@@ -37,7 +37,7 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
-const { resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
+const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
 
 registerBuiltinTelemetry();
 
@@ -355,6 +355,8 @@ test("an operator settling a dispatch underneath it is superseded, not failed", 
 test("a failure after resolution carries the model that launch resolved", async () => {
   const repo = seedRepo("failed-after");
   const registry = new Registry();
+  const detach = attachSessionTelemetry(registry);
+  let failedCwd: string | null = null;
   registry.upsertTask(
     mkTask({
       id: "task-failed",
@@ -375,7 +377,8 @@ test("a failure after resolution carries the model that launch resolved", async 
     // Thrown at the SPAWN, which is after the model and effort ladder has been walked. That
     // ordering is the point: the facts below are the ones this launch resolved, carried
     // forward to an exit three scopes away from where they were computed.
-    spawn: async () => {
+    spawn: async (_label, _short, cwd) => {
+      failedCwd = cwd;
       throw new Error("no terminal backend could start a session");
     },
   });
@@ -398,4 +401,14 @@ test("a failure after resolution carries the model that launch resolved", async 
     .prepare(`SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.session.started'`)
     .get() as { n: number };
   assert.equal(started.n, 0);
+
+  // A later session in that checkout must not consume the failed launch's intent.
+  assert.ok(failedCwd);
+  registry.applyDiscovery([mkDiscovered({ cwd: failedCwd })]);
+  const later = openDb().prepare(
+    "SELECT facts_json, refs_json FROM telemetry_journal WHERE name = 'mission.session.started'",
+  ).get() as { facts_json: string; refs_json: string };
+  assert.equal(JSON.parse(later.facts_json).origin, "discovered");
+  assert.equal(JSON.parse(later.refs_json).task_id, undefined);
+  detach();
 });

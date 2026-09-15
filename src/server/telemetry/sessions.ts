@@ -75,6 +75,9 @@ const SOURCE_KIND = "mission.session";
  */
 const LAUNCH_INTENT_TTL_MS = 5 * 60_000;
 
+/** A signal is not proof of termination; older departures retain an unknown cause. */
+const KILL_REQUEST_CORRELATION_MS = 60_000;
+
 /**
  * A telemetry-visible effort value.
  *
@@ -112,6 +115,7 @@ interface SessionTrack {
   observationId: string;
   agent: AgentType;
   runtime: SessionRuntime;
+  lastState: Session["state"];
   taskId: string | null;
   taskKind: TaskKindValue;
   repoCount: number;
@@ -247,7 +251,11 @@ export function noteSessionRestoring(sessionId: string): void {
  */
 export function noteSessionHandoff(sessionId: string): () => void {
   const track = tracks.get(sessionId);
-  if (track) track.handoff = true;
+  if (track) {
+    track.handoff = true;
+    // Reaching a new, preflighted stop operation proves the earlier kill did not remove it.
+    track.killRequestedAt = null;
+  }
   return () => {
     if (track) track.handoff = false;
   };
@@ -282,7 +290,11 @@ export function observeKillRequested(input: {
 }): TelemetryCaptureResult {
   const now = input.now ?? Date.now();
   const track = tracks.get(input.session.id);
-  if (track && input.outcome === "accepted") track.killRequestedAt = now;
+  if (track && input.outcome === "accepted" &&
+    // An SDK rejection can restore the card before the accepted route continuation runs.
+    (input.session.runtime !== "sdk" || track.lastState === "stopping" || track.lastState === "exited")) {
+    track.killRequestedAt = now;
+  }
   return captureTelemetry({
     event: SESSION_KILL_REQUESTED_EVENT,
     source: { kind: SOURCE_KIND, id: `kill:${input.session.id}:${now}`, revision: 1 },
@@ -411,6 +423,11 @@ export function observeDispatchFinished(input: {
   // refused as a duplicate. The marker is retired by the next `noteDispatchStarted` instead,
   // which every `dispatch()` call makes, so a genuine re-dispatch still gets its own identity.
   const startedAt = dispatchStarts.get(input.taskId) ?? now;
+  if (input.outcome !== "launched") {
+    for (let i = launchIntents.length - 1; i >= 0; i -= 1) {
+      if (launchIntents[i]!.taskId === input.taskId) launchIntents.splice(i, 1);
+    }
+  }
   return captureTelemetry({
     event: DISPATCH_FINISHED_EVENT,
     source: { kind: "mission.dispatch", id: `${input.taskId}:${startedAt}`, revision: 1 },
@@ -578,6 +595,12 @@ function onSession(host: SessionTelemetryHost, session: Session): void {
   // An evicted session lingers in `exited` before removal, and its projection keeps being
   // republished. Nothing after departure changes what was observed.
   if (existing.ended) return;
+  if (session.state !== "stopping" && session.state !== "exited" &&
+    (existing.lastState === "stopping" || existing.lastState === "exited")) {
+    // A failed stop restored the card, or discovery cancelled provisional eviction.
+    existing.killRequestedAt = null;
+  }
+  existing.lastState = session.state;
   observeSegment(existing, session);
   observeTurn(existing, session);
 }
@@ -598,6 +621,7 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
     observationId: randomUUID(),
     agent: session.agent,
     runtime: session.runtime,
+    lastState: session.state,
     taskId: taskId ?? null,
     taskKind: task ? taskKindOf(task.kind) : "none",
     repoCount: task ? boundedCount(1 + task.extraRepos.length) : 0,
@@ -809,7 +833,7 @@ function onSessionRemoved(sessionId: string): void {
   const now = Date.now();
   const reason = shuttingDown
     ? "shutdown"
-    : track.killRequestedAt !== null
+    : track.killRequestedAt !== null && now - track.killRequestedAt <= KILL_REQUEST_CORRELATION_MS
       ? "kill_requested"
       : track.handoff
         ? "handoff"
@@ -842,7 +866,10 @@ function onSessionRemoved(sessionId: string): void {
 
 /** A task moved. Capture exactly one outcome per dispatch attempt that reaches a terminal row. */
 function onTask(task: Task): void {
-  if (task.status !== "done" && task.status !== "failed" && task.status !== "cancelled") return;
+  if (task.status !== "done" && task.status !== "failed" && task.status !== "cancelled") {
+    settledTaskIds.delete(task.id);
+    return;
+  }
   const key = attemptKey(task.id, task.dispatchedAt ?? null);
   if (settledAttempts.has(key)) return;
   settledAttempts.add(key);

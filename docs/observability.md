@@ -288,6 +288,12 @@ For terminal handoffs, `sdk/handoff.ts` marks the departure after preflight and 
 the driver, so removal during that stop still records `reason=handoff`. A failed stop with a
 surviving driver clears the marker. A stopped driver retains its handoff reason even if the
 terminal fails to open; the task outcome describes that failure separately.
+An accepted kill remains an action fact even when the session survives. Its departure marker
+clears on stop-failure restoration, cancelled eviction, or a later handoff, and otherwise
+correlates removal for at most one minute. Later unexplained departures retain `unknown`.
+Failed and superseded dispatches discard unused launch intents so a retry cannot inherit
+their model, effort, or task. A non-terminal task publication clears its prior settlement
+marker so a retry's departure can report that work is still open.
 
 **Late delivery survives ownership invalidation, and gains no authority by doing so.**
 `invalidateTaskOwnershipInTransaction` deletes a task's work-episode binding without archiving it,

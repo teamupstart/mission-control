@@ -27,6 +27,7 @@ const {
   attachSessionTelemetry,
   noteDispatchLaunch,
   noteDispatchStarted,
+  noteSessionHandoff,
   noteSessionRestoring,
   noteTaskDeparture,
   observeDispatchFinished,
@@ -549,6 +550,83 @@ test("a confirmed kill is the ending's reason", () => {
   });
   host().emit({ type: "session_remove", id: session().id });
   assert.equal(journal("mission.session.ended")[0]?.facts.reason, "kill_requested");
+});
+
+for (const later of ["handoff", "stop_failure", "rediscovery", "expired"] as const) {
+  test(`a survived kill request does not mislabel a later ${later} departure`, (t) => {
+    let now = 1_000;
+    t.mock.method(Date, "now", () => now);
+    enableLocalOnly();
+    upsert();
+    observeKillRequested({
+      session: session() as never, outcome: "accepted",
+      actor: { kind: "human", origin: "dashboard", basis: "app_context" },
+    });
+    if (later === "handoff") noteSessionHandoff(session().id as string);
+    else if (later === "expired") now += 5 * 60_000;
+    else {
+      upsert({ state: later === "stop_failure" ? "stopping" : "exited" });
+      upsert({ state: "idle" });
+    }
+    host().emit({ type: "session_remove", id: session().id });
+    assert.equal(journal("mission.session.ended")[0]?.facts.reason, later === "handoff" ? "handoff" : "unknown");
+    assert.equal(journal("mission.session.kill.requested").length, 1, "the accepted action fact remains");
+  });
+}
+
+for (const outcome of ["failed", "superseded"] as const) {
+  test(`a ${outcome} dispatch cannot donate launch attribution to a retry`, () => {
+    enableLocalOnly();
+    noteDispatchStarted("task-old", 1_000);
+    noteDispatchLaunch("task-old", "/tmp/checkout", { model: "old-model", effort: "low" });
+    observeDispatchFinished({
+      taskId: "task-old", agent: "claude", runtime: "terminal", taskKind: "ship",
+      resolvedModel: "old-model", resolvedEffort: "low", resolutionSource: "task", repoCount: 1, outcome,
+    });
+    noteDispatchStarted("task-retry", 2_000);
+    noteDispatchLaunch("task-retry", "/tmp/checkout", { model: "new-model", effort: "high" });
+    upsert();
+    assert.equal(journal("mission.session.started")[0]?.refs.task_id, "task-retry");
+    const [segment] = journal("mission.session.segment.opened");
+    assert.equal(segment?.facts.model_id, "new-model");
+    assert.equal(segment?.facts.effort, "high");
+  });
+}
+
+test("an SDK stop restored before its accepted response cannot mark a later departure", () => {
+  enableLocalOnly();
+  upsert({ runtime: "sdk", state: "stopping" });
+  upsert({ runtime: "sdk", state: "idle" });
+  observeKillRequested({
+    session: session({ runtime: "sdk" }) as never, outcome: "accepted",
+    actor: { kind: "human", origin: "dashboard", basis: "app_context" },
+  });
+  host().emit({ type: "session_remove", id: session().id });
+  assert.equal(journal("mission.session.ended")[0]?.facts.reason, "unknown");
+});
+
+test("an accepted SDK stop still awaiting removal retains its kill attribution", () => {
+  enableLocalOnly();
+  upsert({ runtime: "sdk", state: "stopping" });
+  observeKillRequested({
+    session: session({ runtime: "sdk" }) as never, outcome: "accepted",
+    actor: { kind: "human", origin: "dashboard", basis: "app_context" },
+  });
+  upsert({ runtime: "sdk", state: "exited" });
+  host().emit({ type: "session_remove", id: session().id });
+  assert.equal(journal("mission.session.ended")[0]?.facts.reason, "kill_requested");
+});
+
+test("a task's prior outcome does not hide open work on a new attempt", () => {
+  enableLocalOnly();
+  const task = { id: "task-retry", kind: "ship", extraRepos: [], sessionId: null, dispatchedAt: 1_000 };
+  host().emit({ type: "task_upsert", task: { ...task, status: "failed" } });
+  host().emit({ type: "task_upsert", task: { ...task, status: "dispatching", dispatchedAt: 2_000 } });
+  noteDispatchLaunch(task.id, "/tmp/checkout");
+  upsert();
+  host().emit({ type: "session_remove", id: session().id });
+  assert.equal(journal("mission.session.ended")[0]?.facts.ended_while_work_open, true);
+  assert.equal(journal("mission.task.outcome").length, 1, "the previous attempt's outcome stays recorded");
 });
 
 // ---- task outcomes ----

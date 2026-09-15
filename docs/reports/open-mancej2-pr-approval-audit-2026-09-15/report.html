@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open mancej2 PR approval audit - 2026-09-15</title>
+<style>
+:root{color-scheme:dark;--bg:#0e1013;--panel:#16181c;--panel2:#1d2026;--line:#2f343c;--ink:#f2f3f5;--muted:#b6bcc6;--quiet:#9aa2ad;--blue:#72b7ff;--green:#54d39a;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+@media(prefers-color-scheme:light){:root:where(:not([data-theme=dark])){color-scheme:light;--bg:#f4f4f2;--panel:#fff;--panel2:#f0f0ed;--line:#d5d5d0;--ink:#101114;--muted:#4a4d53;--quiet:#60656d;--blue:#1262ad;--green:#08794f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 var(--sans)}.wrap{max-width:980px;margin:auto;padding:56px 28px 96px}header{border-bottom:1px solid var(--line);padding-bottom:34px;margin-bottom:38px}.eyebrow{font:11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--quiet);margin:0 0 12px}h1{font-size:38px;line-height:1.12;margin:0 0 16px;letter-spacing:-.02em}h2{font-size:23px;line-height:1.25;margin:42px 0 12px;padding-top:22px;border-top:1px solid var(--line)}p{max-width:75ch;margin:0 0 14px}.lead{font-size:18px;color:var(--muted);max-width:68ch}.lead strong{color:var(--green)}a{color:var(--blue)}code{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;white-space:nowrap}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:20px 0}.status{border-left:4px solid var(--green)}.status strong{color:var(--green)}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:10px 8px}th{color:var(--quiet);font:11px var(--mono);letter-spacing:.08em;text-transform:uppercase}td:first-child{white-space:nowrap}pre{overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:14px;font:12px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.note{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body><main class="wrap">
+<header><p class="eyebrow">Mission Control / GitHub audit / 2026-09-15</p><h1>Open PR approval audit for <code>mancej2</code></h1><p class="lead"><strong>No action taken.</strong> One open pull request was found, and it already has a current approval from <code>mancej</code>. Per the task rules, it was not approved again and received no comment.</p></header>
+<section class="card status"><p><strong>Finding</strong></p><p>PR <a href="https://github.com/teamupstart/mission-control/pull/1060">#1060</a>, “fix(models): offer GPT-6 Astra for Codex,” is open and authored by <code>mancej2</code>. The latest <code>mancej</code> review is <code>APPROVED</code> on the current head commit, so the duplicate-approval and duplicate-comment gates both apply.</p></section>
+<h2>Evidence</h2>
+<table><thead><tr><th>Check</th><th>Observed result</th></tr></thead><tbody>
+<tr><td>Open PR search</td><td>Exactly one result: #1060, author <code>mancej2</code>, head <code>e7c2c709c9d88acb1e19ff62f4e37e3773781273</code>.</td></tr>
+<tr><td>Current approval</td><td><code>mancej</code> submitted <code>APPROVED</code> review ID <code>5211550951</code> against that same head commit at <code>2026-09-15T14:43:03Z</code>.</td></tr>
+<tr><td>PR feature summary</td><td>Adds GPT-6 Astra to the built-in Codex model fallback and live catalog handling, exposes its reasoning range, and keeps existing task and background-job defaults unchanged.</td></tr>
+<tr><td>Action</td><td>No approval and no comment. This is a deliberate no-op, not a failure.</td></tr>
+</tbody></table>
+<h2>Commands and limits</h2>
+<pre>gh api user --jq .login
+gh pr list --state open --author mancej2 --json number,title,body,author,headRefOid,reviewDecision,statusCheckRollup,url --limit 100
+gh api repos/teamupstart/mission-control/pulls/1060/reviews --paginate</pre>
+<p class="note">The audit checked the live GitHub state available to the authenticated account <code>mancej</code>. It did not merge the PR, alter repository files other than this untracked report, or wait for CI. The PR currently also includes a CodeRabbit review comment, but the existing current approval means no new comment is permitted by the task rules. Report contrast validation was attempted with <code>node scripts/check-report-contrast.mjs</code> and could not start because this checkout has no installed <code>playwright</code> package; visual contrast is therefore not reported as verified.</p>
+</main></body></html>

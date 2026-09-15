@@ -239,7 +239,7 @@ export class SdkSupervisor {
         // BEFORE the resume, so the card this row produces is recognised as a continuation
         // rather than reported as a session somebody just started. An inert restoring
         // projection is not yet a usable session, and the two must not share one count.
-        noteSessionRestoring(row.id);
+        noteSessionRestoring(row.id, row.taskId);
         const restoreStartedAt = Date.now();
         try {
           await this.resume(row);

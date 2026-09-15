@@ -57,6 +57,7 @@ import type {
   ThinkingLevel,
 } from "@shared/types.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
+import { isTerminalTask } from "@shared/task-status.ts";
 import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
 import { taskOutcomeSourceId } from "./store.ts";
@@ -200,7 +201,7 @@ function rememberDispatchStart(taskId: string, at: number): void {
   }
 }
 /** Sessions the supervisor is bringing back, so their start is not reported as a new one. */
-const restoringSessions = new Set<string>();
+const restoringSessions = new Map<string, { taskId: string | null }>();
 
 let shuttingDown = false;
 
@@ -238,8 +239,8 @@ export function noteDispatchStarted(taskId: string, now = Date.now()): void {
 }
 
 /** The supervisor is resuming this row. Its card is a continuation, not a new session. */
-export function noteSessionRestoring(sessionId: string): void {
-  restoringSessions.add(sessionId);
+export function noteSessionRestoring(sessionId: string, taskId: string | null): void {
+  restoringSessions.set(sessionId, { taskId });
 }
 
 /**
@@ -608,14 +609,14 @@ function onSession(host: SessionTelemetryHost, session: Session): void {
 
 function startTrack(host: SessionTelemetryHost, session: Session): void {
   const now = Date.now();
-  const intent = takeLaunchIntent(session, now);
-  const restoring = restoringSessions.delete(session.id);
-  // ONLY from the launch intent. A scan of live tasks for one naming this session was
-  // considered and rejected: `Task.sessionId` means "currently executing on", so a scan would
-  // bind a session to whichever task happened to name it - including one that has since moved
-  // on - and a discovered session legitimately has no task at all.
-  const taskId = intent?.taskId ?? null;
+  const restoring = restoringSessions.get(session.id);
+  restoringSessions.delete(session.id);
+  const intent = restoring ? null : takeLaunchIntent(session, now);
+  // Only the durable supervisor association or the launch intent supplies task identity.
+  // Scanning current task bindings could attribute a discovered session to unrelated work.
+  const taskId = restoring?.taskId ?? intent?.taskId ?? null;
   const task = taskId ? host.getTask(taskId) : undefined;
+  if (task) rememberTaskSettlement(task.id, isTerminalTask(task.status));
   const origin = intent ? "dispatch" : restoring ? "restored" : "discovered";
   const track: SessionTrack = {
     sessionId: session.id,
@@ -624,7 +625,7 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
     runtime: session.runtime,
     lastState: session.state,
     taskId: taskId ?? null,
-    taskKind: task ? taskKindOf(task.kind) : "none",
+    taskKind: task ? taskKindOf(task.kind) : taskId ? "unknown" : "none",
     repoCount: task ? boundedCount(1 + task.extraRepos.length) : 0,
     firstSeenAt: now,
     // A launch we performed is the ONE case where the start itself was witnessed. Everything
@@ -871,16 +872,9 @@ function onTask(task: Task): void {
   const terminal = status === "done" || status === "failed" || status === "cancelled";
   const now = Date.now();
   const key = taskOutcomeSourceId(task.id, task.dispatchedAt ?? null, terminal, now);
-  if (!terminal) {
-    settledTaskIds.delete(task.id);
-    return;
-  }
+  rememberTaskSettlement(task.id, terminal);
+  if (!terminal) return;
   if (settledAttempts.has(key)) return;
-  settledTaskIds.add(task.id);
-  if (settledTaskIds.size > 1024) {
-    const oldest = settledTaskIds.values().next();
-    if (!oldest.done) settledTaskIds.delete(oldest.value);
-  }
   const departed = departedTasks.has(task.id);
   const startedAt = task.dispatchedAt ?? null;
   const result = captureTelemetry({
@@ -984,6 +978,18 @@ export function registerSessionTelemetrySource(): void {
 }
 
 // ---- helpers ----
+
+function rememberTaskSettlement(taskId: string, terminal: boolean): void {
+  if (!terminal) {
+    settledTaskIds.delete(taskId);
+    return;
+  }
+  settledTaskIds.add(taskId);
+  if (settledTaskIds.size > 1024) {
+    const oldest = settledTaskIds.values().next();
+    if (!oldest.done) settledTaskIds.delete(oldest.value);
+  }
+}
 
 function takeLaunchIntent(session: Session, now: number): LaunchIntent | null {
   sweepLaunchIntents(now);

@@ -262,7 +262,7 @@ test("an app-owned launch is a dispatch with a witnessed start", () => {
 
 test("a restored session is a continuation, not a second adoption", () => {
   enableLocalOnly();
-  noteSessionRestoring("sdk:abc");
+  noteSessionRestoring("sdk:abc", null);
   upsert({ id: "sdk:abc", runtime: "sdk", cwd: "/tmp/elsewhere" });
   const [started] = journal("mission.session.started");
   assert.equal(started?.facts.origin, "restored");
@@ -278,6 +278,30 @@ test("republishing a session does not start it again", () => {
   upsert({ state: "working" });
   upsert({ state: "idle" });
   assert.equal(journal("mission.session.started").length, 1);
+});
+
+test("restoration uses its durable task instead of consuming a same-checkout launch intent", () => {
+  enableLocalOnly();
+  host().tasks.set("restored-task", { id: "restored-task", kind: "ship", extraRepos: [], status: "done" });
+  noteDispatchLaunch("new-dispatch", "/tmp/checkout");
+  noteSessionRestoring("sdk:restored-task", "restored-task");
+  upsert({ id: "sdk:restored-task", runtime: "sdk" });
+  host().emit({ type: "session_remove", id: "sdk:restored-task" });
+  assert.equal(journal("mission.session.started")[0]?.refs.task_id, "restored-task");
+  assert.equal(journal("mission.session.ended")[0]?.facts.ended_while_work_open, false,
+    "a terminal task loaded before observation is already settled");
+  upsert();
+  assert.equal(journal("mission.session.started")[1]?.refs.task_id, "new-dispatch",
+    "the actual new launch still consumes its own intent");
+});
+
+test("a restored task identity survives an unavailable task row without inventing its kind", () => {
+  enableLocalOnly();
+  noteSessionRestoring("sdk:missing-task", "missing-task");
+  upsert({ id: "sdk:missing-task", runtime: "sdk" });
+  const [started] = journal("mission.session.started");
+  assert.equal(started?.refs.task_id, "missing-task");
+  assert.equal(started?.facts.task_kind, "unknown");
 });
 
 test("a daemon restart re-adopting the same session records continuity, not a new session", () => {

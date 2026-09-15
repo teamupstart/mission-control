@@ -996,6 +996,70 @@ test("shutdown owns a fresh SDK launch already waiting on its provider", async (
   }
 });
 
+test("restore carries durable task attribution through session telemetry", async (t) => {
+  const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+  const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
+  const { attachSessionTelemetry, observeUsageRecorded, resetSessionTelemetryForTesting } =
+    await import("../src/server/telemetry/sessions.ts");
+  registerBuiltinTelemetry();
+  resetSessionTelemetryForTesting();
+  assert.equal(setTelemetryConfig({ enabled: true }).ok, true);
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "task-restore-telemetry", kind: "ship", status: "running",
+    sessionId: "sdk:restore-telemetry", extraRepos: [{
+      repoRoot: "/repo/secondary", worktreePath: null, branch: null, provider: null,
+      worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+    }],
+  }));
+  const detach = attachSessionTelemetry(registry);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    upsertSdkSession({
+      id: "sdk:restore-telemetry", agent: "claude", agentSessionId: "restored-conversation",
+      cwd: "/wt/restore-telemetry", taskId: "task-restore-telemetry", model: null,
+      effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+    });
+    const supervisor = new SdkSupervisor(registry);
+    await supervisor.restore();
+    handle.push({ kind: "state", state: "working", activity: null });
+    handle.push({ kind: "turn_done", usage: null });
+    await drain();
+    observeUsageRecorded({
+      identity: "restored-usage", usageOrigin: "authoring", costBasis: "reported",
+      modelId: "claude-sonnet-4-6", input: 1, output: 2, reasoningOutput: 0,
+      cacheRead: 0, cacheWrite: 0, costUsd: 0.01, sessionId: "sdk:restore-telemetry",
+    });
+    handle.push({ kind: "exited", reason: "done", resumable: false });
+    handle.end();
+    await drain();
+    t.mock.timers.tick(9_000);
+    const rows = openDb().prepare("SELECT name, facts_json, refs_json FROM telemetry_journal").all();
+    const events = rows.map((row) => ({
+      name: row.name, facts: JSON.parse(String(row.facts_json)), refs: JSON.parse(String(row.refs_json)),
+    })).filter((row) => row.refs.session_id === "sdk:restore-telemetry");
+    for (const name of ["mission.session.started", "mission.session.segment.opened",
+      "mission.session.turn.finished", "mission.usage.recorded", "mission.session.ended"]) {
+      const found = events.filter((row) => row.name === name);
+      assert.ok(found.length > 0, `${name} was captured`);
+      assert.ok(found.every((row) => row.refs.task_id === "task-restore-telemetry"), `${name} retains the durable task`);
+    }
+    const started = events.find((row) => row.name === "mission.session.started")!;
+    assert.equal(started.facts.origin, "restored");
+    assert.equal(started.facts.task_kind, "ship");
+    assert.equal(started.facts.repo_count, 2);
+    assert.equal(events.find((row) => row.name === "mission.session.ended")?.facts.ended_while_work_open, true);
+  } finally {
+    handle.end();
+    detach();
+    fake.restore();
+    setTelemetryConfig({ enabled: false });
+    resetSessionTelemetryForTesting();
+  }
+});
+
 test("restore resumes the same conversation rather than starting a new one", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

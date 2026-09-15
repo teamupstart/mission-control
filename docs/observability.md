@@ -299,6 +299,10 @@ restarts. Reopening or changing dispatch time rotates it; terminal cleanup updat
 even if they rewrite completion timestamps. An immediate cancellation after reopening gets
 its own outcome. This source state is charged to the telemetry byte budget and expires after
 the same 30-day inactivity window as deduplication state.
+Restored SDK sessions retain the supervisor row's durable task association for session,
+segment, turn, usage and departure facts. A missing task row preserves the ID with unknown
+task kind; it does not turn the session into a taskless one. Restoration also preserves any
+unrelated dispatch intent waiting for a new session in the same checkout.
 
 **Late delivery survives ownership invalidation, and gains no authority by doing so.**
 `invalidateTaskOwnershipInTransaction` deletes a task's work-episode binding without archiving it,

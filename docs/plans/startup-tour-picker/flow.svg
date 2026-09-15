@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 320" role="img" aria-label="Browser hydrates preferences from the daemon, shows the registry-backed picker, and starts the existing engine only on selection. Checkbox changes persist through the daemon into SQLite.">
+<style>text{font-family:system-ui,sans-serif;fill:#e7ebf1;font-size:16px}rect{fill:#171c23;stroke:#485462}.sub{fill:#939eae;font-size:13px}.edge{fill:none;stroke:#f6a733;stroke-width:2;marker-end:url(#arrow)}</style><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10" fill="#f6a733"/></marker></defs>
+<rect width="1100" height="320" fill="#0a0c0f" rx="12"/><rect x="25" y="45" width="205" height="72" rx="10"/><text x="45" y="73">Daemon + SQLite</text><text class="sub" x="45" y="97">Saved UI preferences</text><path class="edge" d="M230 80H310"/>
+<rect x="310" y="45" width="205" height="72" rx="10"/><text x="330" y="73">Dashboard startup</text><text class="sub" x="330" y="97">Hydrate, gate once</text><path class="edge" d="M515 80H595"/>
+<rect x="595" y="45" width="200" height="72" rx="10"/><text x="615" y="73">Tour picker</text><text class="sub" x="615" y="97">Preview then Start</text><path class="edge" d="M795 80H875"/>
+<rect x="875" y="45" width="200" height="72" rx="10"/><text x="895" y="73">Existing engine</text><text class="sub" x="895" y="97">Preflight + walkthrough</text>
+<rect x="595" y="215" width="200" height="72" rx="10"/><text x="615" y="243">Local tour registry</text><text class="sub" x="615" y="267">Every registered entry</text><path class="edge" d="M695 215V125"/>
+<path class="edge" d="M615 117V168H125V125"/><text class="sub" x="218" y="155">Checkbox patch via existing /api/ui/config</text>
+</svg>

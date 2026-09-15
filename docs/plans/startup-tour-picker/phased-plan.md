@@ -14,7 +14,7 @@ Create **one one-shot implementation task**. The risk is concentrated in one lif
 | --- | --- | --- | --- | --- |
 | 1 | The complete registry-backed startup picker, preference, manual reopening, and safe walkthrough handoff | This planning session's PR merged to main | [Phase 1: startup picker and walkthrough handoff](phase-1-startup-picker.md) | `3c1dc325-ddf6-402d-9d7c-5176c433e672` (backlog) |
 
-Repository: `teamupstart/mission-control`, canonical local repository `/Users/jordanmance/workspace/mission-control`. No additional repositories and no context-only attachments. One implementation PR completes the phase.
+Repository: `teamupstart/mission-control`, using the repository checkout attached by Mission Control. No additional repositories and no context-only attachments. One implementation PR completes the phase.
 
 ## Dependency graph and execution order
 
@@ -80,3 +80,5 @@ Final audit on 2026-09-15: reread the approved root plan and Phase 1; every TP r
 ## Publication and scheduling record
 
 The complete plan set was pushed as commit `ecff01eb77c256675f222d328d44d789fb8f0cd4` before task creation. All referenced paths were verified in that commit and the remote branch was confirmed at the same SHA. Mission Control then created task `3c1dc325-ddf6-402d-9d7c-5176c433e672` in backlog, returning the expected canonical repository, no attachments, no task-ID prerequisites, and `dependsOnCurrentSession: true`. This record is a follow-up artifact update; the task remains gated on this planning session's PR merge.
+
+Review repair on 2026-09-15: replaced operator-specific checkout locations with the Mission Control-issued repository scope. The published relative task pointers, canonical scope verification, dependency, requirements, and exit criteria are unchanged.

@@ -11,7 +11,7 @@ Read [the approved root plan](plan.md), [the implementation index](phased-plan.m
 - This planning session's pull request has merged to `main`. All three plan paths and the mockup sources resolve in the checked-out default branch.
 - Rebase or merge the current default branch according to repository rules before implementation; preserve unrelated work and resolve conflicts. Read root AGENTS.md, its memory index, architecture, change contracts, and e2e/README.md.
 - Direct dependency: the current planning session only. There are no prerequisite implementation task IDs and no other phases.
-- Repository: `teamupstart/mission-control`, canonical checkout `/Users/jordanmance/workspace/mission-control`. No additional repository changes or attachments are needed.
+- Repository: `teamupstart/mission-control`, use the repository checkout attached to this task by Mission Control. No additional repository changes or attachments are needed.
 
 ## Scope and non-goals
 
@@ -150,3 +150,5 @@ There are no later phases. Future tour registrations can rely on automatic catal
 ## Cross-phase audit record
 
 2026-09-15: compared this phase with the complete approved root plan and phased index. TP-01 through TP-10 are all owned here exactly once. B, every-open with opt-out, and the new/existing-profile default are preserved. The one-time guidedTour field is explicitly distinguished from the new setting; no conflicting startup consumer remains. The actual same-route return value, route-only confirmation, overlay focus limitations, and E2E suppression seeds are accounted for. No multi-repository dependency, schema ordering hazard, parallel merge contention, or undocumented later work remains. No approved behavior changed during decomposition.
+
+Review repair on 2026-09-15: removed the operator-specific local checkout path from the guide. The repository identity and all task-relative plan paths remain unchanged; no behavior, dependency, or acceptance criterion was revised.

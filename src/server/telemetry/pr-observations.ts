@@ -31,7 +31,7 @@ import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
 import { digest } from "./identity.ts";
 import { registerTelemetrySource } from "./registration.ts";
-import { telemetryTransaction } from "./store.ts";
+import { findSourceIdentity, telemetryTransaction } from "./store.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
 
 const SOURCE_KIND = "mission.pr";
@@ -109,14 +109,18 @@ export function retainPrObservation(input: {
   const taskKind = taskKindOf(input.taskKind);
 
   let retained = false;
+  let observation: ObservationRow | undefined;
   try {
     retained = telemetryTransaction((d) => {
       const existing = d
-        .prepare(`SELECT task_id FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`)
-        .get(input.taskId, prKey) as { task_id: string } | undefined;
+        .prepare(`SELECT * FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`)
+        .get(input.taskId, prKey) as unknown as ObservationRow | undefined;
       // First association only. A second sighting of the same pull request is not news, and
       // re-stamping `associated_at` would reset the horizon this row is polled under.
-      if (existing) return false;
+      if (existing) {
+        observation = existing;
+        return false;
+      }
       d.prepare(
         `INSERT INTO telemetry_pr_observations
            (task_id, pr_key, pr_url, repo_key, repo_role, task_kind, context_json,
@@ -132,11 +136,18 @@ export function retainPrObservation(input: {
         // The attribution FROZEN now, while its source ownership still exists. A late merge is
         // reported against the session and repository that produced it, not against whatever
         // the task happens to be bound to weeks later.
-        JSON.stringify({ sessionId: input.sessionId, repoRole, taskKind }),
+        JSON.stringify({
+          sessionId: input.sessionId, repoRole, taskKind,
+          associationFact: input.creationVerified ? "creation_verified" : "associated_existing",
+          associationCaptured: false,
+        }),
         input.sessionId,
         now,
         now + LATE_OUTCOME_HORIZON_MS,
       );
+      observation = d.prepare(
+        `SELECT * FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`,
+      ).get(input.taskId, prKey) as unknown as ObservationRow;
       return true;
     });
   } catch (error) {
@@ -146,21 +157,35 @@ export function retainPrObservation(input: {
     return { retained: false, prKey };
   }
 
-  if (retained) {
-    capturePrFact({
-      taskId: input.taskId,
-      prKey,
-      repoKey,
-      repoRole,
-      taskKind,
-      sessionId: input.sessionId,
-      fact: input.creationVerified ? "creation_verified" : "associated_existing",
-      delivery: "live",
-      ageMs: 0,
-      now,
-    });
-  }
+  if (observation) captureRetainedAssociation(observation, now);
   return { retained, prKey };
+}
+
+/** Retry the first fact from its frozen row, never from a later sighting's attribution. */
+function captureRetainedAssociation(row: ObservationRow, now: number): void {
+  if (row.expires_at <= now) return;
+  try {
+    const context = JSON.parse(row.context_json) as Record<string, unknown>;
+    if (context.associationCaptured === true) return;
+    // Older retained rows predate the pending marker. Preserve an already captured creation
+    // fact via its durable identity; otherwise the conservative claim is association only.
+    const created = context.associationFact === "creation_verified" ||
+      (context.associationFact === undefined && telemetryTransaction((d) =>
+        findSourceIdentity(d, prFactSource(row.task_id, row.pr_key, "creation_verified")) !== null));
+    const fact = created ? "creation_verified" : "associated_existing";
+    const observation = toObservation(row);
+    const result = capturePrFact({
+      ...observation, fact, delivery: "live", ageMs: 0, occurredAt: row.associated_at, now,
+    });
+    if (result.kind !== "accepted" && result.kind !== "duplicate") return;
+    telemetryTransaction((d) => d.prepare(
+      `UPDATE telemetry_pr_observations
+       SET context_json = json_set(context_json, '$.associationFact', ?, '$.associationCaptured', json('true'))
+       WHERE task_id = ? AND pr_key = ?`,
+    ).run(fact, row.task_id, row.pr_key));
+  } catch (error) {
+    console.warn("[telemetry] could not capture retained pull request association:", error);
+  }
 }
 
 /**
@@ -176,6 +201,14 @@ export function telemetryPrPollTargets(now = Date.now()): string[] {
   // table it has no rows in.
   if (!getTelemetryConfig().enabled) return [];
   try {
+    // Share the poll cadence for retries even if the PR has since merged. Capture and stamp
+    // are independently retryable; durable source identity prevents duplicate events.
+    const pending = telemetryTransaction((d) => d.prepare(
+      `SELECT * FROM telemetry_pr_observations
+       WHERE expires_at > ? AND json_extract(context_json, '$.associationCaptured') IS NOT 1
+       ORDER BY associated_at ASC LIMIT 500`,
+    ).all(now) as unknown as ObservationRow[]);
+    for (const row of pending) captureRetainedAssociation(row, now);
     const rows = telemetryTransaction((d) =>
       d
         .prepare(
@@ -359,11 +392,7 @@ function capturePrFact(input: {
 }) {
   return captureTelemetry({
     event: PR_OBSERVED_EVENT,
-    source: {
-      kind: SOURCE_KIND,
-      id: `${input.taskId}:${input.prKey}:${input.fact}`,
-      revision: 1,
-    },
+    source: prFactSource(input.taskId, input.prKey, input.fact),
     actor: SYSTEM_ACTOR,
     facts: {
       fact: input.fact,
@@ -385,6 +414,10 @@ function capturePrFact(input: {
     occurredAt: input.occurredAt,
     now: input.now,
   });
+}
+
+function prFactSource(taskId: string, prKey: string, fact: string) {
+  return { kind: SOURCE_KIND, id: `${taskId}:${prKey}:${fact}`, revision: 1 };
 }
 
 /** The exported identity of a pull request. One-way, so a holder cannot recover the URL. */

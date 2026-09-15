@@ -310,6 +310,10 @@ dependency polling the same URL does not make an old author's observation live.
 Merge observations remain pollable until capture is durably accepted or recognized as a
 duplicate. A transient capture refusal or failed completion stamp can therefore retry after
 a restart without losing or double-counting the merge.
+The retained context also freezes the initial association fact and its capture status. A
+later sighting or the shared poll cadence retries a pending association using its original
+time, author and creation evidence, even if the merge has already been captured. Retries
+remain bounded by the same retention horizon and 500-row poll limit.
 
 ## The local reference stack
 

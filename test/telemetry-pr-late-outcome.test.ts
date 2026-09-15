@@ -44,6 +44,7 @@ const {
   telemetryPrPollTargets,
 } = await import("../src/server/telemetry/pr-observations.ts");
 const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 registerBuiltinTelemetry();
 
@@ -339,6 +340,97 @@ test("journal pressure leaves a verified merge pending until capture has room", 
   assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 1);
 });
 
+for (const creationVerified of [false, true]) {
+  for (const retry of ["sighting", "poll"] as const) {
+    test(`refused ${creationVerified ? "creation" : "association"} capture retries on ${retry} with its original context`, async () => {
+      enableLocalOnly();
+      seedTask();
+      const input = {
+        taskId: TASK_ID, taskKind: "ship", repoRoot: REPO, primaryRepoRoot: REPO,
+        prUrl: PR_URL, sessionId: SESSION_ID, creationVerified, now: 2_000,
+      };
+      const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+      const original = limits.maxTotalBytes;
+      limits.maxTotalBytes = 1;
+      try {
+        assert.equal(retainPrObservation(input).retained, true);
+        assert.equal(prFacts().length, 0);
+      } finally {
+        limits.maxTotalBytes = original;
+      }
+      closeDb();
+      openDb();
+      if (retry === "sighting") {
+        assert.equal(retainPrObservation({
+          ...input, sessionId: "different-author", taskKind: "scout", creationVerified: !creationVerified, now: 3_000,
+        }).retained, false);
+      } else {
+        await pollAndReconcilePrs(stubRegistry([]) as never, async () => null,
+          async () => ({ state: "open", mergedAt: null }), undefined, 3_000, async () => null);
+      }
+      const facts = prFacts();
+      assert.equal(facts.length, 1);
+      assert.equal(facts[0]?.fact, creationVerified ? "creation_verified" : "associated_existing");
+      assert.equal(facts[0]?.task_kind, "ship");
+      assert.equal((facts[0]?.refs as Record<string, string>).session_id, SESSION_ID);
+      assert.equal((openDb().prepare("SELECT occurred_at FROM telemetry_journal WHERE name = 'mission.pr.observed'").get() as { occurred_at: number }).occurred_at, 2_000);
+      telemetryPrPollTargets(4_000);
+      assert.equal(prFacts().length, 1, "a successful retry is not counted again");
+    });
+  }
+}
+
+test("a pending association retries even after its merge was captured", () => {
+  enableLocalOnly();
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_association_capture BEFORE INSERT ON telemetry_journal
+    WHEN NEW.name = 'mission.pr.observed' AND json_extract(NEW.facts_json, '$.fact') != 'merged'
+    BEGIN SELECT RAISE(FAIL, 'fixture association unavailable'); END`);
+  try {
+    retain();
+    assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 10_000), 1);
+    assert.deepEqual(prFacts().map((fact) => fact.fact), ["merged"]);
+  } finally {
+    d.exec("DROP TRIGGER refuse_association_capture");
+  }
+  closeDb();
+  openDb();
+  assert.deepEqual(telemetryPrPollTargets(11_000), []);
+  assert.deepEqual(prFacts().map((fact) => fact.fact), ["merged", "associated_existing"]);
+});
+
+test("a failed association completion stamp retries without duplicating its accepted fact", () => {
+  enableLocalOnly();
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_association_stamp BEFORE UPDATE OF context_json ON telemetry_pr_observations
+    BEGIN SELECT RAISE(FAIL, 'fixture association stamp unavailable'); END`);
+  try {
+    retain();
+    assert.equal(prFacts().length, 1);
+  } finally {
+    d.exec("DROP TRIGGER refuse_association_stamp");
+  }
+  closeDb();
+  openDb();
+  telemetryPrPollTargets(3_000);
+  assert.equal(prFacts().length, 1);
+  const row = openDb().prepare("SELECT context_json FROM telemetry_pr_observations").get() as { context_json: string };
+  assert.equal(JSON.parse(row.context_json).associationCaptured, true);
+});
+
+test("a legacy retained creation is not recaptured as an existing association", () => {
+  enableLocalOnly();
+  retainPrObservation({
+    taskId: TASK_ID, taskKind: "ship", repoRoot: REPO, primaryRepoRoot: REPO,
+    prUrl: PR_URL, sessionId: SESSION_ID, creationVerified: true, now: 2_000,
+  });
+  openDb().exec("UPDATE telemetry_pr_observations SET context_json = '{}'");
+  closeDb();
+  openDb();
+  telemetryPrPollTargets(3_000);
+  assert.deepEqual(prFacts().map((fact) => fact.fact), ["creation_verified"]);
+});
+
 test("a second sighting of the same association is not a second association", () => {
   enableLocalOnly();
   seedTask();
@@ -475,8 +567,6 @@ test("no pull request URL, repository path or branch reaches an exported record"
 });
 
 // ---- the shared poller, and the authority split inside it ----
-
-const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 /** Everything `pollAndReconcilePrs` asks of a Registry, and nothing else. */
 function stubRegistry(operational: string[]) {

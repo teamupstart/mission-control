@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 78 tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 89 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>78</strong><span>application tables in the current fresh schema</span></div>
+        <div class="metric"><strong>89</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -617,8 +617,9 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Usage and source cursors</strong><span>2 tables</span></summary>
+              <summary><strong>Usage and source cursors</strong><span>3 tables</span></summary>
               <div class="table-list">
+                <div class="table-row"><code>claude_rate_limit_cache</code><p>One validated snapshot of Claude's last reported subscription windows and their recording times. Restored after restart; expired readings remain historical UI data and never count as current quota or billable usage.</p></div>
                 <div class="table-row"><code>usage_ledger</code><p>Deduplicated token and cost cells by stable note key, model, query source, and high-precision source window identity. It separates session and automation spend.</p></div>
                 <div class="table-row"><code>usage_sources</code><p>Durable byte cursors and file identity for append-only usage inputs so a crash may replay data but cannot skip it.</p></div>
               </div>

@@ -52,12 +52,12 @@ import {
   nodeStatusesForSubmission,
   readCapturedContext,
   readinessActionLabel,
-  readinessGapCriteria,
   restageClientItemId,
   restageDisabled,
   restageLabel,
   restageOffered,
   reviewerStatus,
+  runEvidenceCriterionRows,
   evidenceChipLabel,
   openEvidenceTray,
   roundEvidenceCountLabel,
@@ -1720,6 +1720,73 @@ test("a finding's severity, status and location are spelled once", () => {
   assert.equal(inspectorFindingLocation({ ...located, path: null, line: null }), "general");
 });
 
+test("the criterion ledger is total over the canonical criteria and sorts the loud ones up", () => {
+  const readiness = readinessOf([
+    criterion("canon-ok", { matchedClientCriterionId: "c1" }),
+    criterion("canon-warn", {
+      matchedClientCriterionId: "c2",
+      warnings: ["model_proof_class_disagreement"],
+    }),
+    criterion("canon-unclaimed", { gaps: [] }),
+    criterion("canon-gap", { matchedClientCriterionId: "c3", gaps: ["missing_execution"] }),
+  ]);
+  const rows = runEvidenceCriterionRows({
+    coverage: [claim("c1"), claim("c2"), claim("c3")],
+    readiness,
+  });
+
+  /*
+   * Worst first, and record order kept inside each rank - which is what makes this the list to
+   * lead with. The claims list cannot be sorted this way at all: its rows are the author's
+   * declarations, and three of the four criteria above are not one-to-one with one.
+   */
+  assert.deepEqual(rows.map((row) => [row.criterionId, row.label, row.tone]), [
+    ["canon-gap", "gaps", "failed"],
+    ["canon-warn", "warning", "waiting"],
+    ["canon-unclaimed", "no author claim", "waiting"],
+    ["canon-ok", "satisfied", "completed"],
+  ]);
+  assert.deepEqual(rows[0]!.gaps, ["missing execution"]);
+  assert.deepEqual(rows[1]!.warnings, ["model proof class disagreement"]);
+  // The claim is carried onto the criterion's row, so the author's proof class is readable
+  // without opening the claims disclosure to hunt for the matching id.
+  assert.deepEqual(rows[3]!.claims.map((entry) => entry.clientCriterionId), ["c1"]);
+  assert.deepEqual(rows[2]!.claims, []);
+
+  /*
+   * CONTESTED, which `matchedClientCriterionId` alone reports as unclaimed.
+   *
+   * More than one claim answered this criterion, so the reconciliation accepted none of them
+   * and recorded the ids instead. A row that read the matched id alone would print "no author
+   * claim" over two claims that exist, which is the opposite of what happened.
+   */
+  const contested = runEvidenceCriterionRows({
+    coverage: [claim("c1"), claim("c2")],
+    readiness: readinessOf([criterion("canon-two", {
+      matchedClientCriterionId: null,
+      contestedClientCriterionIds: ["c1", "c2"],
+    })]),
+  });
+  assert.equal(contested[0]!.label, "contested");
+  assert.deepEqual(contested[0]!.claims.map((entry) => entry.clientCriterionId), ["c1", "c2"]);
+
+  // A gap outranks everything: the criterion is contested AND gapped, and the gap is the fact
+  // that stops the packet.
+  const gappedContest = runEvidenceCriterionRows({
+    coverage: [claim("c1")],
+    readiness: readinessOf([criterion("canon-two", {
+      matchedClientCriterionId: null,
+      contestedClientCriterionIds: ["c1"],
+      gaps: ["missing_coverage"],
+    })]),
+  });
+  assert.equal(gappedContest[0]!.label, "gaps");
+
+  // No reconciliation, no rows - and the pane falls back to the claims, which is then the only
+  // record of the packet there is.
+  assert.deepEqual(runEvidenceCriterionRows({ coverage: [claim("c1")], readiness: null }), []);
+});
+
 test("a claim row matches its canonical criterion by id, never by the criterion text", () => {
   const linked = claim("c1", { links: [{ clientItemId: "item-a", role: "execution" }] });
   // The author's wording and the canonical wording differ, which is the ordinary case and
@@ -1770,38 +1837,28 @@ test("a claim row matches its canonical criterion by id, never by the criterion 
   assert.equal(evidenceClaimStatus(claim("c2"), null).label, "no evidence linked");
   assert.equal(evidenceClaimStatus(claim("c2"), matched).label, "no evidence linked");
 
-  // The gap block is the gapped criteria with no author claim at all, which are the ones with
-  // no claim row to sit under.
-  assert.deepEqual(
-    readinessGapCriteria(unmatched).map((entry) => entry.criterionId),
-    ["canon-1"],
-  );
-  assert.deepEqual(readinessGapCriteria(matched), []);
-  assert.deepEqual(readinessGapCriteria(null), []);
-
   /*
-   * MATCHED AND GAPPED, which is the case the block must not claim.
+   * MATCHED AND GAPPED, which the ledger must not lose.
    *
    * The reconciliation can accept a claim for a criterion and still record a gap against it -
-   * a proof class that does not satisfy the requirement does exactly that. The claim's own row
-   * already prints the gap, so naming the criterion in a block headed "a criterion with no
-   * claim at all has no row below to sit under" would state it twice, the second time with a
-   * rationale that is false for it. The run's gap COUNT still counts it: the finding is real,
-   * only its place on the page is decided here.
+   * a proof class that does not satisfy the requirement does exactly that. The old pane named
+   * only the UNMATCHED gapped criteria in a block of their own and left this one to be found
+   * on a claim row; the criterion ledger has a row for every canonical criterion, so both are
+   * stated in the same place and the reader does not have to know which list to look in.
    */
   assert.deepEqual(evidenceClaimStatus(linked, withGaps), {
     label: "gaps",
     tone: "failed",
     notes: ["missing execution"],
   });
-  assert.deepEqual(readinessGapCriteria(withGaps), []);
   const mixed = readinessOf([
     criterion("canon-1", { matchedClientCriterionId: "c1", gaps: ["missing_execution"] }),
     criterion("canon-2", { matchedClientCriterionId: null, gaps: ["missing_coverage"] }),
   ]);
   assert.deepEqual(
-    readinessGapCriteria(mixed).map((entry) => entry.criterionId),
-    ["canon-2"],
+    runEvidenceCriterionRows({ coverage: [claim("c1")], readiness: mixed })
+      .map((row) => [row.criterionId, row.label]),
+    [["canon-1", "gaps"], ["canon-2", "gaps"]],
   );
   const mixedDetail = detail([submission("s1", 1, { readiness: mixed })], [], {
     evidenceCoverage: [{ submissionId: "s1", coverage: [claim("c1")] }],
@@ -1809,7 +1866,7 @@ test("a claim row matches its canonical criterion by id, never by the criterion 
   assert.equal(
     runRecordSummary(mixedDetail, mixedDetail.submissions[0]!).evidence.gapCount,
     2,
-    "both gapped criteria are still counted; only the unmatched one gets a named block",
+    "both gapped criteria are counted, and both have a row of their own in the ledger",
   );
 });
 

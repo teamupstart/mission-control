@@ -844,23 +844,39 @@ test("the Evidence pane merges the image ledger and the readiness result without
   assert.match(html, /aria-label="Preview dashboard\.png"/);
   assert.match(html, /aria-label="Preview old-dashboard\.webp"/);
 
-  // The claim row, with the small copy of the picture it cites beside it. The reconciliation
-  // said `model_proof_class_disagreement`, so the row says warning rather than linked.
-  assert.match(html, /The composer renders its caption and scope fields/);
-  assert.match(html, /rendered artifact/);
-  assert.match(html, /model proof class disagreement/);
-  assert.match(html, /class="workflow-chip workflow-waiting">warning<\/span>/);
-  assert.equal((html.match(/class="wf-evidence-mini"/g) ?? []).length, 1);
+  const ledger = html.slice(
+    html.indexOf('aria-label="Canonical reconciliation"'),
+    html.indexOf("Frozen images"),
+  );
+  assert.match(ledger, /A Playwright spec covers the composer end to end/);
+  assert.match(ledger, /class="workflow-chip workflow-failed">missing coverage<\/span>/);
+  assert.match(ledger, /material · no author claim/);
+  assert.ok(
+    ledger.indexOf("A Playwright spec covers the composer end to end")
+      < ledger.indexOf("The composer renders its caption and scope fields"),
+    "the gapped criterion sorts above the merely warned one",
+  );
+  assert.match(ledger, /rendered artifact/);
+  assert.match(ledger, /<code>item-dashboard<\/code>/);
+  assert.match(ledger, /model proof class disagreement/);
+  assert.match(ledger, /class="workflow-chip workflow-waiting">warning<\/span>/);
+  assert.equal((ledger.match(/class="wf-evidence-mini"/g) ?? []).length, 1);
+  // Its own accessible name: the strip card for the same image is a second control, and one
+  // name over both would leave neither addressable by name.
+  assert.match(
+    ledger,
+    /<button type="button" class="wf-evidence-mini-button" aria-label="Open dashboard\.png full size"/,
+  );
+  assert.match(html, /aria-label="Preview dashboard\.png"/);
 
-  // The gap block, named as what it is: a CANONICAL criterion with no author claim to sit under.
-  assert.match(html, /aria-label="Unmatched canonical criteria"/);
-  assert.match(html, /A Playwright spec covers the composer end to end/);
-  assert.match(html, /These are canonical criteria, not author claims/);
-  assert.match(html, /class="workflow-chip workflow-failed">missing coverage<\/span>/);
-
-  // The reconciliation keeps a block of its own rather than being folded into the rows.
-  assert.match(html, /Canonical reconciliation/);
-  assert.match(html, /2 criteria · criterion_mapped_v1/);
+  assert.match(html, /<span class="wf-run-disclosure-title">Frozen author claims<\/span>/);
+  assert.match(html, /<span class="wf-run-disclosure-meta">1 claim<\/span>/);
+  assert.match(html, /class="wf-evidence-claim-text">The composer renders its caption and scope fields/);
+  assert.equal(
+    (html.match(/class="wf-evidence-mini-button" aria-label="Open dashboard\.png full size"/g) ?? []).length,
+    2,
+    "the criterion row and the claim row each carry their own control for the same picture",
+  );
 
   // Static rendering never fetches bodies: the authenticated route is reached lazily in view,
   // and the preview is closed until a thumbnail is clicked.
@@ -1213,8 +1229,8 @@ test("the Evidence pane draws the other side of each of its conditionals", () =>
   assert.doesNotMatch(html, /Advisory only/);
   // An unavailable reconciliation with nothing to say still says why it is unavailable.
   assert.match(html, /Unavailable: Context compaction did not return canonical criteria\./);
-  // Supporting rather than material.
-  assert.match(html, /<span>supporting<\/span>/);
+  // Supporting rather than material, on the criterion's own ledger row.
+  assert.match(html, /<span class="wf-evidence-criterion-facts">supporting/);
   // A claim with no links says so on the row.
   assert.match(html, /no evidence linked/);
   // A carried image names the round it came from rather than offering to stage it again.
@@ -1224,13 +1240,13 @@ test("the Evidence pane draws the other side of each of its conditionals", () =>
 /**
  * A gap the reconciliation recorded against a criterion it DID match to a claim.
  *
- * This reads as two findings if the pane is careless: the criterion is gapped, so the block of
- * unmatched criteria would list it, and the claim it matched is gapped too, so the claim row
- * prints it as well. The block's own sentence says these criteria have no row below to sit
- * under, and for this one that is false. The row is the right place, because the gap is
- * something the author's claim failed to satisfy rather than something nobody claimed.
+ * This read as two findings on the old pane: the criterion was gapped, so the block of unmatched
+ * criteria wanted to list it, and the claim it matched was gapped too, so the claim row printed
+ * it as well - and the block's own sentence said those criteria had no row below, which was
+ * false for exactly this one. One row per CANONICAL criterion removes the question: a gap
+ * belongs to the criterion whether or not a claim answered it, and it is stated there once.
  */
-test("a gap against a matched criterion is stated on the claim row, not in the block", () => {
+test("a gap is stated once, on the criterion's row, matched or not", () => {
   const base = evidenceDetail();
   const html = evidencePane({
     ...base,
@@ -1249,43 +1265,94 @@ test("a gap against a matched criterion is stated on the claim row, not in the b
       : entry),
   } as WorkflowRunDetail);
 
-  /*
-   * On the CLAIM ROW's own note, not merely somewhere in the document.
-   *
-   * The canonical reconciliation disclosure below renders `Gaps: missing execution` for the same
-   * criterion whether it is open or closed, so a search of the whole markup would still pass for
-   * a row that had dropped the code entirely - which is the half of this the pane has to get
-   * right. The note element is the thing a reader sees beside the claim.
-   */
-  assert.match(html, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
-  // The block names only the criterion that has no claim row at all.
-  const block = html.slice(
-    html.indexOf("Unmatched canonical criteria"),
-    html.indexOf("wf-evidence-head"),
+  // Both gapped criteria have a row, both say `gaps`, and each names only its own code.
+  const ledger = html.slice(
+    html.indexOf('aria-label="Canonical reconciliation"'),
+    html.indexOf("Frozen images"),
   );
-  assert.match(block, /A Playwright spec covers the composer end to end/);
-  assert.doesNotMatch(block, /The composer renders its caption and scope fields/);
-  assert.doesNotMatch(block, /missing execution/);
-  // The count is unchanged: the finding is real, only its place on the page is decided.
+  assert.equal((ledger.match(/class="workflow-chip workflow-failed">gaps<\/span>/g) ?? []).length, 2);
+  assert.equal((ledger.match(/missing execution/g) ?? []).length, 1);
+  assert.equal((ledger.match(/missing coverage/g) ?? []).length, 1);
+  // The matched-and-gapped criterion is not in a block telling the reader it has no claim.
+  assert.doesNotMatch(html, /Unmatched canonical criteria/);
+  assert.match(ledger, /The composer renders its caption and scope fields/);
+  // The count is unchanged: both findings are real and both are now reachable in one list.
   assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">2</);
+});
 
-  // And when every gapped criterion is matched, the block is not drawn at all rather than
-  // drawn empty under a heading that would then describe nothing.
-  const allMatched = evidencePane({
+/**
+ * A submission nothing reconciled, where the frozen claims are the only record there is.
+ *
+ * The claims move behind a disclosure because the ledger above says the same things better -
+ * so where there is no ledger, hiding them would leave the pane with nothing but a stat strip
+ * and a thumbnail. `criterionRows.length` is what decides it, not the readiness object: a
+ * result that came back with no criteria at all reconciled nothing.
+ */
+test("the claims stay in the open on a submission with nothing to reconcile them against", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) =>
+      entry.id === "submission-2" ? { ...entry, readiness: null } : entry),
+  } as WorkflowRunDetail);
+
+  assert.doesNotMatch(html, /aria-label="Canonical reconciliation"/);
+  assert.match(html, /<h5 class="wf-evidence-head">Frozen author claims<\/h5>/);
+  assert.doesNotMatch(html, /<span class="wf-run-disclosure-title">Frozen author claims<\/span>/);
+  assert.match(html, /class="wf-evidence-claim-text">The composer renders its caption and scope fields/);
+  // With nothing to be unmatched by, the claim stands rather than reading as unreconciled.
+  assert.match(html, /class="workflow-chip workflow-completed">linked<\/span>/);
+});
+
+/**
+ * A cited image whose body aged out, on the row that cites it.
+ *
+ * The other half of "a pruned or refused body is still a control". The refused half is driven
+ * through a browser, where a real failed fetch can be clicked; this is the arm no request can
+ * produce, because a pruned record is pruned in the daemon's own ledger and its frame never
+ * asks for a body at all. A miniature that dropped its button here would leave the reader on a
+ * 34px "Body pruned" square with nothing to open, and the preview is the only surface that
+ * carries the digest, the scope and the prune the record still has.
+ */
+test("a pruned image cited by a criterion keeps its control and says what happened", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
     ...base,
     submissions: base.submissions.map((entry) => entry.id === "submission-2"
       ? {
         ...entry,
         readiness: {
           ...READINESS,
-          criteria: [{ ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] }],
+          criteria: [
+            // The reconciliation resolved this criterion's evidence to the PRUNED record, which
+            // is the only bridge that puts a pruned picture on a row.
+            {
+              ...READINESS.criteria[0]!,
+              links: [{
+                clientItemId: "item-dashboard",
+                evidenceId: "image-pruned",
+                role: "rendered_output",
+              }],
+            },
+            READINESS.criteria[1]!,
+          ],
         },
       }
       : entry),
   } as WorkflowRunDetail);
-  assert.doesNotMatch(allMatched, /Unmatched canonical criteria/);
-  // And the finding is still on the row, which is the whole reason dropping the block is safe.
-  assert.match(allMatched, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
+
+  const ledger = html.slice(
+    html.indexOf('aria-label="Canonical reconciliation"'),
+    html.indexOf("Frozen images"),
+  );
+  // A button, named for the file it opens, exactly as a readable one is.
+  assert.match(
+    ledger,
+    /<button type="button" class="wf-evidence-mini-button" aria-label="Open old-dashboard\.webp full size"/,
+  );
+  // And the frame inside it says what happened rather than rendering as a broken image.
+  assert.match(ledger, /class="wf-image-pruned" aria-label="old-dashboard\.webp body pruned"/);
+  assert.doesNotMatch(ledger, /<img/);
 });
 
 /**

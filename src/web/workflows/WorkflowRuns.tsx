@@ -103,7 +103,6 @@ import {
   nodeStatusesForSubmission,
   readCapturedContext,
   readinessActionLabel,
-  readinessGapCriteria,
   restageDisabled,
   restageLabel,
   restageOffered,
@@ -111,6 +110,7 @@ import {
   reviewerStatus,
   runChangeWorklist,
   runCompletionClaims,
+  runEvidenceCriterionRows,
   runGrantNotice,
   runParkedSentence,
   evidenceChipLabel,
@@ -2056,6 +2056,47 @@ export function FrozenImageFrame({
   );
 }
 
+/**
+ * One small copy of a frozen image, as the control that opens it full size.
+ *
+ * Every thumbnail of a frozen screenshot opens the preview, wherever it is drawn.
+ *
+ * A pruned or refused body is still a control, because the preview is the only surface that
+ * says why there is no picture.
+ *
+ * Named `Open <name> full size` rather than the strip card's `Preview <name>`: the same image
+ * is reachable from its card and from every row citing it, and one accessible name over both
+ * controls would leave neither addressable by name.
+ */
+function FrozenImageThumb({
+  image,
+  body,
+  onOpen,
+}: {
+  image: WorkflowEvidenceImage;
+  body: FrozenImageBody | undefined;
+  onOpen: (image: WorkflowEvidenceImage) => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip label={`${image.displayName} - click to open it full size`}>
+      <button
+        type="button"
+        className="wf-evidence-mini-button"
+        aria-label={`Open ${image.displayName} full size`}
+        onClick={() => onOpen(image)}
+      >
+        {/* `alt=""` because the button above already names the file. */}
+        <FrozenImageFrame
+          image={image}
+          body={body}
+          className="wf-evidence-mini"
+          alt=""
+        />
+      </button>
+    </Tooltip>
+  );
+}
+
 /** The restage action's whole state, so the strip and the preview cannot disagree about it. */
 export interface RestageControl {
   offered: (image: WorkflowEvidenceImage) => boolean;
@@ -2267,7 +2308,7 @@ function EvidencePane({
   const citations = runEvidenceCitations({ images, coverage, readiness });
   const scopeLabel = (scope: string): string =>
     scopeOptions.find((option) => option.value === scope)?.label ?? scope;
-  const gapCriteria = readinessGapCriteria(readiness);
+  const criterionRows = runEvidenceCriterionRows({ coverage, readiness });
   const previewImage = images.find((image) => image.id === preview) ?? null;
   const citationOf = (image: WorkflowEvidenceImage): string | null =>
     evidenceCitationSentence(citations.citationFor(image.id));
@@ -2308,6 +2349,52 @@ function EvidencePane({
       settle: (imageId) => setRestaged((current) => new Set(current).add(imageId)),
     }),
   };
+
+  const claimList = coverage.length === 0 ? (
+      <p className="wf-run-empty">
+        No acceptance criterion coverage was frozen for this submission.
+      </p>
+    ) : (
+      <div className="wf-evidence-claims">
+        {coverage.map((claim) => {
+          const status = evidenceClaimStatus(claim, readiness);
+          const cited = citations.byClaim.get(claim.clientCriterionId) ?? [];
+          return (
+            <div className="wf-evidence-claim" key={claim.clientCriterionId}>
+              <div className="wf-evidence-claim-body">
+                <span className="wf-evidence-claim-text">{claim.criterion}</span>
+                <span className="wf-evidence-claim-facts">
+                  {evidenceCodeLabel(claim.proofClass)}
+                  {` · ${claim.repositoryScope}`}
+                  {claim.links.length === 0 ? " · no evidence linked" : ""}
+                  {claim.links.map((link) => (
+                    <code key={`${link.clientItemId}:${link.role}`}>{link.clientItemId}</code>
+                  ))}
+                  {status.notes.length > 0 && (
+                    <span className="wf-evidence-claim-note">{status.notes.join(", ")}</span>
+                  )}
+                </span>
+              </div>
+              <div className="wf-evidence-claim-side">
+                {cited.map((image) => (
+                  <FrozenImageThumb
+                    key={image.id}
+                    image={image}
+                    body={bodies.get(image.id)}
+                    onOpen={open}
+                  />
+                ))}
+                <span className={`workflow-chip workflow-${status.tone}`}>{status.label}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  const carried = coverage.filter((claim) => claim.inheritedFromSubmissionId).length;
+  const claimsMeta = `${coverage.length} claim${coverage.length === 1 ? "" : "s"}${
+    carried > 0 ? ` · ${carried} carried forward` : ""
+  }`;
 
   return (
     <>
@@ -2353,25 +2440,65 @@ function EvidencePane({
           Operator continued despite gaps: {overrideReason}
         </p>
       )}
-      {gapCriteria.length > 0 && (
-        <section className="wf-evidence-gaps" aria-label="Unmatched canonical criteria">
-          <h5>What the reconciliation could not match</h5>
+      {criterionRows.length > 0 && (
+        <section className="wf-evidence-reconciliation" aria-label="Canonical reconciliation">
+          <h5>Canonical reconciliation</h5>
           <p className="wf-run-meta">
-            These are canonical criteria, not author claims. A criterion with no claim at all has
-            no row below to sit under, which is why they are named here.
+            Every canonical criterion this run is measured against, worst first, with the frozen
+            author claim that answered it.
+            {readiness?.evaluatorVersion ? ` Evaluator ${readiness.evaluatorVersion}.` : ""}
           </p>
-          {gapCriteria.map((criterion) => (
-            <div className="wf-evidence-gap-row" key={criterion.criterionId}>
-              <span className="wf-evidence-gap-text">{criterion.criterion}</span>
-              <span className="wf-evidence-gap-codes">
-                {criterion.gaps.map((gap) => (
-                  <span className="workflow-chip workflow-failed" key={gap}>
-                    {evidenceCodeLabel(gap)}
+          {criterionRows.map((row) => {
+            const cited = row.claims.flatMap((claim) =>
+              citations.byClaim.get(claim.clientCriterionId) ?? []);
+            return (
+              <div className={`wf-evidence-criterion is-${row.tone}`} key={row.criterionId}>
+                <div className="wf-evidence-criterion-body">
+                  <span className="wf-evidence-criterion-text">{row.criterion}</span>
+                  <span className="wf-evidence-criterion-facts">
+                    {row.material ? "material" : "supporting"}
+                    {row.claims.length === 0
+                      ? " · no author claim"
+                      : row.claims.map((claim) => (
+                          <span
+                            className="wf-evidence-criterion-claim"
+                            key={claim.clientCriterionId}
+                          >
+                            {row.claims.length > 1 && <code>{claim.clientCriterionId}</code>}
+                            {evidenceCodeLabel(claim.proofClass)}
+                            {` · ${claim.repositoryScope}`}
+                            {claim.links.length === 0 ? " · no evidence linked" : ""}
+                          </span>
+                        ))}
+                    {row.links.map((link) => (
+                      <code key={`${link.evidenceId}:${link.role}`}>{link.clientItemId}</code>
+                    ))}
                   </span>
-                ))}
-              </span>
-            </div>
-          ))}
+                  {row.gaps.length > 0 && (
+                    <span className="wf-evidence-criterion-gaps">
+                      {row.gaps.map((gap) => (
+                        <span className="workflow-chip workflow-failed" key={gap}>{gap}</span>
+                      ))}
+                    </span>
+                  )}
+                  {row.warnings.length > 0 && (
+                    <span className="wf-evidence-criterion-note">{row.warnings.join(", ")}</span>
+                  )}
+                </div>
+                <div className="wf-evidence-criterion-side">
+                  {cited.map((image) => (
+                    <FrozenImageThumb
+                      key={image.id}
+                      image={image}
+                      body={bodies.get(image.id)}
+                      onOpen={open}
+                    />
+                  ))}
+                  <span className={`workflow-chip workflow-${row.tone}`}>{row.label}</span>
+                </div>
+              </div>
+            );
+          })}
         </section>
       )}
       {summary.blocking && onOverride && (
@@ -2500,94 +2627,19 @@ function EvidencePane({
           </p>
         </>
       )}
-      <h5 className="wf-evidence-head">Frozen author claims</h5>
-      {coverage.length === 0 ? (
-        <p className="wf-run-empty">
-          No acceptance criterion coverage was frozen for this submission.
-        </p>
-      ) : (
-        <div className="wf-evidence-claims">
-          {coverage.map((claim) => {
-            const status = evidenceClaimStatus(claim, readiness);
-            const cited = citations.byClaim.get(claim.clientCriterionId) ?? [];
-            return (
-              <div className="wf-evidence-claim" key={claim.clientCriterionId}>
-                <div className="wf-evidence-claim-body">
-                  <span className="wf-evidence-claim-text">{claim.criterion}</span>
-                  <span className="wf-evidence-claim-facts">
-                    {evidenceCodeLabel(claim.proofClass)}
-                    {` · ${claim.repositoryScope}`}
-                    {claim.links.length === 0 ? " · no evidence linked" : ""}
-                    {claim.links.map((link) => (
-                      <code key={`${link.clientItemId}:${link.role}`}>{link.clientItemId}</code>
-                    ))}
-                    {status.notes.length > 0 && (
-                      <span className="wf-evidence-claim-note">{status.notes.join(", ")}</span>
-                    )}
-                  </span>
-                </div>
-                <div className="wf-evidence-claim-side">
-                  {/* The point of a screenshot as evidence is that it can be seen BESIDE the
-                      claim it proves. `alt=""`, because the row already names the claim these
-                      pictures are under; which picture each one IS comes from the tooltip. */}
-                  {cited.map((image) => (
-                    /* `Tooltip`, not a `title` attribute, which this codebase does not use and
-                       pins a test against. It also does the job better here: the label is
-                       always rendered into a hidden node the frame points `aria-describedby`
-                       at, so this 34px copy IS named in the accessible tree even though its
-                       `alt` is empty - which is the only way a reader who cannot see it can
-                       tell which of four screenshots the row is carrying. */
-                    <Tooltip key={image.id} label={image.displayName}>
-                      <FrozenImageFrame
-                        image={image}
-                        body={bodies.get(image.id)}
-                        className="wf-evidence-mini"
-                        alt=""
-                      />
-                    </Tooltip>
-                  ))}
-                  <span className={`workflow-chip workflow-${status.tone}`}>{status.label}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {readiness && readiness.criteria.length > 0 && (
+      {criterionRows.length > 0 ? (
         <RunDisclosure
-          title="Canonical reconciliation"
-          meta={`${readiness.criteria.length} criteria · ${readiness.evaluatorVersion}`}
-          tooltip="Show every canonical criterion, what it matched, and the evidence it resolved to"
+          title="Frozen author claims"
+          meta={claimsMeta}
+          tooltip="Show what the author declared, claim by claim, before the reconciliation read it"
         >
-          {readiness.criteria.map((criterion) => (
-            <article key={criterion.criterionId} className="wf-run-card">
-              <header className="wf-run-card-head">
-                <strong>{criterion.criterion}</strong>
-                <span>{criterion.material ? "material" : "supporting"}</span>
-              </header>
-              {criterion.gaps.length > 0 && (
-                <p className="wf-run-error">
-                  Gaps: {criterion.gaps.map(evidenceCodeLabel).join(", ")}
-                </p>
-              )}
-              {criterion.warnings.length > 0 && (
-                <p className="wf-run-notice">
-                  Warnings: {criterion.warnings.map(evidenceCodeLabel).join(", ")}
-                </p>
-              )}
-              <div className="wf-evidence-links">
-                {criterion.links.map((link) => (
-                  <span
-                    className="workflow-chip workflow-completed"
-                    key={`${link.evidenceId}:${link.role}`}
-                  >
-                    {evidenceCodeLabel(link.role)}: {link.clientItemId}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ))}
+          {claimList}
         </RunDisclosure>
+      ) : (
+        <>
+          <h5 className="wf-evidence-head">Frozen author claims</h5>
+          {claimList}
+        </>
       )}
       {previewImage && (
         <FrozenImagePreview

@@ -270,19 +270,35 @@ test("a frozen screenshot is visible beside the claim it proves, and one click f
   await expect(betaCard).toContainText("Cited by 1 claim as state snapshot");
   await expect(alphaCard).toContainText("item-alpha");
 
-  // THE CLAIM ROW carries a small copy of both pictures it cites. A screenshot as evidence is
-  // only evidence if it can be seen beside the claim it proves.
-  await expect(pane).toContainText(CRITERION);
-  const claim = pane.locator(".wf-evidence-claim").filter({ hasText: CRITERION });
-  const minis = claim.locator(".wf-evidence-mini img");
+  const criterionRow = pane.locator(".wf-evidence-criterion")
+    .filter({ has: dashboard.locator(".wf-evidence-mini") });
+  await expect(criterionRow).toHaveCount(1);
+  await expect(criterionRow).toContainText("rendered artifact");
+  /*
+   * No FAILED chip on the row, rather than an exact verdict word.
+   *
+   * This packet is `ready`, which is the fact the fixture controls. Whether the row reads
+   * `satisfied` or `warning` turns on whether the evaluator agreed with the author's proof
+   * class - a model's judgement, and not something to pin a browser test to.
+   */
+  await expect(criterionRow.locator(".workflow-chip.workflow-failed")).toHaveCount(0);
+  const minis = criterionRow.locator(".wf-evidence-mini img");
   await expect(minis).toHaveCount(2);
   // The same two bodies the strip painted, not a second fetch: one object URL per image, shared
-  // by the card, every claim-row copy of it, and the preview.
+  // by the card, every small copy of it, and the preview.
   const stripSources = await Promise.all(
     [alphaCard, betaCard].map((card) => card.locator("img").getAttribute("src")),
   );
   await expect(minis.nth(0)).toHaveAttribute("src", stripSources[0]!);
   await expect(minis.nth(1)).toHaveAttribute("src", stripSources[1]!);
+
+  const claims = pane.getByText("Frozen author claims", { exact: true });
+  await expect(pane.getByText(CRITERION)).toBeHidden();
+  await claims.click();
+  const claim = pane.locator(".wf-evidence-claim").filter({ hasText: CRITERION });
+  await expect(claim).toBeVisible();
+  await expect(claim.locator(".wf-evidence-mini img")).toHaveCount(2);
+  await claims.click();
   await shoot(dashboard, dashboard.locator("section.wf-run-record"), "01-evidence-pane");
 
   // A SINGLE CLICK opens the preview - deliberately not the dispatch strip's double-click,
@@ -355,6 +371,96 @@ test("a frozen screenshot is visible beside the claim it proves, and one click f
     .getByRole("button", { name: "Close" }).click();
   await expect(dashboard.getByRole("dialog", { name: "Preview of pane-alpha.png" })).toBeHidden();
   await expect(alphaCard).toBeFocused();
+
+  const criterionThumb = criterionRow
+    .getByRole("button", { name: "Open pane-beta.png full size" });
+  await criterionThumb.click();
+  const betaPreview = dashboard.getByRole("dialog", { name: "Preview of pane-beta.png" });
+  await expect(betaPreview).toBeVisible();
+  await expect(betaPreview.getByRole("img", { name: BETA_CAPTION })).toBeVisible();
+  await expect(betaPreview).toContainText("item-beta");
+  await expect(betaPreview).toContainText(createHash("sha256").update(BETA).digest("hex"));
+  await expect(betaPreview).toContainText("Cited by 1 claim as state snapshot");
+  await expectContentClearsBorder(betaPreview);
+  await shoot(dashboard, betaPreview, "04-preview-from-thumbnail");
+  await dashboard.keyboard.press("Escape");
+  await expect(betaPreview).toBeHidden();
+  await expect(criterionThumb).toBeFocused();
+
+  await claims.click();
+  const claimThumb = claim.getByRole("button", { name: "Open pane-alpha.png full size" });
+  await claimThumb.click();
+  await expect(dashboard.getByRole("dialog", { name: "Preview of pane-alpha.png" })).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+  await expect(dashboard.getByRole("dialog", { name: "Preview of pane-alpha.png" })).toBeHidden();
+  await expect(claimThumb).toBeFocused();
+});
+
+/**
+ * A body that aged out, which is a separate branch from one the route refuses.
+ *
+ * The pruned arm never issues a request, so routing the image endpoint cannot produce it:
+ * retention has to have run. Hence the order here - the submission freezes and reconciles with
+ * both bodies intact, and only then does one age out from under the record that still cites it.
+ */
+test("a frozen body that aged out keeps its thumbnail control, and the preview says so", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(240_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const session = (await api<Array<{ id: string; cwd: string; agentSessionId?: string }>>(
+    daemon,
+    "/api/sessions",
+  )).find((entry) => entry.id === sessionId);
+  expect(session).toBeTruthy();
+  stageEvidence(daemon, session!.agentSessionId ?? session!.id, session!.cwd);
+  const runId = await seedRun(daemon, sessionId);
+
+  // Retention, after the fact: the frozen record and its reconciliation link are untouched, so
+  // the criterion row still cites an image whose bytes are gone.
+  const prunedAt = Date.now();
+  withDaemonDb(daemon, (db) => {
+    const updated = db.prepare(
+      `UPDATE workflow_submission_images
+          SET availability = 'pruned', pruned_at = ?
+        WHERE display_name = ?`,
+    ).run(prunedAt, "pane-beta.png");
+    expect(updated.changes, "the fixture should have frozen pane-beta.png").toBe(1);
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=evidence`);
+  const pane = dashboard.getByRole("tabpanel", { name: /^Evidence/ });
+  await expect(pane).toBeVisible({ timeout: 30_000 });
+
+  const criterionRow = pane.locator(".wf-evidence-criterion")
+    .filter({ has: dashboard.locator(".wf-evidence-mini") });
+  const prunedThumb = criterionRow
+    .getByRole("button", { name: "Open pane-beta.png full size" });
+  await expect(criterionRow.getByRole("button", { name: "Open pane-alpha.png full size" }))
+    .toBeVisible();
+  await expect(prunedThumb).toBeVisible();
+  await expect(prunedThumb.locator(".wf-image-pruned")).toHaveCount(1);
+  await expect(prunedThumb.locator("img")).toHaveCount(0);
+
+  await prunedThumb.click();
+  const preview = dashboard.getByRole("dialog", { name: "Preview of pane-beta.png" });
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText(
+    "Caption, scope, MIME, size, and SHA-256 remain auditable.",
+  );
+  await expect(preview).toContainText(BETA_CAPTION);
+  await expect(preview).toContainText("item-beta");
+  await expect(preview).toContainText("image/png");
+  await expect(preview).toContainText(createHash("sha256").update(BETA).digest("hex"));
+  await expect(preview).toContainText("pruned");
+  await expect(preview).toContainText("Cited by 1 claim as state snapshot");
+  await expect(preview.locator("img")).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, preview, "05-preview-from-pruned-thumbnail");
+  await dashboard.keyboard.press("Escape");
+  await expect(preview).toBeHidden();
+  await expect(prunedThumb).toBeFocused();
 });
 
 /**
@@ -396,19 +502,19 @@ test("an image body the route refuses shows why on its own card, and nothing els
   await expect(pane).toBeVisible({ timeout: 30_000 });
 
   // The daemon's own reason, in the frame where the picture would have been. Both cards say it,
-  // because both bodies were refused - and so do both copies on the claim row that cites them,
+  // because both bodies were refused - and so do both copies on the criterion row carrying them,
   // which share the same failed request rather than each retrying it.
   await expect(pane.locator(".wf-evidence-card .wf-image-error")).toHaveCount(2);
-  await expect(pane.locator(".wf-evidence-mini .wf-image-error")).toHaveCount(2);
+  await expect(pane.locator(".wf-evidence-criterion .wf-evidence-mini .wf-image-error"))
+    .toHaveCount(2);
   const alphaCard = pane.getByRole("button", { name: "Preview pane-alpha.png" });
   await expect(alphaCard).toContainText("Image body could not be read");
   await expect(alphaCard.locator("img")).toHaveCount(0);
-  // Everything the record carries is still there: the card keeps its name, its caption, its
-  // item id and who cites it, and the claim row keeps its status.
   await expect(alphaCard).toContainText(ALPHA_CAPTION);
   await expect(alphaCard).toContainText("item-alpha");
   await expect(alphaCard).toContainText("Cited by 1 claim as rendered output");
-  await expect(pane).toContainText(CRITERION);
+  await expect(pane.locator(".wf-evidence-criterion .workflow-chip.workflow-failed"))
+    .toHaveCount(0);
   await expect(pane).toContainText("ready");
 
   // And the preview still opens on a refused body, carrying every audit field and saying the
@@ -419,5 +525,23 @@ test("an image body the route refuses shows why on its own card, and nothing els
   await expect(preview).toContainText("Image body could not be read");
   await expect(preview).toContainText(createHash("sha256").update(ALPHA).digest("hex"));
   await shoot(dashboard, preview, "03-refused-body");
+  await dashboard.keyboard.press("Escape");
+  await expect(preview).toBeHidden();
+
+  const refusedThumb = pane.locator(".wf-evidence-criterion")
+    .getByRole("button", { name: "Open pane-alpha.png full size" });
+  await expect(refusedThumb).toBeVisible();
+  await expect(refusedThumb.locator(".wf-image-error")).toContainText(
+    "Image body could not be read",
+  );
+  await refusedThumb.click();
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("Image body could not be read");
+  await expect(preview).toContainText("item-alpha");
+  await expect(preview).toContainText(createHash("sha256").update(ALPHA).digest("hex"));
+  await expect(preview).toContainText("retained");
+  await dashboard.keyboard.press("Escape");
+  await expect(preview).toBeHidden();
+  await expect(refusedThumb).toBeFocused();
   await dashboard.unroute(refused);
 });

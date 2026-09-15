@@ -507,19 +507,18 @@ and [process-boundary guide](agent-guides/architecture.md#process-boundaries).
 
 ## Moving an existing system installation
 
-Automatic relocation is implemented behind packaged capability metadata, but remains disabled
-in this build pending the disposable-account macOS verification described below. Updates
-continue at their existing location. A fresh personal install already defaults to
-`~/Applications/Mission Control.app`.
+Automatic relocation is enabled for eligible legacy managed system installations. A fresh
+personal install defaults to `~/Applications/Mission Control.app`.
 
-When automatic relocation is enabled, an eligible legacy managed `/Applications` installation
-shows both locations before restart. **Install and restart** accepts the update and move;
+An eligible legacy managed `/Applications` installation shows both locations before restart.
+**Install and restart** accepts the update and move;
 **Later**, Escape, and the backdrop change no installation policy. **Keep system installation**
 records explicit system scope and continues in place. A failure to save that choice stops the
 update. Explicit system/custom installations, untrusted receipts, unsupported target builds,
 and an occupied personal destination do not relocate.
 
-Older running helpers install capable code in place first, even when skipping a release.
+Older running helpers and builds with relocation disabled install enabled code in place first,
+even when skipping a release.
 The subsequent accepted update can move. The transition update may still need the existing
 system-folder authorization; relocation and later personal updates need no elevation.
 The same account's state home, database, tasks and sessions remain in place. The system app is
@@ -584,8 +583,13 @@ then publishes its verified Contents into an exclusively reserved target. It doe
 public installer flag. All detached dependencies are listed in
 `scripts/update-helper-files.mjs`, copied with their relative layout, and checked by bundle smoke.
 
-The release gate is `missionInstallMigration.automatic: false` in `electron-builder.yml`.
-Change it only after the Phase 2 disposable-account/VM exercise proves real legacy bootstrap,
-personal launch, login on/off across restart, old Dock launch, pre-/post-commit interruption,
-integration retry, and later personal update/rollback. Fixture and Playwright results do not
-replace that exercise. This checkout has not completed that account/VM exercise.
+Packaged builds carry `missionInstallMigration.automatic: true` in `electron-builder.yml`.
+Eligibility reads that flag from the installed source app and requires a supported migration
+protocol in both source and target. Alpha mode selects the target commit; it does not override
+the source's migration capability. Explicit system/custom scope continues to opt out.
+
+The [Phase 2 packaged macOS exercise](plans/user-scoped-install/phase-2-automatic-update-migration.md#required-packaged-macos-exercise)
+remains the regression checklist for legacy bootstrap, personal launch, login on/off across
+restart, old Dock launch, pre-/post-commit interruption, integration retry, and later personal
+update/rollback. A successful normal migration establishes only the paths actually exercised;
+fixture and browser results do not establish the remaining operating-system behavior.

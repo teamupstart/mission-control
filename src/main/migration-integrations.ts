@@ -11,10 +11,10 @@ import { isMissionHookCommand } from "../server/harness/claude/hooks.ts";
 import type { MigrationPlan, MigrationRepair, MigrationJournal } from "../../scripts/install-migration.mjs";
 
 interface Registration { command: string; args: string[]; env?: Record<string, string> }
-interface McpInventory { id: string; registration: Registration; digest: string }
+interface McpInventory { id: string; digest: string; desiredDigest: string }
 interface HookInventory { path: (string | number)[]; command: string }
 export interface MigrationIntegrationInventory {
-  schema: 1; hooks: HookInventory[]; mcp: McpInventory[]; login: boolean;
+  schema: 2; hooks: HookInventory[]; mcp: McpInventory[]; login: boolean;
 }
 export interface MigrationIntegrationPorts {
   home: string;
@@ -135,9 +135,11 @@ export function inspectMigrationIntegrations(plan: MigrationPlan, ports: Migrati
     if (!spec) continue;
     const found = readMcp(spec, ports);
     const ownedScript = join(plan.source, "Contents/Resources/app/dist/mcp/server.mjs");
-    if (found.registration?.args.includes(ownedScript)) mcp.push({id: `mcp:${agent}`, registration: found.registration, digest: found.digest});
+    // The handoff and journal need comparison facts, never copies of credentials
+    // in env or argv. Repair rereads the registration from its existing owner.
+    if (found.registration?.args.includes(ownedScript)) mcp.push({id: `mcp:${agent}`, digest: found.digest, desiredDigest: digest(movedRegistration(found.registration, plan))});
   }
-  return {schema: 1, hooks, mcp, login: ports.login().openAtLogin};
+  return {schema: 2, hooks, mcp, login: ports.login().openAtLogin};
 }
 
 function valueAt(value: unknown, path: (string | number)[]): unknown {
@@ -203,13 +205,14 @@ function retargetMcpToml(path: string, nonce: string, name: string, before: Regi
 function repairMcp(item: McpInventory, plan: MigrationPlan, ports: MigrationIntegrationPorts): void {
   const agent = AGENT_TYPES.find((agent) => item.id === `mcp:${agent}`);
   const spec = agent ? capabilitiesFor(agent).mcp : null;
-  if (!spec || !registration(item.registration)) throw new Error("The inventoried MCP registration is no longer supported.");
+  if (!spec) throw new Error("The inventoried MCP registration is no longer supported.");
   const path = integrationFile(ports.home, spec.migration.homeFile);
   verifyIntegrationBackups(path, plan.nonce);
-  const desired = movedRegistration(item.registration, plan);
   const found = readMcp(spec, ports);
-  if (digest(found.registration) === digest(desired)) return;
-  if (found.digest !== item.digest) throw new Error("The MCP registration changed after inventory. Your edit was preserved; retarget it manually.");
+  if (digest(found.registration) === item.desiredDigest) return;
+  if (!found.registration || found.digest !== item.digest) throw new Error("The MCP registration changed after inventory. Your edit was preserved; retarget it manually.");
+  const desired = movedRegistration(found.registration, plan);
+  if (digest(desired) !== item.desiredDigest) throw new Error("The inventoried MCP destination does not match this repair.");
   if (spec.migration.kind === "jsonc") {
     const config = jsonc(path);
     const servers = config.value[spec.migration.key] as Record<string, unknown> | undefined;
@@ -218,16 +221,16 @@ function repairMcp(item: McpInventory, plan: MigrationPlan, ports: MigrationInte
     const base = [spec.migration.key, spec.serverName];
     editJsonc(path, plan.nonce, config.text, Object.entries(desired).map(([key, value]) => ({path: [...base, key], value})));
   } else {
-    retargetMcpToml(path, plan.nonce, spec.serverName, item.registration, desired);
+    retargetMcpToml(path, plan.nonce, spec.serverName, found.registration, desired);
   }
-  if (digest(readMcp(spec, ports).registration) !== digest(desired)) throw new Error("MCP replacement could not be verified. Retry repair.");
+  if (digest(readMcp(spec, ports).registration) !== item.desiredDigest) throw new Error("MCP replacement could not be verified. Retry repair.");
 }
 
 export async function repairMigrationIntegrations(journal: MigrationJournal, ports: MigrationIntegrationPorts): Promise<MigrationRepair[]> {
   const inventory = journal.inventory as MigrationIntegrationInventory;
-  if (inventory?.schema !== 1 || !Array.isArray(inventory.hooks) || inventory.hooks.length > 512 || !Array.isArray(inventory.mcp) || inventory.mcp.length > AGENT_TYPES.length || typeof inventory.login !== "boolean" ||
+  if (inventory?.schema !== 2 || !Array.isArray(inventory.hooks) || inventory.hooks.length > 512 || !Array.isArray(inventory.mcp) || inventory.mcp.length > AGENT_TYPES.length || typeof inventory.login !== "boolean" ||
     inventory.hooks.some((item) => !item || typeof item.command !== "string" || !Array.isArray(item.path) || item.path.length !== 6 || item.path[0] !== "hooks" || typeof item.path[1] !== "string" || !Number.isInteger(item.path[2]) || Number(item.path[2]) < 0 || item.path[3] !== "hooks" || !Number.isInteger(item.path[4]) || Number(item.path[4]) < 0 || item.path[5] !== "command" || movedHook(item.command, journal.plan) === item.command) ||
-    inventory.mcp.some((item) => !item || typeof item.id !== "string" || typeof item.digest !== "string" || !registration(item.registration))) throw new Error("The integration inventory is invalid. Recover the personal installation manually.");
+    inventory.mcp.some((item) => !item || typeof item.id !== "string" || !/^[0-9a-f]{64}$/.test(item.digest) || !/^[0-9a-f]{64}$/.test(item.desiredDigest))) throw new Error("The integration inventory is invalid or unsupported. Recover the personal installation manually.");
   const results: MigrationRepair[] = [];
   const run = async (id: string, action: () => void | Promise<void>): Promise<void> => {
     try { await action(); results.push({id, status: "complete", message: `${id}: verified`}); }

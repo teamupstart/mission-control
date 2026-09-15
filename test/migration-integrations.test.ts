@@ -89,6 +89,27 @@ test('retry revalidates completed hooks and MCP after another surface failed', a
   assert.deepEqual(JSON.parse(readFileSync(mcpPath, 'utf8')), mcp);
 });
 
+test('MCP inventory carries only digests while repair preserves credentials in the original configuration', async (t) => {
+  const f = fixture(t);
+  const path = join(f.home, '.claude.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  const entry = config.mcpServers['mission-control'];
+  entry.env.API_TOKEN = 'fixture-private-token-do-not-persist';
+  entry.args.push('--credential', 'fixture-private-argument');
+  writeFileSync(path, JSON.stringify(config));
+  const journal = f.journal();
+  const serialized = JSON.stringify(journal.inventory);
+  assert.ok(!serialized.includes(entry.env.API_TOKEN));
+  assert.ok(!serialized.includes('fixture-private-argument'));
+  assert.ok(!serialized.includes('API_TOKEN'));
+  const results = await repairMigrationIntegrations(journal, f.ports);
+  assert.ok(results.every((r) => r.status === 'complete'));
+  const repaired = JSON.parse(readFileSync(path, 'utf8')).mcpServers['mission-control'];
+  assert.equal(repaired.env.API_TOKEN, entry.env.API_TOKEN);
+  assert.deepEqual(repaired.args, [f.oldMcp.replace(f.plan.source, f.plan.target), '--credential', 'fixture-private-argument']);
+  assert.ok((await repairMigrationIntegrations({...journal, repairs: results}, f.ports)).every((r) => r.status === 'complete'));
+});
+
 test('the CLI-backed TOML adapter preserves registration options and reads back changed paths', async (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, '.codex'));

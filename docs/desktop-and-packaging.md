@@ -556,7 +556,9 @@ merge the preserved edit into the active configuration before removing that reco
 and retrying. After verifying the migration, those private recovery directories can be removed.
 A custom CLI configuration home blocks automatic inventory so the CLI cannot
 read one file while migration changes another. MCP paths are read back through the configured
-harness adapter. Skills stay
+harness adapter.
+MCP inventory stores comparison digests instead of credentials or command arguments. Repair
+rereads those values from the existing configuration and preserves them there. Skills stay
 with the daemon's existing enabled/disabled configuration and reconciler; resolve reported
 conflicts in **Settings > Skills**. Login startup preserves its prior on/off setting and is
 reported as pending when the platform cannot verify it. On macOS a nonce-bound cleanup launch

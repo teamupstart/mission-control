@@ -4,10 +4,6 @@ import type {
   WorkflowRunDetail,
 } from "@shared/workflow.ts";
 import {
-  WORKFLOW_LIMITS,
-  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
-  manualWorkflowTriggerRequestId,
-  workflowRunGaveUp,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
 import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
@@ -22,16 +18,6 @@ import {
   spentInspectorGateCondition,
 } from "./run-model.ts";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
-
-/**
- * How many rounds the run-detail grant hands over at once.
- *
- * Two rather than one, because one buys a single attempt and a round-limited run has just
- * demonstrated that a single attempt was not enough - an operator who has to click through
- * a confirmation for every retry learns to raise the binding instead, which is the setting
- * that governs every FUTURE run rather than this stuck one.
- */
-const GRANT_ROUNDS = 2;
 
 export type RunActionId = string;
 export type WorkflowDeliveryResolution =
@@ -101,14 +87,7 @@ export function copyFeedbackAction(
 export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
   const gate = detail.inspectorGate;
   const actions: GateAction[] = [];
-  if (
-    gate
-    && detail.run.status === "waiting_for_pr"
-    && (gate.state.waitReason === "missing_pr"
-      || gate.state.waitReason === "unadopted_pr")
-    && detail.version?.completionPolicy.kind === "inspector"
-    && detail.version.completionPolicy.missingPrAction === "offer_prepare_pr"
-  ) {
+  if (detail.summary.recovery?.operations.includes("prepare-pr")) {
     actions.push({
       id: "prepare-pr",
       kind: "prepare-pr",
@@ -117,7 +96,7 @@ export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
       disabled: false,
     });
   }
-  if (gate && gate.state.waitReason !== null && inspectorGateCanRecheck(detail)) {
+  if (detail.summary.recovery?.operations.includes("recheck-inspector")) {
     actions.push({
       id: "recheck-inspector",
       kind: "recheck-inspector",
@@ -152,16 +131,6 @@ export function inspectorGateActions(detail: WorkflowRunDetail): GateAction[] {
     });
   }
   return actions;
-}
-
-/** The exact run states the daemon's gate evaluator can advance on an explicit recheck. */
-function inspectorGateCanRecheck(detail: WorkflowRunDetail): boolean {
-  const { status, currentPhase } = detail.run;
-  return status === "waiting_for_pr"
-    || status === "waiting_for_inspector"
-    || status === "waiting_for_new_head"
-    || (status === "waiting_for_session" && currentPhase === "pr_handoff")
-    || (status === "blocked" && currentPhase === "inspector_disabled");
 }
 
 /**
@@ -235,37 +204,12 @@ export interface ResubmitAvailability {
   refusal: string | null;
 }
 
-/**
- * Whether the header may offer a resubmission.
- *
- * `blocked` belongs here because `manager.resubmit` has always accepted it while the header
- * offered the control to `waiting_for_session` alone. That left a run blocked on a fault which
- * has since cleared - `check_cleanup_unresolved` once its pooled worktree came back - showing
- * nothing but Cancel run, with the one call that revives it a route away and unreachable.
- *
- * The refusals mirror `manager.resubmit`'s own, in its order, so the control never promises a
- * call the server will reject. An Inspector-only repair is excluded rather than disabled: it
- * owns Restart full workflow, and two competing recoveries side by side is how an operator
- * picks the wrong one.
- */
+/** Read the daemon's resubmission explanation without interpreting lifecycle fields. */
 export function resubmitAvailability(
   detail: WorkflowRunDetail,
-  liveInspectorRepair: boolean,
+  _liveInspectorRepair: boolean,
 ): ResubmitAvailability | null {
-  const { status } = detail.run;
-  if (status !== "waiting_for_session" && status !== "blocked") return null;
-  const resuming = status === "blocked";
-  if (resuming && liveInspectorRepair) return null;
-  if (detail.binding.state !== "active") {
-    return { resuming, refusal: "The bound session is gone, so no further round can be prepared" };
-  }
-  if (detail.externalSource) {
-    return { resuming, refusal: "An externally sourced run cannot take a manual round" };
-  }
-  if (detail.summary.round > detail.summary.maxRepairRounds) {
-    return { resuming, refusal: "This run has used every repair round its binding allows" };
-  }
-  return { resuming, refusal: null };
+  return detail.summary.recovery?.resubmit ?? null;
 }
 
 /** Takes anything that carries a tooltip, so the derived next move reads it too. */
@@ -276,39 +220,9 @@ export function runActionTooltip(
   return pending ? "This action is already running" : descriptor.tooltip;
 }
 
-/**
- * The request id an unchanged resubmission must replay, read off the run itself.
- *
- * DERIVED, not remembered. The id belongs to the submission the daemon refused, and that
- * submission is on run detail carrying the very key it was filed under - so the answer is a
- * property of the run rather than of the component that happened to make the failing request.
- * A `useRef` holding it looked equivalent and was not: after a reload the ref is empty, and the
- * only place that showed was the round counter. The header went on offering to review "this
- * snapshot" while the daemon, finding no prior submission, opened a fresh repair round and spent
- * one of the binding's on evidence it had already been told was identical.
- *
- * The guards mirror `manager.resubmit`'s revive path exactly, and they have to, because both
- * outcomes either side of it are silent:
- *
- *  - Inside the window, replaying revives the failed submission IN THE SAME ROUND.
- *  - Past the nudge limit the phase is `unchanged_evidence_exhausted`, the revive guard no longer
- *    matches, and the daemon answers "already applied" with the old failed row - so a replay
- *    there is a click that does nothing, and `null` (a fresh id) is the one that runs.
- *
- * `null` is therefore a correct answer and not a failure: the caller mints a fresh id, which is
- * always accepted. Every narrowing below degrades that way, including the trigger key being a
- * shape this build does not recognise.
- */
+/** The daemon supplies the exact idempotency key for a refused snapshot replay. */
 export function refusedUnchangedRequestId(detail: WorkflowRunDetail): string | null {
-  if (
-    detail.run.status !== "waiting_for_session"
-    || detail.run.currentPhase !== "unchanged_evidence"
-  ) return null;
-  const refused = orderedSubmissions(detail).at(-1);
-  // The refusal marks the submission it opened `failed` and leaves it newest, so anything else
-  // here means the run has moved on and this is not the round being repaired.
-  if (!refused || refused.status !== "failed" || refused.triggerSource !== "manual") return null;
-  return manualWorkflowTriggerRequestId(detail.binding.id, refused.triggerKey);
+  return detail.summary.recovery?.resubmit?.requestId ?? null;
 }
 
 /**
@@ -376,45 +290,6 @@ export interface RunNoMoveReason {
   consequence: string;
 }
 
-/**
- * The blocked phases whose recovery is a DECISION rather than a resubmission.
- *
- * A DENYLIST, deliberately. `currentPhase` is a free string that new `setRunState` callers add
- * to without this module hearing about it, so an unrecognised block has to degrade to the
- * recovery `resubmitAvailability` has already proved the daemon accepts. Degrading the other
- * way - an allowlist, so a phase nobody enumerated silently loses its move - would recreate the
- * dead end this whole derivation exists to remove.
- *
- * `session_disappeared` and `round_limit` are absent on purpose: `resubmitAvailability` already
- * refuses both on their own terms, and its refusal is the better sentence.
- */
-const DECISION_BLOCKED_PHASES: ReadonlySet<string> = new Set([
-  // The findings list and the gate section own these three.
-  "inspector_findings",
-  "inspector_pr_closed",
-  "inspector_disabled",
-  // The deliveries section owns these: two mutually exclusive resolutions, and choosing needs
-  // the operator's eyes on the session's pane rather than a button up in the header.
-  "delivery_uncertain",
-  "delivery_refused",
-  "delivery_blocked",
-]);
-
-/**
- * The phases the manager writes when it refuses to review work that has not moved.
- *
- * The first two are the capture-time refusal: a round was opened, evidence was captured, and
- * the snapshot turned out to match. `unchanged_repository` is the cheaper one added beside
- * them - two git reads taken BEFORE a submission exists, so nothing was spent - and it is
- * listed here because the recovery is the same button. What differs is the sentence above it,
- * which is why `runNextMove` branches on the phase rather than treating all three alike.
- */
-const UNCHANGED_EVIDENCE_PHASES: ReadonlySet<string> = new Set([
-  "unchanged_evidence",
-  "unchanged_evidence_exhausted",
-  WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
-]);
-
 const runPath = (detail: WorkflowRunDetail, action: string): string =>
   `/api/workflow-runs/${encodeURIComponent(detail.run.id)}/${action}`;
 
@@ -429,38 +304,8 @@ function liveInspectorRepair(detail: WorkflowRunDetail): boolean {
   return orderedSubmissions(detail).at(-1)?.mode === "inspector_only";
 }
 
-/**
- * The one thing a FINISHED run can still do: review the same session again.
- *
- * This closed the page's largest dead end. A `completed`, `cancelled` or `failed` run used to
- * render six controls and not one of them ran anything - a review that had finished was the end
- * of the road, with no path back to reviewing that session from anywhere in the product.
- *
- * It needs no new route, and the daemon proves it rather than this comment: `activeRunForBinding`
- * defines "open" by SQL exclusion of exactly the three terminal statuses, so the `run_active`
- * refusal stops firing the moment the prior run finishes; nothing in the completion path writes
- * `workflow_bindings.state`, so the binding is still `active`; and the only per-submission guard
- * is the `requestId`-derived trigger key, which is idempotency rather than exclusivity.
- *
- * Two asymmetries live here and nowhere else in this function, both deliberate:
- *
- *  - It is keyed by `detail.binding.id`, not by the run. A run is a thing that happened; only
- *    the binding can start another one.
- *  - Its success lands the reader on a DIFFERENT run, so the caller routes rather than reloads.
- */
+/** Render the confirmed new-run operation the daemon offered. */
 function runAgainMove(detail: WorkflowRunDetail, preview: boolean): RunNextMove | null {
-  /*
-   * The manager's refusals, in `prepareSubmit`'s own order. Where either holds, the move is
-   * `null` and `runNoMoveReason` turns it into the sentence - never a disabled button.
-   *
-   * The one refusal not mirrored here is `run_active`, and it cannot be: run detail carries no
-   * sibling runs, so a page reading an OLDER terminal run of a binding that has since started
-   * another has no way to know. That is the one path to a 409, it needs two runs of one binding
-   * to reach, and the daemon's own sentence is what the page then shows.
-   */
-  if (detail.binding.state !== "active") return null;
-  if (detail.externalSource) return null;
-
   /*
    * WHICH version runs again, and why the copy has to be careful about it.
    *
@@ -502,30 +347,15 @@ function runAgainMove(detail: WorkflowRunDetail, preview: boolean): RunNextMove 
 }
 
 export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
-  const { status, currentPhase } = detail.run;
+  const recovery = detail.summary.recovery;
+  const primary = recovery?.primary;
+  if (!recovery || !primary || !recovery.operations.includes(primary)) return null;
   const preview = detail.binding.deliveryMode !== "live";
-
-  // Terminal. The one arm that STARTS a run rather than advancing one, and an arm on this same
-  // function rather than a second derivation or a bespoke button.
-  if (!workflowRunIsOpen(status)) return runAgainMove(detail, preview);
-
-  // In flight. The pipeline strip below is already saying what is happening, and a run that is
-  // moving does not need a button telling you to wait.
-  if (status === "capturing" || status === "running" || status === "waiting_for_action") {
-    return null;
-  }
-
-  // The three ordinary gate waits. `inspectorGateActions` mirrors the manager's exact
-  // evaluator-processable states, so a gate action cannot preempt a blocked run's own recovery
-  // or make `Check again` the answer to a spent Inspector findings block.
-  if (
-    status === "waiting_for_pr"
-    || status === "waiting_for_inspector"
-    || status === "waiting_for_new_head"
-  ) {
+  if (primary === "run-again") return runAgainMove(detail, preview);
+  if (primary === "prepare-pr" || primary === "recheck-inspector") {
     const gateActions = inspectorGateActions(detail);
     const prepare = gateActions.find((action) => action.kind === "prepare-pr");
-    if (prepare) {
+    if (primary === "prepare-pr" && prepare) {
       return {
         id: prepare.id,
         kind: "prepare-pr",
@@ -537,7 +367,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
       };
     }
     const recheck = gateActions.find((action) => action.kind === "recheck-inspector");
-    if (recheck) {
+    if (primary === "recheck-inspector" && recheck) {
       return {
         id: recheck.id,
         kind: "recheck-inspector",
@@ -551,22 +381,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     return null;
   }
 
-  /*
-   * The provider call failed rather than the review, and it comes BEFORE the resubmission
-   * family: retrying the exhausted call resumes the round the run already paid for, while a
-   * resubmission would open a new one.
-   *
-   * Gated on an errored attempt existing, because `manager.retry` refuses without one - a
-   * button that always answers 409 is worse than no button. The attempt id is deliberately not
-   * sent, exactly as `runRemedy` omits it: the daemon then picks the newest errored attempt on
-   * the live submission itself, which is the one this page would have chosen anyway and cannot
-   * go stale across a round boundary.
-   */
-  if (
-    status === "blocked"
-    && currentPhase === "infrastructure_error"
-    && detail.attempts.some((attempt) => attempt.state === "error")
-  ) {
+  if (primary === "retry") {
     return {
       id: "retry",
       kind: "retry",
@@ -578,56 +393,8 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     };
   }
 
-  /*
-   * A run that spent its repair budget, which is the one block that never clears itself.
-   *
-   * It comes BEFORE the resubmission family because it is the reason that family refuses:
-   * `resubmitAvailability` turns `round > maxRepairRounds` into a refusal sentence, and for
-   * a round-limited run that sentence used to be the end of the page - a paragraph pointing
-   * at a binding edit that cannot reach this run's snapshot. The grant moves the number the
-   * refusal actually reads, so the very next render offers the resume move on its own.
-   *
-   * This is also the only move here that changes what a pull request is waiting for, so the
-   * confirmation says so: while the run is spent, Shipping reports a permanent block.
-   */
-  const spent = workflowRunGaveUp({
-    status,
-    phase: currentPhase,
-    round: detail.summary.round,
-    maxRepairRounds: detail.summary.maxRepairRounds,
-  });
-  /*
-   * Offered only where it REVIVES something, which is two different conditions.
-   *
-   * An Inspector-only gate run is revived by the grant itself: the daemon restores
-   * `waiting_for_new_head` so the gate re-enters, and that works whoever started the run.
-   * Externally sourced runs are included for exactly this arm - an ensemble handoff binds
-   * a published version and its binding stays active, so its gate DOES hold the Shipping
-   * veto and can go spent. Withholding the button there would leave the Merge queue telling
-   * an operator to open a run that offers nothing.
-   *
-   * Every other spent run is revived by the resume move instead, so it inherits that move's
-   * preconditions: a manual round is what it will go on to take, and `resubmitAvailability`
-   * refuses one for a gone session or an external source. Granting rounds there would raise
-   * a number nothing goes on to spend - a button that succeeds and changes nothing.
-   */
-  const gateRepair = liveInspectorRepair(detail);
-  if (
-    spent
-    && detail.binding.state === "active"
-    && (gateRepair || !detail.externalSource)
-    // And only while there is headroom to grant. `grantRepairRounds` clamps the sum at the
-    // same ceiling and REFUSES a grant that would not move the number, so a run already at
-    // the maximum would otherwise render a button whose only possible answer is a 409.
-    && detail.summary.maxRepairRounds < WORKFLOW_LIMITS.repairRoundsMax
-  ) {
-    // The number the daemon will actually add, not the number we asked for. The clamp bites
-    // within `GRANT_ROUNDS` of the ceiling, and a button that promises two and delivers one
-    // is a small lie told at the exact moment an operator is counting rounds.
-    const rounds = Math.min(
-      detail.summary.maxRepairRounds + GRANT_ROUNDS,
-      WORKFLOW_LIMITS.repairRoundsMax,
-    ) - detail.summary.maxRepairRounds;
+  if (primary === "grant-rounds") {
+    const rounds = recovery.grantRounds;
     const spentCondition = spentInspectorGateCondition(detail);
     const adoptCleanHead = spentCondition?.kind === "clean_exact_head";
     const label = adoptCleanHead
@@ -663,7 +430,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
 
   // Everything below is a resubmission, so the manager's own refusals decide first. Where it
   // refuses, the move is `null` and `runNoMoveReason` turns the refusal into the sentence.
-  const availability = resubmitAvailability(detail, liveInspectorRepair(detail));
+  const availability = recovery.resubmit;
   if (!availability || availability.refusal !== null) return null;
 
   /*
@@ -673,7 +440,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
    * `workflow_unchanged_evidence`, and the manager persists that refusal as a run phase, so the
    * affordance is durable across a remount rather than held in component state.
    */
-  if (UNCHANGED_EVIDENCE_PHASES.has(currentPhase)) {
+  if (primary === "resubmit-unchanged") {
     const latestSubmissionId = orderedSubmissions(detail).at(-1)?.id ?? null;
     const reusedImageCount = latestSubmissionId
       ? detail.evidenceImages?.find((group) => group.submissionId === latestSubmissionId)?.images.length ?? 0
@@ -688,7 +455,7 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
      * they do not have, so this arm states what the daemon actually compared - the tree - and
      * what proceeding will cost.
      */
-    const repositoryOnly = currentPhase === WORKFLOW_UNCHANGED_REPOSITORY_PHASE;
+    const repositoryOnly = availability.unchanged === "repository";
     if (repositoryOnly) {
       return {
         id: "resubmit-unchanged",
@@ -729,9 +496,10 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
     };
   }
 
-  const resumable = status === "waiting_for_session"
-    || !DECISION_BLOCKED_PHASES.has(currentPhase);
-  if (!resumable) return null;
+  if (primary !== "resubmit") {
+    const _unsupported: never = primary;
+    return null;
+  }
   const nextRound = detail.summary.round + 1;
   return {
     // One action-store intent per repair round. A fresh capture that is refused as unchanged
@@ -872,6 +640,12 @@ const NO_RERUN_SENTENCES: Record<Exclude<WorkflowBindingState, "active">, RunNoM
  */
 export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | null {
   if (runNextMove(detail) !== null) return null;
+  if (!detail.summary.recovery || (!detail.summary.recovery.phaseKnown && workflowRunIsOpen(detail.run.status))) {
+    return {
+      cause: detail.summary.recovery ? "This daemon does not recognize the run's phase." : "Recovery actions are unavailable.",
+      consequence: "Inspect the run record for details. Refresh after updating the daemon to obtain its recovery actions.",
+    };
+  }
   const { status, currentPhase } = detail.run;
 
   /*

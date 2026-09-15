@@ -8,6 +8,7 @@ import {
 } from "../src/web/lib/line-review-groups.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
+import { projectWorkflowRecovery } from "../src/server/workflows/recovery.ts";
 
 /**
  * The Review drawer's fold, as a table.
@@ -19,11 +20,18 @@ import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
  * `line-drawer.test.ts`, and that a person can click it is `e2e/specs/line-drawers.spec.ts`.
  */
 
-const run = (over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary => ({
-  ...LADDER_SUMMARY,
-  activePersonaNames: [],
-  ...over,
-});
+const run = (over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary => {
+  const summary = { ...LADDER_SUMMARY, activePersonaNames: [], ...over };
+  summary.recovery = projectWorkflowRecovery({
+    status: summary.status, phase: summary.phase, bindingId: summary.bindingId,
+    bindingState: summary.sessionId ? "active" : "orphaned", sessionId: summary.sessionId,
+    external: Boolean(summary.externalSource), round: summary.round, maxRepairRounds: summary.maxRepairRounds,
+    latest: { mode: "full_workflow", status: "failed", triggerSource: "manual", triggerKey: "request" },
+    attempts: [{ state: "error" }], completionPolicy: { kind: "none" }, bindingHasOtherRun: false,
+    gate: null,
+  });
+  return summary;
+};
 
 /** A blocked run, which is the only kind that folds. */
 const stopped = (id: string, phase: string, over: Partial<WorkflowRunSummary> = {}) =>

@@ -191,6 +191,7 @@ import {
   type WorkflowStoreWrite,
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
+import { infrastructureRecoveryAvailable, inspectorRecoveryCanRecheck } from "./recovery.ts";
 import { getWorkflowPolicy } from "./config.ts";
 import {
   renderInspectorFeedback,
@@ -1095,6 +1096,21 @@ export class WorkflowManager {
       : result;
   }
 
+  /** Add current recovery facts at the response boundary, never to persisted run rows. */
+  presentRun(run: WorkflowRun): WorkflowRun;
+  presentRun(run: WorkflowRun | null): WorkflowRun | null;
+  presentRun(run: WorkflowRun | null): WorkflowRun | null {
+    if (!run) return null;
+    const current = this.store.getRun(run.id) ?? run;
+    return { ...current, recovery: this.store.runSummary(run.id)?.recovery ?? {
+      operations: [], primary: null, triage: null, phaseKnown: false, resubmit: null, grantRounds: 0,
+    } };
+  }
+
+  presentRunResult<T extends { run: WorkflowRun }>(value: T): T {
+    return { ...value, run: this.presentRun(value.run) };
+  }
+
   private decorateRun(detail: WorkflowRunDetail): WorkflowRunDetail {
     const latest = detail.submissions.at(-1);
     detail = { ...detail, evidenceRecovery: latest ? this.evidenceRecoveryFor(detail.run, latest) : null };
@@ -1891,7 +1907,7 @@ export class WorkflowManager {
         ok: false,
         reason: "run_active",
         message: "This binding already has an active run",
-        current: alreadyRunning,
+        current: this.presentRun(alreadyRunning),
       };
     }
     return leadWasIdempotent
@@ -2082,7 +2098,7 @@ export class WorkflowManager {
           ok: false,
           reason: "unchanged_evidence",
           message: "The evidence snapshot is unchanged; confirm this same resubmission to continue",
-          current: { run: existingRun, submission: existing },
+          current: this.presentRunResult({ run: existingRun, submission: existing }),
         };
       }
       return {
@@ -2091,7 +2107,8 @@ export class WorkflowManager {
         idempotent: true,
       };
     }
-    if (!["waiting_for_session", "blocked"].includes(run.status) || binding.state !== "active") {
+    if (!workflowRunPhaseRecognized(run.currentPhase)
+      || !["waiting_for_session", "blocked"].includes(run.status) || binding.state !== "active") {
       return {
         ok: false,
         reason: "run_not_waiting",
@@ -2453,14 +2470,20 @@ export class WorkflowManager {
       return { ok: true, value: { run, submission }, idempotent: true };
     }
     const attempts = this.store.listAttempts(submission.id);
+    const latestAttempts = new Map<string, WorkflowNodeAttempt>();
+    for (const attempt of attempts) {
+      const prior = latestAttempts.get(attempt.nodeId);
+      if (!prior || attempt.attempt > prior.attempt) latestAttempts.set(attempt.nodeId, attempt);
+    }
+    // Keep attempt chronology: replacing a Map value preserves the node's first position.
+    const currentAttempts = attempts.filter((attempt) => latestAttempts.get(attempt.nodeId)?.id === attempt.id);
     const failed = input.nodeAttemptId
-      ? attempts.find((attempt) => attempt.id === input.nodeAttemptId)
-      : [...attempts].reverse().find((attempt) => attempt.state === "error");
+      ? currentAttempts.find((attempt) => attempt.id === input.nodeAttemptId)
+      : currentAttempts.reverse().find((attempt) => attempt.state === "error");
     if (
-      run.status !== "blocked" ||
-      run.currentPhase !== "infrastructure_error" ||
-      !failed ||
-      failed.state !== "error"
+      !failed || !infrastructureRecoveryAvailable(
+        { status: run.status, phase: run.currentPhase }, submission, failed.state === "error",
+      )
     ) {
       return {
         ok: false,
@@ -2941,7 +2964,7 @@ export class WorkflowManager {
     if (replay) return { ok: true, value: run, idempotent: true };
     const latest = this.store.latestSubmission(run.id);
     if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
-    if (!workflowRunGaveUp({
+    if (!workflowRunPhaseRecognized(run.currentPhase) || !workflowRunGaveUp({
       status: run.status,
       phase: run.currentPhase,
       round: latest.round,
@@ -3165,11 +3188,7 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
-    const canEvaluate = run.status === "waiting_for_pr"
-      || run.status === "waiting_for_inspector"
-      || run.status === "waiting_for_new_head"
-      || (run.status === "waiting_for_session" && run.currentPhase === "pr_handoff")
-      || (run.status === "blocked" && run.currentPhase === "inspector_disabled");
+    const canEvaluate = inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase });
     if (!canEvaluate) {
       return {
         ok: false,
@@ -3220,7 +3239,7 @@ export class WorkflowManager {
     const abandoningBypass =
       run.status === "waiting_for_new_head"
       || latest.mode === "inspector_only";
-    if (!abandoningBypass) {
+    if (runIsTerminal(run) || !workflowRunPhaseRecognized(run.currentPhase) || !abandoningBypass) {
       return {
         ok: false,
         reason: "run_not_waiting",
@@ -3289,7 +3308,7 @@ export class WorkflowManager {
         ok: false,
         reason: "invalid_delivery_state",
         message: "A terminal workflow run cannot deliver another repair packet",
-        current: run,
+        current: run ? this.presentRun(run) : null,
       };
     }
     const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_completed", input.requestId);
@@ -3898,7 +3917,7 @@ export class WorkflowManager {
           message:
             "This external run has no pinned artifact, so the result it was started for "
             + "cannot be established; start a new result rather than reviewing another commit",
-          current: existingRun,
+          current: this.presentRun(existingRun),
         };
       }
       if (pinned.expectedHeadSha !== expectation.data.expectedHeadSha) {
@@ -3949,7 +3968,7 @@ export class WorkflowManager {
         ok: false,
         reason: "run_active",
         message: "This binding already has an active run",
-        current: active,
+        current: this.presentRun(active),
       };
     }
     // The external source kind IS the trigger source. Assigning rather than restating it
@@ -6280,7 +6299,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped before evidence capture began",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       // The row, not the caller's copy. A repair round is captured from a run object the
@@ -6313,7 +6332,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The run's frozen review intent could not be read; start a new run",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       const frozenIntent = runRow.intent ?? null;
@@ -6341,7 +6360,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped during evidence capture",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       if (!captured) {
@@ -6711,7 +6730,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped while evidence was being compacted",
-          current: currentRun,
+          current: this.presentRun(currentRun),
         };
       }
       const selectionSource = previousEvidenceSubmission(this.store, submission);
@@ -6843,7 +6862,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The captured evidence did not satisfy this submission's activation guard",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       if (version && !shippingOnlyContinuation) {
@@ -6935,7 +6954,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped during evidence capture",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       return {

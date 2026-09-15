@@ -1,3 +1,4 @@
+import { withWorkflowRecovery } from "./workflow-recovery.ts";
 import type {
   PersonaSnapshot,
   WorkflowNodeAttempt,
@@ -293,7 +294,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
 
   if (state === "changes" || state === "uncertain") {
     summary.status = state === "uncertain" ? "blocked" : "waiting_for_session";
-    summary.phase = state === "uncertain" ? "delivery_uncertain" : "repair_wait";
+    summary.phase = state === "uncertain" ? "delivery_uncertain" : "persona_feedback";
     summary.failedPersonaCount = state === "uncertain" ? 1 : 2;
     currentSubmission = submission({ status: "waiting_for_session" });
     attempts.push(
@@ -307,7 +308,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
 
   if (state === "gate") {
     summary.status = "waiting_for_inspector";
-    summary.phase = "inspector_gate";
+    summary.phase = "inspector_review";
     summary.round = 3;
     summary.gate = "waiting_inspector";
     summary.gatePrNumber = 301;
@@ -426,7 +427,7 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
     }];
   }
 
-  return {
+  return withWorkflowRecovery({
     summary,
     binding: {
       id: "binding",
@@ -472,5 +473,5 @@ export function ladderDetail(state: LadderState): WorkflowRunDetail {
     llmCallCount: 0,
     nextLlmCallAfter: null,
     inspectorGate,
-  };
+  });
 }

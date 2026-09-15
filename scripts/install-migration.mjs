@@ -330,7 +330,16 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
     } catch (error) {
       // A crash injection deliberately models process death, including no finally cleanup.
       if (error?.migrationCrash) throw error;
-      if (migrationIsCommitted(journal, migrationReceipt(plan.stateDirectory))) {
+      let receipt;
+      try { receipt = migrationReceipt(plan.stateDirectory); }
+      catch (receiptError) {
+        // An unreadable receipt proves neither commitment nor non-commitment.
+        // Preserve both runtimes and record a safe outcome instead of restoring.
+        const message = recordMigrationRecoveryFailure(journal, "Migration failed and the installation receipt could not be read. Commitment could not be verified.");
+        return { committed: false, journal, error: message,
+          diagnostic: `${String(error?.message ?? error)} Receipt read failed: ${String(receiptError?.message ?? receiptError)}` };
+      }
+      if (migrationIsCommitted(journal, receipt)) {
         journal.repairs = [{ id: "startup", status: "pending", message: "The personal installation committed. Reopen it to finish startup and integration repair." }];
         publish("repair-required");
         return { committed: true, journal, error: String(error.message ?? error) };

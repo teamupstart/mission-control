@@ -325,6 +325,70 @@ test("workflow image contracts default historical context and bind image citatio
   }).success, false);
 });
 
+test("48 images and 48 mixed text artifacts survive intake and capture with independent count limits", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-count-budget-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    // Give this fixture its own retained body so other cases can release their last reference.
+    writeFileSync(join(repo, "evidence/screen.png"), Buffer.concat([PNG, Buffer.from("count-budget")]));
+    writeFileSync(join(repo, "evidence/run.log"), "ok 1 - focused test\n");
+    const images = Array.from({ length: 48 }, (_, index) => ({
+      kind: "agent" as const, clientItemId: `count-image-${index}`, path: "evidence/screen.png",
+      caption: `Image ${index}`, repositoryScope: "repo-01" as const,
+    }));
+    const artifacts = Array.from({ length: 24 }, (_, index) => ({
+      kind: "text" as const, clientItemId: `count-log-${index}`, path: "evidence/run.log",
+      caption: `Log ${index}`, repositoryScope: "repo-01" as const,
+    }));
+    const commandOutputs = Array.from({ length: 24 }, (_, index) => ({
+      kind: "command" as const, clientItemId: `count-command-${index}`, command: "npm test",
+      exitCode: 0, output: "ok 1 - focused test\n", caption: `Command ${index}`,
+      repositoryScope: "repo-01" as const,
+    }));
+    assert.equal(SubmitWorkflowEvidenceSchema.safeParse({ images, artifacts, commandOutputs }).success, true);
+    const extraImage = { ...images[0]!, clientItemId: "count-image-overflow" };
+    const extraCommand = { ...commandOutputs[0]!, clientItemId: "count-command-overflow" };
+    assert.equal(SubmitWorkflowEvidenceSchema.safeParse({ images: [...images, extraImage] }).success, false);
+    assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
+      artifacts, commandOutputs: [...commandOutputs, extraCommand],
+    }).success, false);
+
+    const store = new WorkflowStore();
+    const input = { store, noteKey: "count-budget-note", task: taskAt(repo), fallbackRoot: repo };
+    const staged = await stageAgentWorkflowEvidence({ ...input, images, artifacts, commandOutputs, now: 1 });
+    assert.equal(staged.images.length, 48);
+    assert.equal(staged.artifacts.length, 48);
+    await assert.rejects(() => stageAgentWorkflowEvidence({ ...input, images: [extraImage], now: 2 }),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "image_count");
+    await assert.rejects(() => stageAgentWorkflowEvidence({ ...input, images: [], commandOutputs: [extraCommand], now: 2 }),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_count");
+
+    const binding = store.insertBinding({
+      id: "count-budget-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: input.noteKey, sessionId: "count-budget-session", sessionAgent: "codex",
+      sessionName: "count budget", sessionCwd: repo, sessionRepoRoot: repo,
+      triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 3,
+    });
+    const created = store.createInitialSubmission(
+      { id: "count-budget-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "count-budget-root", now: 4 },
+      { id: "count-budget-submission", triggerSource: "manual", triggerKey: "count-budget-root", context: {}, evidence: {}, now: 4 },
+    );
+    const capturedImages = await captureSubmissionImages(store, created.submission.id, 5);
+    const capturedText = await captureSubmissionTextArtifacts(store, created.submission.id, 5);
+    assert.equal(capturedImages.length, 48);
+    assert.equal(capturedText.length, 48);
+    const snapshot = context();
+    snapshot.evidence.images = capturedImages;
+    snapshot.evidence.artifacts = capturedText;
+    assert.equal(WorkflowContextSnapshotSchema.safeParse(snapshot).success, true);
+    assert.equal(resolveSubmissionImageInputs(store, created.submission.id).length, 48);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("384 KiB of mixed workflow text evidence survives registration and capture", async () => {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-budget-")));
   try {

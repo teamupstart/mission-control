@@ -169,6 +169,31 @@ export interface TelemetryService {
   stop(): Promise<void>;
 }
 
+export interface TelemetryServiceOptions {
+  /**
+   * Called after a cadence cycle that moved something, so the settings-status tuple can be
+   * recomposed and pushed.
+   *
+   * A callback rather than an import of the registry, for the reason `settings-status.ts`
+   * itself gives about the dependency direction: this module must not pull the registry's whole
+   * graph in behind it. Called only when the cycle actually did work - an idle tick on an
+   * enabled installation happens every thirty seconds forever, and recomposing for each one
+   * would put a database read on a timer for no reason. (The registry would drop the identical
+   * frame anyway; this avoids composing it at all.)
+   */
+  onHealthChanged?: () => void;
+  /**
+   * The cadence, so a focused test can drive the timer rather than wait thirty seconds for it.
+   *
+   * A seam rather than a setting: nothing reads it from configuration and the daemon passes
+   * nothing, so a real installation runs on `TELEMETRY_CYCLE_MS`. It exists because the wiring
+   * between "a cycle moved something" and "every open dashboard is told" is exactly the kind of
+   * thing that is easy to get wrong and impossible to notice, and a test that cannot reach the
+   * timer can only assert the pieces either side of it.
+   */
+  cycleMs?: number;
+}
+
 /**
  * Start the recurring cycle.
  *
@@ -176,7 +201,10 @@ export interface TelemetryService {
  * `pending`, because that request may have been accepted remotely and the retry path is where
  * that ambiguity is already handled.
  */
-export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryService {
+export function startTelemetry(
+  deps: Partial<DeliveryDeps> = {},
+  options: TelemetryServiceOptions = {},
+): TelemetryService {
   registerBuiltinTelemetry();
 
   // Did the previous run stop cleanly? Asked BEFORE anything else, because the answer is a
@@ -213,8 +241,20 @@ export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryServi
 
   const cycleTimer = setInterval(() => {
     if (stopped || !getTelemetryConfig().enabled) return;
-    void cycle();
-  }, TELEMETRY_CYCLE_MS);
+    void cycle().then((result) => {
+      // Only when the cycle moved something. See `onHealthChanged`.
+      if (!options.onHealthChanged) return;
+      if (result.consumed === 0 && result.batches === 0 && result.sent === 0) return;
+      try {
+        options.onHealthChanged();
+      } catch (error) {
+        // A publisher that throws must not take the cadence timer with it. The next cycle
+        // that does work republishes, and the tuple is recomposed on every dashboard connect
+        // regardless, so the worst case is a stale panel until then rather than a lost one.
+        console.warn("[telemetry] could not publish telemetry health:", error);
+      }
+    });
+  }, options.cycleMs ?? TELEMETRY_CYCLE_MS);
   const retentionTimer = setInterval(() => {
     if (stopped || !getTelemetryConfig().enabled) return;
     try {

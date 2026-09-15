@@ -200,7 +200,7 @@ export async function runRestage(input: {
 /**
  * Why staging THIS image was refused, or null.
  *
- * Keyed by image because a submission may freeze eight of them and each is staged on its own. A
+ * Keyed by image because a submission may freeze multiple images and each is staged on its own. A
  * single pane-wide value cannot express that: a press on one image would clear the recorded
  * failure of another whose bytes were never staged and which nothing retried, quietly removing
  * the only mark saying so.

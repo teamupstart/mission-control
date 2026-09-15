@@ -17,9 +17,15 @@ export {
   telemetryStatus,
   userCredentialConfigured,
 } from "./config.ts";
+export {
+  recordTelemetryControl,
+  runTelemetryOperation,
+  telemetryCollectionEnabled,
+} from "./controls.ts";
 export { observeDaemonStart, runTelemetryProbe } from "./diagnostics.ts";
 export type { DaemonLaunchMode } from "./diagnostics.ts";
-export { telemetryHealth } from "./health.ts";
+export { telemetryHealth, telemetrySettingsSummary } from "./health.ts";
+export { admitBrowserTelemetry, resetIngressRateLimitForTesting } from "./ingress.ts";
 export {
   registerTelemetryProjection,
   registerTelemetrySource,

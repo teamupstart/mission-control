@@ -1955,12 +1955,10 @@ function DeliveriesPane({
  * whose strip is under the fold, and an intersection trigger leaves every thumbnail saying
  * "Loading image…" until they scroll - which is the exact defect this phase exists to remove.
  *
- * So the trigger is the pane itself being rendered, and there is no observer at all. The phase
- * document proposed keeping one for a long strip, and the repository says there cannot be one:
- * `WORKFLOW_IMAGE_LIMITS.maxCount` is 8 and `WorkflowContextSnapshotSchema` caps the frozen
- * array at the same number, carried-forward records included. Withholding at most eight small
- * bodies inside a pane somebody deliberately opened buys nothing and costs the thing the pane
- * is for.
+ * So the trigger is the pane itself being rendered, and there is no observer at all. The frozen
+ * packet, carried-forward records included, is bounded by `WORKFLOW_IMAGE_LIMITS`: 48 images
+ * and 20 MiB combined. Opening the pane fetches those bodies so its thumbnails are ready when
+ * the reader scrolls to them.
  *
  * Revoking is the owner's job and the owner is this hook: every URL it created is released when
  * the pane unmounts, which is the same commit that destroys every consumer of them.

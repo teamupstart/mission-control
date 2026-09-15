@@ -173,7 +173,8 @@ Four ready-made workflows ship already published in the Library:
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
-complex work. The three implementation workflows begin with configured typecheck and test Commands.
+complex work. The three implementation workflows begin with configured typecheck, test, and lint
+Commands in parallel.
 Unconfigured slots skip and pass. All presets use Foreman complete, live repair delivery, automatic
 resumption, and up to five repair rounds, subject to the existing trust and execution settings.
 General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
@@ -187,8 +188,9 @@ material is reported as a gap. Plan tasks with Persona review receive instructio
 frozen text artifact containing the root plan, phase files, relevant unchanged references, and
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
-No-Mistakes version 18 is current. Versions 1 through 17 remain available with their original
-review graphs and completion policies. The durable workflow ID remains
+General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
+Their earlier versions remain available with their original review graphs and completion policies.
+The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
 The **Author what runs** guided tour walks this workflow - its five stages, its disabled
@@ -197,16 +199,15 @@ follows one already-ended run of it - completed, cancelled or failed - into the 
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
 ⌘K palette. See [guided tours](ui.md#guided-tours).
 
-Stage 1 is a deterministic gate: the [`typecheck` and `test` Commands](#command-nodes), placed
-ahead of every reviewer so that a change which does not compile costs no model calls at all.
-Both are evaluated on the same submission and both must pass at their All-pass Join before
+Stage 1 is a deterministic gate: the [`typecheck`, `test`, and `lint` Commands](#command-nodes),
+placed ahead of every reviewer so that a failing check costs no model calls at all.
+All three are evaluated on the same submission and must pass at their All-pass Join before
 anything behind them starts, so one failing gate returns the submission to the session with the
 command's own output and **no Persona runs**.
 
-Those checks are live from version 3 onward, on a machine where you have switched checks on and
-configured a command - the graph did not change, the runtime behind it arrived. Where you have
-not, the gates report Not run and pass, and versions 3 onward follow the same Persona review
-path version 2 does while preserving the deterministic stage in the graph. The
+No-Mistakes has typecheck and test from version 3 onward, with lint added in version 19.
+Checks run when enabled and configured on the machine. Unconfigured slots report Not run and
+pass while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
@@ -257,17 +258,17 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 18 preserve that verified publication
-contract. Versions 10 through 18 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 18.
+would ask for one the run already has. Versions 9 through 19 preserve that verified publication
+contract. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 19.
 
-A passed review in versions 1 through 8 and version 18 is then gated on the
+A passed review in versions 1 through 8 and versions 18 onward is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
-Versions 9 through 17 complete when their Pull Request action reaches End. Version 18 waits
+Versions 9 through 17 complete when their Pull Request action reaches End. Versions 18 onward wait
 for Inspector after that action. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
 
-In versions 4 through 8 and version 18, findings require the session to fix, verify, commit and push, then
+In versions 4 through 8 and versions 18 onward, findings require the session to fix, verify, commit and push, then
 GitHub Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
@@ -329,7 +330,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 18 because it is current. Adopting the newer version on an
+take version 19 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -935,7 +936,7 @@ its exact output directly through the existing evidence tool, so normalized tran
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
 
-Text artifacts and completed-command outputs share an eight-item limit, with at most 64 KiB
+Text artifacts and completed-command outputs share a 48-item limit, with at most 64 KiB
 per artifact and 384 KiB combined. Command and exit-code framing counts toward these byte
 limits. The complete serialized workflow context must also fit its 2,000,000-byte limit.
 
@@ -985,7 +986,7 @@ before capture, including in the initial binding dialog before that conversation
 The daemon resolves that initial packet from the live session, so creating a placeholder binding
 is not required and a stale registration cannot reach the first review unseen. The dashboard
 blocks submission while an upload is pending or failed, a caption
-or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
+or scope is missing, registered evidence cannot be read, or the packet exceeds 48 images, 5 MiB
 per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
 or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
 the count and byte total shown in the composer become part of that immutable submission.
@@ -1048,7 +1049,7 @@ frozen image and artifact arrays at the same counts, so a carry that ignored the
 entire capture as a stale capture and lose every item rather than the few at the margin. The
 image count is stricter still: `WORKFLOW_IMAGE_LIMITS.maxCount` is `LLM_IMAGE_LIMITS.maxCount`,
 the number of images a single model call accepts, and `validateLlmImages` refuses a call that
-exceeds it. A submission carrying a ninth image could not be sent to the Persona that has to read
+exceeds it. A submission carrying a 49th image could not be sent to the Persona that has to read
 it. When a limit does refuse part of a carry the run records `evidence_carry_truncated` naming
 how many images, artifacts, and claims it refused, so a shortened carry is inspectable rather
 than silent.
@@ -1162,7 +1163,8 @@ Run detail shows both the frozen author claims and canonical reconciliation. Ful
 text does not enter fleet summaries.
 
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
-result before the engine creates any Persona or Check attempt. A structural gap parks the run at
+result before the engine creates any Persona or Check attempt, until the round exhausts its
+evidence attempt budget. A structural gap parks the run at
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
 original immutable submission inspectable. That packet carries the whole rubric rather than only
 its holes: the matching rules, every gapped criterion with its id and the claim ids contesting it,
@@ -1195,14 +1197,22 @@ initial submission plus at most two refinements. The first round has more room t
 gaps; later rounds inherit applicable evidence through the existing carry-forward rules. These
 refinements stay within their workflow round and do not spend Persona repair rounds.
 
-The next refinement beyond the round's limit, whether the session staged it or the operator asked
-for it, is refused rather than reserved: the run blocks in
-the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
-submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
-alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the
-readiness decision on screen, and the operator can still continue despite gaps from the block; the
-retry control is withdrawn with the loop it would restart. Resubmitting the run opens an ordinary
-new round instead.
+If the final allowed attempt still has structural gaps, the workflow automatically sends that
+immutable packet to the judges. It does not wait for another evidence upload, reserve another
+refinement, or require **Continue to review**. The readiness result remains `gaps`, and an
+`evidence_preflight_exhausted_continued` timeline event records the submission, round, refinement
+budget, and remaining gap codes. This is an engine continuation, not an operator override or a
+claim that the evidence is sufficient.
+
+The judges decide whether the available evidence supports the work. A failing verdict returns
+feedback to the session through the normal repair flow; the next round uses its own evidence
+attempt budget and the workflow's existing resumption policy and repair-round limit.
+
+The automatic readiness sweep also recovers exhausted packets left waiting or blocked in the
+historical `preflight_refinement_exhausted` phase. It needs no newly staged evidence. A prepared
+preflight packet is cancelled before review starts; a sending or uncertain delivery must settle
+first. The handoff is durable, so a restart between continuation and judge activation resumes the
+same submission without creating another refinement or recording an operator decision.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another

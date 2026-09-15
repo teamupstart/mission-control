@@ -89,6 +89,11 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
 
 export type SetupRequirement = "required" | "recommended" | "optional";
 
+export interface SetupGuideLink {
+  url: string;
+  label: string;
+}
+
 /**
  * Local background services Mission Control can start on the operator's behalf.
  *
@@ -440,6 +445,7 @@ export interface SetupRowView {
   requirement: SetupRequirement;
   enables: string;
   remedy: SetupRemedy;
+  guide?: SetupGuideLink;
   status: SetupStatus;
 }
 
@@ -499,6 +505,9 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     requirement: SetupRequirement;
     enables: string;
     remedy: SetupRemedy;
+    guide?: SetupGuideLink;
+    /** Keep a healthy environment integration visible using this evidence sentence. */
+    readyEvidence?: string;
   }
 > = {
   "pi-extension": {
@@ -516,6 +525,11 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     requirement: "optional",
     enables: "Until setup finishes, UpstartClaw tools cannot authenticate reliably in dispatched sessions.",
     remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+    guide: {
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/upstart.md",
+      label: "Open UpstartClaw setup guide",
+    },
+    readyEvidence: "Core plugin setup completed",
   },
   // `required`, unlike its neighbour, and the difference is what the row's presence means.
   // An environment row exists only while its check is warning (see `environmentRow`), and

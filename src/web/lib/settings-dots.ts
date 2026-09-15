@@ -91,6 +91,26 @@ export function settingsRailDot(
       // panel warns about, summarized to one rail dot. The panel's other amber - armed check
       // execution - is handled above, since it does not need the tuple.
       return status.shipping.autoMerge && trustBlindSpot ? "armed" : null;
+    case "telemetry": {
+      // Three readings, and the ordering is what makes the dot worth having.
+      //
+      // Red first: a destination the daemon STOPPED on its own, or one whose last attempt
+      // failed. That is a queue quietly filling up, which has no other symptom anywhere in the
+      // app - nothing else would ever mention it, so the rail is the only thing that can.
+      //
+      // Green when something is actually being exported, which is the same claim the Inspector's
+      // green makes: this subsystem is doing its live thing right now.
+      //
+      // And nothing at all when collection is off or local-only. Local-only is a complete,
+      // correct state, not a half-finished setup, and a dot nagging about it would be this
+      // surface arguing for its own feature.
+      const telemetry = status.telemetry;
+      if (!telemetry) return null;
+      if (telemetry.profiles.some((p) => p.pausedReason !== null || (p.failing && p.pending > 0))) {
+        return "failing";
+      }
+      return telemetry.profiles.some((p) => p.exporting) ? "live" : null;
+    }
     default:
       return null;
   }

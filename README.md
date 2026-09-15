@@ -277,7 +277,10 @@ and control surface stay coherent.
 
 ## Get started
 
-There are two paths through this repository:
+The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
+install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
+the optional ones, and keep the app current. The short version is two paths through this
+repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
   the window closed, and receives updates. Updates check Node.js and npm before building and
@@ -298,7 +301,12 @@ There are two paths through this repository:
   ```
 
   Then open `http://127.0.0.1:5173`. See [First-run setup](docs/setup.md) and
-  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path.
+  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path. Upstart
+  operators should also follow [Running Mission Control at Upstart](docs/upstart.md) for the
+  UpstartClaw marketplace, plugin, sign-in, and daemon environment steps.
+
+Either way, **Settings → Setup** is where Mission Control reports what this machine can already do
+and what is still missing. The [setup guide](docs/setup-guide.html) reads that panel row by row.
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:

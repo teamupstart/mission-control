@@ -330,12 +330,21 @@ async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupPr
 }
 
 function environmentRow(check: EnvironmentCheckView): SetupRowView | null {
-  if (check.warning === null) return null;
   const metadata = ENVIRONMENT_ROW_METADATA[check.id];
+  const { readyEvidence, ...rowMetadata } = metadata;
+  if (check.warning === null) {
+    if (check.ready !== true || !readyEvidence) return null;
+    return {
+      rowId: { source: "environment-check", id: check.id },
+      label: check.label || ENVIRONMENT_CHECK_INFO[check.id].label,
+      ...rowMetadata,
+      status: { state: "satisfied", evidence: readyEvidence },
+    };
+  }
   return {
     rowId: { source: "environment-check", id: check.id },
     label: check.label || ENVIRONMENT_CHECK_INFO[check.id].label,
-    ...metadata,
+    ...rowMetadata,
     status: { state: "needs-setup", why: check.warning, evidence: check.detail },
   };
 }

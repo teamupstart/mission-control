@@ -4,6 +4,11 @@ This walkthrough takes a new checkout from clone to a running Mission Control an
 its full verification suite. For the contributor expectations and test policy, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+If you are installing Mission Control to use rather than to work on, read the illustrated
+[setup guide](setup-guide.html) instead. It covers the same Setup panel from the operator's
+side, with screenshots, a required-versus-optional breakdown of every row, and how updates
+arrive.
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
@@ -39,6 +44,13 @@ A successful installation asks you to start a fresh Pi session. Existing or brok
 have no install or repair button: their **Pi extension** warning supplies a manual installer
 command, with durable-clone and desktop guidance. The warning disappears after a healthy
 **Re-check**. A machine that never installed Pi integration has no required Pi warning.
+
+When the UpstartClaw core plugin is installed, this family also keeps an **UpstartClaw core
+setup** row visible. A completed setup reads **Ready**; missing, unfinished, malformed, or
+unreadable setup state reads **Needs setup** and offers the interactive setup skill command.
+The row links to [Running Mission Control at Upstart](upstart.md), which includes the marketplace,
+plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
+without the plugin remain free of Upstart-specific setup chrome.
 
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
 installer and update preflight (currently Node.js 24). It reports a missing or older runtime as

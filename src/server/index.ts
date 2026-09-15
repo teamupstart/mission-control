@@ -714,7 +714,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Telemetry's recurring cycle, started HERE rather than beside the database for the reason
   // every job in this callback is: it is background work, and nothing about a backend being
   // unreachable may delay a daemon becoming available. Startup lease recovery runs inside it.
-  telemetry = startTelemetry();
+  // `publishSettingsStatus` is handed in rather than imported by the telemetry module, so the
+  // registry's graph stays on this side of the boundary. It fires only on a cycle that moved
+  // something, which on an installation with collection off is never.
+  telemetry = startTelemetry({}, { onHealthChanged: () => publishSettingsStatus(registry) });
   // And the first fact this installation captures, if it has opted in: that the daemon
   // started, and how long it took to answer. Measured to HERE, which is what an operator
   // would call startup, and captured after it rather than before - the observation cannot be

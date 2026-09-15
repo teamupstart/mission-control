@@ -211,7 +211,7 @@ export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
  * Later rounds allow two consecutive refinements after their initial evidence packet.
  * Round 1 doubles the total attempts, including that initial packet: six attempts means
  * five refinements. It has more gaps to close before later rounds can inherit the evidence.
- * The final allowed refinement is captured normally; only the next reservation blocks.
+ * The final allowed refinement is captured normally, then unresolved gaps go to review.
  */
 const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
 
@@ -9060,36 +9060,10 @@ export class WorkflowStore {
       if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
       }
-      /*
-       * The bound on the loop, checked before anything is reserved and after idempotency, so a
-       * restart re-driving a refinement that already exists still recovers it.
-       *
-       * Counting the PARENT's chain and comparing the child it would produce is what keeps the
-       * cap off by nothing: `refinements` is what has already been spent, so the reservation in
-       * hand is `refinements + 1`, and the run blocks only once that exceeds the limit.
-       *
-       * The parent submission is deliberately left `waiting_for_evidence_readiness`. The gaps
-       * are still real and still the operator's to settle, and leaving the submission where it
-       * is keeps `overrideEvidenceReadiness` - continue despite gaps - reachable from the block.
-       */
+      // Replays recover existing reservations, but exhaustion never buys another segment.
       const refinements = this.consecutiveEvidencePreflightRefinements(parent.id);
       const limit = evidencePreflightRefinementLimit(parent.round);
       if (refinements + 1 > limit) {
-        this.setRunState(
-          run.id,
-          "blocked",
-          WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
-          { submissionId: parent.id, round: parent.round, refinements },
-          input.now,
-        );
-        this.appendEvent(run.id, WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE, {
-          submissionId: parent.id,
-          round: parent.round,
-          segment: parent.segment,
-          refinements,
-          limit,
-          manualRetry: input.manualRetry,
-        }, input.now, `preflight-refinement-exhausted:${parent.id}`);
         return { ok: false, reason: "refinement_exhausted", limit };
       }
       const inFlight = this.db.prepare(
@@ -9139,6 +9113,48 @@ export class WorkflowStore {
     });
   }
 
+  /** Commit the bounded preflight's handoff before activating any evaluator. */
+  continueExhaustedEvidenceReadiness(submissionId: string, now: number): boolean {
+    return transaction(this.db, () => {
+      const submission = this.getSubmission(submissionId);
+      const run = submission ? this.getRun(submission.runId) : null;
+      if (!submission || !run || this.latestSubmission(run.id)?.id !== submission.id
+          || submission.readiness?.status !== "gaps") return false;
+      const eventId = `evidence-preflight-exhausted-continued:${submission.id}`;
+      // A crash after the transaction but before graph activation leaves this exact handoff.
+      if (run.status === "running" && run.currentPhase === "activating"
+          && submission.status === "running") {
+        return Boolean(this.db.prepare("SELECT 1 FROM workflow_events WHERE event_id = ?").get(eventId));
+      }
+      const capturing = run.status === "capturing" && submission.status === "running";
+      const waiting = submission.status === "waiting_for_evidence_readiness"
+        && (run.status === "waiting_for_evidence_readiness"
+          || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE));
+      if (!capturing && !waiting) return false;
+      const version = this.getWorkflowVersionById(run.workflowVersionId);
+      if (!workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy)) return false;
+      const refinements = this.consecutiveEvidencePreflightRefinements(submission.id);
+      const limit = evidencePreflightRefinementLimit(submission.round);
+      if (refinements < limit) return false;
+      // Do not race a packet whose delivery outcome is still unknown on an older waiting run.
+      if (this.db.prepare(`SELECT 1 FROM workflow_deliveries
+        WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
+          AND state IN ('sending', 'uncertain') LIMIT 1`).get(run.id, submission.id)) return false;
+      this.db.prepare(`UPDATE workflow_deliveries
+        SET state = 'cancelled', error = 'preflight_exhausted', updated_at = ?
+        WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
+          AND state = 'prepared'`).run(now, run.id, submission.id);
+      // Preserve the frozen gaps. This is an engine decision, never an operator override.
+      this.setSubmissionState(submission.id, "running", now);
+      this.setRunState(run.id, "running", "activating", null, now);
+      this.appendEvent(run.id, "evidence_preflight_exhausted_continued", {
+        submissionId: submission.id, round: submission.round, segment: submission.segment,
+        refinements, limit, gapCodes: submission.readiness.gapCodes,
+      }, now, eventId);
+      return true;
+    });
+  }
+
   overrideEvidenceReadiness(input: {
     id: string;
     runId: string;
@@ -9178,16 +9194,8 @@ export class WorkflowStore {
         return { ok: false, reason: "policy_off" };
       }
       const latest = this.latestSubmission(run.id);
-      /*
-       * Two run states, one submission state.
-       *
-       * The override answers a question about the SUBMISSION - continue despite these gaps -
-       * and the submission is waiting either way. The second run state is the refinement cap's
-       * block: it stops the loop from spending more segments, and if it also withdrew the
-       * override it would take away the operator decision it exists to ask for, leaving a round
-       * that can only be abandoned. So the block is accepted here and nowhere else; every other
-       * blocked phase still refuses.
-       */
+      // Retain manual continuation for historical exhaustion blocks until the sweep resumes
+      // them. Other blocked phases are unrelated to the evidence-readiness decision.
       const preflightExhausted = run.status === "blocked"
         && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
       if (

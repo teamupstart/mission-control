@@ -268,6 +268,63 @@ test("an accepted batch is marked accepted and its payload released", async () =
   assert.equal(remaining.n, 0);
 });
 
+test("a configured product endpoint exports on the wire and drains its own queue", async () => {
+  // The claim this phase made operable, taken all the way to the socket. Every other product
+  // test establishes CONFIGURATION - that enrolment happens, that the endpoint is its own - and
+  // configuration state is exactly what can look right while nothing is ever sent. So this one
+  // captures a product-eligible fact, runs the real delivery pass, and inspects the request.
+  //
+  // No `installProductIngestForTesting` anywhere in here, deliberately. That seam makes the
+  // audience available WITHOUT an address, which is the opposite of the path being proved: this
+  // is what an operator running their own minimized collector actually does.
+  const applied = setTelemetryConfig({
+    enabled: true,
+    product: { enabled: true, endpoint: "https://product.example.com" },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+
+  captureAndProject("boot-product", 1_000);
+  const f = fixture([ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  // It was SENT, to the operator's product address, as OTLP/HTTP protobuf. The personal backend
+  // is unconfigured in this test, so every request here belongs to the product profile and a
+  // request to anywhere else would be a redirect this audience must never perform.
+  assert.ok(f.attempts.length >= 1, "a product batch reached the transport");
+  for (const attempt of f.attempts) {
+    assert.ok(
+      attempt.url.startsWith("https://product.example.com/"),
+      `product export went to ${attempt.url}`,
+    );
+  }
+  assert.ok(f.attempts[0]!.url.endsWith("/v1/metrics"));
+  assert.equal(f.attempts[0]!.headers["content-type"], "application/x-protobuf");
+  // No credential is stored for this profile and none may be invented for it.
+  assert.equal(f.attempts[0]!.headers.authorization, undefined);
+
+  // And the queue DRAINED rather than merely being marked: the row settles accepted for the
+  // product profile, and the payload is released instead of being kept alongside it.
+  const rows = openDb()
+    .prepare(`SELECT profile, state FROM telemetry_delivery`)
+    .all() as unknown as Array<{ profile: string; state: string }>;
+  assert.ok(rows.length > 0, "the product profile produced delivery rows");
+  for (const row of rows) {
+    assert.equal(row.profile, "product");
+    assert.equal(row.state, "accepted");
+  }
+  const remaining = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_batches`)
+    .get() as { n: number };
+  assert.equal(remaining.n, 0, "a delivered payload is released, not held a second time");
+
+  // The health view the Settings panel reads tells the same story, so an operator watching the
+  // panel sees the export that the transport actually performed.
+  const product = telemetryHealth().profiles.find((p) => p.profile === "product");
+  assert.equal(product?.exporting, true);
+  assert.ok((product?.accepted ?? 0) > 0, "the panel counts the accepted product batch");
+  assert.equal(product?.pending, 0, "and shows nothing left queued");
+});
+
 test("a server error retries the same immutable batch rather than rebuilding it", async () => {
   enableUser();
   captureAndProject("boot-1", 1_000);

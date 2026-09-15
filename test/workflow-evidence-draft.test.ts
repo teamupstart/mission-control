@@ -139,7 +139,7 @@ test("caption, count, per-image, aggregate, and staged-load bounds are enforced 
   const errors = result.errors.join(" ");
   assert.match(errors, /longer than 1000/);
   assert.match(errors, /larger than 5 MiB/);
-  assert.match(errors, /At most 8 images/);
+  assert.match(errors, /At most 48 images/);
   assert.match(errors, /larger than 20 MiB/);
   assert.match(errors, /Registered evidence is unavailable/);
 });

@@ -279,14 +279,15 @@ app.on("window-all-closed", () => {
   /* keep running for the tray */
 });
 
-app.on("before-quit", () => {
+function stopShell(): void {
   setQuitting(true);
   stopUpdateSubscription?.();
   stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
   backgroundStart?.stop();
-});
+}
+app.on("before-quit", stopShell);
 
 app.whenReady().then(async () => {
   if (process.argv.includes("--mission-migration-remove-login")) {
@@ -395,6 +396,14 @@ app.whenReady().then(async () => {
     if (healthy && migratedStartup) await updater.retryMigrationRepair();
   }
 }).catch((error: unknown) => {
-  if (migratedStartup) dialog.showErrorBox("Personal installation needs recovery", "The personal installation committed, but its runtime could not start. Stop any older background daemon, then reopen the personal app. The retained system app will not be started against the upgraded state.");
   console.error(error);
+  if (migratedStartup) {
+    try {
+      dialog.showErrorBox("Personal installation needs recovery", "The personal installation committed, but its runtime could not start. Stop any older background daemon, then reopen the personal app. The retained system app will not be started against the upgraded state.");
+    } finally {
+      // exit releases the single-instance lock without emitting before-quit.
+      // Stop owned workers explicitly so reopening can attempt a fresh startup.
+      try { stopShell(); } finally { app.exit(1); }
+    }
+  }
 });

@@ -62,8 +62,9 @@ const app = {
   getVersion: () => "1.2.3",
   requestSingleInstanceLock() {
     observed.app.push("requestSingleInstanceLock");
-    return false;
+    return process.env.HARNESS_BACKGROUND_FAILURE === "1";
   },
+  getLoginItemSettings: () => ({openAtLogin: false}),
   exit(code) {
     observed.app.push(`exit(${code})`);
     finish();
@@ -79,7 +80,7 @@ const app = {
 };
 
 const electron = new Proxy(
-  { app },
+  { app, dialog: {showErrorBox(title) { observed.app.push(`showErrorBox(${title})`); finish(); }} },
   {
     get(target, property) {
       if (property in target) return target[property];
@@ -103,6 +104,13 @@ childProcess.spawnSync = (command, args) => {
   }
   return { status, stderr: process.env.HARNESS_OPEN_STDERR ?? "" };
 };
+
+if (process.env.HARNESS_BACKGROUND_FAILURE === "1") {
+  // No shell or network may escape this startup fixture. The locator falls back,
+  // then the real daemon supervisor refuses this old daemon's health response.
+  childProcess.spawn = () => { throw new Error("fixture login shell unavailable"); };
+  global.fetch = async () => Response.json({service: "mission-control", capabilities: []});
+}
 
 const logged = [];
 console.error = (line) => logged.push(String(line));

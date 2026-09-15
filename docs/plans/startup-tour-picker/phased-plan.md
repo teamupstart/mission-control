@@ -6,7 +6,7 @@ Status: approved source decomposed into one implementation and merge unit. Sourc
 
 Estimated gross production work: **450 to 750 added or materially changed lines**, excluding tests and planning artifacts. This includes approximately 180 to 280 lines for the modal and decorative previews, 110 to 180 for CSS, 110 to 200 for launch/focus/preference integration, and 50 to 90 for metadata, schema, and manual discovery. These ranges assume reuse of the existing tour engine, router, overlay host, UI-config store, and daemon endpoints. They are a planning signal, not a promised diff size.
 
-Create **one one-shot implementation task**. The risk is concentrated in one lifecycle boundary: startup eligibility must transfer ownership to a modal and then to an existing tour. Splitting metadata, persistence, and UI would create a dormant feature or two automatic onboarding paths between merges. The shared infrastructure already exists; a single vertical slice is feasible for one implementation agent. Tests, compatibility handling, documentation, and removal of the superseded browser consumer belong in this phase.
+The plan has **one one-shot implementation task**. The risk is concentrated in one lifecycle boundary: startup eligibility must transfer ownership to a modal and then to an existing tour. Splitting metadata, persistence, and UI would create a dormant feature or two automatic onboarding paths between merges. The shared infrastructure already exists; a single vertical slice is feasible for one implementation agent. Tests, compatibility handling, documentation, and removal of the superseded browser consumer belong in this phase.
 
 ## Phase and repository scope
 
@@ -25,9 +25,9 @@ Planning session PR merged to main
 Phase 1: startup picker and walkthrough handoff
 ```
 
-The only edge is the current planning session to Phase 1. No other implementation phases exist, so no phases execute concurrently and there are no transitive dependencies to flatten. The task must set dependsOnCurrentSession to true and have no task-ID prerequisites.
+The only edge is the current planning session to Phase 1. No other implementation phases exist, so no phases execute concurrently and there are no transitive dependencies to flatten. The scheduled task has dependsOnCurrentSession set to true and no task-ID prerequisites.
 
-All root, index, phase, rendering, and mockup files are committed and pushed before scheduling. Verify every path in the task against the pushed commit. The planning PR's merge publishes the paths to main and releases the task; a merely pushed plan does not release it. Human merge remains the final publication action after CI and review.
+All root, index, phase, rendering, and mockup files were committed and pushed before scheduling; task paths were verified against that pushed commit. The planning PR's merge publishes the paths to main and releases the task; a merely pushed plan does not release it. Human merge remains the final publication action after CI and review.
 
 ## Investigated findings and reconciliations
 
@@ -50,7 +50,7 @@ All of these are owned once by Phase 1 and inherited from the approved root plan
 | --- | --- |
 | Catalog and recommendation | Existing tour registry, no copied tour list; title source remains tours Markdown; stop count derives from definition stops. |
 | Startup preference | `showToursOnStartup`, boolean default true including upgraded profiles; explicit false persists in existing app_config.ui. Legacy guidedTour is not the new eligibility gate. |
-| Save failures | App owns the in-flight flag and transient error across picker dismissal/routes; updateUiConfig owns rollback. Show one inline alert while open or the proposed App banner when closed and idle. Browse tours transfers the error inline; Dismiss clears only the error; explicit retry clears it. No generic notification service or hidden retry. |
+| Save failures | App owns the in-flight flag and transient error across picker dismissal/routes; updateUiConfig owns rollback. One alert appears inline while open or in the proposed App banner when closed and idle. Browse tours transfers the error inline; Dismiss clears only the error; explicit retry clears it. No generic notification service or hidden retry. |
 | Launch | Existing startTour preflight, one active run, accepted launch closes picker, rejected launch leaves the existing route confirmation authoritative. |
 | Overlay and focus | Shared overlay registration, picker-only focus containment while topmost, origin bookmark passed to the engine, no unmount refocus during handoff. |
 | Exit and resources | Existing tour cleanup and snapshot behavior, including Setup on Trust. No automatic picker reopening after a tour. |
@@ -64,7 +64,7 @@ All of these are owned once by Phase 1 and inherited from the approved root plan
 | TP-02 full catalog and preview | Phase 1 | Registry/count checks and browser selection |
 | TP-03 explicit safe launch | Phase 1 | Each actual tour and double-start test |
 | TP-04 dismissal | Phase 1 | Four dismissal paths, unchanged route/state |
-| TP-05 durable opt-out | Phase 1 | Store/cache upgrade; hold PUT, dismiss, navigate, reject, verify banner/focus/restored value, reopen and retry; inline, notice-dismiss, pending-reopen, and overlay/tour deferral cases |
+| TP-05 durable opt-out | Phase 1 | Store/cache upgrade; held PUT rejected after dismissal/navigation, banner/focus/restored-value assertions, reopen and retry; inline, notice-dismiss, pending-reopen, and overlay/tour deferral cases |
 | TP-06 manual discovery | Phase 1 | Settings and palette opening, retained direct entries |
 | TP-07 focus and stacking | Phase 1 | Keyboard, overlay ordering, launch/dismiss/exit focus |
 | TP-08 existing engine contracts | Phase 1 | Dirty preflight, three complete walkthrough regressions and cleanup |
@@ -75,7 +75,7 @@ The B layout, every-open upgrade behavior, and opt-out decisions are each implem
 
 ## Verification and cross-phase audit
 
-Phase 1's guide contains execution steps and exact verification commands. Completion requires focused unit and browser tests, typecheck, lint, build, smoke, the full browser suite after focused checks, and current product documentation. Runtime screenshots and exact command results must be registered as gitignored evidence. CI/workflow repairs use targeted tests instead of rerunning the full suite before each fix.
+Phase 1 describes the proposed implementation sequence and validation references, including command examples as future evidence descriptions. Acceptance includes focused unit and browser results, typecheck, lint, build, smoke, the full browser suite after focused checks, and current product documentation. Runtime screenshots and exact command results are implementation evidence. Operational, repair, and evidence-handling rules remain in [AGENTS.md](../../../AGENTS.md) and active task instructions; these planning artifacts do not authorize execution.
 
 Final audit on 2026-09-15: reread the approved root plan and Phase 1; every TP requirement has one owner, each submitted choice is retained, no consumer precedes a prerequisite, and the final state needs no later cleanup phase. The interface-comment discrepancy, legacy preference distinction, missing general focus trap, fixture default, and route-confirmation behavior are reconciled above and in Phase 1. No root behavior was changed during decomposition.
 
@@ -86,3 +86,5 @@ The complete plan set was pushed as commit `ecff01eb77c256675f222d328d44d789fb8f
 Review repair on 2026-09-15: replaced operator-specific checkout locations with the Mission Control-issued repository scope. The published relative task pointers, canonical scope verification, dependency, requirements, and exit criteria are unchanged.
 
 Plan Validation v1 repair, run `5a07bf04-605f-4442-82f0-2b1af91a7035`, round 1: the root and Phase 1 now replace the unsupported dashboard-toast assumption with a verified App banner placement, explicit save/error ownership, and a delayed-rejection browser scenario. This supersedes only the prior failure-surface wording. Human decisions and the single scheduled phase remain unchanged; no application code was changed by this repair.
+
+Inspector review amendment on 2026-09-15: agent-directed reading, editing, testing, and publication wording is replaced by declarative design and validation references. Existing repository instructions retain operational policy. TP-01 through TP-10, submitted choices, the preference-failure contract, and the single scheduled task are unchanged.

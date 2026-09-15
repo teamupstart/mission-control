@@ -25,7 +25,12 @@ const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-tok
 
 const registry = new Registry();
 const queues = new QueueManager(registry);
-const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), queues);
+const app = buildApp({
+  registry,
+  reviews: new ReviewManager(registry),
+  tasks: new TaskManager(registry),
+  queues,
+});
 
 /** A claude session sitting in the real checkout at `cwd`, on `branch`. */
 function mkDisco(id: string, cwd: string, branch: string): DiscoveredSession {

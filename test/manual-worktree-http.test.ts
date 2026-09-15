@@ -32,27 +32,13 @@ function manager(deps: Partial<WorktreeManagerDeps> = {}): WorktreeManager {
 const registry = new Registry();
 const worktrees = manager();
 const tasks = new TaskManager(registry);
-const app = buildApp(
+const app = buildApp({
   registry,
-  new ReviewManager(registry),
+  reviews: new ReviewManager(registry),
   tasks,
-  new QueueManager(registry),
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
+  queues: new QueueManager(registry),
   worktrees,
-);
+});
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 after(() => {

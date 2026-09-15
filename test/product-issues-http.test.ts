@@ -68,9 +68,7 @@ class ProductIssueService extends ProductIssueServiceBase {
 }
 
 function appFor(service: ProductIssueServiceType) {
-  const args: Parameters<typeof buildApp> = [registry, reviews, tasks, queues];
-  args[21] = service;
-  return buildApp(...args);
+  return buildApp({ registry, reviews, tasks, queues, productIssues: service });
 }
 
 function draft(overrides: Record<string, unknown> = {}) {

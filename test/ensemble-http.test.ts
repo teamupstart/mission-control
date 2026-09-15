@@ -56,7 +56,13 @@ function build() {
     agentBinPresent: async () => true,
     missionMcpAvailable: async () => true,
   });
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry), undefined, undefined, undefined, undefined, manager);
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    ensembles: manager,
+  });
   // A separate engine on the SAME store/gateway/finalize drives a run to awaiting_decision without
   // needing the manager's private launch path or a real repository.
   const driver = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters, finalize, now: () => 1000, armTimer: () => () => {} });

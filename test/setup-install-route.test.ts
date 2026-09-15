@@ -61,34 +61,13 @@ function appFor({
     calls.push({ backend, ...spec });
     return { ...launchResult, homeName: spec.name };
   };
-  return buildApp(
+  return buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined, // away
-    undefined, // personas
-    undefined, // workflows
-    undefined, // schedules
-    undefined, // ensembles
-    undefined, // sdk sessions
-    undefined, // handoff deps
-    launcher,
-    undefined, // session actions
-    undefined, // pending turns
-    undefined, // pane deps
-    undefined, // keep awake
-    undefined, // archives
-    undefined, // workflow commands
-    undefined, // worktrees
-    undefined, // worktree operations
-    undefined, // model catalogs
-    undefined, // product issues
-    undefined, // file comments
-    undefined, // file comment walkthrough
-    undefined, // settings backups
-    undefined, // setup check deps
-    {
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    launchSessionTerminal: launcher,
+    setupInstallDeps: {
       catalog: SETUP_DEPENDENCY_INFO,
       homeDir: home,
       listRepoRoots: async () => ["/verified"],
@@ -128,7 +107,7 @@ function appFor({
       }),
       ...install,
     },
-  );
+  });
 }
 
 function post(app: ReturnType<typeof buildApp>, body: unknown): Promise<Response> {

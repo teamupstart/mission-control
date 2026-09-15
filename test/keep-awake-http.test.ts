@@ -52,24 +52,13 @@ function scriptedChild(script: "spawn" | "error"): KeepAwakeChild {
 
 function appWith(manager?: KeepAwakeManager, onStatus?: (s: KeepAwakeStatus) => void) {
   void onStatus;
-  return buildApp(
-    {} as unknown as Registry,
-    {} as unknown as ReviewManager,
-    {} as unknown as TaskManager,
-    {} as unknown as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    manager,
-  );
+  return buildApp({
+    registry: {} as unknown as Registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    keepAwake: manager,
+  });
 }
 
 function workingManager(over: { script?: "spawn" | "error"; platform?: NodeJS.Platform } = {}) {

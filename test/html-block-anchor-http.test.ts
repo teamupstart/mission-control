@@ -38,7 +38,12 @@ const registry = {
 } as unknown as Registry;
 
 const stub = <T,>() => ({}) as unknown as T;
-const app = buildApp(registry, stub<ReviewManager>(), stub<TaskManager>(), stub<QueueManager>());
+const app = buildApp({
+  registry,
+  reviews: stub<ReviewManager>(),
+  tasks: stub<TaskManager>(),
+  queues: stub<QueueManager>(),
+});
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 const PAGE = [

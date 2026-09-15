@@ -42,7 +42,7 @@ const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
 const workflows = new WorkflowManager(registry);
-const app = buildApp(registry, reviews, tasks, queues, undefined, undefined, workflows);
+const app = buildApp({ registry, reviews, tasks, queues, workflows });
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 function seed(

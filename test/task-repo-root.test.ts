@@ -120,7 +120,7 @@ test("MCP create_task from inside a pooled worktree files against the repo that 
   const { main, worktree } = repoWithWorktree("mcp");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   // Exactly what `src/mcp/server.ts` sends: `process.cwd()`, twice. The agent cannot know
   // it is standing in a worktree, so the daemon is the only place this can be fixed.
@@ -151,7 +151,7 @@ test("an explicit absolute selector outside workspace scan roots walks back to i
   const target = repoWithWorktree("selector-target");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const res = await app.request("/mcp/v2/tasks", {
     method: "POST",
@@ -180,7 +180,7 @@ test("a task cannot be created or edited into a root with no main checkout", asy
 
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
   const dispatch = await app.request("/api/tasks", {

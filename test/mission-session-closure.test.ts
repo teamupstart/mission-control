@@ -1069,7 +1069,7 @@ test("a prompt typed into a concluded pane is refused before any turn begins", a
   const kill = stubbornPane();
   const f = terminalMission({}, kill);
   kill.bind(f.registry);
-  const app = buildApp(f.registry, {} as ReviewManager, f.tasks, new QueueManager(f.registry));
+  const app = buildApp({ registry: f.registry, reviews: {} as ReviewManager, tasks: f.tasks, queues: new QueueManager(f.registry) });
 
   await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
   await settle();
@@ -1108,7 +1108,7 @@ test("an ordinary session's prompt is never refused by that boundary", async () 
   // through exactly as before - a hook that can refuse work is only safe while it is this
   // narrow, and 204 is what says nothing was decided.
   const f = terminalMission({ completionPolicy: "manual" });
-  const app = buildApp(f.registry, {} as ReviewManager, f.tasks, new QueueManager(f.registry));
+  const app = buildApp({ registry: f.registry, reviews: {} as ReviewManager, tasks: f.tasks, queues: new QueueManager(f.registry) });
   assert.equal(db.getTaskSessionClosure(f.taskId), null, "nothing is owed here");
 
   const allowed = await app.request("/hooks/UserPromptSubmit", {

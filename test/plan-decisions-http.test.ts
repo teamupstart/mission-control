@@ -26,7 +26,12 @@ const TOKEN = ensureToken();
 
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
-const app = buildApp(registry, reviews, new TaskManager(registry), new QueueManager(registry));
+const app = buildApp({
+  registry,
+  reviews,
+  tasks: new TaskManager(registry),
+  queues: new QueueManager(registry),
+});
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-token": TOKEN };

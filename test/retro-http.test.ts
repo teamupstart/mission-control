@@ -91,18 +91,13 @@ function fixture(over: { send?: () => Promise<never> } = {}) {
         return "started" as const;
       }),
   } as unknown as SdkSupervisor;
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as ReviewManager,
+    reviews: {} as ReviewManager,
     tasks,
-    {} as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
-  );
+    queues: {} as QueueManager,
+    sdkSessions: supervisor,
+  });
   return { registry, tasks, typed, app, serial };
 }
 

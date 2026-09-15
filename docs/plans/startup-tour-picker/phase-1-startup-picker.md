@@ -68,7 +68,7 @@ Promote Setup for picker display without duplicating an explicit list of tour ID
 
 Add the focused TourPicker component under `src/web/components/` and register a unique ID in OVERLAY_IDS. Render through Overlay under the existing OverlayHost.
 
-Implement the approved two-column list and preview, native radio semantics, one explicit Start this tour action, close button, Not now, checkbox, loading/saving/error feedback, and empty state. Opening and selection have no navigation or dispatch side effects. Use actual current titles and derived stop counts. Preview all registered tours without promising duration, saved progress, or completion.
+Implement the approved two-column list and preview, native radio semantics, one explicit Start this tour action, close button, Dismiss, checkbox, loading/saving/error feedback, and empty state. Opening and selection have no navigation or dispatch side effects. Use actual current titles and derived stop counts. Preview all registered tours without promising duration, saved progress, or completion.
 
 Use `.modal`, shell-owned horizontal inset, `.modal-bleed` for genuine edge-to-edge bands, current palette tokens, and desktop no-drag behavior. At narrow widths, stack the list over the preview and wrap the footer. Bound width and height against the viewport, with reachable close and action controls. Preserve readable text rather than scaling the SVG design image.
 
@@ -128,7 +128,7 @@ The new `e2e/specs/tour-picker.spec.ts` must prove TP-01 through TP-10 alongside
 
 - Fresh, upgraded, explicitly opted-out, and re-enabled profiles; reload, a new window, no reopen on route/focus/rerender/reconnect; delayed hydration and failed hydration without a default flash.
 - All registered tours and matching count/preview; select-only has no side effects; Start reaches each actual first stop; fast repeated activation and same-route launch.
-- Not now, close, Escape, backdrop, route preservation, manual reopen from Settings and palette, and retained direct tour entries.
+- Dismiss, close, Escape, backdrop, route preservation, manual reopen from Settings and palette, and retained direct tour entries.
 - Pending preference save, success across reload and another window, rollback on rejection with open picker and after dismissal, and old pending marker ignored.
 - Dirty draft Stay, Leave, then Start again; other overlay deferral and no picker over an active walkthrough.
 - Keyboard radio selection, topmost-only focus trap, primary action, restoration on dismissal and tour exit, Setup on Trust, and no late focus theft.

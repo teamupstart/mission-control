@@ -96,6 +96,40 @@ test("registered workflow observer contains capture failure and records a gap wi
     assert.equal(d.isTransaction, false);
   } finally { d.exec("DROP TRIGGER refuse_workflow_capture"); }
 });
+for (const failure of ["action lookup", "action capture", "workflow checkpoint"] as const) {
+  test(`${failure} and diagnostic failure retain an unknown gap until storage recovers`, async () => {
+    const { resetPendingUnknownGap, flushPendingUnknownGap } = await import("../src/server/telemetry/retention.ts");
+    resetPendingUnknownGap();
+    const d = openDb();
+    d.exec(`CREATE TEMP TRIGGER refuse_gap BEFORE INSERT ON telemetry_gaps
+      BEGIN SELECT RAISE(ABORT, 'diagnostic storage unavailable'); END`);
+    if (failure === "action lookup") d.exec("ALTER TABLE telemetry_source_identities RENAME TO unavailable_identities");
+    else d.exec(`CREATE TEMP TRIGGER refuse_observation BEFORE INSERT ON ${failure === "action capture" ? "telemetry_journal" : "telemetry_source_state"}
+      BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END`);
+    try {
+      if (failure === "workflow checkpoint") {
+        const { store, submission } = seedTelemetryWorkflow("double-failure");
+        assert.equal(store.getSubmission(submission.id)?.status, "running", "the business write still commits");
+      } else {
+        assert.doesNotThrow(() => recordWorkflowAction({ action: "workflow.retry", operationId: "double-failure",
+          context: { operationId: "double-failure", surface: "runs", actor: { kind: "human", origin: "dashboard", basis: "app_context" } },
+          outcome: "applied", before: null, startedAt: Date.now(), now: Date.now() }));
+      }
+      assert.equal(d.isTransaction, false);
+      assert.equal(d.prepare("SELECT COUNT(*) AS n FROM telemetry_gaps").get()?.n, 0);
+      assert.equal(flushPendingUnknownGap(), false, "storage is still unavailable");
+    } finally {
+      d.exec("DROP TRIGGER refuse_gap");
+      if (failure === "action lookup") d.exec("ALTER TABLE unavailable_identities RENAME TO telemetry_source_identities");
+      else d.exec("DROP TRIGGER refuse_observation");
+    }
+    try {
+      assert.equal(flushPendingUnknownGap(), true, "the loss survives even when its counter could not be stored");
+      assert.equal(d.prepare("SELECT count FROM telemetry_gaps WHERE kind = 'unknown_gap'").get()?.count, 1);
+      assert.equal(flushPendingUnknownGap(), false, "the deferred gap is settled only once");
+    } finally { resetPendingUnknownGap(); }
+  });
+}
 test("invalid or absent general categories never invalidate a historically valid review", () => {
   for (const category of [undefined, "incorrect-new-category", 7, { raw: "PRIVATE_SENTINEL" }, "security"]) {
     const verdict = parsePersonaVerdict(JSON.stringify({ verdict: "fail", summary: "needs work", confidence: 1,

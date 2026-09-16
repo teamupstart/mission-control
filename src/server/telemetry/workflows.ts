@@ -26,6 +26,7 @@ import { workflowAuthorContext } from "./sessions.ts";
 import { readSourceState, writeSourceState } from "./source-state.ts";
 import { getDestination, recordGap, resetUsedBytesCache, telemetryTransaction } from "./store.ts";
 import { registerTelemetrySource } from "./registration.ts";
+import { markUnknownGapPending } from "./retention.ts";
 
 const SOURCE = "mission.workflow";
 const actor = { kind: "workflow", origin: "daemon", basis: "owner" } as const;
@@ -48,8 +49,15 @@ export function observeWorkflowWrite(db: DatabaseSync, observe: (scope: Workflow
     if (db !== openDb() || !getTelemetryConfig().enabled) return;
     telemetryTransaction(() => forWorkflowProfiles(observe));
   } catch {
-    try { telemetryTransaction((d) => recordGap(d, "capture_refused", "workflow observation unavailable", Date.now())); } catch {}
+    recordWorkflowObservationGap();
   }
+}
+
+function recordWorkflowObservationGap(): void {
+  resetUsedBytesCache();
+  try {
+    telemetryTransaction((db) => recordGap(db, "capture_refused", "workflow observation unavailable", Date.now()));
+  } catch { markUnknownGapPending(); }
 }
 function emit<S extends z.ZodTypeAny>(scope: WorkflowObservationScope, event: TelemetryEventDefinition<S>, id: string,
   ctx: Context, facts: Record<string, unknown>, now: number, refs: Record<string, string> = {}): void {
@@ -313,8 +321,5 @@ const workflowObserver: WorkflowMutationObserver = {
     if (db !== openDb() || !getTelemetryConfig().enabled) return;
     forWorkflowProfiles((scope) => observeMutation(scope, store, mutation));
   },
-  failed() {
-    resetUsedBytesCache();
-    telemetryTransaction((db) => recordGap(db, "capture_refused", "workflow observation unavailable", Date.now()));
-  },
+  failed: recordWorkflowObservationGap,
 };

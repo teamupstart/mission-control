@@ -130,6 +130,10 @@ test("a kind's row is written per field, and its neighbours are left alone", asy
   await expect(planModel).toBeEnabled();
   await planModel.selectOption("gpt-5.6-sol");
   await dashboard.getByRole("combobox", { name: "Effort for plan tasks" }).selectOption("high");
+  // Selection updates the DOM optimistically. Let all three saves reach the daemon before
+  // navigating or reading persisted state, as the other kind-default scenarios do.
+  await expect.poll(async () => (await kindDefaults(daemon)).plan)
+    .toEqual({ agent: "codex", model: "gpt-5.6-sol", effort: "high" });
 
   // Read it back off a fresh load rather than believing the optimistic paint: the per-field
   // merge is invisible in the DOM the panel drew, and only the daemon's own state can say
@@ -151,6 +155,8 @@ test("a kind's row is written per field, and its neighbours are left alone", asy
   // Moving the row's own agent strands its model, so the model follows rather than being left
   // as a pair the daemon would refuse. Claude has no `gpt-5.6-sol`.
   await dashboard.getByRole("combobox", { name: "Agent for plan tasks" }).selectOption("claude");
+  await expect.poll(async () => (await kindDefaults(daemon)).plan)
+    .toEqual({ agent: "claude", model: null, effort: "high" });
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Agent for plan tasks" })).toHaveValue("claude");
   await expect(

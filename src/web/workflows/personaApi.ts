@@ -1,3 +1,4 @@
+import { beginOperation } from "../lib/operation-context.ts";
 import { personaNameFromMarkdown } from "@shared/workflow.ts";
 import type { PersonaDriftView, PersonaUpstreamState, PersonaView } from "@shared/workflow.ts";
 
@@ -10,7 +11,8 @@ interface PersonaErrorBody {
 export async function personaRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
+    headers: { "content-type": "application/json",
+      ...(init?.method && init.method !== "GET" ? beginOperation("library").headers : {}), ...init?.headers },
   });
   const body = (await response.json().catch(() => ({}))) as T & PersonaErrorBody;
   if (!response.ok) {

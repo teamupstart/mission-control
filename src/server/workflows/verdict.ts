@@ -1,3 +1,4 @@
+import { workflowFindingReason } from "@shared/workflow-reasons.ts";
 import { z } from "zod";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import {
@@ -20,6 +21,7 @@ const EvidenceInputSchema = z.object({
   line: z.number().finite().optional(),
 });
 const RequestedChangeInputSchema = z.object({
+  category: z.unknown().optional(),
   basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: z.string(),
   rationale: z.string(),
@@ -70,6 +72,7 @@ function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
 function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): RequestedChange {
   return {
     ...(value.basis ? { basis: value.basis } : {}),
+    ...(value.category === undefined ? {} : { category: workflowFindingReason(value.category) }),
     title: clipped(value.title, WORKFLOW_EXECUTION_LIMITS.verdictSummary),
     rationale: clipped(value.rationale, WORKFLOW_EXECUTION_LIMITS.verdictReason),
     evidence: value.evidence

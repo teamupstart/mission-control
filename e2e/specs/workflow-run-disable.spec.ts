@@ -1,3 +1,4 @@
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import type { WorkflowConfig } from "../../src/shared/workflow.ts";
@@ -187,6 +188,7 @@ test("critical feedback follows one Persona through every later round of this ru
 }) => {
   // This case verifies the directive reaches repeated provider calls, so explicitly opt out
   // of retaining a judge's earned pass after round 2.
+  await api(daemon, "/api/telemetry/config", { enabled: true }, "PUT");
   const config = await api<WorkflowConfig>(daemon, "/api/workflows/config");
   await api(daemon, "/api/workflows/config", { ...config, skipPassedJudges: false }, "PUT");
   const runId = await seedFailedRun(dashboard, daemon);
@@ -304,6 +306,11 @@ test("critical feedback follows one Persona through every later round of this ru
     events: Array<{ kind: string }>;
   }>(daemon, `/api/workflow-runs/${runId}`);
   expect(removed.run.personaDirectives).toEqual([]);
+  const actions = workflowActions(daemon);
+  expect(actions.filter((a) => a.facts.action === "workflow.directive" && a.facts.outcome === "applied")).toHaveLength(1);
+  expect(actions.some((a) => a.facts.action === "workflow.resubmit" && a.facts.outcome === "applied")).toBe(true);
+  expect(actions.filter((a) => a.facts.action === "workflow.directive")[0]?.actor)
+    .toMatchObject({ kind: "human", basis: "app_context", origin: "dashboard" });
   expect(removed.events.some((event) => event.kind === "persona_directive_removed")).toBe(true);
 
   await openFeedback("Blocking reviewer");
@@ -315,6 +322,7 @@ test("a stage actions menu disables every member of the stage at once", async ({
   dashboard,
   daemon,
 }) => {
+  await api(daemon, "/api/telemetry/config", { enabled: true }, "PUT");
   const runId = await seedFailedRun(dashboard, daemon);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const pipeline = dashboard.locator(".wf-pipeline-strip");
@@ -346,4 +354,18 @@ test("a stage actions menu disables every member of the stage at once", async ({
     `/api/workflow-runs/${runId}`,
   );
   expect(cleared.run.disabledNodeIds).toEqual([]);
+  const toggles = workflowActions(daemon).filter((a) => a.facts.action === "workflow.toggle_nodes");
+  expect(toggles).toHaveLength(2);
+  expect(toggles.every((a) => a.actor.kind === "human" && a.actor.basis === "app_context")).toBe(true);
+  expect(new Set(toggles.map((a) => a.refs.operation_id)).size).toBe(2);
 });
+
+function workflowActions(daemon: DaemonHandle): Array<{
+  facts: { action: string; outcome: string }; actor: { kind: string; basis: string }; refs: Record<string, string>;
+}> {
+  return withDaemonDb(daemon, (db) => (db.prepare(
+    "SELECT facts_json, actor_json, refs_json FROM telemetry_journal WHERE name = 'mission.action.result'",
+  ).all() as Array<{ facts_json: string; actor_json: string; refs_json: string }>).map((row) => ({
+    facts: JSON.parse(row.facts_json), actor: JSON.parse(row.actor_json), refs: JSON.parse(row.refs_json),
+  })));
+}

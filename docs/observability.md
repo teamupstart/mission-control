@@ -242,6 +242,12 @@ entries to an existing group rather than coining a parallel taxonomy. Instrument
 dimension allowlist; unbounded identities and content-bearing keys are refused by a catalog test
 rather than by review.
 
+### Workflow sources
+
+[Workflow telemetry](observability-workflows.md) documents Phase 4 ownership, counting,
+reason categories, actor coverage, transaction boundaries and the independent Phase 5/6
+extension points.
+
 ### Session, model and outcome sources
 
 Phase 3's owner map. Every row states three things a later phase needs and cannot infer: which

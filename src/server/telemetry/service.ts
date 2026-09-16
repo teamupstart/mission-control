@@ -1,3 +1,5 @@
+import { registerWorkflowTelemetrySource } from "./workflows.ts";
+import { registerAnalyticalTelemetry } from "./projections/index.ts";
 /**
  * The telemetry facility's lifecycle: what starts, on what cadence, and what shutdown owes.
  *
@@ -41,11 +43,13 @@ export const TELEMETRY_ABORT_GRACE_MS = 250;
  */
 export function registerBuiltinTelemetry(): void {
   registerTelemetryProjection(CATALOG_PROJECTION);
+  registerAnalyticalTelemetry();
   registerDaemonTelemetrySource();
   // Phase 3's session, dispatch, task, usage and pull request sources. Registration only -
   // these are namespace claims and honesty declarations, and nothing is captured until an
   // owner calls in and collection is on.
   registerSessionTelemetrySource();
+  registerWorkflowTelemetrySource();
   registerPrTelemetrySource();
 }
 

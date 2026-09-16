@@ -85,6 +85,9 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
 
     const payloadCutoff = now - TELEMETRY_LIMITS.payloadRetentionMs;
     const stateCutoff = now - TELEMETRY_LIMITS.reducerStateRetentionMs;
+    d.prepare(`DELETE FROM telemetry_source_state WHERE rowid IN (
+      SELECT rowid FROM telemetry_source_state WHERE expires_at <= ? LIMIT ?
+    )`).run(now, BATCH_LIMIT);
 
     // 1. Undelivered batches past the age window. Expired, not silently deleted: an operator
     //    who was offline for eight days is told what did not make it.

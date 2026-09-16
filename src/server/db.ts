@@ -165,7 +165,8 @@ let db: DatabaseSync | undefined;
  *    default-off: an upgraded database gains empty tables and captures nothing until an
  *    operator enables collection.
  */
-export const CURRENT_DATABASE_SCHEMA_VERSION = 2;
+// 3: bounded telemetry source checkpoints for immutable workflow context and timing.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 3;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

@@ -7,7 +7,10 @@ import { matchWorkflowAction, type WorkflowAction } from "@shared/workflow-actio
 import { resolveOperationContext, type TelemetryOperationContext } from "@shared/telemetry-ingress.ts";
 import { ACTION_RESULT_EVENT, type ACTION_INTENTS, type ACTION_CAUSES } from "@shared/telemetry-sources/actions.ts";
 import { captureTelemetry } from "./capture.ts";
-import { workflowWait } from "./workflows.ts";
+import { observeWorkflowWrite, workflowWait } from "./workflows.ts";
+import { openDb } from "../db.ts";
+import { findSourceIdentity } from "./store.ts";
+import { markUnknownGapPending } from "./retention.ts";
 
 export function workflowActionCause(action: WorkflowAction, run: WorkflowRun | null, automaticResumption: boolean | null = null): {
   intent: typeof ACTION_INTENTS[number]; cause: typeof ACTION_CAUSES[number];
@@ -30,12 +33,26 @@ export function recordWorkflowAction(input: {
   outcome: "applied" | "refused" | "failed"; startedAt: number; now: number;
   before: WorkflowRun | null; automaticResumption?: boolean | null; refs?: Record<string, string>;
 }): void {
-  captureTelemetry({ event: ACTION_RESULT_EVENT,
-    source: { kind: "mission.workflow.action", id: `${input.action}:${input.operationId}:${input.outcome}`, revision: 1 },
-    actor: input.context.actor, refs: { ...input.refs, operation_id: input.operationId, ...(input.before ? { run_id: input.before.id } : {}) },
-    facts: { feature: input.action.startsWith("persona.") ? "persona" : "workflow", action: input.action,
-      outcome: input.outcome, duration_ms: Math.max(0, input.now - input.startedAt),
-      surface: input.context.surface, coverage: "owner_result", ...workflowActionCause(input.action, input.before, input.automaticResumption) }, now: input.now });
+  // Revision 1 is the first unsuccessful result; revision 2 is successful completion.
+  // Success supersedes that provisional outcome without counting a second logical action.
+  // Durable identities outlive journal payloads and consent windows, so retries after either
+  // restart or payload pruning cannot recount an operation or an applied intervention.
+  try {
+    const db = openDb();
+    observeWorkflowWrite(db, (scope) => {
+      const source = { kind: "mission.workflow.action", id: `${scope.profile}:${input.action}:${input.operationId}` };
+      if (findSourceIdentity(db, { ...source, revision: 2 })) return;
+      const provisional = findSourceIdentity(db, { ...source, revision: 1 });
+      if (provisional && input.outcome !== "applied") return;
+      const result = captureTelemetry({ event: ACTION_RESULT_EVENT, profiles: [scope.profile],
+        source: { ...source, revision: input.outcome === "applied" ? 2 : 1 },
+        actor: input.context.actor, refs: { ...input.refs, operation_id: input.operationId, ...(input.before ? { run_id: input.before.id } : {}) },
+        facts: { feature: input.action.startsWith("persona.") ? "persona" : "workflow", action: input.action,
+          outcome: input.outcome, observation: provisional ? "applied_update" : "initial", duration_ms: Math.max(0, input.now - input.startedAt),
+          surface: input.context.surface, coverage: "owner_result", ...workflowActionCause(input.action, input.before, input.automaticResumption) }, now: input.now });
+      if (result.kind === "refused") throw new Error("workflow action capture refused");
+    });
+  } catch { markUnknownGapPending(); }
 }
 /** Observe the route's authoritative result, without changing request, response or permissions. */
 export function workflowActionTelemetry(store: () => WorkflowStore | null): MiddlewareHandler {

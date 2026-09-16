@@ -396,6 +396,55 @@ test("malformed action bodies retain the route response and fall back to the HTT
   assert.equal(observation?.refs.operation_id, "malformed:malformedrequest123");
 });
 
+for (const initial of [409, 503, 200] as const) {
+  test(`action ${initial} then success counts one operation and one intervention across restart and payload pruning`, async () => {
+    const { Hono } = await import("hono");
+    const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+    const { workflowActionTelemetry } = await import("../src/server/telemetry/workflow-actions.ts");
+    const { OPERATION_ID_HEADER, OPERATION_SURFACE_HEADER } = await import("../src/shared/telemetry-ingress.ts");
+    const { store, run } = seedTelemetryWorkflow(`transition-${initial}`);
+    store.setRunState(run.id, "waiting_for_session", "persona_feedback");
+    let status: 200 | 409 | 503 = initial;
+    const app = new Hono();
+    app.use("/api/*", workflowActionTelemetry(() => new WorkflowStore()));
+    app.post("/api/workflow-runs/:id/retry", (c) => c.json({ status }, status));
+    for (const [index, next] of [initial, 409, 503, 200, 200, 503].entries()) {
+      status = next as typeof status;
+      const response = await app.request(`/api/workflow-runs/${run.id}/retry`, {
+        method: "POST", body: JSON.stringify({ requestId: "same-owner-operation" }), headers: {
+          "content-type": "application/json", [OPERATION_ID_HEADER]: `attempt000${index}`, [OPERATION_SURFACE_HEADER]: "runs",
+        },
+      });
+      assert.equal(response.status, next);
+      assert.deepEqual(await response.json(), { status: next });
+      runProjectionPass();
+      closeDb(); openDb();
+    }
+    const facts = events("action.result");
+    assert.deepEqual(facts.map((e) => e.facts.observation), initial === 200 ? ["initial"] : ["initial", "applied_update"]);
+    assert.equal(facts.at(-1)?.facts.outcome, "applied");
+    const identities = openDb().prepare(`SELECT DISTINCT source_id, source_revision FROM telemetry_journal
+      WHERE source_kind = 'mission.workflow.action' AND source_id LIKE 'local:%' ORDER BY source_revision`).all();
+    assert.equal(new Set(identities.map((r) => r.source_id)).size, 1, "outcome is not part of the operation identity");
+    assert.deepEqual(identities.map((r) => r.source_revision), initial === 200 ? [2] : [1, 2]);
+    for (const audience of ["local", "user", "product"] as const) {
+      for (const metric of ["mission.action.count", "mission.workflow.interventions"]) {
+        assert.equal(listSeries(openDb(), audience).filter((s) => s.instrument === metric).reduce((n, s) => n + s.value, 0), 1);
+      }
+    }
+    const priorCount = total("action.count");
+    // Dedupe survives even complete loss of retained payload; the identity ledger is authoritative.
+    openDb().exec("DELETE FROM telemetry_journal WHERE source_kind = 'mission.workflow.action'");
+    recordWorkflowAction({ action: "workflow.retry", operationId: `${run.id}:same-owner-operation`,
+      context: { operationId: "same-owner-operation", surface: "runs", actor: { kind: "human", origin: "dashboard", basis: "app_context" } },
+      outcome: "applied", before: run, startedAt: Date.now(), now: Date.now() });
+    runProjectionPass();
+    assert.equal(events("action.result").length, 0);
+    assert.equal(total("action.count"), priorCount);
+    assert.equal(total("workflow.interventions"), 1);
+  });
+}
+
 test("multiple failing reviewers link to one packet, provider contract errors and interrupted calls are not rejections", () => {
   const { store, run, submission } = seedTelemetryWorkflow("causes");
   const nodes = goldenWorkflowGraph.nodes.filter((n) => n.kind === "persona");

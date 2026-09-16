@@ -11,6 +11,7 @@ export const ACTION_RESULT_SCHEMA = z.object({
   feature: z.enum(["workflow", "persona"]),
   action: z.enum(WORKFLOW_ACTION_ROUTES.map((r) => r[2]) as [string, ...string[]]),
   outcome: z.enum(["applied", "refused", "failed"]),
+  observation: z.enum(["initial", "applied_update"]).default("initial"),
   duration_ms: z.number().nonnegative(), surface: z.enum(TELEMETRY_OPERATION_SURFACES),
   coverage: z.enum(["owner_result", "unknown"]), intent: z.enum(ACTION_INTENTS), cause: z.enum(ACTION_CAUSES),
 }).strict();
@@ -29,7 +30,9 @@ const base = { description: ACTION_RESULT_EVENT.question, unit: "1", kind: "coun
   since: 2, owner: ACTION_RESULT_EVENT.owner } as const;
 export const ACTION_METRICS: TelemetryMetricDefinition[] = [
   { ...base, name: "mission.action.count", dimensions: ["feature", "action", "outcome", "actor"],
-    contribution: (f, e) => ({ dimensions: { feature: String(f.feature), action: String(f.action), outcome: String(f.outcome), actor: e.actor.kind }, value: 1 }) },
+    description: "Logical operations by their first observed outcome; later success does not add another operation",
+    contribution: (f, e) => f.observation !== "applied_update"
+      ? { dimensions: { feature: String(f.feature), action: String(f.action), outcome: String(f.outcome), actor: e.actor.kind }, value: 1 } : null },
   { ...base, name: "mission.workflow.interventions", dimensions: ["action", "intent", "cause"],
     contribution: (f, e) => f.outcome === "applied" && e.actor.kind === "human"
       && ["owner", "app_context"].includes(e.actor.basis) && e.refs.run_id

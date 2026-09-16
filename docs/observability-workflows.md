@@ -18,12 +18,22 @@ opt-in. All new facts use the existing durable journal and independent audience 
 | Stage | Immutable version, projected member ids and submission | Activation to the stage barrier, including parallel overlap |
 | Delivery | Existing delivery id plus transition revision | Only confirmed `persona_feedback`/`inspector_feedback` delivery counts as a repair packet |
 | Repair cause | Delivery plus causing attempt | Every contributing review can link to one packet without increasing its count |
-| Action result | Mutation route result, subject, logical operation/request id and outcome | One logical applied/refused/failed result; repeated owner request ids deduplicate |
+| Action result | Mutation route result, subject and logical operation/request id, scoped to audience | One operation count at its initial outcome; a later successful completion is a revision, not another operation |
 
 `persona_contract_outcome=accepted` and advisory `persona_verdict` events never contribute
 another review. A valid fail is a successful review of work that needs changes. Disabled
 and reused synthetic passes do not contribute reviews or provider executions. Results that
 arrive after cancellation remain audit observations without a new executed verdict.
+
+Action result source IDs exclude outcome. Revision 1 preserves the first unsuccessful response;
+revision 2 records successful completion, either initially or after that provisional response.
+`observation=initial` contributes once to `mission.action.count`, whose outcome dimension is the
+first observed outcome. A later success has `observation=applied_update`: its fact records the
+superseding successful outcome without incrementing the operation counter. The successful
+revision alone can
+contribute a human intervention. Repeated failures/refusals retain the first response; retries
+after success add neither an operation nor another intervention. Durable source identities keep
+this rule across restart, consent changes and journal-payload pruning within the retention window.
 
 The reason vocabulary is `WORKFLOW_FINDING_REASONS`, revision 1. It is requested through the
 maintained shared Persona prompt. Normalization accepts older/custom Personas and treats an

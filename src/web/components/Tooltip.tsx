@@ -152,7 +152,9 @@ export function Tooltip({
   // Measured on the ref callback rather than in a layout effect: this runs before paint
   // on the client just the same, but is never invoked during the `renderToStaticMarkup`
   // the component tests use, where `useLayoutEffect` would warn on every render.
-  const measure = useCallback((el: HTMLSpanElement | null) => {
+  // Reattach on each render: hover can reset a focused trigger's existing bubble to
+  // unmeasured without remounting it. A stable ref would leave that bubble hidden.
+  const measure = (el: HTMLSpanElement | null): void => {
     if (!el) return;
     setTip((prev) => {
       if (!prev || prev.shift !== undefined) return prev;
@@ -173,7 +175,7 @@ export function Tooltip({
         ? { ...prev, shift, placement: "below", y: prev.triggerBottom }
         : { ...prev, shift };
     });
-  }, []);
+  };
 
   const childProps = children.props as Record<string, unknown>;
   const describedChildren =

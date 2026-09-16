@@ -775,11 +775,13 @@ export function SettingsPage({
           <p className="settings-rail-footer-label" id="settings-help-title">
             Help &amp; tours
           </p>
-          <button type="button" className="settings-tour-start" onClick={onBrowseTours} aria-label="Browse tours">
-            <span className="settings-tour-start-icon" aria-hidden>☷</span>
-            <span className="settings-tour-start-copy"><strong>Browse tours</strong><small>Choose a walkthrough</small></span>
-            <span className="settings-tour-start-arrow" aria-hidden>→</span>
-          </button>
+          <Tooltip label="Preview all available tours and choose a walkthrough">
+            <button type="button" className="settings-tour-start" onClick={onBrowseTours} aria-label="Browse tours">
+              <span className="settings-tour-start-icon" aria-hidden>☷</span>
+              <span className="settings-tour-start-copy"><strong>Browse tours</strong><small>Choose a walkthrough</small></span>
+              <span className="settings-tour-start-arrow" aria-hidden>→</span>
+            </button>
+          </Tooltip>
           {/* Direct shortcuts retain registry order. */}
           {TOUR_ENTRIES.map((tour) => (
             <Tooltip key={tour.id} label={tour.settings.tooltip}>

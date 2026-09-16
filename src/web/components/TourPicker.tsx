@@ -4,6 +4,7 @@ import type { TourId } from "../tour/contracts.ts";
 import { containTourTab } from "../tour/focus-containment.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { TOUR_PREFERENCE_ERROR } from "./TourPreferenceNotice.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /** Decorative product shapes, with a generic preview for future catalog registrations. */
 function TourIllustration({ kind }: { kind: TourCatalogEntry["preview"]["illustration"] }): React.JSX.Element {
@@ -62,22 +63,26 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
       onKeyDown={containTab}>
       <header className="modal-head">
         <div><h2>Explore Mission Control</h2><p>Choose a tour. Start when you’re ready.</p></div>
-        <button className="icon-btn" aria-label="Close tour picker" onClick={onClose}
-          autoFocus={!selected}>✕</button>
+        <Tooltip label="Close the picker without starting a tour">
+          <button className="icon-btn" aria-label="Close tour picker" onClick={onClose}
+            autoFocus={!selected}>✕</button>
+        </Tooltip>
       </header>
       <div className="modal-bleed tour-picker-content">
         {selected ? <>
           <fieldset className="tour-picker-list">
             <legend className="sr-only">Available tours</legend>
             {entries.map((entry) => (
-              <label key={entry.id} className={`tour-picker-row${entry.id === selected.id ? " is-selected" : ""}`}>
-                <input type="radio" name="tour-picker-selection" value={entry.id}
-                  checked={entry.id === selected.id} autoFocus={entry.id === entries[0]?.id}
-                  onChange={() => setSelectedId(entry.id)} aria-label={entry.title} />
-                <span><strong>{entry.title}</strong><small>{entry.stopCount} stops</small>
-                  {entry.recommended && <span className="tour-picker-recommended">Recommended first</span>}
-                </span>
-              </label>
+              <Tooltip key={entry.id} label={`Preview ${entry.title}`}>
+                <label className={`tour-picker-row${entry.id === selected.id ? " is-selected" : ""}`}>
+                  <input type="radio" name="tour-picker-selection" value={entry.id}
+                    checked={entry.id === selected.id} autoFocus={entry.id === entries[0]?.id}
+                    onChange={() => setSelectedId(entry.id)} aria-label={entry.title} />
+                  <span><strong>{entry.title}</strong><small>{entry.stopCount} stops</small>
+                    {entry.recommended && <span className="tour-picker-recommended">Recommended first</span>}
+                  </span>
+                </label>
+              </Tooltip>
             ))}
           </fieldset>
           <section className="tour-picker-preview" aria-label={`${selected.title} preview`}>
@@ -86,21 +91,27 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
             <p>{selected.preview.summary}</p>
             <h4>What you’ll learn</h4>
             <ul>{selected.preview.outcomes.map((outcome) => <li key={outcome}>{outcome}</li>)}</ul>
-            <button className="btn btn-primary" onClick={() => onStart(selected.id)}>Start this tour</button>
+            <Tooltip label={`Start ${selected.title} from the beginning`}>
+              <button className="btn btn-primary" onClick={() => onStart(selected.id)}>Start this tour</button>
+            </Tooltip>
           </section>
         </> : <p className="tour-picker-empty">No tours are available.</p>}
       </div>
       <footer className="modal-foot tour-picker-footer">
         <div className="tour-picker-preference">
-          <label><input type="checkbox" checked={enabled} disabled={!hydrated || saving}
-            onChange={(event) => onSave(event.target.checked)} aria-describedby="tour-preference-status" />
-            Show tours when Mission Control opens</label>
+          <Tooltip label="Offer the tour picker in new dashboard windows and after reloads">
+            <label><input type="checkbox" checked={enabled} disabled={!hydrated || saving}
+              onChange={(event) => onSave(event.target.checked)} aria-describedby="tour-preference-status" />
+              Show tours when Mission Control opens</label>
+          </Tooltip>
           <span id="tour-preference-status" role="status">
             {!hydrated ? "Loading your saved preference…" : saving ? "Saving…" : "Applies to new windows and reloads."}
           </span>
           {saveError && <p role="alert">{TOUR_PREFERENCE_ERROR}</p>}
         </div>
-        <button className="btn btn-ghost" onClick={onClose}>Dismiss</button>
+        <Tooltip label="Close the picker without changing your startup preference">
+          <button className="btn btn-ghost" onClick={onClose}>Dismiss</button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

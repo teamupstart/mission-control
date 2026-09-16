@@ -86,6 +86,27 @@ test("fresh catalog previews every registry entry without launching or writing",
   expect(await (await fetch(`${daemon.baseURL}/api/tasks`)).json()).toEqual([]);
 });
 
+test("picker controls describe preview, start, preference and dismissal on hover and focus", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const start = picker(page).getByRole("button", { name: "Start this tour" });
+  const close = picker(page).getByRole("button", { name: "Close tour picker" });
+  for (const [control, description] of [
+    [picker(page).getByRole("radio", { name: "Set up this machine" }), "Preview Set up this machine"],
+    [start, "Start Set up this machine from the beginning"],
+    [checkbox(page), "Offer the tour picker in new dashboard windows and after reloads"],
+    [close, "Close the picker without starting a tour"],
+    [picker(page).getByRole("button", { name: "Dismiss", exact: true }), "Close the picker without changing your startup preference"],
+  ] as const) {
+    await control.hover();
+    await expect(page.locator(".tooltip").filter({ hasText: description })).toBeVisible();
+    await expect(control).toHaveAccessibleDescription(new RegExp(description));
+  }
+  await close.focus();
+  await start.focus();
+  await expect(page.locator(".tooltip").filter({ hasText: "Start Set up this machine from the beginning" })).toBeVisible();
+  await screenshot(page, "picker-tooltips");
+});
+
 for (const method of ["Dismiss", "Close tour picker", "Escape", "backdrop"]) {
   test(`${method} preserves the deep link and preference and restores dashboard focus`, async ({ page, daemon }) => {
     await page.goto(`${daemon.baseURL}/#/library/commands/lint`);
@@ -126,6 +147,8 @@ test("opt-out persists across reload, daemon restart and a second window; both m
   await page.reload();
   await expect(page.getByRole("button", { name: "Browse tours", exact: true })).toBeVisible();
   await expect(picker(page)).toBeHidden();
+  await page.getByRole("button", { name: "Browse tours", exact: true }).hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Preview all available tours and choose a walkthrough" })).toBeVisible();
   await page.getByRole("button", { name: "Browse tours", exact: true }).click();
   await expect(checkbox(page)).not.toBeChecked();
   await picker(page).getByRole("button", { name: "Dismiss", exact: true }).click();
@@ -339,6 +362,15 @@ test("rejected save after dismissal and navigation reports once without stealing
   await expect(library).toBeFocused();
   expect((await config(daemon)).config.showToursOnStartup).toBe(true);
   await screenshot(page, "preference-rejected-narrow");
+  for (const [name, description] of [
+    ["Browse tours", "Reopen the tour picker to retry saving your preference"],
+    ["Dismiss", "Dismiss this notice without changing your saved preference"],
+  ] as const) {
+    const control = notice.getByRole("button", { name, exact: true });
+    await control.hover();
+    await expect(page.locator(".tooltip").filter({ hasText: description })).toBeVisible();
+    await expect(control).toHaveAccessibleDescription(description);
+  }
   await notice.getByRole("button", { name: "Browse tours" }).click();
   await expect(checkbox(page)).toBeChecked();
   await expect(picker(page).getByRole("alert")).toHaveText(ERROR);

@@ -1,3 +1,4 @@
+import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -1860,6 +1861,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
     spawn: spawnUniquely,

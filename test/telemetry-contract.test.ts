@@ -348,6 +348,8 @@ test("registering the same implementation twice is idempotent", async () => {
     "mission.task",
     "mission.telemetry",
     "mission.usage",
+    "mission.workflow",
+    "mission.workflow.action",
   ]);
   resetTelemetryRegistrations();
 });

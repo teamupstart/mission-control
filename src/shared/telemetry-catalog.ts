@@ -1,3 +1,5 @@
+import { SOURCE_EVENTS, SOURCE_METRICS } from "./telemetry-sources/index.ts";
+import { ANALYTICAL_METRICS } from "./telemetry-projections/index.ts";
 /**
  * The typed telemetry registry: every event Mission Control may capture, every instrument it
  * may project, and the rules a later phase's addition has to satisfy.
@@ -19,7 +21,6 @@ import {
   AUDIENCE_ALL,
   AUDIENCE_OPERATOR,
   TELEMETRY_ACTOR_BASES,
-  TELEMETRY_CATALOG_VERSION,
   TELEMETRY_UNKNOWN_VALUE,
   type TelemetryAudience,
   type TelemetryEnvelope,
@@ -1036,6 +1037,7 @@ export const PR_OBSERVED_EVENT = defineEvent({
 /** Every registered event, by name. */
 export const TELEMETRY_EVENTS: Record<string, TelemetryEventDefinition> = Object.fromEntries(
   [
+    ...SOURCE_EVENTS,
     DAEMON_STARTED_EVENT,
     TELEMETRY_PROBE_EVENT,
     TELEMETRY_CONTROL_EVENT,
@@ -1073,7 +1075,7 @@ export const DAEMON_STARTS_METRIC = defineMetric({
   dimensions: ["launch_mode", "schema_upgraded"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1097,7 +1099,7 @@ export const DAEMON_STARTUP_DURATION_METRIC = defineMetric({
   // explicit buckets are what Prometheus's OTLP receiver translates without surprises.
   boundaries: [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000],
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => {
     const ms = typeof facts.startup_ms === "number" ? facts.startup_ms : null;
@@ -1117,7 +1119,7 @@ export const TELEMETRY_PROBES_METRIC = defineMetric({
   dimensions: ["profile", "outcome"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1143,7 +1145,7 @@ export const TELEMETRY_CONTROLS_METRIC = defineMetric({
   dimensions: ["action", "profile", "outcome", "actor_basis"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1167,7 +1169,7 @@ export const TELEMETRY_SETTINGS_OPENS_METRIC = defineMetric({
   dimensions: ["collection_enabled"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: { collection_enabled: String(facts.collection_enabled === true) },
@@ -1211,7 +1213,7 @@ export const SESSIONS_STARTED_METRIC = defineMetric({
   dimensions: ["origin", "start_observation", "agent", "runtime", "task_kind"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1236,7 +1238,7 @@ export const SESSIONS_ENDED_METRIC = defineMetric({
   dimensions: ["reason", "agent", "runtime", "task_kind", "ended_while_work_open"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1264,7 +1266,7 @@ export const SESSION_OBSERVED_DURATION_METRIC = defineMetric({
   dimensions: ["agent", "runtime", "observation_bounded"],
   boundaries: [1_000, 10_000, 60_000, 300_000, 900_000, 3_600_000, 14_400_000, 86_400_000],
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => {
     const ms = typeof facts.observed_ms === "number" ? facts.observed_ms : null;
@@ -1291,7 +1293,7 @@ export const SESSION_RESTORES_METRIC = defineMetric({
   dimensions: ["outcome", "agent", "turn_in_progress"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1314,7 +1316,7 @@ export const DISPATCHES_METRIC = defineMetric({
   dimensions: ["outcome", "agent", "runtime", "task_kind", "resolution_source", "resolved_effort"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1340,7 +1342,7 @@ export const DISPATCH_DURATION_METRIC = defineMetric({
   dimensions: ["outcome", "agent", "runtime"],
   boundaries: [500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000],
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => {
     const ms = typeof facts.duration_ms === "number" ? facts.duration_ms : null;
@@ -1367,7 +1369,7 @@ export const SESSION_SEGMENTS_METRIC = defineMetric({
   dimensions: ["agent", "runtime", "effort", "quality", "reason"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1392,7 +1394,7 @@ export const EFFORT_SELECTIONS_METRIC = defineMetric({
   dimensions: ["requested_effort", "outcome", "applies", "agent", "runtime"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1417,7 +1419,7 @@ export const SESSION_OPERATIONS_METRIC = defineMetric({
   dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1442,7 +1444,7 @@ export const SESSION_TURNS_METRIC = defineMetric({
   dimensions: ["agent", "runtime", "effort", "quality", "outcome"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1467,7 +1469,7 @@ export const TURN_DURATION_METRIC = defineMetric({
   dimensions: ["agent", "runtime", "effort", "observation_bounded"],
   boundaries: [1_000, 5_000, 15_000, 30_000, 60_000, 180_000, 600_000, 1_800_000],
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => {
     const ms = typeof facts.duration_ms === "number" ? facts.duration_ms : null;
@@ -1496,7 +1498,7 @@ export const USAGE_TOKENS_METRIC = defineMetric({
   dimensions: ["usage_origin", "model_id"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => {
     const total = ["input", "output", "reasoning_output", "cache_read", "cache_write"].reduce(
@@ -1524,7 +1526,7 @@ export const USAGE_COST_METRIC = defineMetric({
   dimensions: ["usage_origin", "model_id", "cost_basis"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1550,7 +1552,7 @@ export const TASK_OUTCOMES_METRIC = defineMetric({
   dimensions: ["task_kind", "status", "completion_evidence"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1573,7 +1575,7 @@ export const PR_OBSERVATIONS_METRIC = defineMetric({
   dimensions: ["fact", "task_kind", "repo_role", "delivery", "visibility"],
   boundaries: null,
   unknownPolicy: "explicit_unknown",
-  since: TELEMETRY_CATALOG_VERSION,
+  since: 1,
   owner: "src/shared/telemetry-catalog.ts",
   contribution: (facts) => ({
     dimensions: {
@@ -1590,6 +1592,8 @@ export const PR_OBSERVATIONS_METRIC = defineMetric({
 /** Every registered instrument, by name. */
 export const TELEMETRY_METRICS: Record<string, TelemetryMetricDefinition> = Object.fromEntries(
   [
+    ...SOURCE_METRICS,
+    ...ANALYTICAL_METRICS,
     DAEMON_STARTS_METRIC,
     DAEMON_STARTUP_DURATION_METRIC,
     TELEMETRY_PROBES_METRIC,

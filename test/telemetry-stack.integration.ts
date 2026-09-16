@@ -347,6 +347,36 @@ test("session attribution across restart reaches real metrics and scoped traces"
   }
 });
 
+test("workflow golden metrics and scoped review traces survive restart in the real stack", async () => {
+  resetTelemetryState();
+  enableExport();
+  const { runWorkflowGoldenFixture } = await import("./helpers/workflow-telemetry.ts");
+  const { runId } = await runWorkflowGoldenFixture(`stack-${RUN}`);
+  runProjectionPass(); runProjectionPass();
+  const instance = resourceAttributes()["service.instance.id"];
+  const delivered = await runDeliveryPass();
+  assert.ok(delivered.accepted > 0);
+  const expected: Record<string, number> = {
+    mission_persona_verdicts_total: 3, mission_persona_executions_total: 4,
+    mission_persona_response_errors_total: 1, mission_workflow_repair_packets_total: 1,
+    mission_workflow_repair_rounds_total: 1, mission_workflow_interventions_total: 1,
+  };
+  for (const [metric, value] of Object.entries(expected)) {
+    const result = await promEventually(`${metric}{service_instance_id="${instance}"}`,
+      (r) => r.data.result.reduce((n, point) => n + Number(point.value[1]), 0) === value);
+    assert.equal(result.data.result.reduce((n, point) => n + Number(point.value[1]), 0), value, metric);
+  }
+  const row = openDb().prepare("SELECT refs_json FROM telemetry_journal WHERE name = 'mission.workflow.review.finished' LIMIT 1")
+    .get() as { refs_json: string };
+  const refs = JSON.parse(row.refs_json) as Record<string, string>;
+  const trace = await tempoTrace(scopedTraceId("user", profileSalt("user"), refs.__trace_id!));
+  assert.ok(trace, "completed workflow review trace must be searchable");
+  const json = JSON.stringify(trace);
+  assert.ok(json.includes("mission.workflow.review.finished"));
+  assert.ok(!json.includes("PRIVATE_SENTINEL"));
+  assert.ok(!json.includes(runId));
+});
+
 test("a batch built days ago lands at the time it was built, not the time it drained", async () => {
   // The backlog case, and the reason Prometheus is configured with an out-of-order window
   // longer than the app's queue. Without it this drains successfully, returns 200 the whole

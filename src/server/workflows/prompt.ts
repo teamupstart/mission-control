@@ -1,3 +1,4 @@
+import { WORKFLOW_FINDING_REASONS } from "@shared/workflow-reasons.ts";
 import type {
   PersonaFeedbackSummary,
   PersonaSnapshot,
@@ -184,6 +185,7 @@ export function buildPersonaPrompt(
     ...untrustedJsonBlock("workflow-standards", context.evidence.standards),
     "",
     "# Required output",
+    `For each requested change, include an optional category from: ${WORKFLOW_FINDING_REASONS.join(", ")}. This advisory topic is independent of basis; use unknown when unsure.`,
     "Reply with ONLY one JSON object. A pass must have {\"verdict\":\"pass\",\"summary\":string,\"approvalDetails\":{\"reason\":string,\"evidence\":[EvidenceRef]},\"confidence\":0..1}. A fail must have {\"verdict\":\"fail\",\"summary\":string,\"requestedChanges\":[{\"title\":string,\"rationale\":string,\"basis\":\"substantive\"|\"coverage_registration\"|\"evidence_access\",\"evidence\":[EvidenceRef],\"path\"?:string,\"line\"?:integer}],\"confidence\":0..1}, with at least one EvidenceRef for every requested change. EvidenceRef is {\"kind\":\"diff\"|\"transcript\"|\"standard\"|\"goal\"|\"decision\"|\"check\"|\"image\"|\"artifact\",\"quote\":string,\"path\"?:string,\"line\"?:integer}. For Check evidence, path MUST be the immutable attemptId and quote the retained output or outcome fact. For image evidence, path MUST be the stable image id from the manifest, quote is your visual observation, and line must be omitted. For text artifact evidence, path MUST be the stable artifact id from the manifest and line must be omitted. Never use a fail verdict for an infrastructure or evidence-access problem.",
   ].join("\n");
 }

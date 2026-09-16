@@ -3,17 +3,17 @@
  *
  * Three promises hold this whole design together and all three are enforced here:
  *
- * 1. **Accepted means committed.** This function returns `accepted` only after a journal row
- *    is durably written. Nothing downstream can weaken that into "queued in memory".
+ * 1. **Accepted means a durable journal write.** Standalone capture commits before returning.
+ *    Transactional source owners stage capture in their own commit and do not publish an
+ *    acceptance before that commit succeeds. Nothing is merely queued in memory.
  * 2. **No network I/O.** Capture touches SQLite and returns. The exporter runs on its own
  *    schedule, so a dead endpoint cannot make a business operation slow or fail.
  * 3. **A telemetry failure never rewrites a business result.** Every path returns a refusal
  *    value; nothing throws out of here. The caller has already done its real work.
  *
- * The pre-acceptance gap is explicit and is not closed by this function: a crash between a
- * successful business commit and this call loses the fact. Closing it would mean attaching
- * telemetry to every business transaction, which P1 rejects, and the honest alternative is to
- * measure the gap rather than claim it away - see `telemetry_gaps`.
+ * A standalone caller retains a pre-acceptance gap between its business commit and this call.
+ * WorkflowStore closes that window for its own mutations with a telemetry savepoint in the
+ * source transaction. Other sources retain their declared gap; see `telemetry_gaps`.
  */
 import { z } from "zod";
 import {

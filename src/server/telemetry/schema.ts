@@ -24,6 +24,19 @@ import type { DatabaseSync } from "node:sqlite";
  */
 export function createTelemetryTables(d: DatabaseSync): void {
   d.exec(`
+    -- Bounded source checkpoints, not workflow history. No raw evidence or text.
+    CREATE TABLE IF NOT EXISTS telemetry_source_state (
+      namespace TEXT NOT NULL,
+      id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      state_json TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      PRIMARY KEY (namespace, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_source_state_expiry
+      ON telemetry_source_state(expires_at);
+
     -- Immutable resource identity: what OTLP calls the producing entity. Content addressed,
     -- so two boots of the same build share one row and an upgrade mints a new one - which is
     -- exactly the behaviour that stops a replay after an upgrade restamping old batches with

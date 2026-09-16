@@ -36,36 +36,28 @@ let transactionDepth = 0;
 
 export function telemetryTransaction<T>(fn: (d: DatabaseSync) => T): T {
   const d = openDb();
-  // Reentrant by depth, because `node:sqlite` has no nested transactions. A helper that opens
-  // its own while one is already in progress throws "cannot start a transaction within a
-  // transaction", and the stray ROLLBACK in the catch below then takes the OUTER unit of work
-  // down with it - so an unrelated bookkeeping write could fail an operator's config change.
-  //
-  // An inner call JOINS the transaction in progress rather than suppressing anything. Its
-  // failure still propagates and the outermost frame rolls the whole thing back, which is what
-  // a caller of the outer transaction already expects. Committing at the inner frame instead
-  // would publish half a unit of work.
-  if (transactionDepth > 0) {
-    transactionDepth += 1;
-    try {
-      return fn(d);
-    } finally {
-      transactionDepth -= 1;
-    }
-  }
-  d.exec("BEGIN IMMEDIATE");
-  transactionDepth = 1;
+  // A source may call from its own transaction. A savepoint isolates telemetry failure
+  // without committing or rolling back the business write that owns that transaction.
+  const nested = d.isTransaction;
+  const savepoint = `telemetry_${++transactionDepth}`;
+  d.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
   try {
     const result = fn(d);
-    d.exec("COMMIT");
+    d.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
     return result;
   } catch (error) {
     try {
-      d.exec("ROLLBACK");
+      if (nested) {
+        d.exec(`ROLLBACK TO ${savepoint}`);
+        d.exec(`RELEASE ${savepoint}`);
+      } else d.exec("ROLLBACK");
     } catch {}
+    // Rollback invalidates this savepoint's admission estimate. An enclosing source rollback
+    // can only overstate it, which admission reconciles before any capacity refusal.
+    resetUsedBytesCache();
     throw error;
   } finally {
-    transactionDepth = 0;
+    transactionDepth -= 1;
   }
 }
 
@@ -366,6 +358,14 @@ export function putProjectionState(
   next: StoredProjectionState,
   now: number,
 ): void {
+  const json = JSON.stringify(next.state);
+  const bytes = Buffer.byteLength(json);
+  const previous = d.prepare("SELECT LENGTH(CAST(state_json AS BLOB)) AS bytes FROM telemetry_projection_state WHERE projection = ? AND profile = ?")
+    .get(projection, profile) as { bytes: number } | undefined;
+  if (bytes > TELEMETRY_LIMITS.maxProjectionStateBytes
+    || usedBytesForAdmission(d, bytes) + bytes - (previous?.bytes ?? 0) > TELEMETRY_LIMITS.maxTotalBytes) {
+    throw new Error("telemetry projection state exceeds its budget");
+  }
   d.prepare(
     `INSERT INTO telemetry_projection_state
        (projection, profile, state_version, consumed_seq, state_json, updated_at)
@@ -375,7 +375,8 @@ export function putProjectionState(
        consumed_seq  = excluded.consumed_seq,
        state_json    = excluded.state_json,
        updated_at    = excluded.updated_at`,
-  ).run(projection, profile, next.stateVersion, next.consumedSeq, JSON.stringify(next.state), now);
+  ).run(projection, profile, next.stateVersion, next.consumedSeq, json, now);
+  noteBytesAdded(bytes - (previous?.bytes ?? 0));
 }
 
 /** The lowest checkpoint across every registered projection, which bounds payload pruning. */
@@ -1023,7 +1024,8 @@ export function usedBytes(d: DatabaseSync): number {
       `SELECT
          (SELECT COALESCE(SUM(bytes),0) FROM telemetry_journal WHERE payload_pruned_at IS NULL)
          + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_batches)
-         + (SELECT COALESCE(SUM(LENGTH(state_json)),0) FROM telemetry_projection_state)
+         + (SELECT COALESCE(SUM(LENGTH(CAST(state_json AS BLOB))),0) FROM telemetry_projection_state)
+         + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_source_state)
          + (SELECT COALESCE(SUM(LENGTH(task_id) + LENGTH(interval_id) + 24),0) FROM telemetry_task_outcome_state)
          + (SELECT COALESCE(SUM(${PR_OBSERVATION_BYTES_SQL}),0) FROM telemetry_pr_observations)
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and

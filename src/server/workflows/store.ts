@@ -1,3 +1,4 @@
+import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
@@ -2367,6 +2368,7 @@ function runContextState(
 }
 
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
+  if (db.isTransaction) return fn();
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = fn();
@@ -2910,6 +2912,18 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
 }
 
 export class WorkflowStore {
+  /** Publish domain writes before commit, including nested writes in an outer transaction. */
+  private mutate<T>(
+    change: () => T,
+    notice: (result: T) => WorkflowMutation | readonly WorkflowMutation[] | null,
+  ): T {
+    return transaction(this.db, () => {
+      const result = change();
+      publishWorkflowMutation(this.db, this, () => notice(result));
+      return result;
+    });
+  }
+
   /**
    * `builtins` is injectable for the contract tests, and defaults to what this build ships.
    *
@@ -3673,8 +3687,8 @@ export class WorkflowStore {
    * The legacy workflow-config save is the reason it exists: it moves the command catalog and
    * the policy blob together, they are two owners over one database file, and committing the
    * first while the second fails would report a refusal over a change that had already
-   * happened. Anything called inside must use the `…InTransaction` readers and writers -
-   * `transaction` is not re-entrant, and a nested `BEGIN` is an error, not a savepoint.
+   * happened. Store mutations join an existing transaction; they do not commit it or
+   * create another business transaction. Observer savepoints remain inside that boundary.
    *
    * Everything `fn` writes must go through THIS handle. Two connections to one file are two
    * transactions, and the second one's write would sit outside the rollback this promises.
@@ -4199,7 +4213,7 @@ export class WorkflowStore {
   }
 
   insertWorkflow(input: WorkflowInsert): WorkflowStoreWrite {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const shipped = this.builtinWorkflowById(input.id);
       if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const named = this.builtinWorkflowNamed(input.normalizedName);
@@ -4233,7 +4247,7 @@ export class WorkflowStore {
         input.updatedAt,
       );
       return { ok: true, workflow: this.mustWorkflow(input.id) };
-    });
+    }, (result) => result.ok ? { kind: "definition", id: input.id, now: input.createdAt } : null);
   }
 
   updateWorkflowCas(
@@ -4242,7 +4256,7 @@ export class WorkflowStore {
     patch: WorkflowPatch,
     updatedAt = Date.now(),
   ): WorkflowStoreWrite {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const shipped = this.builtinWorkflowById(id);
       if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const current = this.getWorkflowInTransaction(id);
@@ -4287,7 +4301,7 @@ export class WorkflowStore {
         return { ok: false, reason: "revision_conflict", current: this.getWorkflowInTransaction(id) };
       }
       return { ok: true, workflow: this.mustWorkflow(id) };
-    });
+    }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 
   archiveWorkflowCas(id: string, expectedDraftRevision: number, archivedAt = Date.now()): WorkflowStoreWrite {
@@ -4453,7 +4467,7 @@ export class WorkflowStore {
     versionId: string,
     publishedAt = Date.now(),
   ): WorkflowPublishWrite {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       // A built-in arrives published. Refusing here rather than at the route is what stops a
       // second caller from minting a row version against an id that owns no rows.
       const shipped = this.builtinWorkflowById(id);
@@ -4552,7 +4566,7 @@ export class WorkflowStore {
         version: this.mustWorkflowVersion(id, next),
         idempotent: false,
       };
-    });
+    }, (result) => result.ok ? { kind: "version", id: result.version.id, now: publishedAt } : null);
   }
 
   summary(workflow: WorkflowDefinition): WorkflowSummary {
@@ -4721,31 +4735,33 @@ export class WorkflowStore {
   }
 
   insertBinding(input: WorkflowBindingInsert): WorkflowBinding {
-    this.db.prepare(
-      `INSERT INTO workflow_bindings (
-         id, workflow_version_id, note_key, session_id, session_agent, session_name,
-         session_cwd, session_repo_root, repo_root, trigger_mode, delivery_mode, state,
-         max_repair_rounds, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-    ).run(
-      input.id,
-      input.workflowVersionId,
-      input.noteKey,
-      input.sessionId,
-      input.sessionAgent,
-      input.sessionName,
-      input.sessionCwd,
-      input.sessionRepoRoot,
-      input.repoRoot ?? "",
-      input.triggerMode,
-      input.deliveryMode,
-      input.maxRepairRounds,
-      input.now,
-      input.now,
-    );
-    const binding = this.getBinding(input.id);
-    if (!binding) throw new Error(`Workflow binding ${input.id} disappeared after insert`);
-    return binding;
+    return this.mutate(() => {
+      this.db.prepare(
+        `INSERT INTO workflow_bindings (
+           id, workflow_version_id, note_key, session_id, session_agent, session_name,
+           session_cwd, session_repo_root, repo_root, trigger_mode, delivery_mode, state,
+           max_repair_rounds, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      ).run(
+        input.id,
+        input.workflowVersionId,
+        input.noteKey,
+        input.sessionId,
+        input.sessionAgent,
+        input.sessionName,
+        input.sessionCwd,
+        input.sessionRepoRoot,
+        input.repoRoot ?? "",
+        input.triggerMode,
+        input.deliveryMode,
+        input.maxRepairRounds,
+        input.now,
+        input.now,
+      );
+      const binding = this.getBinding(input.id);
+      if (!binding) throw new Error(`Workflow binding ${input.id} disappeared after insert`);
+      return binding;
+    }, (result) => ({ kind: "binding", id: result.id, now: input.now }));
   }
 
   updateBinding(
@@ -4753,20 +4769,22 @@ export class WorkflowStore {
     patch: Partial<Pick<WorkflowBinding, "triggerMode" | "deliveryMode" | "state" | "maxRepairRounds">>,
     now = Date.now(),
   ): WorkflowBinding | null {
-    const assignments: string[] = [];
-    const values: Array<string | number> = [];
-    if (patch.triggerMode !== undefined) { assignments.push("trigger_mode = ?"); values.push(patch.triggerMode); }
-    if (patch.deliveryMode !== undefined) { assignments.push("delivery_mode = ?"); values.push(patch.deliveryMode); }
-    if (patch.state !== undefined) { assignments.push("state = ?"); values.push(patch.state); }
-    if (patch.maxRepairRounds !== undefined) {
-      assignments.push("max_repair_rounds = ?");
-      values.push(patch.maxRepairRounds);
-    }
-    if (assignments.length === 0) return this.getBinding(id);
-    assignments.push("updated_at = ?");
-    values.push(now, id);
-    this.db.prepare(`UPDATE workflow_bindings SET ${assignments.join(", ")} WHERE id = ?`).run(...values);
-    return this.getBinding(id);
+    return this.mutate(() => {
+      const assignments: string[] = [];
+      const values: Array<string | number> = [];
+      if (patch.triggerMode !== undefined) { assignments.push("trigger_mode = ?"); values.push(patch.triggerMode); }
+      if (patch.deliveryMode !== undefined) { assignments.push("delivery_mode = ?"); values.push(patch.deliveryMode); }
+      if (patch.state !== undefined) { assignments.push("state = ?"); values.push(patch.state); }
+      if (patch.maxRepairRounds !== undefined) {
+        assignments.push("max_repair_rounds = ?");
+        values.push(patch.maxRepairRounds);
+      }
+      if (assignments.length === 0) return this.getBinding(id);
+      assignments.push("updated_at = ?");
+      values.push(now, id);
+      this.db.prepare(`UPDATE workflow_bindings SET ${assignments.join(", ")} WHERE id = ?`).run(...values);
+      return this.getBinding(id);
+    }, (result) => result ? { kind: "binding", id, now } : null);
   }
 
   reattachBinding(
@@ -4774,22 +4792,24 @@ export class WorkflowStore {
     input: Pick<WorkflowBindingInsert, "noteKey" | "sessionId" | "sessionAgent" | "sessionName" | "sessionCwd" | "sessionRepoRoot">,
     now = Date.now(),
   ): WorkflowBinding | null {
-    this.db.prepare(
-      `UPDATE workflow_bindings
-          SET note_key = ?, session_id = ?, session_agent = ?, session_name = ?,
-              session_cwd = ?, session_repo_root = ?, state = 'active', updated_at = ?
-        WHERE id = ? AND state <> 'archived'`,
-    ).run(
-      input.noteKey,
-      input.sessionId,
-      input.sessionAgent,
-      input.sessionName,
-      input.sessionCwd,
-      input.sessionRepoRoot,
-      now,
-      id,
-    );
-    return this.getBinding(id);
+    return this.mutate(() => {
+      this.db.prepare(
+        `UPDATE workflow_bindings
+            SET note_key = ?, session_id = ?, session_agent = ?, session_name = ?,
+                session_cwd = ?, session_repo_root = ?, state = 'active', updated_at = ?
+          WHERE id = ? AND state <> 'archived'`,
+      ).run(
+        input.noteKey,
+        input.sessionId,
+        input.sessionAgent,
+        input.sessionName,
+        input.sessionCwd,
+        input.sessionRepoRoot,
+        now,
+        id,
+      );
+      return this.getBinding(id);
+    }, (result) => result ? { kind: "binding", id, now } : null);
   }
 
   claimBySourceKey(sourceKey: string): WorkflowBindingClaim | null {
@@ -6988,21 +7008,24 @@ export class WorkflowStore {
     gateState: WorkflowJson | null = null,
     now = Date.now(),
   ): WorkflowRun {
-    // The FULL contract, status and detail, exactly as the naming writer. This door once
-    // skipped the detail half, on the argument that a carried payload was not its to justify.
-    // That argument was wrong in the direction that matters: it made "every registered phase"
-    // untrue, and the payloads it was excusing were precisely the ones landing in a phase with
-    // no business holding them. `deliveryCarriedDetail` fixed that at the source - a note
-    // travels only while its phase stands still - so there is nothing left to excuse.
-    assertRunLifecycle(id, status, currentPhase, gateState);
-    const terminal = ["completed", "cancelled", "failed"].includes(status);
-    this.db.prepare(
-      `UPDATE workflow_runs
-          SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
-              completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
-        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-    ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
-    return this.mustRun(id);
+    return this.mutate(() => {
+      // The FULL contract, status and detail, exactly as the naming writer. This door once
+      // skipped the detail half, on the argument that a carried payload was not its to justify.
+      // That argument was wrong in the direction that matters: it made "every registered phase"
+      // untrue, and the payloads it was excusing were precisely the ones landing in a phase with
+      // no business holding them. `deliveryCarriedDetail` fixed that at the source - a note
+      // travels only while its phase stands still - so there is nothing left to excuse.
+      assertRunLifecycle(id, status, currentPhase, gateState);
+      const terminal = ["completed", "cancelled", "failed"].includes(status);
+      this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
+                completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
+      return this.mustRun(id);
+
+    }, () => ({ kind: "run", id, now }));
   }
 
   /**
@@ -7788,39 +7811,42 @@ export class WorkflowStore {
   }
 
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
-    if (input.reviewInput && (!input.persona || input.reviewInput.submissionId !== input.submissionId)) {
-      throw new Error("Persona review input must identify its owning attempt submission");
-    }
-    this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_node_attempts (
-         id, submission_id, node_id, attempt, state, persona_snapshot_json,
-         session_action_snapshot_json, operator_directive_json, check_evidence_json, review_input_json, runner_id,
-         model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
-         created_at, updated_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
-    ).run(
-      input.id,
-      input.submissionId,
-      input.nodeId,
-      input.attempt,
-      input.state,
-      input.persona === null ? null : JSON.stringify(input.persona),
-      input.sessionAction ? JSON.stringify(input.sessionAction) : null,
-      input.checkEvidence ? JSON.stringify(input.checkEvidence) : null,
-      input.reviewInput ? JSON.stringify(WorkflowPersonaReviewInputSchema.parse(input.reviewInput)) : null,
-      // The waiting attempt's observation state is written WITH the row, not after it: a
-      // daemon that stopped between the two would leave an attempt nothing can tell apart
-      // from one whose packet was already prepared.
-      input.sessionActionState ? JSON.stringify(input.sessionActionState) : null,
-      input.retryAt ?? null,
-      input.inputFingerprint,
-      input.error ?? null,
-      input.now,
-      input.now,
-    );
-    const attempt = this.attemptForNode(input.submissionId, input.nodeId, input.attempt);
-    if (!attempt) throw new Error(`Workflow attempt ${input.id} disappeared after insert`);
-    return attempt;
+    return this.mutate(() => {
+      if (input.reviewInput && (!input.persona || input.reviewInput.submissionId !== input.submissionId)) {
+        throw new Error("Persona review input must identify its owning attempt submission");
+      }
+      this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_node_attempts (
+           id, submission_id, node_id, attempt, state, persona_snapshot_json,
+           session_action_snapshot_json, operator_directive_json, check_evidence_json, review_input_json, runner_id,
+           model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
+           created_at, updated_at, started_at, finished_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+      ).run(
+        input.id,
+        input.submissionId,
+        input.nodeId,
+        input.attempt,
+        input.state,
+        input.persona === null ? null : JSON.stringify(input.persona),
+        input.sessionAction ? JSON.stringify(input.sessionAction) : null,
+        input.checkEvidence ? JSON.stringify(input.checkEvidence) : null,
+        input.reviewInput ? JSON.stringify(WorkflowPersonaReviewInputSchema.parse(input.reviewInput)) : null,
+        // The waiting attempt's observation state is written WITH the row, not after it: a
+        // daemon that stopped between the two would leave an attempt nothing can tell apart
+        // from one whose packet was already prepared.
+        input.sessionActionState ? JSON.stringify(input.sessionActionState) : null,
+        input.retryAt ?? null,
+        input.inputFingerprint,
+        input.error ?? null,
+        input.now,
+        input.now,
+      );
+      const attempt = this.attemptForNode(input.submissionId, input.nodeId, input.attempt);
+      if (!attempt) throw new Error(`Workflow attempt ${input.id} disappeared after insert`);
+      return attempt;
+
+    }, (result) => ({ kind: "attempt", id: result.id, now: input.now }));
   }
 
   /**
@@ -7938,12 +7964,15 @@ export class WorkflowStore {
     state: SessionActionAttemptState,
     now = Date.now(),
   ): WorkflowNodeAttempt | null {
-    const changed = this.db.prepare(
-      `UPDATE workflow_node_attempts
-          SET output_json = ?, updated_at = ?
-        WHERE id = ? AND state = 'waiting'`,
-    ).run(JSON.stringify(state), now, attemptId);
-    return Number(changed.changes) === 1 ? this.getAttempt(attemptId) : null;
+    return this.mutate(() => {
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET output_json = ?, updated_at = ?
+          WHERE id = ? AND state = 'waiting'`,
+      ).run(JSON.stringify(state), now, attemptId);
+      return Number(changed.changes) === 1 ? this.getAttempt(attemptId) : null;
+
+    }, (result) => result ? { kind: "attempt", id: attemptId, now } : null);
   }
 
   getAttempt(id: string): WorkflowNodeAttempt | null {
@@ -8114,7 +8143,7 @@ export class WorkflowStore {
     model: string | null,
     now = Date.now(),
   ): WorkflowNodeAttempt | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const initial = this.getAttempt(id);
       if (!initial || !["queued", "retry_wait"].includes(initial.state)) return null;
       let snapshot = initial.operatorDirective ?? null;
@@ -8139,7 +8168,7 @@ export class WorkflowStore {
         id,
       );
       return Number(result.changes) === 1 ? this.getAttempt(id) : null;
-    });
+    }, (result) => result ? { kind: "attempt", id: result.id, now } : null);
   }
 
   finishAttempt(
@@ -8153,24 +8182,27 @@ export class WorkflowStore {
     },
     now = Date.now(),
   ): WorkflowNodeAttempt {
-    this.db.prepare(
-      `UPDATE workflow_node_attempts
-          SET state = ?, verdict_json = ?, output_json = ?, error = ?, retry_at = ?,
-              updated_at = ?, finished_at = ?
-        WHERE id = ?`,
-    ).run(
-      input.state,
-      input.verdict === undefined || input.verdict === null ? null : JSON.stringify(input.verdict),
-      input.output === undefined || input.output === null ? null : JSON.stringify(input.output),
-      input.error ?? null,
-      input.retryAt ?? null,
-      now,
-      input.state === "retry_wait" ? null : now,
-      id,
-    );
-    const attempt = this.getAttempt(id);
-    if (!attempt) throw new Error(`Workflow attempt ${id} disappeared after update`);
-    return attempt;
+    return this.mutate(() => {
+      this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = ?, verdict_json = ?, output_json = ?, error = ?, retry_at = ?,
+                updated_at = ?, finished_at = ?
+          WHERE id = ?`,
+      ).run(
+        input.state,
+        input.verdict === undefined || input.verdict === null ? null : JSON.stringify(input.verdict),
+        input.output === undefined || input.output === null ? null : JSON.stringify(input.output),
+        input.error ?? null,
+        input.retryAt ?? null,
+        now,
+        input.state === "retry_wait" ? null : now,
+        id,
+      );
+      const attempt = this.getAttempt(id);
+      if (!attempt) throw new Error(`Workflow attempt ${id} disappeared after update`);
+      return attempt;
+
+    }, (result) => ({ kind: "attempt", id: result.id, now }));
   }
 
   finishAttemptWithReceipts(
@@ -8444,39 +8476,42 @@ export class WorkflowStore {
   }
 
   private insertDeliveryInTransaction(input: WorkflowDeliveryInsert, now: number): WorkflowDelivery {
-    const nodeAttemptId = input.kind === "session_action" ? input.nodeAttemptId ?? null : null;
-    if (input.kind === "session_action") {
-      // The link is validated by JOIN rather than trusted, because the row parser cannot:
-      // a delivery naming an attempt in another submission - or another run - would let a
-      // completed action advance a graph it never ran in.
-      const attempt = nodeAttemptId ? this.getAttempt(nodeAttemptId) : null;
-      if (!attempt || attempt.submissionId !== input.submissionId) {
-        throw new Error("A session action delivery must name an attempt of its own submission");
+    return this.mutate(() => {
+      const nodeAttemptId = input.kind === "session_action" ? input.nodeAttemptId ?? null : null;
+      if (input.kind === "session_action") {
+        // The link is validated by JOIN rather than trusted, because the row parser cannot:
+        // a delivery naming an attempt in another submission - or another run - would let a
+        // completed action advance a graph it never ran in.
+        const attempt = nodeAttemptId ? this.getAttempt(nodeAttemptId) : null;
+        if (!attempt || attempt.submissionId !== input.submissionId) {
+          throw new Error("A session action delivery must name an attempt of its own submission");
+        }
+        const submission = this.getSubmission(input.submissionId);
+        if (!submission || submission.runId !== input.runId) {
+          throw new Error("A session action delivery must name a submission of its own run");
+        }
       }
-      const submission = this.getSubmission(input.submissionId);
-      if (!submission || submission.runId !== input.runId) {
-        throw new Error("A session action delivery must name a submission of its own run");
-      }
-    }
-    this.db.prepare(
-      `INSERT INTO workflow_deliveries (
-         id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
-         payload_sha256, state, error, created_at, updated_at, delivered_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
-    ).run(
-      input.id,
-      input.runId,
-      input.submissionId,
-      input.kind,
-      nodeAttemptId,
-      input.sessionId,
-      input.noteKey,
-      input.payload,
-      input.payloadSha256,
-      now,
-      now,
-    );
-    return this.mustDelivery(input.id);
+      this.db.prepare(
+        `INSERT INTO workflow_deliveries (
+           id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
+           payload_sha256, state, error, created_at, updated_at, delivered_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
+      ).run(
+        input.id,
+        input.runId,
+        input.submissionId,
+        input.kind,
+        nodeAttemptId,
+        input.sessionId,
+        input.noteKey,
+        input.payload,
+        input.payloadSha256,
+        now,
+        now,
+      );
+      return this.mustDelivery(input.id);
+
+    }, () => ({ kind: "delivery", id: input.id, now }));
   }
 
   /**
@@ -8484,7 +8519,7 @@ export class WorkflowStore {
    * Refused packets may be explicitly reclaimed; uncertain/delivered packets never can.
    */
   claimDeliverySend(id: string, allowRefused = false, now = Date.now()): WorkflowDelivery | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
       const run = this.getRun(delivery.runId);
@@ -8504,7 +8539,7 @@ export class WorkflowStore {
           WHERE id = ? AND state = ?`,
       ).run(now, id, delivery.state);
       return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
-    });
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   setDeliveryState(
@@ -8513,14 +8548,17 @@ export class WorkflowStore {
     error: string | null,
     now = Date.now(),
   ): WorkflowDelivery | null {
-    const result = this.db.prepare(
-      `UPDATE workflow_deliveries
-          SET state = ?, error = ?, updated_at = ?,
-              delivered_at = CASE WHEN ? = 'delivered'
-                                  THEN COALESCE(delivered_at, ?) ELSE delivered_at END
-        WHERE id = ?`,
-    ).run(state, error, now, state, now, id);
-    return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+    return this.mutate(() => {
+      const result = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = ?, error = ?, updated_at = ?,
+                delivered_at = CASE WHEN ? = 'delivered'
+                                    THEN COALESCE(delivered_at, ?) ELSE delivered_at END
+          WHERE id = ?`,
+      ).run(state, error, now, state, now, id);
+      return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   refuseDeliveryBeforeSend(
@@ -8529,12 +8567,15 @@ export class WorkflowStore {
     allowRefused: boolean,
     now = Date.now(),
   ): WorkflowDelivery | null {
-    const result = this.db.prepare(
-      `UPDATE workflow_deliveries
-          SET state = 'refused', error = ?, updated_at = ?
-        WHERE id = ? AND (state = 'prepared' OR (? = 1 AND state = 'refused'))`,
-    ).run(error, now, id, allowRefused ? 1 : 0);
-    return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
+    return this.mutate(() => {
+      const result = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'refused', error = ?, updated_at = ?
+          WHERE id = ? AND (state = 'prepared' OR (? = 1 AND state = 'refused'))`,
+      ).run(error, now, id, allowRefused ? 1 : 0);
+      return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
+
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   finishDeliverySend(
@@ -8543,12 +8584,15 @@ export class WorkflowStore {
     error: string | null,
     now = Date.now(),
   ): WorkflowDelivery | null {
-    const result = this.db.prepare(
-      `UPDATE workflow_deliveries
-          SET state = ?, error = ?, updated_at = ?
-        WHERE id = ? AND state = 'sending'`,
-    ).run(state, error, now, id);
-    return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+    return this.mutate(() => {
+      const result = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = ?, error = ?, updated_at = ?
+          WHERE id = ? AND state = 'sending'`,
+      ).run(state, error, now, id);
+      return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   confirmDeliverySend(
@@ -8557,7 +8601,7 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);
@@ -8636,7 +8680,7 @@ export class WorkflowStore {
         }, now);
       }
       return { delivery: this.mustDelivery(id), rearmed };
-    });
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   /**
@@ -8644,7 +8688,7 @@ export class WorkflowStore {
    * Convert all of them before any ready graph work is recovered.
    */
   recoverSendingDeliveries(now = Date.now()): WorkflowDelivery[] {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const sending = this.listDeliveriesByState("sending");
       for (const delivery of sending) {
         this.db.prepare(
@@ -8675,7 +8719,7 @@ export class WorkflowStore {
         }, now);
       }
       return sending.map((delivery) => this.mustDelivery(delivery.id));
-    });
+    }, (result) => result.map((delivery) => ({ kind: "delivery", id: delivery.id, now })));
   }
 
   markSendingUncertainForSession(
@@ -8683,7 +8727,7 @@ export class WorkflowStore {
     reason: string,
     now = Date.now(),
   ): WorkflowDelivery[] {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const rows = this.db.prepare(
         `SELECT * FROM workflow_deliveries WHERE session_id = ? AND state = 'sending'`,
       ).all(sessionId) as unknown[];
@@ -8712,7 +8756,7 @@ export class WorkflowStore {
         }, now);
       }
       return sending.map((delivery) => this.mustDelivery(delivery.id));
-    });
+    }, (result) => result.map((delivery) => ({ kind: "delivery", id: delivery.id, now })));
   }
 
   requireDeliveryRetryConfirmation(
@@ -8768,7 +8812,7 @@ export class WorkflowStore {
     idempotent: boolean;
     rearmed: WorkflowCompletionKind | null;
   } | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
       const run = this.getRun(delivery.runId);
@@ -8844,7 +8888,7 @@ export class WorkflowStore {
         }
       }
       return { delivery: this.mustDelivery(id), idempotent: false, rearmed };
-    });
+    }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
   replaceUncertainDeliveryWithRepair(
@@ -8857,7 +8901,7 @@ export class WorkflowStore {
     submission: WorkflowSubmission;
     idempotent: boolean;
   } | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const delivery = this.getDelivery(deliveryId);
       if (!delivery) return null;
       const run = this.getRun(delivery.runId);
@@ -8922,7 +8966,7 @@ export class WorkflowStore {
         submission: this.mustSubmission(input.id),
         idempotent: false,
       };
-    });
+    }, (result) => result ? { kind: "delivery", id: deliveryId, now: input.now } : null);
   }
 
   listReadinessOverrides(runId: string): WorkflowSubmissionReadinessOverride[] {
@@ -9264,26 +9308,29 @@ export class WorkflowStore {
     now = Date.now(),
     eventId?: string,
   ): WorkflowEvent {
-    const payloadJson = JSON.stringify(payload);
-    if (eventId) {
-      if (eventId.length > 200) throw new Error("Workflow event id exceeds 200 characters");
-      const existing = this.db.prepare(
-        `SELECT * FROM workflow_events WHERE event_id = ?`,
-      ).get(eventId);
-      if (existing) {
-        const parsed = parseWorkflowEventRow(existing);
-        if (parsed.runId !== runId || parsed.kind !== kind || JSON.stringify(parsed.payload) !== payloadJson) {
-          throw new Error(`Workflow event replay conflict for ${eventId}`);
+    return this.mutate(() => {
+      const payloadJson = JSON.stringify(payload);
+      if (eventId) {
+        if (eventId.length > 200) throw new Error("Workflow event id exceeds 200 characters");
+        const existing = this.db.prepare(
+          `SELECT * FROM workflow_events WHERE event_id = ?`,
+        ).get(eventId);
+        if (existing) {
+          const parsed = parseWorkflowEventRow(existing);
+          if (parsed.runId !== runId || parsed.kind !== kind || JSON.stringify(parsed.payload) !== payloadJson) {
+            throw new Error(`Workflow event replay conflict for ${eventId}`);
+          }
+          return parsed;
         }
-        return parsed;
       }
-    }
-    const result = this.db.prepare(
-      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?, ?)`,
-    ).run(eventId ?? null, runId, now, kind, payloadJson);
-    const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
-    workflowLog("info", { run: runId, event: kind });
-    return parseWorkflowEventRow(row);
+      const result = this.db.prepare(
+        `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?, ?)`,
+      ).run(eventId ?? null, runId, now, kind, payloadJson);
+      const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
+      workflowLog("info", { run: runId, event: kind });
+      return parseWorkflowEventRow(row);
+
+    }, (event) => ({ kind: "event", event, now }));
   }
 
   /**
@@ -9418,6 +9465,16 @@ export class WorkflowStore {
     };
   }
 
+  getLlmCall(id: string): WorkflowLlmCall | null {
+    const row = this.db.prepare("SELECT * FROM workflow_llm_calls WHERE id = ?").get(id);
+    return row ? parseWorkflowLlmCallRow(row) : null;
+  }
+
+  listLlmCallsFinishedAt(runId: string, now: number): WorkflowLlmCall[] {
+    return this.db.prepare("SELECT * FROM workflow_llm_calls WHERE run_id = ? AND finished_at = ?")
+      .all(runId, now).map(parseWorkflowLlmCallRow);
+  }
+
   listLlmCallPage(
     runId: string,
     after: string | null = null,
@@ -9459,28 +9516,31 @@ export class WorkflowStore {
   }
 
   insertLlmCall(call: WorkflowLlmCall): void {
-    this.db.prepare(
-      `INSERT INTO workflow_llm_calls (
-         id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
-         attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
-         cost_usd, error_code
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
-      call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
-      call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
-    );
-    workflowLog("info", {
-      run: call.runId,
-      submission: call.submissionId,
-      event: "model_call_started",
-      call: call.id,
-      purpose: call.purpose,
-      runner: call.runner,
-      model: call.model,
-      attempt: call.attempt,
-      input_bytes: call.inputBytes,
-    });
+    return this.mutate(() => {
+      this.db.prepare(
+        `INSERT INTO workflow_llm_calls (
+           id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
+           attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
+           cost_usd, error_code
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
+        call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
+        call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
+      );
+      workflowLog("info", {
+        run: call.runId,
+        submission: call.submissionId,
+        event: "model_call_started",
+        call: call.id,
+        purpose: call.purpose,
+        runner: call.runner,
+        model: call.model,
+        attempt: call.attempt,
+        input_bytes: call.inputBytes,
+      });
+
+    }, () => ({ kind: "call", id: call.id, now: call.startedAt }));
   }
 
   finishLlmCall(
@@ -9490,44 +9550,50 @@ export class WorkflowStore {
     errorCode: string | null,
     now = Date.now(),
   ): void {
-    const updated = this.db.prepare(
-      `UPDATE workflow_llm_calls
-          SET state = ?, finished_at = ?, duration_ms = ? - started_at,
-              output_bytes = ?, error_code = ?
-        WHERE id = ? AND state = 'running'
-        RETURNING run_id, submission_id, runner_id, model_id, duration_ms`,
-    ).get(state, now, now, outputBytes, errorCode, id) as {
-      run_id: string;
-      submission_id: string;
-      runner_id: string;
-      model_id: string;
-      duration_ms: number;
-    } | undefined;
-    // A cancellation or restart can settle the row while the provider callback is
-    // still unwinding. Do not log the later callback as if it replaced that durable
-    // outcome.
-    if (!updated) return;
-    workflowLog(state === "succeeded" ? "info" : "warn", {
-      run: updated.run_id,
-      submission: updated.submission_id,
-      event: "model_call_finished",
-      call: id,
-      runner: updated.runner_id,
-      model: updated.model_id,
-      state,
-      duration_ms: updated.duration_ms,
-      output_bytes: outputBytes,
-      error: errorCode,
-    });
+    return this.mutate(() => {
+      const updated = this.db.prepare(
+        `UPDATE workflow_llm_calls
+            SET state = ?, finished_at = ?, duration_ms = ? - started_at,
+                output_bytes = ?, error_code = ?
+          WHERE id = ? AND state = 'running'
+          RETURNING run_id, submission_id, runner_id, model_id, duration_ms`,
+      ).get(state, now, now, outputBytes, errorCode, id) as {
+        run_id: string;
+        submission_id: string;
+        runner_id: string;
+        model_id: string;
+        duration_ms: number;
+      } | undefined;
+      // A cancellation or restart can settle the row while the provider callback is
+      // still unwinding. Do not log the later callback as if it replaced that durable
+      // outcome.
+      if (!updated) return;
+      workflowLog(state === "succeeded" ? "info" : "warn", {
+        run: updated.run_id,
+        submission: updated.submission_id,
+        event: "model_call_finished",
+        call: id,
+        runner: updated.runner_id,
+        model: updated.model_id,
+        state,
+        duration_ms: updated.duration_ms,
+        output_bytes: outputBytes,
+        error: errorCode,
+      });
+
+    }, () => ({ kind: "call", id, now }));
   }
 
   interruptRunningLlmCalls(runId: string, now = Date.now()): void {
-    this.db.prepare(
-      `UPDATE workflow_llm_calls
-          SET state = 'interrupted', finished_at = ?, duration_ms = ? - started_at,
-              error_code = 'daemon_restart'
-        WHERE run_id = ? AND state = 'running'`,
-    ).run(now, now, runId);
+    return this.mutate(() => {
+      this.db.prepare(
+        `UPDATE workflow_llm_calls
+            SET state = 'interrupted', finished_at = ?, duration_ms = ? - started_at,
+                error_code = 'daemon_restart'
+          WHERE run_id = ? AND state = 'running'`,
+      ).run(now, now, runId);
+
+    }, () => ({ kind: "calls_settled", runId, now }));
   }
 
   runRetention(input: {
@@ -10220,7 +10286,7 @@ export class WorkflowStore {
   }
 
   cancelRun(id: string, reason: string, now = Date.now()): WorkflowRun | null {
-    return transaction(this.db, () => {
+    return this.mutate(() => {
       const run = this.getRun(id);
       if (!run) return null;
       if (["completed", "cancelled", "failed"].includes(run.status)) return run;
@@ -10252,7 +10318,7 @@ export class WorkflowStore {
       this.setRunStateCarryingPhase(id, "cancelled", reason, { reason }, now);
       this.appendEvent(id, "run_cancelled", { reason }, now);
       return this.mustRun(id);
-    });
+    }, (result) => result ? { kind: "run_cancelled", runId: id, now } : null);
   }
 
   orphanBinding(
@@ -10593,44 +10659,47 @@ export class WorkflowStore {
   }
 
   private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {
-    const provenance = workflowSubmissionOriginColumns(input.origin);
-    this.db.prepare(
-      `INSERT INTO workflow_submissions (
-         id, run_id, round, segment, parent_submission_id, continuation_node_id,
-         continuation_node_attempt_id, refinement_reason, mode, trigger_source, trigger_key, evidence_group_key,
-         staged_image_generation, evidence_fingerprint, context_json, evidence_json,
-         readiness_json, pr_head_sha,
-         status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?,
-                 CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
-    ).run(
-      input.id,
-      input.runId,
-      input.round,
-      provenance.segment,
-      provenance.parentSubmissionId,
-      provenance.continuationNodeId,
-      provenance.continuationNodeAttemptId,
-      provenance.refinementReason,
-      input.mode ?? "full_workflow",
-      input.triggerSource,
-      input.triggerKey,
-      input.evidenceGroupKey ?? input.triggerKey,
-      input.evidenceFingerprint ?? `capturing:${input.id}`,
-      JSON.stringify(input.context),
-      JSON.stringify(input.evidence),
-      input.prHeadSha ?? null,
-      input.status ?? "capturing",
-      input.now,
-      input.now,
-      input.status ?? "capturing",
-      input.now,
-    );
-    if (input.reserveEvidence !== false) this.reserveWorkflowEvidenceInTransaction(
-      input.id,
-      input.evidenceGroupKey ?? input.triggerKey,
-      input.now,
-    );
+    return this.mutate(() => {
+      const provenance = workflowSubmissionOriginColumns(input.origin);
+      this.db.prepare(
+        `INSERT INTO workflow_submissions (
+           id, run_id, round, segment, parent_submission_id, continuation_node_id,
+           continuation_node_attempt_id, refinement_reason, mode, trigger_source, trigger_key, evidence_group_key,
+           staged_image_generation, evidence_fingerprint, context_json, evidence_json,
+           readiness_json, pr_head_sha,
+           status, created_at, updated_at, completed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?,
+                   CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
+      ).run(
+        input.id,
+        input.runId,
+        input.round,
+        provenance.segment,
+        provenance.parentSubmissionId,
+        provenance.continuationNodeId,
+        provenance.continuationNodeAttemptId,
+        provenance.refinementReason,
+        input.mode ?? "full_workflow",
+        input.triggerSource,
+        input.triggerKey,
+        input.evidenceGroupKey ?? input.triggerKey,
+        input.evidenceFingerprint ?? `capturing:${input.id}`,
+        JSON.stringify(input.context),
+        JSON.stringify(input.evidence),
+        input.prHeadSha ?? null,
+        input.status ?? "capturing",
+        input.now,
+        input.now,
+        input.status ?? "capturing",
+        input.now,
+      );
+      if (input.reserveEvidence !== false) this.reserveWorkflowEvidenceInTransaction(
+        input.id,
+        input.evidenceGroupKey ?? input.triggerKey,
+        input.now,
+      );
+
+    }, () => ({ kind: "submission", id: input.id, now: input.now }));
   }
 
   private reserveWorkflowEvidenceInTransaction(

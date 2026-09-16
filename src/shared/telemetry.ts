@@ -32,7 +32,7 @@ export const TELEMETRY_ENVELOPE_VERSION = 1;
  * that created them, which is what stops a replay after an upgrade from being re-aggregated
  * under today's rules.
  */
-export const TELEMETRY_CATALOG_VERSION = 1;
+export const TELEMETRY_CATALOG_VERSION = 2;
 
 /** The audience-policy revision. A record carries the policy epoch that admitted it. */
 export const TELEMETRY_AUDIENCE_POLICY_VERSION = 1;
@@ -169,6 +169,8 @@ export const TELEMETRY_LIMITS = {
   leaseMs: 60_000,
   /** How many journal rows one projection pass consumes. Bounds the transaction, not the day. */
   projectionBatchSize: 256,
+  /** One analytical reducer state, also charged against maxTotalBytes. */
+  maxProjectionStateBytes: 8 * 1024 * 1024,
   /** How many batches one delivery pass drains, so an overnight backlog cannot saturate. */
   deliveryBatchesPerTick: 8,
 } as const;

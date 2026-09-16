@@ -62,6 +62,11 @@ const RESERVED_REFS = new Set([TRACE_REF, SPAN_REF, PARENT_SPAN_REF]);
 
 export interface CaptureRequest<Facts extends z.ZodTypeAny> {
   event: TelemetryEventDefinition<Facts>;
+  /**
+   * Narrow capture to these consented audiences when source context differs by profile.
+   * Such callers must give each profile's fact a distinct source identity.
+   */
+  profiles?: readonly TelemetryProfileId[];
   /** The authoritative identity this fact dedupes on. */
   source: TelemetrySourceIdentity;
   facts: z.input<Facts>;
@@ -144,7 +149,8 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
     // could refuse it. The flag stays in memory, so re-enabling settles it then.
     flushPendingUnknownGap(now);
 
-    const eligible = capturingProfiles(config).filter((p) => definition.audience.includes(p));
+    const eligible = capturingProfiles(config).filter((p) => definition.audience.includes(p)
+      && (!request.profiles || request.profiles.includes(p)));
     if (eligible.length === 0) {
       return { kind: "refused", reason: "not_eligible", detail: "no profile admits this event" };
     }

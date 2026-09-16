@@ -60,8 +60,10 @@ export function publishWorkflowMutation(
       db.exec("RELEASE workflow_observer");
     } catch {
       if (savepoint) {
-        db.exec("ROLLBACK TO workflow_observer");
-        db.exec("RELEASE workflow_observer");
+        try {
+          db.exec("ROLLBACK TO workflow_observer");
+          db.exec("RELEASE workflow_observer");
+        } catch { /* A released savepoint must not turn observer failure into owner failure. */ }
       }
       try { observer.failed?.(db); } catch { /* Diagnostics cannot veto the write either. */ }
     }

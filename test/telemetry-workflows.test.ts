@@ -23,9 +23,9 @@ beforeEach(() => {
     product: { enabled: true, endpoint: "http://127.0.0.1:4319" } }).ok, true);
   runProjectionPass();
 });
-function events(name: string) {
-  return (openDb().prepare("SELECT facts_json, refs_json, actor_json FROM telemetry_journal WHERE name = ? ORDER BY seq")
-    .all(`mission.${name}`) as { facts_json: string; refs_json: string; actor_json: string }[])
+function events(name: string, profile = "local") {
+  return (openDb().prepare(`SELECT facts_json, refs_json, actor_json FROM telemetry_journal WHERE name = ? AND EXISTS (SELECT 1 FROM json_each(profiles_json) WHERE value = ?) ORDER BY seq`)
+    .all(`mission.${name}`, profile) as { facts_json: string; refs_json: string; actor_json: string }[])
     .map((row) => ({ facts: JSON.parse(row.facts_json), refs: JSON.parse(row.refs_json), actor: JSON.parse(row.actor_json) }));
 }
 function total(name: string, dimension?: [string, string]) {
@@ -46,7 +46,7 @@ test("P3 golden: 3 reviews, 4 calls, one malformed response, one reused pass, pa
   assert.deepEqual(goldenTotals(), expected);
   const count = events("workflow.review.finished").length;
   store.appendEvent(runId, "persona_verdict", { verdict: "pass", nodeId: "p1" });
-  for (const attempt of store.listAttempts(repairSubmissionId)) observeWorkflowWrite(openDb(), () => observeWorkflowAttempt(store, attempt.id, Date.now()));
+  for (const attempt of store.listAttempts(repairSubmissionId)) observeWorkflowWrite(openDb(), (scope) => observeWorkflowAttempt(scope, store, attempt.id, Date.now()));
   closeDb(); openDb(); runProjectionPass(); runProjectionPass();
   assert.deepEqual(goldenTotals(), expected);
   assert.equal(events("workflow.review.finished").length, count);
@@ -114,7 +114,7 @@ test("uncertain packet resolution preserves one packet identity and ambiguous ac
   store.finishDeliverySend(packet.delivery.id, "uncertain", "PRIVATE_SENTINEL");
   runProjectionPass(); assert.equal(total("workflow.repair.packets"), 0);
   store.resolveUncertainDelivery(packet.delivery.id, "mark_delivered", "resolved");
-  observeWorkflowWrite(openDb(), () => observeWorkflowDelivery(store, packet.delivery.id, Date.now()));
+  observeWorkflowWrite(openDb(), (scope) => observeWorkflowDelivery(scope, store, packet.delivery.id, Date.now()));
   const before = store.getRun(run.id)!;
   for (const kind of ["unknown", "foreman", "human"] as const) recordWorkflowAction({ action: "workflow.retry", before,
     operationId: kind, context: { operationId: null, surface: "unknown", actor: { kind, basis: "declared", origin: "mcp" } },
@@ -211,6 +211,69 @@ test("author context freezes at submission and does not adopt later pending effo
   } finally { detach(); resetSessionTelemetryForTesting(); }
 });
 
+for (const profile of ["user", "product"] as const) {
+  test(`${profile} consent windows isolate author context without resetting other audiences`, async () => {
+    const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
+    const { observeWorkflowAsset } = await import("../src/server/telemetry/workflows.ts");
+    resetSessionTelemetryForTesting();
+    let publish: (event: { type: string } & Record<string, unknown>) => void = () => {};
+    const detach = attachSessionTelemetry({ subscribe(listener) { publish = listener; return () => {}; }, getTask: () => undefined });
+    try {
+      const id = `consent-${profile}`;
+      publish({ type: "session_upsert", session: { id: `session-${id}`, agent: "claude", runtime: "sdk",
+        state: "idle", terminals: [], agentSessionId: "conversation", meta: {
+          modelId: "claude-opus-5", thinkingLevel: "medium", nativeEffort: null, source: "driver",
+        } } });
+      const seeded = seedTelemetryWorkflow(id);
+      const { run, submission } = seeded;
+      let { store } = seeded;
+      const uninterrupted = profile === "user" ? "product" : "user";
+      assert.equal(events("workflow.submission", profile)[0]?.facts.author_effort, "medium");
+      setTelemetryConfig({ [profile]: { enabled: false } });
+      store.setRunState(run.id, "waiting_for_session", "persona_feedback");
+      assert.equal(events("workflow.run", profile).length, 1, "withdrawn audience captures nothing");
+      const others = events("workflow.run", uninterrupted);
+      const assets = events("workflow.asset", uninterrupted);
+      setTelemetryConfig({ [profile]: { enabled: true } });
+      closeDb(); openDb();
+      const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+      store = new WorkflowStore();
+      // A current observation after restart belongs to each audience's own window.
+      store.appendEvent(run.id, "persona_verdict", {});
+      observeWorkflowWrite(openDb(), (scope) => observeWorkflowAsset(scope, store, "binding", run.bindingId, Date.now()));
+      assert.deepEqual(events("workflow.run", uninterrupted), others);
+      assert.deepEqual(events("workflow.asset", uninterrupted), assets);
+      const resumed = events("workflow.run", profile).at(-1)!;
+      assert.equal(resumed.facts.status, "waiting_for_session");
+      assert.equal(resumed.facts.author_quality, "unknown");
+      assert.equal(resumed.facts.author_effort, "unknown");
+      assert.equal(resumed.refs.session_id, undefined);
+      assert.equal(resumed.facts.wait_ms, null);
+      assert.equal(resumed.facts.time_quality, "unknown");
+      assert.equal(events("workflow.run", uninterrupted).at(-1)?.facts.author_effort, "medium");
+      assert.equal(events("workflow.asset", profile).length, 2);
+      const packet = store.prepareDelivery({ id: `packet-${id}`, runId: run.id, submissionId: submission.id,
+        kind: "persona_feedback", sessionId: `session-${id}`, noteKey: id, payload: "PRIVATE_SENTINEL", payloadSha256: "hash" });
+      store.claimDeliverySend(packet.delivery.id);
+      store.confirmDeliverySend(packet.delivery.id, null, true);
+      store.cancelRun(run.id, "cancelled");
+      runProjectionPass();
+      for (const audience of ["local", "user", "product"] as const) {
+        assert.equal(events("workflow.run", audience).filter((e) => e.facts.observation === "finished").length, 1);
+        assert.equal(events("workflow.repair.delivery", audience).filter((e) => e.facts.state === "delivered").length, 1);
+        assert.equal(listSeries(openDb(), audience).filter((s) => s.instrument === "mission.workflow.repair.packets")
+          .reduce((sum, s) => sum + s.value, 0), 1);
+      }
+      // Replaying a permanent owner result in another consent window is still a duplicate.
+      setTelemetryConfig({ [profile]: { enabled: false } });
+      setTelemetryConfig({ [profile]: { enabled: true } });
+      store.appendEvent(run.id, "run_cancelled", { deliveryId: packet.delivery.id });
+      assert.equal(events("workflow.run", profile).filter((e) => e.facts.observation === "finished").length, 1);
+      assert.equal(events("workflow.repair.delivery", profile).filter((e) => e.facts.state === "delivered").length, 1);
+    } finally { detach(); resetSessionTelemetryForTesting(); }
+  });
+}
+
 test("bounded projection state rolls back oversized state and collection withdrawal clears source checkpoints", async () => {
   const { putProjectionState, usedBytes } = await import("../src/server/telemetry/store.ts");
   const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
@@ -290,8 +353,12 @@ for (const scenario of [
     assert.equal(response.status, baseline.status);
     assert.deepEqual([...response.headers], [...baseline.headers]);
     assert.equal(await response.text(), await baseline.text());
+    const retry = await createApp(true).request(path, { ...init, headers: {
+      ...init.headers, [OPERATION_ID_HEADER]: "newhttpattempt123",
+    } });
+    assert.equal(retry.status, scenario.status);
     const observations = events("action.result");
-    assert.equal(observations.length, 1, "one persisted outcome per completed request");
+    assert.equal(observations.length, 1, "retries preserve one persisted outcome per owner requestId");
     const [observation] = observations;
     assert.ok(observation);
     assert.equal(observation.facts.action, "workflow.retry");
@@ -300,7 +367,7 @@ for (const scenario of [
     assert.ok(observation.facts.duration_ms >= 0);
     assert.deepEqual(observation.actor, { kind: "human", origin: "dashboard", basis: "app_context" });
     assert.equal(observation.refs.run_id, run.id);
-    assert.equal(observation.refs.operation_id, `${run.id}:routefailure123`);
+    assert.equal(observation.refs.operation_id, `${run.id}:owner-request-id`);
     assert.ok(!JSON.stringify(observations).includes("PRIVATE_SENTINEL"));
     assert.deepEqual(store.getRun(run.id), run, "observation cannot mutate workflow state");
     runProjectionPass();
@@ -308,6 +375,26 @@ for (const scenario of [
     assert.equal(total("workflow.interventions"), 0, "an unsuccessful action is not a completed human intervention");
   });
 }
+
+test("malformed action bodies retain the route response and fall back to the HTTP operation identity", async () => {
+  const { Hono } = await import("hono");
+  const { workflowActionTelemetry } = await import("../src/server/telemetry/workflow-actions.ts");
+  const { OPERATION_ID_HEADER } = await import("../src/shared/telemetry-ingress.ts");
+  const app = new Hono();
+  app.use("/api/*", workflowActionTelemetry(() => null));
+  app.post("/api/workflow-runs/:id/retry", async (c) => {
+    try { await c.req.json(); } catch { return c.json({ error: "invalid JSON" }, 400); }
+    return c.json({ error: "unexpected valid body" }, 500);
+  });
+  const response = await app.request("/api/workflow-runs/malformed/retry", {
+    method: "POST", body: "{", headers: { "content-type": "application/json", [OPERATION_ID_HEADER]: "malformedrequest123" },
+  });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "invalid JSON" });
+  const [observation] = events("action.result");
+  assert.equal(observation?.facts.outcome, "refused");
+  assert.equal(observation?.refs.operation_id, "malformed:malformedrequest123");
+});
 
 test("multiple failing reviewers link to one packet, provider contract errors and interrupted calls are not rejections", () => {
   const { store, run, submission } = seedTelemetryWorkflow("causes");

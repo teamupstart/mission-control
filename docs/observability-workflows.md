@@ -84,14 +84,22 @@ the original per-method telemetry callbacks and removes the store's concrete bac
 
 `telemetry_source_state` stores only bounded source checkpoints: frozen author context, last
 observed lifecycle/disposition and stage activation. Rows are at most 16 KiB, share the global
-byte budget, expire after 30 days, and clear when collection changes. A source failure before
+byte budget, expire after 30 days, and clear when global collection changes. Workflow checkpoints
+and frozen author context are scoped by audience and consent epoch. Withdrawing one audience
+does not reset the others. Re-enrollment starts a fresh checkpoint namespace; old author context
+and timing baselines cannot cross into it. A source failure before
 acceptance remains a reported gap. Historical pre-consent activity and observations lost before
 acceptance are not reconstructed from current settings. Action-result capture follows the
 completed route and therefore retains the documented pre-acceptance crash window.
 
 Observation revisions have a persisted window identity, so collection restarting cannot collide
 with an earlier window's revisions. Terminal run outcomes and confirmed deliveries retain their
-permanent identities across windows. Context cleared by withdrawal is not reconstructed.
+permanent identities per audience across windows. Context unavailable after withdrawal is not
+reconstructed. Workflow capture writes a separate journal fact for each eligible audience so
+their contexts can differ. Its explicit `profiles` selection only narrows current consent and
+the event's audience allowlist. Consumers still receive one fact per business identity in their
+own audience; a permanent outcome already captured for that audience is never recounted after
+re-enrollment.
 
 These are deviations to carry into the Phase 4 PR: atomic savepoint capture replaces source
 reconciliation; existing session-action evidence supplies the available pickup coverage;

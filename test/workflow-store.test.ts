@@ -107,6 +107,31 @@ test("outer workflow rollback removes nested business and observer writes togeth
   } finally { detach(); db.exec("DROP TABLE observer_probe"); }
 });
 
+test("an observer that releases its savepoint cannot roll back the owner or block later observers", () => {
+  let failures = 0;
+  let observed = 0;
+  const detachFailed = registerWorkflowMutationObserver({
+    observe(connection) {
+      connection.exec("RELEASE workflow_observer");
+      throw new Error("observer already released its savepoint");
+    },
+    failed() { failures++; },
+  });
+  const detachHealthy = registerWorkflowMutationObserver({
+    observe(_connection, view) {
+      assert.equal(view.getWorkflow("w1")?.draftRevision, 1);
+      observed++;
+    },
+  });
+  try {
+    assert.equal(seed().ok, true);
+    assert.equal(store.getWorkflow("w1")?.draftRevision, 1);
+    assert.equal(failures, 1);
+    assert.equal(observed, 1);
+    assert.equal(db.isTransaction, false);
+  } finally { detachFailed(); detachHealthy(); }
+});
+
 test("definitions use revision CAS, normalized-name uniqueness, summaries, and soft archive", () => {
   const created = seed();
   assert.equal(created.ok, true);

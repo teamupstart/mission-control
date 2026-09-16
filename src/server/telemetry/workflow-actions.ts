@@ -77,7 +77,7 @@ export function workflowActionTelemetry(store: () => WorkflowStore | null): Midd
       // The owner's request id survives browser retries even when each request carries a new
       // app context. Read only this bounded field, never retain the body or any rationale.
       try {
-        if (c.res.ok && c.req.header("content-type")?.includes("application/json")) {
+        if (c.req.header("content-type")?.includes("application/json")) {
           const body: unknown = await c.req.json();
           if (body && typeof body === "object" && "requestId" in body
             && typeof body.requestId === "string" && body.requestId.length <= 200) operationId = body.requestId;

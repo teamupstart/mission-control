@@ -840,7 +840,8 @@ test("a late prompt's turn is ended by a real teardown, not merely asked about",
   assert.match(task?.outcome ?? "", /^Foreman concluded this recurring mission run: /);
 });
 
-test("a prompt arriving mid-sweep is not left waiting for the retry interval", async () => {
+test("a prompt arriving mid-sweep is not left waiting for the retry interval", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 + HOUR });
   // The ordering that used to lose it: a SWEEP pass is already inside a stop when the prompt
   // lands, so the request to look again arrives while `sweepingClosures` is set. Dropping it
   // there left the news of a started turn to the ordinary ten-second retry, which is the
@@ -850,10 +851,8 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
   // settles its own row directly and never takes that mutex, which is the whole point of the
   // change this test sits beside.
   let release!: () => void;
-  // Released on a TIMER rather than straight away, because the interleaving is the subject: a
-  // real stop spawns a process or waits on a driver pump, so it spans macrotasks, and the
-  // zero-delay sweep the interception asks for therefore fires while the pass is still inside
-  // it. Resolving on a microtask would let the pass finish first and never exercise this.
+  // Keep the stop blocked until the zero-delay interception sweep has fired. Advancing
+  // these timers explicitly preserves that interleaving without a host-sleep deadline.
   const gate = new Promise<void>((resolve) => {
     release = () => { setTimeout(resolve, 100); };
   });
@@ -885,7 +884,8 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
 
   // A retry pass, now in flight and stuck inside its stop.
   const inFlight = f.tasks.sweepMissionSessionClosures();
-  await until("the sweep is inside its stop", () => killed.length === 2);
+  await settle();
+  assert.equal(killed.length, 2, "the sweep is inside its stop");
 
   f.registry.applyHook({
     agent: "claude",
@@ -897,14 +897,19 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
     env: {},
   });
   release();
-
-  await until(
-    "the pass that was already running comes straight back rather than waiting ten seconds",
-    () => killed.length >= 3,
-    3_000,
-  );
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(killed.length, 2, "the urgent sweep cannot overlap the blocked stop");
+  t.mock.timers.tick(99);
   await inFlight;
-  await until("and finishes the close", () => f.registry.getSession(f.sessionId) === undefined);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(killed.length, 3, "the urgent retry runs before the ten-second retry interval");
+  assert.equal(f.registry.getSession(f.sessionId)?.state, "exited");
+
+  t.mock.timers.tick(9_000);
+  await settle();
+  assert.equal(f.registry.getSession(f.sessionId), undefined, "and finishes the close");
 });
 
 test("a conclusion asks its own session even while another closure is mid-stop", async () => {

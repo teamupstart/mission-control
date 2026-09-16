@@ -152,28 +152,28 @@ export function Tooltip({
   // Measured on the ref callback rather than in a layout effect: this runs before paint
   // on the client just the same, but is never invoked during the `renderToStaticMarkup`
   // the component tests use, where `useLayoutEffect` would warn on every render.
-  const measure = useCallback((el: HTMLSpanElement | null) => {
-    if (!el) return;
-    setTip((prev) => {
-      if (!prev || prev.shift !== undefined) return prev;
-      const r = el.getBoundingClientRect();
-      const overLeft = EDGE_MARGIN - r.left;
-      const overRight = r.right - (window.innerWidth - EDGE_MARGIN);
-      const shift = overLeft > 0 ? overLeft : overRight > 0 ? -overRight : 0;
-      // Flip under the trigger when the bubble does not actually FIT above it. The
-      // threshold in `show` cannot answer this: it runs before the bubble exists, so it
-      // can only ask whether the trigger sits near the top of the viewport, not whether
-      // this particular bubble is taller than the gap above it. A short tooltip on a
-      // topbar control is fine either way; a tall one - the automation stat lists a line
-      // per role - is clipped off the top of the screen, which is how this was found.
-      // Measured here because this is the one moment the real height is known, and it is
-      // the same pass that already corrects horizontally.
-      const flip = prev.placement === "above" && r.height > prev.triggerTop - EDGE_MARGIN;
-      return flip
-        ? { ...prev, shift, placement: "below", y: prev.triggerBottom }
-        : { ...prev, shift };
-    });
-  }, []);
+  // Reattach when the tip changes: hover can reset a focused trigger's existing bubble
+  // to unmeasured without remounting it. Guard BEFORE scheduling an update so parent
+  // renders cannot form a ref/state update loop, even when an updater returns its input.
+  const measure = useCallback((el: HTMLSpanElement | null): void => {
+    if (!el || !tip || tip.shift !== undefined) return;
+    const r = el.getBoundingClientRect();
+    const overLeft = EDGE_MARGIN - r.left;
+    const overRight = r.right - (window.innerWidth - EDGE_MARGIN);
+    const shift = overLeft > 0 ? overLeft : overRight > 0 ? -overRight : 0;
+    // Flip under the trigger when the bubble does not actually FIT above it. The
+    // threshold in `show` cannot answer this: it runs before the bubble exists, so it
+    // can only ask whether the trigger sits near the top of the viewport, not whether
+    // this particular bubble is taller than the gap above it. A short tooltip on a
+    // topbar control is fine either way; a tall one - the automation stat lists a line
+    // per role - is clipped off the top of the screen, which is how this was found.
+    // Measured here because this is the one moment the real height is known, and it is
+    // the same pass that already corrects horizontally.
+    const flip = tip.placement === "above" && r.height > tip.triggerTop - EDGE_MARGIN;
+    setTip(flip
+      ? { ...tip, shift, placement: "below", y: tip.triggerBottom }
+      : { ...tip, shift });
+  }, [tip]);
 
   const childProps = children.props as Record<string, unknown>;
   const describedChildren =

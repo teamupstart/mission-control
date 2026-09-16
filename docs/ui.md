@@ -241,7 +241,8 @@ whose session disappeared shows **Reviewers stopped** in grey rather than an amb
 
 The ☺ glyph in the topbar's tool cluster - beside Settings and Alerts - and **Report product
 feedback…** in the palette's **Do** group open the same dialog. There is one of it, and one
-draft behind it, so it does not matter which door you use.
+draft behind it, so it does not matter which door you use. Reports go to
+`teamupstart/mission-control` by default, the same destination used by the MCP reporting tools.
 
 The form is five report types (**Bug**, **Feature request**, **Documentation**, **Usability**,
 **Other**), a one-line title, and a details box whose prompt changes with the type while

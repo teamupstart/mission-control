@@ -263,7 +263,7 @@ export function jiraBin(): string {
   return envVar("JIRA_BIN") || "jira";
 }
 
-export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej-cyc/mission-control-issues";
+export const DEFAULT_PRODUCT_ISSUES_REPO = "teamupstart/mission-control";
 
 export type ProductIssuesRepoConfig =
   | { ok: true; repo: string }

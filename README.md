@@ -395,7 +395,8 @@ and build contracts.
 
 Sessions can [report product feedback](docs/sessions.md) with the
 `report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue automatically and returns its GitHub URL, without a second dashboard approval.
+issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
+dashboard approval. The dashboard feedback form uses the same destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository

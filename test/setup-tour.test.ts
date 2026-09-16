@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { FIRST_RUN_TOUR, TOUR_ENTRIES } from "../src/web/tour/entries.ts";
+import { RECOMMENDED_TOUR, TOUR_ENTRIES } from "../src/web/tour/entries.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "../src/web/tour/tours/setup.ts";
 import { TOUR_TARGET_NAMESPACES } from "../src/web/tour/target-registry.ts";
 
@@ -142,11 +142,11 @@ test("the Setup entry opens on the fleet and hands the operator Trust when it en
   assert.equal(entry.palette.title, "Start Set up this machine tour");
 });
 
-test("Setup is the tour a fresh profile receives automatically", () => {
-  assert.equal(FIRST_RUN_TOUR, "setup");
-  // The automatic tour is one of the registered ones rather than a fourth definition wired
+test("Setup is recommended in the catalog", () => {
+  assert.equal(RECOMMENDED_TOUR, "setup");
+  // The recommended tour is one of the registered ones rather than a fourth definition wired
   // straight into the effect that starts it.
-  assert.ok(TOUR_ENTRIES.some((entry) => entry.id === FIRST_RUN_TOUR));
+  assert.ok(TOUR_ENTRIES.some((entry) => entry.id === RECOMMENDED_TOUR));
 });
 
 test("only a tour that hands a page over declares an exit route", () => {

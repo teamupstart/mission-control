@@ -116,7 +116,7 @@ test.describe("typing a comment with real keystrokes", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         guidedDispatch: false,
-        guidedTour: false,
+        showToursOnStartup: false,
         conversationView: "chat",
         layout: "console",
       }),
@@ -129,7 +129,7 @@ test.describe("typing a comment with real keystrokes", () => {
         "mission-control.ui",
         JSON.stringify({
           guidedDispatch: false,
-          guidedTour: false,
+          showToursOnStartup: false,
           conversationView: "chat",
           layout: "console",
         }),

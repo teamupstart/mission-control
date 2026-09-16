@@ -80,13 +80,19 @@ async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void>
 }
 
 async function sessionCwd(daemon: DaemonHandle): Promise<string> {
+  // The session is registered before its first turn supplies model/status metadata.
+  // That metadata can resize the detail header, invalidating raw pointer coordinates.
+  // Finish the fake turn before opening and measuring this geometry fixture.
   await expect
     .poll(async () => {
       const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
         cwd: string | null;
+        agentSessionId: string | null;
+        state: string;
       }[];
-      return sessions[0]?.cwd ?? null;
-    }, { message: "the dispatched session never reported a working directory" })
+      const session = sessions[0];
+      return session?.agentSessionId && session.state === "idle" ? session.cwd : null;
+    }, { message: "the dispatched session never finished its initial turn" })
     .not.toBeNull();
   const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
     cwd: string | null;

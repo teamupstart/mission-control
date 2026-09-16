@@ -26,6 +26,18 @@ const { DISPLAY_ITEM_HIDDEN_SEEDS } = await import("../src/shared/protocol.ts");
 
 beforeEach(() => store.clear());
 
+test("startup preference defaults on for old caches and legacy imports, preserving explicit false", () => {
+  store.set("mission-control.ui", JSON.stringify({ guidedTour: false }));
+  store.set("ai-harness.guided-tour-consumption-pending", "true");
+  assert.equal(readCache().showToursOnStartup, true);
+  store.set("ai-harness.layout", "board");
+  assert.equal(readLegacySettings()?.showToursOnStartup, true);
+  store.set("mission-control.ui", JSON.stringify({ showToursOnStartup: false }));
+  assert.equal(readCache().showToursOnStartup, false);
+  store.set("mission-control.ui", JSON.stringify({ showToursOnStartup: "false" }));
+  assert.equal(readCache().showToursOnStartup, true);
+});
+
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -56,6 +68,7 @@ test("a written cache round-trips", () => {
     keybindingHints: false,
     guidedDispatch: false,
     guidedTour: false,
+    showToursOnStartup: false,
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
     // Head-seeded, which is what any record this build writes looks like. That is what makes
@@ -78,6 +91,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.keybindingHints, false);
   assert.equal(config.guidedDispatch, false);
   assert.equal(config.guidedTour, false);
+  assert.equal(config.showToursOnStartup, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);

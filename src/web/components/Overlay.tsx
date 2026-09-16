@@ -60,6 +60,7 @@ export const OVERLAY_IDS = {
   ensembleDelete: "ensemble-delete",
   worktreeAction: "worktree-action",
   tour: "tour",
+  tourPicker: "tour-picker",
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
   restoreSettings: "restore-settings",

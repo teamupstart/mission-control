@@ -30,22 +30,22 @@ Object.defineProperty(globalThis, "fetch", {
 
 const { uiConfig, updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 
-test("a failed background tour write does not restore over a newer preference", async () => {
-  const consumingTour = updateUiConfig({ guidedTour: false });
+test("a failed tour preference write does not restore over a newer preference", async () => {
+  const savingPreference = updateUiConfig({ showToursOnStartup: false });
   await new Promise((resolve) => setImmediate(resolve));
   await updateUiConfig({ richText: false });
   finishTourWrite?.(new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 }));
-  assert.equal(await consumingTour, false);
-  assert.equal(uiConfig().guidedTour, true, "the failed request restores only its own field");
+  assert.equal(await savingPreference, false);
+  assert.equal(uiConfig().showToursOnStartup, true, "the failed request restores only its own field");
   assert.equal(uiConfig().richText, false, "the later preference remains in the live cache");
 });
 
 test("a failed older write cannot restore over a successful identical write", async () => {
   deferNextWrite = true;
-  const olderWrite = updateUiConfig({ guidedTour: false });
+  const olderWrite = updateUiConfig({ showToursOnStartup: false });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(await updateUiConfig({ guidedTour: false }), true);
+  assert.equal(await updateUiConfig({ showToursOnStartup: false }), true);
   finishTourWrite?.(new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 }));
   assert.equal(await olderWrite, false);
-  assert.equal(uiConfig().guidedTour, false, "the newer accepted value remains in the live cache");
+  assert.equal(uiConfig().showToursOnStartup, false, "the newer accepted value remains in the live cache");
 });

@@ -25,11 +25,11 @@ export const test = base.extend<{
    */
   daemonEnv: Record<string, string>;
   /**
-   * Leave the product's automatic tour default intact for a fresh-profile assertion.
+   * Leave the product's startup picker default intact for a fresh-profile assertion.
    * Ordinary browser specs turn it off before any page can load, so their setup does not
    * become a test of onboarding.
    */
-  guidedTour: boolean;
+  startupPicker: boolean;
   /**
    * Leave the first-launch Setup reminder intact for the spec that owns onboarding.
    * Ordinary browser specs acknowledge it before the first page load so their layout and
@@ -40,19 +40,19 @@ export const test = base.extend<{
   dashboard: Page;
 }>({
   daemonEnv: [{}, { option: true }],
-  guidedTour: [false, { option: true }],
+  startupPicker: [false, { option: true }],
   setupReminder: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, guidedTour, setupReminder }, use) => {
+  daemon: async ({ daemonEnv, startupPicker, setupReminder }, use) => {
     const daemon = await startDaemon(daemonEnv);
     try {
-      if (!guidedTour) {
+      if (!startupPicker) {
         const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ guidedTour: false }),
+          body: JSON.stringify({ showToursOnStartup: false }),
         });
-        if (!pinned.ok) throw new Error("the daemon should accept the guided-tour pin");
+        if (!pinned.ok) throw new Error("the daemon should accept the startup-picker pin");
       }
       if (!setupReminder) {
         const checks = await fetch(`${daemon.baseURL}/api/setup/checks`);
@@ -87,7 +87,7 @@ export const test = base.extend<{
    * profile - or a second test in the same context - would open the modal pointed at a repo
    * this daemon has never heard of.
    *
-   * `guidedDispatch` and the one-time `guidedTour` are then pinned OFF, and
+   * `guidedDispatch` and the startup tour picker are then pinned OFF, and
    * `conversationView` to Chat and `lineDensity` to Expanded, explicitly, and
    * none is the same statement as "it ships that way". Roughly fifty specs drive the
    * dispatch modal, and every one of them
@@ -130,7 +130,7 @@ export const test = base.extend<{
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           guidedDispatch: false,
-          guidedTour: false,
+          showToursOnStartup: false,
           conversationView: "chat",
           lineDensity: "expanded",
         }),
@@ -143,7 +143,7 @@ export const test = base.extend<{
           "mission-control.ui",
           JSON.stringify({
             guidedDispatch: false,
-            guidedTour: false,
+            showToursOnStartup: false,
             conversationView: "chat",
             lineDensity: "expanded",
           }),

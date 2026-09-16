@@ -248,6 +248,7 @@ const uiFields = {
   keybindingHints: "setting",
   guidedDispatch: "setting",
   guidedTour: "setting",
+  showToursOnStartup: "setting",
   trustStaged: "setting",
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",

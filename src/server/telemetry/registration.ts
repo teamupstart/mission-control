@@ -61,6 +61,12 @@ export interface TelemetryProjectionContext {
   policyEpoch: number;
   /** Wall clock for this pass. Injected so a fixture can freeze it. */
   now: number;
+  /** True only after the entire accepted journal prefix has been consumed. */
+  caughtUp?: boolean;
+  /** Latest recorded loss, conservatively shared across profiles; null means no recorded gap. */
+  lastGapAt?: number | null;
+  /** Immutable resource captured with the current event; absent in snapshot callbacks. */
+  resource?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -84,7 +90,10 @@ export interface TelemetryProjection<State = unknown> {
   id: string;
   /** Bumped when `State`'s shape changes. `migrateState` is how an old row survives. */
   stateVersion: number;
-  initialState(): State;
+  /** Opt in to bounded expiry/calculation on quiet ticks, without inventing a source event. */
+  idleSnapshots?: boolean;
+  /** New projections may use the exact consent/cutover time; existing factories ignore it. */
+  initialState(now?: number): State;
   /**
    * Bring state written by an older build forward, or return null to start over.
    *

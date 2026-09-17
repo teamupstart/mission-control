@@ -336,7 +336,7 @@ test("registering the same implementation twice is idempotent", async () => {
   registerBuiltinTelemetry();
   registerBuiltinTelemetry();
   registerBuiltinTelemetry();
-  assert.deepEqual(registeredProjections().map((p) => p.id), ["mission.catalog"]);
+  assert.deepEqual(registeredProjections().map((p) => p.id), ["mission.analytics.v1", "mission.catalog"]);
   // Phase 3's five source namespaces joined Phase 1's two. Spelled out rather than counted,
   // because the point of the assertion is that a THIRD registration of the same implementation
   // adds nothing - and a length check would pass while a sixth owner quietly took a namespace.

@@ -53,6 +53,7 @@ import {
   getSeries,
   insertBatch,
   journalHead,
+  listGaps,
   putProjectionState,
   putResource,
   putSeries,
@@ -280,7 +281,7 @@ function runOne(
       // zero. This is the "enabling authorizes new data from that point" rule in one line: a
       // fresh opt-in inherits no history, and a re-enable after a withdrawal cannot replay the
       // facts that withdrawal purged.
-      state = projection.initialState();
+      state = projection.initialState(now);
       consumedSeq = journalHead(d);
     } else if (stored.stateVersion === projection.stateVersion) {
       state = stored.state;
@@ -294,7 +295,7 @@ function runOne(
           `${projection.id} state v${stored.stateVersion} could not be migrated`,
           now,
         );
-        state = projection.initialState();
+        state = projection.initialState(now);
       } else {
         state = migrated;
       }
@@ -302,7 +303,7 @@ function runOne(
     }
 
     const events = readJournalAfter(d, consumedSeq, TELEMETRY_LIMITS.projectionBatchSize);
-    if (events.length === 0) {
+    if (events.length === 0 && !projection.idleSnapshots) {
       // Still persist a first checkpoint, so the head we just chose survives a restart and a
       // later pass cannot rediscover an empty journal and reset to a newer head.
       if (!stored) {
@@ -332,7 +333,7 @@ function runOne(
         envelope,
         state,
         collector,
-        { profile, policyEpoch: destination.policyEpoch, now },
+        { profile, policyEpoch: destination.policyEpoch, now, resource: getResource(d, event.resourceId) ?? undefined },
       );
     }
     collector.endEvent();
@@ -340,6 +341,8 @@ function runOne(
       profile,
       policyEpoch: destination.policyEpoch,
       now,
+      caughtUp: highest >= journalHead(d),
+      lastGapAt: listGaps(d).reduce<number | null>((latest, gap) => Math.max(latest ?? gap.lastAt, gap.lastAt), null),
     });
 
     const applied = collector.apply(d, producesBatches);

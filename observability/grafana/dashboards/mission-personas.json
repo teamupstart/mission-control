@@ -1,0 +1,1346 @@
+{
+  "uid": "mission-personas",
+  "title": "Mission Control: Persona quality and burden",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "mission-control",
+    "product-telemetry"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment (every panel)",
+        "type": "custom",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "local,demo,test",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "local",
+          "value": "local"
+        },
+        "options": []
+      },
+      {
+        "name": "installation",
+        "label": "Installation (every panel)",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "label_values(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",audience=\"user\",slice_by=\"all\"},service_instance_id)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "reviews_axis",
+        "label": "reviews cohort axis only",
+        "type": "custom",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "all,reviewer_model,reviewer_effort,app_version",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "all",
+          "value": "all"
+        },
+        "options": []
+      },
+      {
+        "name": "reviews_slice",
+        "label": "reviews cohort slice only",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "label_values(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",slice_by=\"$reviews_axis\"},slice)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Adoption and first value",
+      "type": "link",
+      "url": "/d/mission-adoption",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Workflow completion",
+      "type": "link",
+      "url": "/d/mission-workflows",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Persona quality and burden",
+      "type": "link",
+      "url": "/d/mission-personas",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Models and effort",
+      "type": "link",
+      "url": "/d/mission-models",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Human involvement",
+      "type": "link",
+      "url": "/d/mission-interventions",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Reliability and data quality",
+      "type": "link",
+      "url": "/d/mission-reliability",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Scope and interpretation",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Executed reviews exclude invalid responses and reused passes. Reviewer model is distinct from author model. Persona identities and revisions are trace-only in the current contract. Low-volume slices are exploratory, not rankings.\n\n**Environment and installation apply everywhere.** Axis/slice controls affect only their labelled cohort panels, including coverage. Other panels use only environment and installation. Cohorts show the 7-day start window ending 7 days before the selected end time. Activity panels show last observed cumulative streams in the selected time range. Missing, stale (>2h) or partial snapshots are absent, never zero. An explicit 0 is an observed zero; Incomplete means coverage gaps.\n\n[Signal and query contract](https://github.com/teamupstart/mission-control/blob/main/docs/telemetry-analytics.md)"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Executed reviews",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Executed reviews"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Passed reviews",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Passed reviews"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Rejected reviews",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Rejected reviews"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Observed rejection rate",
+      "description": "Observed fail / executed; identical coherent producers and filters on both sides. Incomplete is not complete; consult coverage. No eligible denominator is not zero.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "(sum((last_over_time(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]))))) / sum((last_over_time(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))) and (sum((last_over_time(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]))))) > 0)",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Observed rejection rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "noValue": "No eligible / stale or partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Invalid responses",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 14,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Invalid responses"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Reused passes",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 14,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Reused passes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Delivered repair packets",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Delivered repair packets"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Next-review resolution",
+      "description": "Observed resolved / failed_with_next; identical coherent producers and filters on both sides. Incomplete is not complete; consult coverage. No eligible denominator is not zero.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "(sum((last_over_time(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]))))) / sum((last_over_time(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))) and (sum((last_over_time(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]))))) > 0)",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Next-review resolution"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "noValue": "No eligible / stale or partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Rejected without next review",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Rejected without next review"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Unknown review order",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Unknown review order"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Findings by reason",
+      "description": "Independent category marginal view; environment and installation only. No cross-product or join to other cohort filters.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (slice) ((last_over_time(mission_analytics_v1_reasons_findings{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}[2h]) and (((last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}[2h]) == mission:analytics_reasons:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reasons_findings{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"findings\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_reviews{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"reviews\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_unknown_basis{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"unknown_basis\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"category\"}[2h])))))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Findings by reason"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Finding basis (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (basis,category_source) (last_over_time(mission_persona_findings_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Finding basis (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Executed, disabled and reused nodes (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (node_kind,disposition) (last_over_time(mission_workflow_nodes_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Executed, disabled and reused nodes (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 15,
+      "title": "Persona and workflow controls (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (action,outcome) (last_over_time(mission_action_count_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",feature=~\"persona|workflow\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Persona and workflow controls (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 16,
+      "title": "Reviewer comparison: volume",
+      "description": "Independent reviewer_model marginal view; environment and installation only. No cross-product or join to other cohort filters.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 63,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (slice) ((last_over_time(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"reviewer_model\"}[2h])))))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Reviewer comparison: volume"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 17,
+      "title": "reasons: observation coverage",
+      "description": "Exact reasons snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "min((last_over_time(mission_analytics_v1_reasons_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_reasons:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reasons_findings{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"findings\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_reviews{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"reviews\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_unknown_basis{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_basis\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "reasons: observation coverage"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Incomplete",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Complete",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 18,
+      "title": "reasons: snapshot age",
+      "description": "Exact reasons snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 70,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "max(time() - (last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_reasons:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reasons_findings{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"findings\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_reviews{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"reviews\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_unknown_basis{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_basis\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reasons_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reasons_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "reasons: snapshot age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 19,
+      "title": "Observation coverage",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 70,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "min((last_over_time(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Observation coverage"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Incomplete",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Complete",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 20,
+      "title": "Snapshot age",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "max(time() - (last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Snapshot age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 21,
+      "title": "Coherent producers",
+      "description": "Exact reviews snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Uses only reviews axis/slice controls.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 77,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "count(max by (service_instance_id) ((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) and (((last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]) == mission:analytics_reviews:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_reviews_executed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"executed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_fail{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"fail\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_pass{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_pass\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_failed_with_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"failed_with_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_resolved{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"resolved\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_no_next{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"no_next\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_invalid{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"invalid\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_reused{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"reused\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_packets{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"packets\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_ordering_unknown{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"ordering_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_reviews_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"$reviews_axis\",slice=~\"$reviews_slice\"}[2h]))))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Coherent producers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 22,
+      "title": "Producers seen in 30 days",
+      "description": "Environment and installation only. Previously seen producers, not a configured inventory. With the cohort axis set to all, compare with coherent producers to expose stale or partial installations. A narrower cohort slice can also reduce the coherent count; never-seen producers cannot be counted.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 77,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "count(max by (service_instance_id) (last_over_time(mission_analytics_v1_reviews_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\"}[30d])))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Producers seen in 30 days"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 900,
+      "title": "Event-time traces: select a Trace ID",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "mission-tempo"
+      },
+      "description": "Safe workflow, review, session and error context. Trace sampling never changes metric denominators. Environment, installation and time only. Trace attributes support persona, revision, stage and model inspection.",
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "mission-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"mission-control\" && resource.deployment.environment.name =~ \"$environment\" && resource.service.instance.id =~ \"$installation\" && name = \"mission.workflow.review.finished\" }",
+          "limit": 100,
+          "tableType": "traces"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No traces in this range"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

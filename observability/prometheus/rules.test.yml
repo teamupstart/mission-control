@@ -1,0 +1,504 @@
+{
+  "rule_files": [
+    "cohorts.yml"
+  ],
+  "evaluation_interval": "15s",
+  "tests": [
+    {
+      "interval": "30s",
+      "input_series": [
+        {
+          "series": "mission_analytics_v1_runs_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "6"
+        },
+        {
+          "series": "mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "4"
+        },
+        {
+          "series": "mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "26"
+        },
+        {
+          "series": "mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "mission:analytics_runs:calculated_at",
+          "eval_time": "1m",
+          "exp_samples": [
+            {
+              "labels": "mission:analytics_runs:calculated_at{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "expr": "mission:analytics_runs:calculated_at",
+          "eval_time": "121m",
+          "exp_samples": []
+        },
+        {
+          "expr": "sum(last_over_time(mission_analytics_v1_runs_completed[2h])) / sum(last_over_time(mission_analytics_v1_runs_eligible[2h]))",
+          "eval_time": "1m",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 0.6666666666666666
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "30s",
+      "input_series": [
+        {
+          "series": "mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "4"
+        },
+        {
+          "series": "mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "26"
+        },
+        {
+          "series": "mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "mission:analytics_runs:calculated_at",
+          "eval_time": "1m",
+          "exp_samples": []
+        }
+      ]
+    },
+    {
+      "interval": "30s",
+      "input_series": [
+        {
+          "series": "mission_analytics_v1_runs_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "6"
+        },
+        {
+          "series": "mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "4 5"
+        },
+        {
+          "series": "mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "26"
+        },
+        {
+          "series": "mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "mission:analytics_runs:calculated_at",
+          "eval_time": "1m",
+          "exp_samples": []
+        }
+      ]
+    },
+    {
+      "interval": "15s",
+      "input_series": [
+        {
+          "series": "mission_analytics_v1_runs_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "6"
+        },
+        {
+          "series": "mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "4 5"
+        },
+        {
+          "series": "mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "26"
+        },
+        {
+          "series": "mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        },
+        {
+          "series": "mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}",
+          "values": "0"
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "sum((last_over_time(mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h]) and (((last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h]) == mission:analytics_runs:calculated_at{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_runs_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"completed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"pending\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"cancelled\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"failed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"immature\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"left_censored\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"recovery_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"with_recovery\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"with_human\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"ambiguous_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"human_gate\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"automation_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"eligibility_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"human_free\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"observation_incomplete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"mixed_author\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])))))",
+          "eval_time": "0s",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "expr": "sum((last_over_time(mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h]) and (((last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h]) == mission:analytics_runs:calculated_at{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_runs_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_completed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"completed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_pending{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"pending\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_cancelled{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"cancelled\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_failed{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"failed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_immature{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"immature\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_left_censored{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"left_censored\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_recovery_operations{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"recovery_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_recovery{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"with_recovery\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_human{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"with_human\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_ambiguous_actor{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"ambiguous_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_gate{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"human_gate\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_automation_eligible{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"automation_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_eligibility_unknown{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"eligibility_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_free{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"human_free\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_observation_incomplete{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"observation_incomplete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_mixed_author{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"mixed_author\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_start_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_end_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_horizon_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_complete_ratio{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_expected_points{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_first_observed_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_consent_epoch{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_runs_calculated_at_seconds{audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\",deployment_environment_name=\"test\",service_instance_id=\"fixture\",service_version=\"1\"}[2h])))))",
+          "eval_time": "15s",
+          "exp_samples": []
+        },
+        {
+          "expr": "(sum((last_over_time(mission_analytics_v1_runs_completed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_runs:calculated_at{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_runs_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_completed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"completed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_pending{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"pending\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_cancelled{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"cancelled\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_failed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_immature{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"immature\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_left_censored{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"left_censored\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_recovery_operations{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"recovery_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_recovery{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_recovery\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_human{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_human\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_ambiguous_actor{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"ambiguous_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_gate{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_gate\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_automation_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"automation_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_eligibility_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligibility_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_free{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_free\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_observation_incomplete{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observation_incomplete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_mixed_author{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"mixed_author\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_start_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_end_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_horizon_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_complete_ratio{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_expected_points{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_first_observed_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_consent_epoch{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]))))) / sum((last_over_time(mission_analytics_v1_runs_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_runs:calculated_at{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_runs_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_completed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"completed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_pending{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"pending\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_cancelled{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"cancelled\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_failed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_immature{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"immature\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_left_censored{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"left_censored\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_recovery_operations{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"recovery_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_recovery{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_recovery\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_human{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_human\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_ambiguous_actor{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"ambiguous_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_gate{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_gate\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_automation_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"automation_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_eligibility_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligibility_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_free{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_free\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_observation_incomplete{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observation_incomplete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_mixed_author{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"mixed_author\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_start_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_end_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_horizon_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_complete_ratio{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_expected_points{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_first_observed_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_consent_epoch{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))) and (sum((last_over_time(mission_analytics_v1_runs_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_runs:calculated_at{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_runs_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_completed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"completed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_pending{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"pending\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_cancelled{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"cancelled\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_failed{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_immature{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"immature\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_left_censored{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"left_censored\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_recovery_operations{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"recovery_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_recovery{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_recovery\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_with_human{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"with_human\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_ambiguous_actor{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"ambiguous_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_gate{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_gate\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_automation_eligible{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"automation_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_eligibility_unknown{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"eligibility_unknown\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_human_free{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"human_free\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_observation_incomplete{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observation_incomplete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_mixed_author{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"mixed_author\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_start_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_window_end_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_horizon_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_complete_ratio{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_expected_points{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_first_observed_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_runs_consent_epoch{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_runs_calculated_at_seconds{deployment_environment_name=~\"test\",service_instance_id=~\"fixture\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]))))) > 0)",
+          "eval_time": "15s",
+          "exp_samples": []
+        }
+      ],
+      "name": "a partial new field before calculation metadata is hidden between rule evaluations"
+    }
+  ]
+}

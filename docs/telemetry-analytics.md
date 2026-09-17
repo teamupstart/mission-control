@@ -3,8 +3,8 @@
 Phase 6 exports exact populations over accepted telemetry facts through the normal durable
 OTLP outbox. It does not query operational task history, complete tasks, release dependencies,
 or require Grafana or a warehouse. Enable collection and a destination as described in
-[Observability](observability.md). Dashboards and broad feature instrumentation belong to
-Phases 7 and 5 respectively.
+[Observability](observability.md). The [six Grafana dashboards](observability-dashboards.md) consume this contract; primary-action
+instrumentation is described in [the action guide](observability-actions.md).
 
 The instrument contract is `mission.analytics.v1.<view>.<field>`, registered in
 [`src/shared/telemetry-projections/index.ts`](../src/shared/telemetry-projections/index.ts).

@@ -40,6 +40,16 @@ test("legacy reviewed heads gain nullable posture and cannot count as live", () 
   assert.equal(legacy?.headSha, "abc");
   assert.equal(legacy?.source, "legacy");
   assert.equal(legacy?.reviewPosture, null);
+  assert.equal(legacy?.reviewComplete, null);
+  assert.equal(legacy?.cleanReviewHeadSha, null);
+});
+
+test("clean publication provenance survives a normal ledger update", () => {
+  updateInspectorPr("mancej/ai-harness#146", { reviewComplete: true, cleanReviewHeadSha: "abc" }, 3);
+  updateInspectorPr("mancej/ai-harness#146", { title: "Retitled pull request" }, 4);
+  const row = getInspectorPr("mancej/ai-harness#146");
+  assert.equal(row?.reviewComplete, true);
+  assert.equal(row?.cleanReviewHeadSha, "abc");
 });
 
 test("a subsequent live review can persist its posture", () => {

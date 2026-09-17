@@ -259,7 +259,7 @@ test("clean review is live-only, follows resolution, and is not duplicated after
   const stopLive = startInspector(registryStub());
   await waitFor(
     "the retry to recover the accepted review and finish the head",
-    () => getInspectorPr(liveKey)?.headSha === "head-live",
+    () => getInspectorPr(liveKey)?.cleanReviewHeadSha === "head-live",
   );
   stopLive();
 
@@ -273,6 +273,7 @@ test("clean review is live-only, follows resolution, and is not duplicated after
     "the earlier finding must resolve before the clean review is accepted",
   );
   assert.equal(liveState.posts.length, 1, "a lost response must not duplicate the clean review");
+  assert.equal(getInspectorPr(liveKey)?.round, 1, "publication retry must not spend another model review");
   assert.equal(liveState.posts[0]!.event, "COMMENT");
   assert.equal(liveState.posts[0]!.commit_id, "head-live");
   assert.deepEqual(liveState.posts[0]!.comments, []);

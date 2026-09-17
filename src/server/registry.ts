@@ -8202,6 +8202,9 @@ export class Registry extends EventEmitter {
       round: row.round,
       lastReviewedAt: row.lastReviewedAt,
       failed: row.lastError !== null,
+      reviewedHeadSha: row.headSha,
+      observedHeadSha: row.observedHeadSha,
+      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
   }
 

@@ -1095,6 +1095,7 @@ const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   working_tree_not_pushed: "The captured working tree has changes that were never committed and pushed.",
   head_mismatch: "The pull request's head is not the commit this submission reviewed.",
   review_pending: "GitHub Inspector has the pull request and has not finished reviewing it.",
+  clean_review_pending: "Inspector has no open findings and is waiting to confirm its final clean review on GitHub.",
   review_backoff: "GitHub Inspector's review failed and is waiting out its retry backoff.",
   review_error: "GitHub Inspector's last review attempt errored.",
   findings: "GitHub Inspector left findings that have to be resolved.",
@@ -1229,10 +1230,29 @@ const SPENT_EVIDENCE_SENTENCES: Record<SpentInspectorEvidenceProblem, string> = 
   finding_ledger_inconsistent: "Current Inspector finding totals do not reconcile with this workflow's historical finding record.",
 };
 
+/** Show both sides of a mismatch instead of presenting the observed head as a gate pin. */
+export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null {
+  const state = detail.inspectorGate?.state;
+  if (!state) return null;
+  const submission = selectedSubmission(detail, null);
+  const context = submission?.context as { evidence?: { headSha?: string | null } } | undefined;
+  const expected = state.targetHeadSha ?? submission?.prHeadSha ?? context?.evidence?.headSha;
+  if (state.waitReason === "head_mismatch") {
+    return `expected ${shortSha(expected) ?? "unknown"}, PR at ${shortSha(state.observedHeadSha) ?? "unknown"}`;
+  }
+  const head = state.targetHeadSha ?? state.observedHeadSha;
+  return head ? `head ${shortSha(head)}` : null;
+}
+
 /** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
   const condition = spentInspectorGateCondition(detail);
-  if (!condition) return gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null);
+  if (!condition) {
+    if (detail.inspectorGate?.state.waitReason === "head_mismatch") {
+      return `Inspector gate is waiting: ${inspectorGateHeadLabel(detail)}. Submit the current work for review to continue.`;
+    }
+    return gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null);
+  }
   switch (condition.kind) {
     case "historical_findings_open":
       return `Current Inspector still has ${condition.currentOpenFindings} open finding${condition.currentOpenFindings === 1 ? "" : "s"}; ${condition.historicalOpenFindings} ${condition.historicalOpenFindings === 1 ? "was" : "were"} recorded when this workflow stopped.`;

@@ -453,11 +453,43 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
   expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
 });
 
+test("a dry-run Inspector check requires a review of the current PR commit", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/inspector/config", { mode: "dry-run" }, "PUT");
+  const session = await dispatch(dashboard, daemon);
+  await announcePullRequest(daemon, session, "https://github.com/mancej-cyc/ai-harness/pull/478");
+  await expect.poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length).toBe(1);
+  observeCleanReview(daemon);
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`UPDATE inspector_prs SET head_sha = ?, observed_head_sha = ?,
+      review_posture = 'dry-run', clean_review_head_sha = NULL WHERE state = 'open'`)
+      .run("a".repeat(40), "b".repeat(40));
+  });
+  await refreshInspections(daemon);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const inspector = dashboard.locator(".console-detail").getByRole("link", { name: /^GitHub Inspector: no open findings/ });
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText("…");
+  await expect(inspector).toHaveClass(/insp-queued/);
+  await expect(inspector).toHaveAccessibleName(/dry run - nothing was posted.*Waiting for the current PR commit/);
+  await shoot(inspector, dashboard, "10-inspector-stale-dry-run");
+
+  withDaemonDb(daemon, (db) => {
+    db.prepare("UPDATE inspector_prs SET head_sha = observed_head_sha WHERE state = 'open'").run();
+  });
+  await refreshInspections(daemon);
+  await expect(inspector).toHaveAccessibleName(/no open findings at bbbbbbbb.*dry run - nothing was posted/);
+  await expect(inspector).not.toHaveAccessibleName(/Final clean review|Waiting for the current PR commit/);
+  await expect(inspector).toContainText("✓");
+  await expect(inspector).toHaveClass(/insp-clean/);
+  await shoot(inspector, dashboard, "11-inspector-current-dry-run");
+});
+
 test("a session nobody corrected is never offered a retro, however clean its review", async ({
   dashboard,
   daemon,
 }) => {
   await enableRetroSkill(daemon);
+  await api(daemon, "/api/inspector/config", { mode: "live" }, "PUT");
   const session = await dispatch(dashboard, daemon);
 
   await announcePullRequest(daemon, session, "https://github.com/mancej-cyc/ai-harness/pull/478");
@@ -484,8 +516,21 @@ test("a session nobody corrected is never offered a retro, however clean its rev
   // predicate exactly that way: without this line the case stayed green. The chip carries the
   // same push the offer would have ridden, so once it is on screen the absence is a refusal.
   await expect(
-    card.getByRole("link", { name: "GitHub Inspector: reviewed, nothing outstanding" }),
+    card.getByRole("link", { name: /^GitHub Inspector: no open findings/ }),
   ).toBeVisible({ timeout: 30_000 });
+  const inspector = card.getByRole("link", { name: /^GitHub Inspector: no open findings/ });
+  await expect(inspector).toContainText("…");
+  await expect(inspector).toHaveAccessibleName(/Workflow completion is separate/);
+  await shoot(inspector, dashboard, "08-inspector-publication-pending");
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`UPDATE inspector_prs SET head_sha = 'abcdef1234567890',
+      observed_head_sha = 'abcdef1234567890', clean_review_head_sha = 'abcdef1234567890'
+      WHERE state = 'open'`).run();
+  });
+  await refreshInspections(daemon);
+  await expect(inspector).toHaveAccessibleName(/no open findings at abcdef12.*Final clean review published/);
+  await expect(inspector).toContainText("✓");
+  await shoot(inspector, dashboard, "09-inspector-publication-confirmed");
   await expectNoRetroOffer(card);
   // The Complete backstop is conditioned on the same worthiness, so it is absent too - the
   // dialog that offers it is the one place the timing condition is dropped, and dropping the

@@ -214,6 +214,10 @@ head that passed those gates.
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
+Inspector completion gates require the matching reviewed PR commit and all findings resolved.
+In Live mode they also wait for the final clean review on GitHub. The session chip distinguishes
+that publication from workflow completion.
+
 Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor

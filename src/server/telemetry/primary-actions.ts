@@ -7,6 +7,7 @@ import { resolveOperationContext } from "@shared/telemetry-ingress.ts";
 import { matchPrimaryAction, primaryActionVariant, type PrimaryAction } from "@shared/telemetry-sources/primary-actions.ts";
 import { ERROR_ID_HEADER } from "@shared/telemetry-sources/experience.ts";
 import { operationObservation, recordPrimaryAction, retainPendingAction, recordSafeError, type ActionOutcome, type OperationObservation } from "./experience.ts";
+import { digest } from "./identity.ts";
 
 const requestContext = z.object({ requestId: z.string().min(1).max(900).optional(), sourceKey: z.string().min(1).max(4096).optional(), by: z.enum(["human", "foreman", "agent", "workflow"]).optional() });
 const resultShape = z.object({ ok: z.boolean().optional(), outcome: z.string().optional(), status: z.string().optional(), state: z.string().optional(),
@@ -78,7 +79,10 @@ export function primaryActionTelemetry(): MiddlewareHandler {
           // Routes in this manifest return finite JSON owner results, never streams/files.
           result = await c.res.clone().json();
         } catch { /* Unknown success stays pending. */ }
-        const action = { ...observation, ...match, action: observation.primaryAction ?? match.action, sourceId: `${match.subject}:${idempotencyKey}` };
+        // Request keys and route subjects may contain private content. Minimize before
+        // both journal capture and pending-state retention while preserving replay identity.
+        const action = { ...observation, ...match, action: observation.primaryAction ?? match.action,
+          sourceId: digest(["primary-action", match.subject, idempotencyKey]) };
         const outcome = c.error ? "failed" : primaryOutcome(match.action, c.res.status, result);
         recordPrimaryAction({ ...action, outcome });
         if (outcome === "pending" && ["pipeline.start", "pipeline.retry"].includes(match.action)) {

@@ -242,3 +242,42 @@ test("capture refusal cannot escape automation owners or nested pending-action s
   assert.equal(events("mission.action.result").filter((e) => e.facts.action === "pipeline.start").length, 1,
     "refusal retained the pending observation for later settlement");
 });
+
+test("primary request identities are private at rest and stable across replay and pending settlement", async () => {
+  const { createPipelineCommission } = await import("../src/server/pipelines/commissions.ts");
+  const { settlePendingAction } = await import("../src/server/telemetry/experience.ts");
+  openDb().prepare(`INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at)
+    VALUES (?, 'Fixture', 'Fixture', 'ship', 'codex', ?, 'backlog', 1, 1)`).run("PRIVATE_SENTINEL_task", home);
+  const commission = createPipelineCommission({ taskId: "PRIVATE_SENTINEL_task", provider: "ai-conductor", repoRoot: home,
+    id: "commission-privacy", correlationId: "correlation-privacy", launchKey: "launch-privacy", capabilities: { supported: true }, now: Date.now() });
+  const app = new Hono(); app.use("*", primaryActionTelemetry());
+  app.post("/api/sessions/:id/rename", async (c) => { await c.req.json(); return c.json({ ok: true }); });
+  app.post("/api/ensembles", async (c) => { await c.req.json(); return c.json({ ok: true }); });
+  app.post("/api/tasks/:id/pipeline/start", async (c) => { await c.req.json(); return c.json({ pipelineCommissionId: commission.id }, 202); });
+  const cases = [
+    ["/api/sessions/PRIVATE_SENTINEL_session/rename", { requestId: "PRIVATE_SENTINEL_request" }],
+    ["/api/ensembles", { sourceKey: "/private/PRIVATE_SENTINEL/repo" }],
+    ["/api/tasks/PRIVATE_SENTINEL_task/pipeline/start", { requestId: "PRIVATE_SENTINEL_pending" }],
+  ] as const;
+  const send = async () => {
+    for (const [url, body] of cases) assert.ok((await app.request(url, { method: "POST",
+      headers: { ...headers, "x-mission-operation-id": crypto.randomUUID().replaceAll("-", "") }, body: JSON.stringify(body) })).ok);
+  };
+  const assertPrivate = () => {
+    for (const table of ["telemetry_journal", "telemetry_source_identities", "telemetry_source_state"]) {
+      const rows = openDb().prepare(`SELECT * FROM ${table}`).all();
+      assert.ok(rows.length > 0, `${table} must contain the observations under test`);
+      assert.ok(!JSON.stringify(rows).includes("PRIVATE_SENTINEL"), `${table} must not retain request keys or route subjects`);
+    }
+  };
+  await send(); assertPrivate();
+  closeDb(); openDb();
+  await send();
+  settlePendingAction(`${commission.id}:1`, "applied");
+  settlePendingAction(`${commission.id}:1`, "applied");
+  runProjectionPass(); assertPrivate();
+  for (const profile of ["local", "user", "product"] as const) {
+    assert.equal(total("mission.action.count", profile), 3, "replay and settlement keep the stable operation identity");
+    assert.deepEqual(events("mission.action.result", profile).filter((e) => e.facts.action === "pipeline.start").map((e) => e.facts.outcome), ["pending", "applied"]);
+  }
+});

@@ -351,6 +351,10 @@ This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.
 the integration enabled. Start a fresh Pi session normally; it loads the extension without
 being launched through Mission Control or passing `-e`. Building alone installs nothing.
 Keep the built checkout available because the installed link points to its extension artifact.
+If that installation later moves or is removed, an app bundle dragged to another folder or a
+checkout deleted, the link it left behind is dangling and Pi silently loads nothing. The next
+daemon start, or a run of the installer above, repoints it at the current build. A link
+written by anything other than Mission Control is still never replaced or removed.
 The standalone installer also works when the running app predates the configuration API.
 
 Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP

@@ -20,6 +20,7 @@ const spec = capabilitiesFor("pi").extensions!;
 const dir = join(home, spec.isolatedDirName);
 const link = join(dir, spec.linkName);
 const { extensionsDirFor, reconcileExtensionLink, uninstallExtensionLink } = await import("../src/server/skills/reconcile.ts");
+const { PI_EXTENSION_OUTPUT, piExtensionPath } = await import("../src/server/config.ts");
 const { applyPiExtensionConfig, getPiExtensionConfig, reconcilePiExtension } = await import("../src/server/extensions/config.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { closeDb, openDb } = await import("../src/server/db.ts");
@@ -109,10 +110,19 @@ for (const operation of ["symlinkSync", "renameSync"] as const) {
 test("real files, directories, foreign links and unknown dangling links are never modified", () => {
   mkdirSync(dir);
   const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator code");
-  for (const kind of ["file", "directory", "link", "dangling"]) {
+  // Near misses for the moved-installation repair below. A dangling link is adopted only
+  // when it points at our exact build output path, so each of these stays somebody else's.
+  const unknownDangling = [
+    join(home, "missing.js"),
+    join(home, "pi-extension", "index.js"),
+    join(home, "dist", "pi-extension", "other.js"),
+    join(home, "dist", "pi-extensions", "index.js"),
+    join(home, "dist", "index.js"),
+  ];
+  for (const kind of ["file", "directory", "link", ...unknownDangling]) {
     if (kind === "file") writeFileSync(link, "operator code");
     else if (kind === "directory") mkdirSync(link);
-    else symlinkSync(kind === "link" ? foreign : join(home, "missing.js"), link);
+    else symlinkSync(kind === "link" ? foreign : kind, link);
     const before = lstatSync(link);
     for (const call of [() => reconcileExtensionLink(true), uninstallExtensionLink]) {
       const result = call();
@@ -124,6 +134,37 @@ test("real files, directories, foreign links and unknown dangling links are neve
     if (kind === "file") assert.equal(readFileSync(link, "utf8"), "operator code");
     rmSync(link, { recursive: kind === "directory" });
   }
+});
+
+test("the build output layout the reconciler recognizes is the one this build writes", () => {
+  // piExtensionPath keeps its specifier literal so the bundle smoke check can read it,
+  // so nothing but this stops the two drifting apart.
+  const previous = process.env.MISSION_PI_EXTENSION;
+  delete process.env.MISSION_PI_EXTENSION;
+  try {
+    assert.equal(piExtensionPath().endsWith(`/${PI_EXTENSION_OUTPUT.join("/")}`), true, piExtensionPath());
+  } finally { process.env.MISSION_PI_EXTENSION = previous; }
+});
+
+test("a moved or deleted installation's dangling link is repaired instead of refused", () => {
+  // Reported from a real machine: the app bundle moved from /Applications to
+  // ~/Applications, so the machine-wide link pointed at a target that no longer existed.
+  // Startup reconciliation refused it as "not ours", Pi silently loaded no extension, and
+  // the warning's own remedy - npm run install-pi-extension - hit the same refusal.
+  const moved = join(home, "gone", "Mission Control.app", "Contents", "Resources", "app", ...PI_EXTENSION_OUTPUT);
+  mkdirSync(dir, { recursive: true });
+  symlinkSync(moved, link);
+  assert.equal(existsSync(moved), false, "the previous installation is gone, as on the reported machine");
+  const result = reconcileExtensionLink(true);
+  assert.deepEqual(result.blocked, []);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.linked, [spec.linkName]);
+  assert.equal(readlinkSync(link), target);
+  // Off has to clear the orphan too, so neither direction leaves an operator wedged.
+  rmSync(link); symlinkSync(moved, link);
+  assert.equal(uninstallExtensionLink().changed, true);
+  assert.equal(existsSync(link), false);
 });
 
 test("missing build cannot replace a working link, and off removes our dangling link", () => {

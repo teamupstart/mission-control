@@ -36,6 +36,7 @@ interface ChildProcessBoundary {
     | "current-runtime"
     | "fixed-os-utility"
     | "locator-result"
+    | "verified-migration-source"
     | "operator-command"
     | "resolved-path-parameter"
     | "test-provider";
@@ -56,6 +57,10 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
+  ],
+  "src/main/migration-integration-ports.ts": [
+    { operation: "execFileSync", command: "command.path", contract: "locator-result", reason: "Migration MCP inspection uses the configured harness CLI and its resolved child environment." },
+    { operation: "execFile", command: 'join(plan.source, "Contents/MacOS/Mission Control")', contract: "verified-migration-source", reason: "Login cleanup launches the retained source only after validating its pinned bundle identity; its nonce-bound entry exits before runtime startup." },
   ],
   "src/main/update-build.ts": [
     { operation: "spawn", command: "request.node", contract: "current-runtime", reason: "absolute runtime selected by Electron" },
@@ -255,7 +260,9 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "fixed-os-utility":
       return boundary.command === "executable";
     case "locator-result":
-      return boundary.command === "executable.path" || boundary.command === "resolved";
+      return ["executable.path", "command.path", "resolved"].includes(boundary.command);
+    case "verified-migration-source":
+      return boundary.command === 'join(plan.source, "Contents/MacOS/Mission Control")';
     case "operator-command":
       return boundary.command === "runtime.command";
     case "resolved-path-parameter":

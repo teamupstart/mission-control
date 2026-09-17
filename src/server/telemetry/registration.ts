@@ -28,6 +28,18 @@ export interface EmittedSpan {
   status: "unset" | "ok" | "error";
   statusMessage: string | null;
   attributes: Record<string, string | number | boolean>;
+  /**
+   * Internal correlation ids to promote as span attributes, translated per destination.
+   *
+   * RAW here and scoped by the engine, because the per-profile salt is what makes the same
+   * session unjoinable across two audiences - and a projection cannot know it. A projection
+   * that hashed them itself would either leak the mapping or invent a second one.
+   *
+   * Catalog entries have declared `refAttributes` since Phase 1; nothing read them until
+   * Phase 3 needed a trace to say which session and which task a span belongs to, so a
+   * declared ref silently reached no span at all.
+   */
+  refs?: Record<string, string>;
 }
 
 /**
@@ -49,6 +61,12 @@ export interface TelemetryProjectionContext {
   policyEpoch: number;
   /** Wall clock for this pass. Injected so a fixture can freeze it. */
   now: number;
+  /** True only after the entire accepted journal prefix has been consumed. */
+  caughtUp?: boolean;
+  /** Latest recorded loss, conservatively shared across profiles; null means no recorded gap. */
+  lastGapAt?: number | null;
+  /** Immutable resource captured with the current event; absent in snapshot callbacks. */
+  resource?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -72,7 +90,10 @@ export interface TelemetryProjection<State = unknown> {
   id: string;
   /** Bumped when `State`'s shape changes. `migrateState` is how an old row survives. */
   stateVersion: number;
-  initialState(): State;
+  /** Opt in to bounded expiry/calculation on quiet ticks, without inventing a source event. */
+  idleSnapshots?: boolean;
+  /** New projections may use the exact consent/cutover time; existing factories ignore it. */
+  initialState(now?: number): State;
   /**
    * Bring state written by an older build forward, or return null to start over.
    *

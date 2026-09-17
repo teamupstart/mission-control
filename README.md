@@ -55,6 +55,17 @@ fleet.
 - [Ensembles](#ensembles)
 - [The whole loop](#the-whole-loop)
 
+## Guided tours
+
+Each new dashboard window or reload offers a tour picker with a list and preview. Browse
+**See the work**, **Author what runs**, or the recommended **Set up this machine**, then
+explicitly select **Start this tour**. No tour starts just from opening or browsing the picker.
+
+Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home.
+**Browse tours** in **Settings > Help & tours** or the command palette always reopens it.
+Tours start at their first stop and do not save progress or resume. See the
+[guided tours reference](docs/ui.md#guided-tours) for details.
+
 ## The board
 
 The board turns a directory full of agent sessions into an operational view. One column per state
@@ -295,6 +306,8 @@ repository:
   To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  Fresh installs use `~/Applications`. Eligible legacy system installations move there when
+  accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
@@ -386,7 +399,8 @@ and build contracts.
 
 Sessions can [report product feedback](docs/sessions.md) with the
 `report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue automatically and returns its GitHub URL, without a second dashboard approval.
+issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
+dashboard approval. The dashboard feedback form uses the same destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
@@ -399,6 +413,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
+  gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

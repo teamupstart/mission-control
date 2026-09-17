@@ -8,6 +8,7 @@ import test from "node:test";
 // The route boundary owns source attribution and MCP authentication. This isolated app uses
 // one discovered session and an injected product-issue service, never the operator's gh.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-product-issues-http-"));
+process.env.MISSION_PRODUCT_ISSUES_REPO = "";
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -107,16 +108,15 @@ async function confirm(
   };
 }
 
-test("dashboard and MCP share issue structure and publisher, with distinct source labels", async () => {
+test("dashboard and MCP publish to the default mission-control repository, with distinct source labels", async () => {
   const calls: string[][] = [];
   const bodies: Array<string | undefined> = [];
   const service = new ProductIssueService({
-    target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async (_bin, args, options) => {
       calls.push(args);
       bodies.push(options?.input);
       return stubRun({
-        stdout: "https://github.com/acme/public-issues/issues/3\n",
+        stdout: "https://github.com/teamupstart/mission-control/issues/3\n",
         stderr: "",
         code: 0,
       });
@@ -130,7 +130,8 @@ test("dashboard and MCP share issue structure and publisher, with distinct sourc
     body: JSON.stringify(dashboardDraft),
   });
   assert.equal(dashboard.status, 200);
-  const dashboardPreview = await dashboard.json() as { labels: string[]; body: string };
+  const dashboardPreview = await dashboard.json() as { target: string; labels: string[]; body: string };
+  assert.equal(dashboardPreview.target, "teamupstart/mission-control");
   assert.deepEqual(
     dashboardPreview.labels,
     ["documentation", "status:needs-triage", "source:dashboard"],
@@ -147,7 +148,8 @@ test("dashboard and MCP share issue structure and publisher, with distinct sourc
     }),
   });
   assert.equal(agent.status, 200);
-  const agentPreview = await agent.json() as { labels: string[]; body: string };
+  const agentPreview = await agent.json() as { target: string; labels: string[]; body: string };
+  assert.equal(agentPreview.target, "teamupstart/mission-control");
   assert.equal(agentPreview.body, dashboardPreview.body);
   assert.deepEqual(
     agentPreview.labels,
@@ -175,6 +177,9 @@ test("dashboard and MCP share issue structure and publisher, with distinct sourc
   });
   assert.equal(dashboardSubmit.status, 201);
   assert.equal(calls.length, 2);
+  for (const args of calls) {
+    assert.equal(args[args.indexOf("--repo") + 1], "teamupstart/mission-control");
+  }
   assert.deepEqual(bodies, [agentPreview.body, dashboardPreview.body]);
   assert.deepEqual(calls[0]!.map((arg) => arg === "source:agent" ? "source:dashboard" : arg), calls[1],
     "both routes publish through the same GitHub command structure");

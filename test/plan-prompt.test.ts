@@ -21,7 +21,7 @@ import {
   planSkillsForAgent,
   planSkillsForSession,
 } from "../src/server/plans/skills.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "../src/server/plans/tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "../src/server/plans/tools.ts";
 import {
   requiredSkillCommand,
   skillInvocationForAgent,
@@ -295,14 +295,14 @@ test("the skills the contract names are the skills the dispatch requires", () =>
 
 test("every plan launch requires the tools its prompt names", () => {
   const appendix = planContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL]) {
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
     assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool), `a caller can require ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL].sort(),
+    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL].sort(),
   );
 });
 
@@ -310,10 +310,10 @@ test("a plan's requirement is unioned with the caller's, and stays a set", () =>
   const required = kindMissionMcpRequirement(mkTask(), { tools: ["report_status"] });
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL].sort(),
+    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL].sort(),
   );
   const again = kindMissionMcpRequirement(mkTask(), required);
-  assert.equal(again?.tools.length, 3, "a repeat adds nothing");
+  assert.equal(again?.tools.length, required?.tools.length, "a repeat adds nothing");
 });
 
 test("a scout's launch is untouched by the plan requirement landing beside it", () => {

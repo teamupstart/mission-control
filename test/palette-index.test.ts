@@ -449,6 +449,7 @@ test("the fixed commands include one row per registered tour beside existing aff
   const targets = rows.map((row) => row.target.kind).sort();
   assert.deepEqual(targets, [
     "bind-workflow",
+    "browse-tours",
     "dispatch",
     "report-product-issue",
     "route",

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { migrationPlanFixture } from "./helpers/migration-plan.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const MAIN_BUNDLE = join(REPO_ROOT, "dist", "main", "index.cjs");
@@ -88,9 +89,10 @@ function fixture(): { home: string; state: string; personal: string } {
 function runEntry(
   runningBundle: string,
   env: Record<string, string> = {},
+  args: string[] = [],
 ): { observed: Observed; fixture: ReturnType<typeof fixture> } {
   const paths = fixture();
-  const result = spawnSync(process.execPath, [HARNESS], {
+  const result = spawnSync(process.execPath, [HARNESS, ...args], {
     encoding: "utf8",
     timeout: 120_000,
     env: {
@@ -122,6 +124,14 @@ test("the entry point hands a system launch to the personal app before taking an
   // straight back to the copy they were being moved off.
   assert.ok(!observed.app.includes("requestSingleInstanceLock"));
   assert.deepEqual(observed.app, ["exit(0)", "quit"]);
+});
+
+test("login cleanup with no matching transaction exits before redirect or runtime startup", () => {
+  const { observed } = runEntry(SYSTEM_BUNDLE, {}, ['--mission-migration-remove-login', 'stale']);
+  assert.deepEqual(observed.app, ['exit(1)']);
+  assert.deepEqual(observed.spawn, []);
+  assert.equal(observed.logged.length, 1);
+  assert.match(observed.logged[0]!, /Migration login cleanup failed/);
 });
 
 test("a failed hand-over leaves the entry point running and asking for the lock", () => {
@@ -170,7 +180,8 @@ test("the entry point launches nothing when it is already the installed app", ()
 
   assert.equal(observed.loadError, null);
   assert.deepEqual(observed.spawn, []);
-  assert.deepEqual(observed.app, ["requestSingleInstanceLock"]);
+  // The harness denies this lock so the real entry point cannot start a daemon.
+  assert.deepEqual(observed.app, ["requestSingleInstanceLock", "quit"]);
   rmSync(paths.home, { recursive: true, force: true });
 });
 
@@ -193,6 +204,28 @@ test("an unmanaged entry point is untouched by any of this", () => {
 
   assert.equal(observed.loadError, null);
   assert.deepEqual(observed.spawn, []);
-  assert.deepEqual(observed.app, ["requestSingleInstanceLock"]);
+  assert.deepEqual(observed.app, ["requestSingleInstanceLock", "quit"]);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("a failed migrated background startup releases the shell so reopening can retry", (t) => {
+  const paths = fixture();
+  t.after(() => rmSync(join(paths.home, '..'), {recursive: true, force: true}));
+  const state = realpathSync(paths.state);
+  const plan = migrationPlanFixture({schema: 1, repo: CANONICAL_REPO, releaseTag: 'v1.2.3', installedVersion: '1.2.3', installedCommit: COMMIT, sourceClone: join(state, 'app-src'), appPath: SYSTEM_BUNDLE, installedAt: '2026-09-14T00:00:00.000Z'});
+  plan.target = paths.personal;
+  plan.stateDirectory = state;
+  plan.intendedReceipt.appPath = paths.personal;
+  plan.intendedReceipt.installedVersion = plan.targetIdentity.version!;
+  writeFileSync(join(state, 'install-migration.json'), JSON.stringify({plan, owner: {pid: 1, identity: 'finished fixture owner'}, ownerRole: 'recovery', stage: 'complete', repairs: [], inventory: null, targetProcess: null}));
+  const result = spawnSync(process.execPath, [HARNESS], {encoding: 'utf8', timeout: 15_000, env: {...process.env,
+    HOME: paths.home, MISSION_HOME: state, HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+    HARNESS_APP_PATH: join(paths.personal, 'Contents/Resources/app'), HARNESS_BACKGROUND_FAILURE: '1',
+  }});
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout.trim().split('\n').at(-1)!) as Observed;
+  assert.equal(observed.loadError, null);
+  assert.deepEqual(observed.app, ['requestSingleInstanceLock', 'showErrorBox(Personal installation needs recovery)', 'exit(1)']);
+  assert.ok(observed.logged.some((message) => message.includes('running Mission Control daemon is from an older build')));
+  assert.deepEqual(observed.spawn, []);
 });

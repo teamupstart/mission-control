@@ -7,6 +7,7 @@ import { WORKFLOW_COMMAND_UNKNOWN } from "../../src/shared/workflow.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Library › Commands: the shelf, the fixed-slot editor, and the workflow palette that reads it.
@@ -185,6 +186,10 @@ test("a global default is typed, previewed, saved, and lands in the daemon's cat
   dashboard,
   daemon,
 }) => {
+  const telemetry = await fetch(`${daemon.baseURL}/api/telemetry/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true }),
+  });
+  expect(telemetry.ok).toBe(true);
   // Precondition, asserted rather than assumed: every claim below is about a change of state.
   const opening = await catalog(daemon);
   expect(opening.map((view) => view.slot)).toEqual([...SLOTS]);
@@ -229,6 +234,15 @@ test("a global default is typed, previewed, saved, and lands in the daemon's cat
   await expect(dashboard.getByRole("complementary", { name: "Command library" }))
     .toContainText("Global default");
   await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+
+  const observations = withDaemonDb(daemon, (db) => db.prepare(
+    "SELECT facts_json, actor_json FROM telemetry_journal WHERE name = 'mission.action.result'",
+  ).all() as Array<{ facts_json: string; actor_json: string }>);
+  const command = observations.map((row) => ({ facts: JSON.parse(row.facts_json), actor: JSON.parse(row.actor_json) }))
+    .filter((row) => row.facts.action === "workflow.command");
+  expect(command).toHaveLength(1);
+  expect(command[0]?.facts).toMatchObject({ outcome: "applied", surface: "library" });
+  expect(command[0]?.actor).toMatchObject({ kind: "human", basis: "app_context" });
 
   await dashboard.goto(`${daemon.baseURL}/#/library`);
   await expect(card(dashboard, "test")).toContainText("Global default");

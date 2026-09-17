@@ -32,6 +32,8 @@ interface DesktopUpdateState {
   check(): void;
   apply(): void;
   install(): void;
+  keepSystem(): void;
+  repairMigration(): void;
   cancel(): void;
   defer(): void;
   dismiss(): void;
@@ -62,10 +64,12 @@ export function useDesktopUpdates(): DesktopUpdateState {
   const cancel = useCallback(() => {
     void updates?.cancel().catch(() => {});
   }, [updates]);
+  const keepSystem = useCallback(() => { void updates?.keepSystem?.().catch(() => {}); }, [updates]);
+  const repairMigration = useCallback(() => { void updates?.repairMigration?.().catch(() => {}); }, [updates]);
   const defer = useCallback(() => {
     void updates?.defer().catch(() => {});
   }, [updates]);
   const dismiss = useCallback(() => setDismissed(true), []);
 
-  return { snapshot: dismissed ? null : snapshot, check, apply, install, cancel, defer, dismiss };
+  return { snapshot: dismissed ? null : snapshot, check, apply, install, keepSystem, repairMigration, cancel, defer, dismiss };
 }

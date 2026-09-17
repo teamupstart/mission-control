@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -164,7 +165,8 @@ let db: DatabaseSync | undefined;
  *    default-off: an upgraded database gains empty tables and captures nothing until an
  *    operator enables collection.
  */
-export const CURRENT_DATABASE_SCHEMA_VERSION = 2;
+// 3: bounded telemetry source checkpoints for immutable workflow context and timing.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 3;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2917,6 +2919,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_file_comment_messages_thread
       ON file_comment_messages(thread_id, created_at);
+
+    -- Last reported account quota survives restarts, separately from billable usage.
+    CREATE TABLE IF NOT EXISTS claude_rate_limit_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reading_json TEXT NOT NULL
+    );
 
     -- The walkthrough's run state: one row per session, and a TABLE rather than a derived
     -- value. "Paused" and "never started" are the same set of rows - everything queued,
@@ -12056,6 +12064,8 @@ export interface ConsumePromptedGenerationInput {
   noteKey: string;
   sessionCwd: string | null;
   generation: number;
+  /** Compared inside the consumption statement, never an authority to select a workflow. */
+  expectedPlanPublication?: PlanPublicationContext;
   /** Daemon-verified intent episode. Absent only for legacy in-process callers. */
   episodeKey?: string | null;
   ask: boolean;
@@ -12106,6 +12116,7 @@ export function consumePromptedGeneration(
   const ask = input.ask ? 1 : 0;
   const handoffKind = input.directHandoff?.kind ?? null;
   const handoffEpisode = input.directHandoff?.episodeKey ?? null;
+  const publication = input.expectedPlanPublication;
   const currentRow = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
     .get(input.noteKey) as unknown as QueueRow | undefined;
   const previousDecision = currentRow ? toPromptedDecision(currentRow) : null;
@@ -12157,6 +12168,21 @@ export function consumePromptedGeneration(
         AND completed_at IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM foreman_queue_items WHERE note_key = ?
+        )
+        -- The read before this request is not a lock. Compare plan ownership in the
+        -- same statement as both INSERT and UPDATE consumption. A bound owner may
+        -- record a Manual ask, but can never authorize a direct-shipping latch.
+        AND (
+          ? IS NULL
+          OR (? = 'skill' AND NOT EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state <> 'archived'
+          ))
+          OR (? = 'workflow' AND ? IS NULL AND EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state = 'active'
+               AND id = ? AND workflow_version_id = ? AND trigger_mode = ?
+          ))
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
@@ -12212,6 +12238,15 @@ export function consumePromptedGeneration(
     input.noteKey,
     input.generation,
     input.noteKey,
+    publication?.owner ?? null,
+    publication?.owner ?? null,
+    input.noteKey,
+    publication?.owner ?? null,
+    handoffKind,
+    input.noteKey,
+    publication?.owner === "workflow" ? publication.bindingId : null,
+    publication?.owner === "workflow" ? publication.workflowVersionId : null,
+    publication?.owner === "workflow" ? publication.triggerMode : null,
     ask,
     ask,
   );

@@ -241,7 +241,8 @@ whose session disappeared shows **Reviewers stopped** in grey rather than an amb
 
 The ☺ glyph in the topbar's tool cluster - beside Settings and Alerts - and **Report product
 feedback…** in the palette's **Do** group open the same dialog. There is one of it, and one
-draft behind it, so it does not matter which door you use.
+draft behind it, so it does not matter which door you use. Reports go to
+`teamupstart/mission-control` by default, the same destination used by the MCP reporting tools.
 
 The form is five report types (**Bug**, **Feature request**, **Documentation**, **Usability**,
 **Other**), a one-line title, and a details box whose prompt changes with the type while
@@ -316,7 +317,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 | Group | Kinds | The second line says |
 | --- | --- | --- |
 | **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
-| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), or start a guided tour |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), browse tours, or start a guided tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
 Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a
@@ -401,14 +402,30 @@ Workflow posture, and MCP tool list. An unknown tour, or an operation a tour did
 is refused before any task is created rather than falling through to general dispatch, and
 cleanup refuses a task whose title, labels, and intent prefix are not the recipe's own.
 
-Three tours are registered, and none stores progress or resumes. A fresh profile starts
-**Set up this machine** once automatically - nothing else in the product works until this
-machine has the tools the work needs and the repositories that work may act in - then records
-that the orientation has been shown so it does not reopen over later work. Which tour that is lives in one place, `FIRST_RUN_TOUR` beside
-the entries, rather than in the effect that starts it. Exiting a tour restores the page, the
-asset, and the control it started from, unless its entry declares an `exit` route because
-handing that page over is the point; see **Set up this machine** below. Each tour can always be
-started manually at stop one.
+Every new dashboard window or reload offers **Explore Mission Control**, a list-and-preview
+picker containing every registered tour. It waits for the daemon's saved preference and for
+other dialogs to close. **Set up this machine** is recommended and initially previewed;
+selecting a row only changes the preview. **Start this tour** explicitly starts that tour at
+stop one. Opening, browsing, and dismissing the picker create no tasks and preserve the route.
+
+**Show tours when Mission Control opens** defaults on for both new and upgraded profiles.
+Uncheck it to save an opt-out for this Mission Control state home, across windows and daemon
+restarts. Saving disables only the checkbox; a failed save restores the previous setting and
+reports the error inline, or in a dashboard banner after dismissal once other dialogs and tours
+close. The banner's **Browse tours** action lets you retry. Already-open windows do not live-sync
+this preference. The legacy one-time orientation flag does not opt anyone out of this picker.
+
+**Dismiss**, the close button, Escape, or the backdrop closes the picker for the current
+document. Refocusing, navigating, or reconnecting does not reopen it. **Browse tours** in
+**Settings > Help & tours** or the command palette reopens it regardless of the saved preference.
+The existing direct tour shortcuts remain. A dirty draft keeps the picker beneath the ordinary
+leave dialog: Cancel keeps the draft; Discard and leave changes route, then **Start this tour**
+must be pressed again.
+
+Three tours are registered, and none stores progress or resumes. Exiting a tour restores the
+page, asset, and control it started from, unless its entry declares an exit route because
+handing that page over is the point; see **Set up this machine** below. Finishing or exiting a
+tour does not reopen the picker. Each tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md),
@@ -558,8 +575,8 @@ no tour active.
 
 #### Set up this machine
 
-**Set up this machine** is the tour a fresh profile receives automatically, and it can be
-started again from the Settings rail's **Help & tours** footer or **Start Set up this machine
+**Set up this machine** is the startup picker’s recommended preview, and it can also be
+started directly from the Settings rail's **Help & tours** footer or **Start Set up this machine
 tour** in the palette. Its subject is finding and using two panels rather than reading either,
 so it is seven stops and deliberately walks neither the dependency families nor the grant
 cells. The first four are what this machine CAN do:
@@ -595,7 +612,7 @@ introducing a panel and then taking the page away would undo the point of it. La
 selection, Board drill-in, filter, and the open Line drawer are still restored, and the exit
 route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
 the control that started the tour when it survived the move, and to the **Trust** rail row
-when it did not, which is the automatic first-run case. The rail row rather than the add
+when it did not, which includes a startup-picker launch without an invoker. The rail row rather than the add
 field: a spotlight may be any element, but a landing control has to be focusable, and the add
 field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
 the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
@@ -604,9 +621,8 @@ non-focusable area leaves, so it is not started at all when the invoker took foc
 The tour is explanatory and read-only. It does not click a remedy, execute a command, install a
 tool, or click a grant cell - which matters most across the Trust half, where a stop that
 clicked a cell would hand out a live GitHub grant on behalf of an operator who only pressed
-Next. It writes no progress of its own and cannot be resumed; the one-time first-run flag
-described above is consumed by App when the automatic tour starts, not by any stop. Three of
-its seven spotlights are outside both panels, in the top bar and the Settings rail, which is
+Next. It writes no progress of its own and cannot be resumed. Starting it does not change
+the startup-picker preference. Three of its seven spotlights are outside both panels, in the top bar and the Settings rail, which is
 the whole point: an operator who has never opened Setup or Trust has to be shown where each
 one is before its rows mean anything. Both halves live in the `setup`
 target namespace, because a namespace is owned by the tour that spotlights a target rather

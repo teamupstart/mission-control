@@ -18,7 +18,7 @@ import {
 import { STATE_DIR, mcpServerPath } from "./config.ts";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./plans/tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "./plans/tools.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
 import { COMPLETE_RETRO_NO_CHANGE_TOOL } from "./retro-tool.ts";
@@ -62,6 +62,7 @@ export const MISSION_MCP_TOOLS = [
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
+  PLAN_PUBLICATION_TOOL,
   "request_input",
   "report_product_feedback",
   "report_product_issue",
@@ -120,7 +121,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL],
+  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL],
   pipeline: [],
   chat: [],
 };

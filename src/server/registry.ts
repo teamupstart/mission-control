@@ -1,3 +1,4 @@
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -117,6 +118,7 @@ import type {
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
+import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
 // Who typed a given user turn, reserved at delivery by every non-human sender. Read here so
@@ -256,6 +258,12 @@ import {
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
+// The ONE telemetry call in this file, and deliberately so: everything else Phase 3 needs
+// from the Registry arrives through the event stream it already publishes. This is the
+// exception because the driver's per-turn usage never reaches that stream - it is written
+// straight to the ledger here - and observing it anywhere else would either miss it or
+// re-read it from a source that cannot deduplicate.
+import { observeUsageRecorded } from "./telemetry/index.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import {
   launchEchoFingerprint,
@@ -1022,9 +1030,8 @@ export class Registry extends EventEmitter {
    *
    * ONE value for the whole registry, not one per session, because that is what the fact
    * is: a five-hour window is a property of the ACCOUNT, and every session on the machine
-   * reports the same one. Held in memory and never persisted - it is a live gauge with a
-   * server-supplied reset time, and a stored percentage would be read as current long
-   * after it stopped being true.
+   * reports the same one. Persisted so a restart during quota exhaustion does not erase
+   * the only reading available. Expired windows travel separately as last-known readings.
    */
   private latestRateLimits: RateLimits | null = null;
   private latestRateLimitSources = new Map<AgentType, RateLimitSource>();
@@ -1079,6 +1086,7 @@ export class Registry extends EventEmitter {
 
   constructor() {
     super();
+    this.latestRateLimits = loadClaudeRateLimits();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
@@ -5502,7 +5510,15 @@ export class Registry extends EventEmitter {
     if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
       return;
     }
-    this.latestRateLimits = { fiveHour, sevenDay, updatedAt: Date.now() };
+    const now = Date.now();
+    const recorded = (window: RateLimitWindow | null, previous: RateLimitWindow | null | undefined) =>
+      window && (previous && rateWindowEqual(window, previous) ? previous : { ...window, recordedAt: now });
+    this.latestRateLimits = {
+      fiveHour: recorded(fiveHour, prev?.fiveHour),
+      sevenDay: recorded(sevenDay, prev?.sevenDay),
+      updatedAt: now,
+    };
+    saveClaudeRateLimits(this.latestRateLimits);
     this.recomputeFleetCost();
   }
 
@@ -5628,6 +5644,31 @@ export class Registry extends EventEmitter {
       ts: now,
       models: usage.models,
     });
+    // The third canonical writer, observed on the same terms as the other two: AFTER the
+    // ledger commit, keyed on the ledger's own conflict target. That key is the turn id, so a
+    // driver re-emitting a `result` it already reported - a resumed stream replaying its tail,
+    // a supervisor reconnecting - produces a duplicate here rather than a second set of
+    // tokens. The basis is `reported` because Claude Code priced this itself, from rates the
+    // account has and this repository does not.
+    for (const model of usage.models) {
+      observeUsageRecorded({
+        identity: `${noteKey}|${usage.turnId}|${model.modelId}`,
+        usageOrigin: "authoring",
+        costBasis: model.reportedCostUsd === null ? "unpriced" : "reported",
+        modelId: model.modelId,
+        input: model.input,
+        output: model.output,
+        reasoningOutput: model.reasoningOutput,
+        cacheRead: model.cacheRead,
+        cacheWrite: model.cacheWrite,
+        costUsd: model.reportedCostUsd,
+        agent: s.agent,
+        sessionId: s.id,
+        conversationId: s.agentSessionId,
+        occurredAt: now,
+        now,
+      });
+    }
     this.applyDurableUsage(noteKey);
   }
 
@@ -5686,6 +5727,7 @@ export class Registry extends EventEmitter {
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
       // and a snapshot served between recomputes is as honest as an emitted one.
       rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
+      lastKnownRateLimits: this.latestRateLimits,
       rateLimitSources: [...this.latestRateLimitSources.values()]
         .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
         .filter((source) => source.windows.length > 0),
@@ -5726,6 +5768,7 @@ export class Registry extends EventEmitter {
       // automation line whenever the loops spent but the fleet did not.
       JSON.stringify(this.lastFleetCost.automation) === JSON.stringify(fleet.automation) &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
+      rateLimitsDisplayEqual(this.lastFleetCost.lastKnownRateLimits ?? null, fleet.lastKnownRateLimits ?? null) &&
       rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;
     if (same) return;
@@ -8590,6 +8633,7 @@ export class Registry extends EventEmitter {
       logicalKey: string;
       generation: number;
       expectedIntent: SessionIntentGuard;
+      expectedPlanPublication?: PlanPublicationContext;
       ask: boolean;
       /** Record a direct-shipping handoff in the same write, or null to consume only. */
       directHandoff: PromptedDirectHandoffKind | null;
@@ -8627,6 +8671,7 @@ export class Registry extends EventEmitter {
       sessionCwd: session.cwd,
       generation: input.generation,
       episodeKey: input.expectedIntent.episodeKey,
+      expectedPlanPublication: input.expectedPlanPublication,
       ask: input.ask,
       // The authorizing episode is the one this boundary just RE-VERIFIED against the
       // live goal, not the one the caller sent. `sessionIntentMatches` above already

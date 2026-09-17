@@ -70,6 +70,20 @@ test("the conversation rendering round-trips, and an unknown one is refused", ()
   assert.equal(getUiConfig().conversationView, "chat", "a refused patch changed the store");
 });
 
+test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
+  assert.equal(getUiConfig().showToursOnStartup, true);
+  for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {
+    setAppConfig(APP_CONFIG_ENTRIES.ui, old);
+    assert.equal(getUiConfig().showToursOnStartup, true);
+  }
+  setUiConfig({ showToursOnStartup: false });
+  setUiConfig({ richText: false });
+  assert.equal(getUiConfig().showToursOnStartup, false);
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>).showToursOnStartup, false);
+  assert.throws(() => setUiConfig({ showToursOnStartup: "false" } as never));
+  assert.equal(getUiConfig().showToursOnStartup, false);
+});
+
 test("a key from a retired preference is dropped rather than carried forever", () => {
   // `usageBarCollapsed` folded the topbar's second row, which the spend popover retired.
   // The schema is not `.strict()`, so a config saved by an older build still OPENS - the

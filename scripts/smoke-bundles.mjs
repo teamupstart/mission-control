@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -30,9 +31,9 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Long enough for a cold ESM load of a ~780KB bundle on a slow CI runner. */
@@ -452,6 +453,7 @@ async function declaredMcpTools() {
       COMPLETE_RETRO_NO_CHANGE_TOOL: "src/server/retro-tool.ts",
       PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
       PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
+      PLAN_PUBLICATION_TOOL: "src/server/plans/tools.ts",
     }[ref[1]];
     if (!from) {
       fail(`MISSION_MCP_TOOLS names ${ref[1]}, which this smoke does not know how to resolve`);
@@ -770,6 +772,24 @@ async function run(command, args) {
   return { code, output };
 }
 
+async function smokeDetachedUpdateHelper() {
+  const root = await mkdtemp(join(tmpdir(), "mission-helper-smoke-"));
+  try {
+    const packaging = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
+    for (const file of UPDATE_HELPER_FILES) {
+      if (!packaging.includes(`  - ${file}\n`)) throw new Error(`Detached dependency missing from package: ${file}`);
+      const target = join(root, file);
+      await mkdir(dirname(target), {recursive: true});
+      await copyFile(new URL(`../${file}`, import.meta.url), target);
+    }
+    const result = await run(process.execPath, [join(root, "scripts/apply-update.mjs"), "--target-tag", "v1.0.0"]);
+    if (result.code !== 1 || !result.output.includes("missing sourceClone")) throw new Error("The detached helper could not load its complete dependency graph.");
+    console.log("[smoke] detached update helper loads with only its packaged copy inventory");
+  } catch (error) { fail(String(error)); }
+  finally { await rm(root, {recursive: true, force: true}); }
+}
+
+await smokeDetachedUpdateHelper();
 await smokeNativeKeepAwake();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();

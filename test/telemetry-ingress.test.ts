@@ -114,11 +114,11 @@ test("the allowlist is a catalog property, so it cannot be widened from a call s
   // neighbouring definition.
   assert.deepEqual(
     browserIngressEvents().map((e) => e.name),
-    [TELEMETRY_SETTINGS_OPENED_EVENT.name],
+    ["mission.feature.entry", "mission.renderer.error", "mission.connection.recovered", TELEMETRY_SETTINGS_OPENED_EVENT.name],
   );
   // And everything else is explicitly not.
   for (const event of Object.values(TELEMETRY_EVENTS)) {
-    if (event.name === TELEMETRY_SETTINGS_OPENED_EVENT.name) continue;
+    if (["mission.feature.entry", "mission.renderer.error", "mission.connection.recovered", TELEMETRY_SETTINGS_OPENED_EVENT.name].includes(event.name)) continue;
     assert.equal(event.ingress, null, `${event.name} must not be reachable from a page`);
   }
 });

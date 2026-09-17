@@ -317,10 +317,14 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
-A plan finishes on Foreman's ordinary boundary and is offered the ordinary wrap-up a ship task
-gets, so the plan lands as a pull request. That is deliberate rather than incidental: the
-scheduled phase tasks carry paths rather than content, and those paths have to resolve on the
-default branch before any phase can start.
+A plan with a bound workflow finishes its approved artifacts and requested scheduling, then
+ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
+the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
+creates the PR directly. The skill refreshes ownership with `get_plan_publication_context`;
+manual bindings keep their manual submission boundary, and an unavailable read does not permit
+direct publication. Artifacts still must be committed and pushed before phase tasks are
+scheduled. Those tasks depend on the planning session and remain blocked until the planning
+PR merges, when their referenced paths become available on the default branch.
 
 The plan also **outlives the checkout it was written in**. When anything is about to destroy
 that checkout - Reclaim, Remove, Cancel, Reschedule, or the startup pass after a restart the

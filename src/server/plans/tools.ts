@@ -24,3 +24,6 @@ export const PLAN_DECISIONS_TOOL = "request_plan_decisions" as const;
 
 /** How `phased-plan` schedules one dependency-linked backlog task per phase. */
 export const PLAN_SCHEDULING_TOOL = "create_task" as const;
+
+/** Live workflow authority before the skill takes its direct publication path. */
+export const PLAN_PUBLICATION_TOOL = "get_plan_publication_context" as const;

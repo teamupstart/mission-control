@@ -37,6 +37,7 @@ import {
 import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
+import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -61,6 +62,9 @@ async function http(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
+    "x-mission-operation-id": crypto.randomUUID().replaceAll("-", ""),
+    "x-mission-operation-surface": "mcp",
+    "x-mission-operation-actor": "agent",
     ...extraHeaders,
     "content-type": "application/json",
     "x-harness-token": readClientToken(),
@@ -861,6 +865,31 @@ server.registerTool(
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "get_plan_publication_context",
+  {
+    title: "Read plan PR ownership",
+    description: "Before a planning skill creates a pull request, read who owns publication. " +
+      "A workflow owner means finish planning and yield; a skill owner means the skill may follow " +
+      "its direct PR path, subject to the task's instructions. Unavailable context is not permission " +
+      "to publish. This read never authorizes merge or overrides a no-PR/completion handoff.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true },
+  },
+  async () => {
+    try {
+      const response = await http("/mcp/plan-publication", "POST", {
+        env: ENV, sessionId: SESSION_ID, cwd: process.cwd(),
+      });
+      if (!response.ok) return textResult(`Could not read plan publication ownership (${response.status}): ${await response.text()}`, true);
+      const context = PlanPublicationContextSchema.parse(await response.json());
+      return textResult(JSON.stringify(context), context.owner === "unavailable");
+    } catch (error) {
+      return textResult(`Could not read plan publication ownership: ${String(error)}`, true);
     }
   },
 );

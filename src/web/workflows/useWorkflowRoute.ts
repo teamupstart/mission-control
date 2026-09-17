@@ -577,8 +577,8 @@ export function pipelineRunHash(run: {
 export interface MissionRouter {
   route: MissionRoute;
   /**
-   * Ask to move. `false` means the move did NOT happen - either because a dirty draft is
-   * now holding it (see `pendingRoute`) or because it was already the current route.
+   * Ask to move. `false` means a dirty draft is holding the move (see `pendingRoute`).
+   * Asking for the current route succeeds without navigating.
    */
   navigate: (route: MissionRoute) => boolean;
   /**

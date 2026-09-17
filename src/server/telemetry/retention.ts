@@ -18,6 +18,7 @@
 import { TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import { expirePrObservations } from "./pr-observations.ts";
 import {
   expiredBatchIds,
   listGaps,
@@ -27,6 +28,7 @@ import {
   pruneOrphanedContexts,
   pruneOrphanedResources,
   pruneSourceIdentities,
+  pruneTaskOutcomeState,
   pruneTerminalDeliveries,
   releaseTerminalBatchPayloads,
   recordGap,
@@ -61,6 +63,8 @@ export interface RetentionPassResult {
   releasedTerminalBatches: number;
   /** Settled delivery rows dropped once nothing referenced them. */
   prunedDeliveries: number;
+  /** Incomplete retained PR observations swept past the late-outcome horizon. */
+  expiredPrObservations: number;
   underPressure: boolean;
 }
 
@@ -75,11 +79,15 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       prunedResources: 0,
       releasedTerminalBatches: 0,
       prunedDeliveries: 0,
+      expiredPrObservations: 0,
       underPressure: false,
     };
 
     const payloadCutoff = now - TELEMETRY_LIMITS.payloadRetentionMs;
     const stateCutoff = now - TELEMETRY_LIMITS.reducerStateRetentionMs;
+    d.prepare(`DELETE FROM telemetry_source_state WHERE rowid IN (
+      SELECT rowid FROM telemetry_source_state WHERE expires_at <= ? LIMIT ?
+    )`).run(now, BATCH_LIMIT);
 
     // 1. Undelivered batches past the age window. Expired, not silently deleted: an operator
     //    who was offline for eight days is told what did not make it.
@@ -127,8 +135,24 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     //    reconciliation cannot resurrect an expired source as new activity in between.
     result.prunedRows = pruneJournalRows(d, stateCutoff, BATCH_LIMIT);
     result.prunedIdentities = pruneSourceIdentities(d, stateCutoff, BATCH_LIMIT);
+    pruneTaskOutcomeState(d, stateCutoff, BATCH_LIMIT);
     result.prunedContexts = pruneOrphanedContexts(d);
     result.prunedResources = pruneOrphanedResources(d);
+
+    // 6. Phase 3's retained pull request associations, on the SAME long window rather than a
+    //    horizon of their own. Only incomplete observations count as gaps; successfully
+    //    captured associations and merges are ordinary cleanup. "We stopped looking" and
+    //    "it never merged" are different answers and a cohort must tell them apart.
+    result.expiredPrObservations = expirePrObservations(d, now, BATCH_LIMIT);
+    if (result.expiredPrObservations > 0) {
+      recordGap(
+        d,
+        "payload_expired",
+        `${result.expiredPrObservations} pull request observation(s) passed the late-outcome horizon`,
+        now,
+        result.expiredPrObservations,
+      );
+    }
 
     return result;
   });

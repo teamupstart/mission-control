@@ -1,3 +1,6 @@
+import { registerExperienceTelemetrySource, recordSafeError } from "./experience.ts";
+import { registerWorkflowTelemetrySource } from "./workflows.ts";
+import { registerAnalyticalTelemetry } from "./projections/index.ts";
 /**
  * The telemetry facility's lifecycle: what starts, on what cadence, and what shutdown owes.
  *
@@ -11,8 +14,10 @@ import { getTelemetryConfig } from "./config.ts";
 import { runDeliveryPass, type DeliveryDeps } from "./delivery.ts";
 import { registerDaemonTelemetrySource } from "./diagnostics.ts";
 import { CATALOG_PROJECTION, runProjectionPass } from "./projection.ts";
+import { registerPrTelemetrySource } from "./pr-observations.ts";
 import { registerTelemetryProjection, registeredSources } from "./registration.ts";
 import { noteTelemetryRunStart, noteTelemetryRunStopped, runRetentionPass } from "./retention.ts";
+import { registerSessionTelemetrySource } from "./sessions.ts";
 import { recoverLeases, telemetryTransaction } from "./store.ts";
 
 /** P1's candidate collection and export cadence, measured in docs/observability.md. */
@@ -39,7 +44,15 @@ export const TELEMETRY_ABORT_GRACE_MS = 250;
  */
 export function registerBuiltinTelemetry(): void {
   registerTelemetryProjection(CATALOG_PROJECTION);
+  registerAnalyticalTelemetry();
   registerDaemonTelemetrySource();
+  // Phase 3's session, dispatch, task, usage and pull request sources. Registration only -
+  // these are namespace claims and honesty declarations, and nothing is captured until an
+  // owner calls in and collection is on.
+  registerSessionTelemetrySource();
+  registerWorkflowTelemetrySource();
+  registerPrTelemetrySource();
+  registerExperienceTelemetrySource();
 }
 
 export interface TelemetryCycleResult {
@@ -212,6 +225,8 @@ export function startTelemetry(
   // a never-opted-in installation still writes nothing.
   const enabled = getTelemetryConfig().enabled;
   if (noteTelemetryRunStart(enabled, deps.now?.() ?? Date.now())) {
+    recordSafeError({ component: "process", family: "process", code: "termination_unknown", retryable: "unknown",
+      handled: true, fingerprint: "unknown", suppressed: 0 });
     console.warn(
       "[telemetry] the previous run did not shut down cleanly; recorded an unknown capture gap",
     );

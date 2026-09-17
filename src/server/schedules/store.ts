@@ -1,3 +1,4 @@
+import { observeScheduleOccurrence } from "../telemetry/automation.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { openDb } from "../db.ts";
 import { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
@@ -1000,7 +1001,9 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
     const claimed = d
       .prepare(`SELECT * FROM mission_schedule_occurrences WHERE id = ?`)
       .get(input.occurrenceId) as unknown as OccurrenceRow;
-    return { outcome: "claimed" as const, occurrence: rowToOccurrence(claimed) };
+    const occurrence = rowToOccurrence(claimed);
+    observeScheduleOccurrence(occurrence);
+    return { outcome: "claimed" as const, occurrence };
   });
 }
 
@@ -1036,7 +1039,9 @@ export function finishOccurrence(input: FinishOccurrenceInput): ScheduleOccurren
     input.error ?? null,
     input.id,
   );
-  return getOccurrence(input.id);
+  const occurrence = getOccurrence(input.id);
+  observeScheduleOccurrence(occurrence);
+  return occurrence;
 }
 
 /**

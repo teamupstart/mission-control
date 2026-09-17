@@ -364,7 +364,7 @@ async function putJson(url, body) {
  * exists and the reminder goes only after the frames that are of it.
  */
 async function disableGuidedTour(baseURL) {
-  await putJson(`${baseURL}/api/ui/config`, { guidedTour: false });
+  await putJson(`${baseURL}/api/ui/config`, { showToursOnStartup: false });
 }
 
 async function dismissSetupBanner(baseURL) {

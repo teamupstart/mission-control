@@ -184,6 +184,13 @@ test("the detached updater carries its narrowly scoped bundle-swap support modul
     [
       "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/update-lock.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/install-migration.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/migration-runtime.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/install-destination.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/install-receipt-schema.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/update-source.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/staged-bundle.mjs",
     ],
   );
 });
@@ -1588,4 +1595,158 @@ test("cancelling says so, refuses a second build, and comes back only when the b
   await flush();
   assert.equal(started, 2);
   f.controller.stop();
+});
+
+test('migration deferral does not save policy, acceptance carries both paths, and system opt-out stays in place', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  const plan = migrationPlanFixture(receipt);
+  let current = receipt;
+  let writes = 0;
+  const f = fixture({
+    installSnapshot: () => ({receipt: current, problem: null}),
+    migrationPlan: () => current.installScope ? null : plan,
+    migrationInventory: () => ({schema: 1, hooks: [], mcp: [], login: false}),
+    keepSystem: async () => {writes++; current = {...current, installScope: 'system'}; return current;},
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().migration?.target, plan.target);
+  f.controller.defer();
+  assert.equal(writes, 0);
+  assert.equal(f.handoffs.length, 0);
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.keepSystem(), true);
+  assert.equal(writes, 1);
+  assert.equal(f.handoffs[0]?.appPath, receipt.appPath);
+  assert.equal(f.handoffs[0]?.migration, undefined);
+});
+
+test('a failed system preference write cannot quit or relocate, and accepted migration carries its inventory', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  const plan = migrationPlanFixture(receipt);
+  const failure = 'receipt write failed at /Users/Private/.mission-control token=private-fixture-secret';
+  const f = fixture({migrationPlan: () => plan, keepSystem: async () => {throw new Error(failure);}, migrationInventory: () => ({login: false})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.keepSystem(), false);
+  assert.equal(f.handoffs.length, 0);
+  assert.equal(f.events.includes('quit'), false);
+  const failed = f.controller.getSnapshot();
+  assert.equal(failed.phase, 'error');
+  const safeMessage = 'The installation change could not finish. Check the update log and try again.';
+  if (failed.phase === 'error') assert.equal(failed.message, safeMessage);
+  assert.deepEqual(f.events.filter((event) => event.startsWith('error-dialog:')), [`error-dialog:${safeMessage}`]);
+  assert.ok(f.events.includes(`log:system installation preference failed: ${failure}`));
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.migration?.source, plan.source);
+  assert.equal(f.handoffs[0]?.migration?.target, plan.target);
+  assert.deepEqual(f.handoffs[0]?.migrationInventory, {login: false});
+});
+
+test('a successful migration repair retry clears the prior failure and publishes completion', async (t) => {
+  let complete = false;
+  let fail = true;
+  const f = fixture({
+    migrationStatus: () => ({source: receipt.appPath, target: '/Users/Fixture/Applications/Mission Control.app', status: complete ? 'complete' : 'repair-required', repairs: []}),
+    repairMigration: async () => {if (fail) throw new Error('temporary failure'); complete = true;},
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.retryMigrationRepair();
+  assert.equal(f.controller.getSnapshot().phase, 'error');
+  fail = false;
+  await f.controller.retryMigrationRepair();
+  assert.equal(f.controller.getSnapshot().phase, 'idle');
+  assert.equal(f.controller.getSnapshot().migration?.status, 'complete');
+});
+
+test('a finishing repair retry does not discard an update offer published while it waited', async (t) => {
+  let finish!: () => void;
+  const f = fixture({repairMigration: () => new Promise<void>((resolve) => {finish = resolve;})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const retry = f.controller.retryMigrationRepair();
+  await f.controller.check(true);
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+  finish();
+  await retry;
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+});
+
+for (const operation of ['migration preflight', 'integration repair'] as const) {
+  test(`${operation} keeps raw failure details out of the snapshot and dialog`, async (t) => {
+    const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+    const failure = 'cannot read /Users/Private/.config/agent.json token=private-fixture-secret';
+    const f = fixture({migrationPlan: () => migrationPlanFixture(receipt)});
+    t.after(() => f.controller.stop());
+    await f.controller.start();
+    if (operation === 'migration preflight') {
+      await f.controller.check(true);
+      await f.controller.apply();
+      f.port.migrationPlan = () => {throw new Error(failure);};
+      assert.equal(await f.controller.install(), false);
+    } else {
+      // Non-Error rejections must cross the same safe boundary.
+      f.port.repairMigration = async () => {throw failure;};
+      await f.controller.retryMigrationRepair();
+    }
+    const snapshot = f.controller.getSnapshot();
+    assert.equal(snapshot.phase, 'error');
+    const safeMessage = 'The installation change could not finish. Check the update log and try again.';
+    if (snapshot.phase === 'error') {
+      assert.equal(snapshot.message, safeMessage);
+      assert.equal(snapshot.retryable, true);
+    }
+    assert.deepEqual(f.events.filter((event) => event.startsWith('error-dialog:')), [`error-dialog:${safeMessage}`]);
+    assert.ok(f.events.includes(`log:${operation} failed: ${failure}`));
+    assert.equal(f.handoffs.length, 0);
+    assert.equal(f.events.includes('quit'), false);
+  });
+}
+
+test('Later cannot dismiss an accepted system choice while its receipt write is pending', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  let save!: () => void;
+  const pending = new Promise<void>((resolve) => { save = resolve; });
+  let current = receipt;
+  const f = fixture({installSnapshot: () => ({receipt: current, problem: null}),
+    migrationPlan: () => current.installScope ? null : migrationPlanFixture(receipt), keepSystem: async () => {
+      await pending;
+      current = {...receipt, installScope: 'system'};
+      return current;
+    }});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  const accepted = f.controller.keepSystem();
+  f.controller.defer();
+  assert.equal(f.controller.getSnapshot().phase, 'ready');
+  assert.equal(f.handoffs.length, 0);
+  save();
+  assert.equal(await accepted, true);
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]?.migration, undefined);
+});
+
+test('completed migration does not hide the next ordinary update offer or ready action', async (t) => {
+  const f = fixture({migrationStatus: () => ({source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'complete', repairs: []})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().migration?.status, 'complete');
+  await f.controller.check(true);
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+  assert.equal(f.controller.getSnapshot().migration, undefined);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, 'ready');
+  assert.equal(f.controller.getSnapshot().migration, undefined);
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.migration, undefined);
 });

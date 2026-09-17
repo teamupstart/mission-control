@@ -60,6 +60,7 @@ test("the upgrade creates the telemetry tables and leaves every one of them empt
   const tables = [
     "telemetry_resources",
     "telemetry_contexts",
+    "telemetry_source_state",
     "telemetry_journal",
     "telemetry_source_identities",
     "telemetry_projection_state",

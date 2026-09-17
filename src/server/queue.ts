@@ -1,3 +1,5 @@
+import { recordAutomationTransition, operationObservation } from "./telemetry/experience.ts";
+import { automationOutcome } from "./telemetry/automation.ts";
 import { randomUUID } from "node:crypto";
 import type { SessionQueue, WorkItem } from "@shared/types.ts";
 import type { SetWorkItemState } from "@shared/protocol.ts";
@@ -271,6 +273,9 @@ export class QueueManager {
   private write(item: WorkItem): { ok: true; item: WorkItem } | { ok: false; error: string } {
     try {
       this.registry.putQueueItem(item);
+      recordAutomationTransition(`${item.id}:${item.round}`, { feature: "queues", action: "queue_item",
+        outcome: automationOutcome(item.state), coverage: "owner_transition" },
+        operationObservation.getStore()?.context.actor ?? { kind: "unknown", origin: "daemon", basis: "unknown" });
       return { ok: true, item };
     } catch (err) {
       if (isSingleFlightViolation(err)) {

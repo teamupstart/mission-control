@@ -407,6 +407,23 @@ test("Claude and Codex quota windows render independently with their own duratio
   assert.ok(html.includes("Codex · 1-week window"));
 });
 
+test("Claude-unavailable explanation remains visible alongside a Codex runway", () => {
+  const html = render(fleet({
+    estimatedCostToday: 0, estimatedBurnPerHour: 0, tokensToday: 0, prsToday: 0,
+    rateLimits: null,
+    lastKnownRateLimits: null,
+    rateLimitSources: [{
+      source: "codex", updatedAt: Date.now(),
+      windows: [{ ...liveWin(43, 6 * 24 * HOUR), id: "primary", label: "1-week", durationMinutes: 10080 }],
+    }],
+  }));
+  assert.ok(html.includes("Claude utilization unavailable"));
+  assert.ok(html.includes("Waiting for a usage report from Claude."));
+  assert.match(html, /<span>Codex · 1-week window<\/span><b>43%/);
+  assert.equal([...html.matchAll(/class="runway-meter"/g)].length, 1,
+    "Codex retains its bar without inventing a Claude reading");
+});
+
 test("no PRs opened today means no cost-per-PR, rather than a division by zero", () => {
   const html = render(fleet({ prsToday: 0 }));
   assert.ok(!html.includes("Per shipped PR"));
@@ -435,7 +452,25 @@ test("a runway meter states the consumption AND the projection, not one of the t
 
 test("a window with no reading renders nothing rather than a bar at zero", () => {
   const html = render(fleet({ rateLimits: { fiveHour: null, sevenDay: null, updatedAt: NOW } }));
-  assert.ok(!html.includes("runway"));
+  assert.ok(!html.includes('class="runway-meter"'));
+  assert.ok(html.includes("Claude utilization unavailable"));
+});
+
+test("an expired saved Claude window stays visible without a current quota alarm or projection", () => {
+  const f = fleet({
+    estimatedCostToday: 0, estimatedBurnPerHour: 0, tokensToday: 0,
+    lastKnownRateLimits: {
+      fiveHour: { ...win(100, HOUR), recordedAt: NOW }, sevenDay: null, updatedAt: NOW,
+    },
+  });
+  assert.equal(fleetCostHasContent(f), true);
+  assert.equal(spendChipTone(f), "ok");
+  assert.equal(spendChipFigures(f).alert, null);
+  const html = render(f);
+  assert.ok(html.includes("100% last reported"));
+  assert.ok(html.includes("Reset passed · awaiting update"));
+  assert.ok(html.includes("Recorded"));
+  assert.ok(!html.includes(" · clears"));
 });
 
 test("the plan view leads with the windows; the usd view leads with the dollars", () => {

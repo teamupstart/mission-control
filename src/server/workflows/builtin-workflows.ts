@@ -1543,7 +1543,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
     slug: PLAN_VALIDATION_WORKFLOW_SLUG,
     name: "Plan Validation",
-    description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans without code checks or a pull request action.",
+    description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans, then opens a verified pull request without code checks.",
     versions: [{
       pipeline: {
         sessionId: "pv-session",
@@ -1574,6 +1574,37 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
+    }, {
+      pipeline: {
+        sessionId: "pv-session",
+        endId: "pv-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("pv-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "pv-review-2-join",
+            members: [
+              reviewer("pv-plan-consistency-judge", "plan-consistency-judge"),
+              reviewer("pv-phase-dependencies-judge", "phase-dependencies-judge"),
+              reviewer("pv-plan-feasibility-judge", "plan-feasibility-judge"),
+            ],
+          },
+          action("pv-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 2,
     }],
   }),
 ];

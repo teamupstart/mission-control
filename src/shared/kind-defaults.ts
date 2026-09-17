@@ -106,6 +106,30 @@ export function taskKindEffort(
  *  - the kind's model, when the task's agent matches the row's.
  *  - the per-harness default, else null - launch with no `--model` at all.
  */
+export interface LaunchModelResolution {
+  model: string | null;
+  /** `harness` leaves the choice to the CLI rather than using the panel default. */
+  tier: "task" | "automation" | "kind" | "harness_default" | "harness";
+}
+
+export function resolveLaunchModel(
+  config: HarnessesConfig,
+  agent: AgentType,
+  kind: TaskKind | null,
+  taskModel: string | null,
+  launchModel: string | null,
+): LaunchModelResolution {
+  if (taskModel != null) return { model: taskModel, tier: "task" };
+  if (launchModel != null) return { model: launchModel, tier: "automation" };
+  const kindModel = kind ? taskKindModel(config, agent, kind) : null;
+  if (kindModel != null) return { model: kindModel, tier: "kind" };
+  const defaultModel = config.defaultModel[agent];
+  return defaultModel != null
+    ? { model: defaultModel, tier: "harness_default" }
+    : { model: null, tier: "harness" };
+}
+
+/** The model from the shared resolution, for callers that do not need its attribution. */
 export function launchModelFor(
   config: HarnessesConfig,
   agent: AgentType,
@@ -113,12 +137,18 @@ export function launchModelFor(
   taskModel: string | null,
   launchModel: string | null,
 ): string | null {
-  return (
-    taskModel ??
-    launchModel ??
-    (kind ? taskKindModel(config, agent, kind) : null) ??
-    config.defaultModel[agent]
-  );
+  return resolveLaunchModel(config, agent, kind, taskModel, launchModel).model;
+}
+
+/** The tier from the same resolution that supplies the model. */
+export function launchModelTier(
+  config: HarnessesConfig,
+  agent: AgentType,
+  kind: TaskKind | null,
+  taskModel: string | null,
+  launchModel: string | null,
+): LaunchModelResolution["tier"] {
+  return resolveLaunchModel(config, agent, kind, taskModel, launchModel).tier;
 }
 
 /**

@@ -4277,6 +4277,27 @@ body {
 .spend-runway[data-tone="high"] .runway-head b {
   color: var(--danger);
 }
+.runway-note,
+.runway-unavailable {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.runway-note {
+  margin-top: 5px;
+}
+.runway-note span,
+.runway-unavailable small {
+  display: block;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+}
+.spend-runway[data-expired] .runway-head b {
+  color: var(--muted);
+}
+.spend-runway[data-expired] .runway-fill {
+  background: var(--dim);
+}
 .runway-meter {
   height: 6px;
   border-radius: 999px;
@@ -11078,6 +11099,85 @@ select:not([multiple]) option:focus-visible {
   padding: 14px var(--modal-inset, 18px);
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);
+}
+
+/* ---- tour catalog ---- */
+/* The fixed picker owns scrolling while open, including over a wider dashboard at zoom. */
+.app:has(.tour-picker) { overflow-x: clip; }
+.tour-picker {
+  width: min(880px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.tour-picker .modal-head,
+.tour-picker-footer { flex: none; }
+.tour-picker .modal-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.tour-picker-content {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 0;
+  overflow: auto;
+}
+.tour-picker-list {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.tour-picker-row {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 14px 12px;
+  margin-bottom: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tour-picker-row:hover { background: var(--panel); }
+.tour-picker-row.is-selected {
+  background: color-mix(in srgb, var(--select) 10%, var(--panel));
+  border-color: var(--select);
+}
+.tour-picker-row:focus-within { outline: 2px solid var(--select); outline-offset: 2px; }
+.tour-picker input { accent-color: var(--select); flex: none; }
+.tour-picker-row input { margin-top: 3px; }
+.tour-picker-row strong { display: block; font-size: 14px; }
+.tour-picker-row small { display: block; margin-top: 6px; color: var(--muted); }
+.tour-picker-recommended { display: block; margin-top: 10px; color: var(--select); font-size: 11px; }
+.tour-picker-preview { min-width: 0; padding: 22px; }
+.tour-picker-preview h3 { margin: 18px 0 10px; font-size: 22px; }
+.tour-picker-preview p { color: var(--muted); line-height: 1.6; margin: 0; }
+.tour-picker-preview h4 { margin: 22px 0 12px; font-size: 13px; }
+.tour-picker-preview ul { padding-left: 20px; margin: 0 0 24px; }
+.tour-picker-preview li { padding-left: 3px; margin-bottom: 10px; line-height: 1.5; }
+.tour-picker-preview li::marker { color: var(--select); }
+.tour-picker-illustration { display: block; width: 100%; max-height: 148px; }
+.tour-art-panel { fill: var(--panel-2); stroke: var(--border); }
+.tour-art-card { fill: var(--panel); stroke: var(--border); }
+.tour-art-line { fill: none; stroke: var(--dim); stroke-width: 2; stroke-linecap: round; }
+.tour-art-accent { fill: var(--select); }
+.tour-art-check { fill: none; stroke: var(--panel); stroke-width: 2; }
+.tour-picker-footer { justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.tour-picker-preference { min-width: 0; flex: 1 1 260px; }
+.tour-picker-preference label { display: flex; gap: 9px; align-items: baseline; line-height: 1.5; }
+.tour-picker-preference [role="status"] { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
+.tour-picker-preference [role="alert"] { color: var(--attention); margin: 8px 0 0; line-height: 1.5; }
+.tour-picker-empty { padding: 24px; grid-column: 1 / -1; }
+@media (max-width: 640px) {
+  .tour-picker-content { grid-template-columns: minmax(0, 1fr); }
+  .tour-picker-list { border-right: 0; border-bottom: 1px solid var(--border-soft); padding-block: 12px; }
+  .tour-picker-row { padding-block: 10px; margin-bottom: 4px; }
+  .tour-picker-row small { display: inline; margin-right: 10px; }
+  .tour-picker-recommended { display: inline-block; margin-top: 5px; }
+  .tour-picker-preview { padding: 18px; }
 }
 
 /* ---- auto-update dialog ---- */

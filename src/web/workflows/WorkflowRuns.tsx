@@ -1,3 +1,4 @@
+import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
@@ -1199,6 +1200,7 @@ function RunWorklist({
    * own handler, because picking a segment clears the selection rather than moving it.
    */
   const selectIn = (key: string | null): void => {
+    if (key !== (selected?.key ?? null)) featureAction("runs", "select");
     setSelectedKey(key);
     setChosenSegment({ segment, round });
   };
@@ -1602,6 +1604,7 @@ function RunRecordTabs({
   const selected = routed ?? localPick ?? fallback;
   const tabs = useRef(new Map<RunRecordPane, HTMLButtonElement>());
   const select = (pane: RunRecordPane): void => {
+    if (pane !== selected) featureAction("runs", "select");
     if (pane === selected) return;
     if (onPane) onPane(pane);
     else setPick(pane);
@@ -1790,7 +1793,7 @@ function DeliveriesPane({
         <p className="wf-run-meta">
           {`Showing round ${viewedRound}'s ${rows.length} of ${detail.deliveries.length} packets. `}
           <Tooltip label="Show every packet this run has sent, in every round">
-            <button className="btn btn-ghost" onClick={() => setThisRoundOnly(false)}>
+            <button className="btn btn-ghost" onClick={() => { featureAction("runs", "filter"); setThisRoundOnly(false); }}>
               Show every round
             </button>
           </Tooltip>
@@ -1802,7 +1805,7 @@ function DeliveriesPane({
             ? "A refused or uncertain packet keeps the whole ledger open."
             : (
               <Tooltip label="Show only the packets belonging to the round being read">
-                <button className="btn btn-ghost" onClick={() => setThisRoundOnly(true)}>
+                <button className="btn btn-ghost" onClick={() => { featureAction("runs", "filter"); setThisRoundOnly(true); }}>
                   Show round {viewedRound} only
                 </button>
               </Tooltip>

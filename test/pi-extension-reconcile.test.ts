@@ -1,6 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
@@ -370,6 +370,16 @@ test("real operator paths stay unchanged through a scratch symlink and dot-dot s
   }
 });
 
+async function waitForListening(child: ChildProcess, output: () => string): Promise<void> {
+  // Count polling opportunities rather than wall time: host sleep must not spend the
+  // daemon's startup budget before either process gets another turn. Normally 25 seconds.
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if (output().includes("[mission-control] listening on")
+      || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 test("an actual isolated daemon leaves the operator's real extension directory unchanged", async () => {
   const real = join(homedir(), ...spec.homeDir);
   const snapshot = () => existsSync(real) ? readdirSync(real).sort().map((name) => {
@@ -386,8 +396,7 @@ test("an actual isolated daemon leaves the operator's real extension directory u
   });
   let output = ""; child.stdout.on("data", (c) => output += c); child.stderr.on("data", (c) => output += c);
   try {
-    const deadline = Date.now() + 25_000;
-    while (!output.includes("[mission-control] listening on") && child.exitCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    await waitForListening(child, () => output);
     assert.match(output, /\[mission-control\] listening on/);
     assert.deepEqual(snapshot(), before);
     assert.equal(existsSync(join(isolated, spec.isolatedDirName)), false);
@@ -399,42 +408,49 @@ test("an actual isolated daemon leaves the operator's real extension directory u
   assert.deepEqual(snapshot(), before);
 });
 
-test("daemon startup logs failed extension reconciliation and remains available", async () => {
-  const isolated = join(home, "failed-startup-reconcile");
-  const extensions = join(isolated, spec.isolatedDirName);
-  mkdirSync(extensions, { recursive: true });
-  const installed = join(extensions, spec.linkName);
-  symlinkSync(target, installed);
-  const inode = lstatSync(installed).ino;
-  const intentFile = join(isolated, "pi-extension.json");
-  const malformed = "{ broken installation intent";
-  writeFileSync(intentFile, malformed);
-  const server = createServer(); server.listen(0, "127.0.0.1"); await once(server, "listening");
-  const address = server.address(); assert.ok(address && typeof address !== "string");
-  await new Promise<void>((done) => server.close(() => done()));
-  const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
-    env: { ...process.env, MISSION_HOME: isolated, MISSION_PORT: String(address.port), MISSION_POLL_MS: "0", MISSION_SCOUT_RECONCILE_MS: "0" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let output = ""; child.stdout.on("data", (c) => output += c); child.stderr.on("data", (c) => output += c);
-  try {
-    const deadline = Date.now() + 25_000;
-    while (!output.includes("[mission-control] listening on") && child.exitCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-    assert.match(output, /\[extensions\] could not reconcile: SyntaxError/);
-    assert.match(output, /\[mission-control\] listening on/);
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal(response.status, 200);
-    const health = await response.json();
-    assert.equal(health.ok, true);
-    assert.equal(health.service, "mission-control");
-    assert.equal(health.pid, child.pid);
-    assert.equal(child.exitCode, null, "reconciliation failure must not stop the daemon");
-    assert.equal(lstatSync(installed).ino, inode);
-    assert.equal(readlinkSync(installed), target);
-    assert.equal(readFileSync(intentFile, "utf8"), malformed);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
+for (const clockAdvanceMs of [0, 17 * 60_000]) {
+  test(`daemon startup logs failed extension reconciliation and remains available${clockAdvanceMs ? " across a wall-clock jump" : ""}`, async (t) => {
+    const isolated = join(home, `failed-startup-reconcile-${clockAdvanceMs}`);
+    const extensions = join(isolated, spec.isolatedDirName);
+    mkdirSync(extensions, { recursive: true });
+    const installed = join(extensions, spec.linkName);
+    symlinkSync(target, installed);
+    const inode = lstatSync(installed).ino;
+    const intentFile = join(isolated, "pi-extension.json");
+    const malformed = "{ broken installation intent";
+    writeFileSync(intentFile, malformed);
+    const server = createServer(); server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const address = server.address(); assert.ok(address && typeof address !== "string");
+    await new Promise<void>((done) => server.close(() => done()));
+    const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
+      env: { ...process.env, MISSION_HOME: isolated, MISSION_PORT: String(address.port), MISSION_POLL_MS: "0", MISSION_SCOUT_RECONCILE_MS: "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = ""; child.stdout.on("data", (c) => output += c); child.stderr.on("data", (c) => output += c);
+    if (clockAdvanceMs) {
+      const now = Date.now();
+      t.mock.timers.enable({ apis: ["Date"], now });
+      const jump = setTimeout(() => t.mock.timers.setTime(now + clockAdvanceMs), 10);
+      t.after(() => clearTimeout(jump));
     }
-  }
-});
+    try {
+      await waitForListening(child, () => output);
+      assert.match(output, /\[extensions\] could not reconcile: SyntaxError/);
+      assert.match(output, /\[mission-control\] listening on/);
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/health`, { signal: AbortSignal.timeout(5_000) });
+      assert.equal(response.status, 200);
+      const health = await response.json();
+      assert.equal(health.ok, true);
+      assert.equal(health.service, "mission-control");
+      assert.equal(health.pid, child.pid);
+      assert.equal(child.exitCode, null, "reconciliation failure must not stop the daemon");
+      assert.equal(lstatSync(installed).ino, inode);
+      assert.equal(readlinkSync(installed), target);
+      assert.equal(readFileSync(intentFile, "utf8"), malformed);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
+      }
+    }
+  });
+}

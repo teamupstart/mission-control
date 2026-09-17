@@ -912,3 +912,18 @@ test("two features in one repository are two rows, and two repositories do not c
   assert.equal(spend?.tokens, 10 + 1 + 10 + 1 + 20 + 2);
   assert.equal(spend?.runs, 3, "distinct features");
 });
+
+test("Phase 5: external stage observations remain unknown-actor and replay once", async () => {
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  enableExperience(); reset();
+  const root = repo("telemetry-source");
+  seedConductorRun(root, "PRIVATE_SENTINEL", { steps: { build: "done" } });
+  consentTo(root);
+  const registry = new Registry();
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  await refreshPipelineRepo(registry, "ai-conductor", root);
+  const facts = experienceFacts("mission.automation.transition").filter((e) => e.facts.feature === "pipelines");
+  assert.equal(facts.filter((e) => e.facts.action === "stage" && e.facts.outcome === "applied").length, 1);
+  assert.ok(facts.every((e) => e.actor.kind === "unknown" && e.facts.coverage === "external_observation"));
+  assert.ok(!JSON.stringify(facts).includes("PRIVATE_SENTINEL"));
+});

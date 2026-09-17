@@ -1673,9 +1673,18 @@ adds the block and only `--uninstall` removes it: re-running `npm run setup` or 
 installer leaves an existing block exactly as it found it, so **Settings → Cost** stays the one
 switch.
 
-A plan meter disappears once its window resets rather than holding the last percentage -
-a quota that has already rolled over is not a figure worth showing, and the same rule
-already governs an account with no rate limits to report.
+Claude's last reported windows are saved in the daemon database and restored automatically
+after a restart, even when Claude cannot provide another report because its quota is exhausted
+or usage lookup is unavailable. Each window shows when its value was recorded and its reset
+countdown. Repeated identical reports keep that recording time; a partial report updates only
+the window it carries. This saves reported percentages, never estimates quota from token cost.
+
+After a Claude window resets, its saved bar remains visible as **last reported**, with
+**Reset passed · awaiting update**. It no longer produces a quota warning or runway projection;
+the current percentage is unknown until another usage report arrives. If Claude has never
+reported usage, the Spend popover says **Claude utilization unavailable**, with no invented
+zero-percent bar. The next valid report updates the display automatically. Codex windows still
+disappear when their reset time passes.
 
 **Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.

@@ -17,6 +17,12 @@ The practical implication is that a schema change is not just a new-table change
 also open safely against an operator's existing database. Keep the migration beside the
 schema and create dependent indexes only after the columns exist.
 
+`claude_rate_limit_cache` holds one validated snapshot of Claude's last reported subscription
+windows, including each window's recording time. The Registry restores it before serving a
+snapshot; terminal statusLine and SDK usage reports update the same record. Expired readings
+remain available as explicitly historical UI data and are excluded from current quota. This is
+independent of the usage ledger and never contributes dollars or tokens.
+
 ## Full-database recovery points
 
 Mission Control creates verified recovery points for normal operation and schema upgrades. See

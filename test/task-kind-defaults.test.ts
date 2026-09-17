@@ -33,6 +33,8 @@ const {
   getHarnessesConfig,
   setHarnessesConfig,
   resolveDispatchModel,
+  resolveDispatchModelWithTier,
+  resolveDispatchModelTier,
   resolveDispatchEffort,
   resolveTaskAgent,
   taskKindDefaults,
@@ -43,7 +45,7 @@ const { DispatchSchema, HarnessesConfigPatchSchema, HarnessesConfigSchema } = aw
 const { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_BEHAVIOR } = await import("@shared/task.ts");
 const { MODEL_CATALOG } = await import("@shared/model.ts");
 const { launchEffortLevels, supportsEffort } = await import("@shared/harness-capabilities.ts");
-const { launchEffortFor } = await import("@shared/kind-defaults.ts");
+const { launchEffortFor, launchModelFor, launchModelTier, resolveLaunchModel } = await import("@shared/kind-defaults.ts");
 const { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } = await import("@shared/types.ts");
 const { mergeHarnessesPatch } = await import("../src/web/harnesses-reconcile.ts");
 
@@ -85,22 +87,30 @@ test("an untouched installation resolves exactly as it did before this key exist
 
 // ---- the ladder ----
 
-test("the model ladder puts the kind below the launch model and above the harness default", () => {
-  setHarnessesConfig({
-    defaultModel: { claude: "claude-sonnet-5" },
+test("model and attribution resolve together across every tier and harness mismatch", () => {
+  const config = setHarnessesConfig({
+    defaultModel: { claude: "claude-sonnet-5", codex: "gpt-5.6-sol" },
     kindDefaults: { plan: { agent: "claude", model: "claude-opus-4-8" } },
   });
-  // Harness default for a kind with no row of its own.
-  assert.equal(resolveDispatchModel("claude", null, null, "ship"), "claude-sonnet-5");
-  // The kind's model, above the harness default.
-  assert.equal(resolveDispatchModel("claude", null, null, "plan"), "claude-opus-4-8");
-  // Foreman's launch-only model, above the kind.
-  assert.equal(resolveDispatchModel("claude", null, "claude-haiku-4-5", "plan"), "claude-haiku-4-5");
-  // The task's own pin, above everything.
-  assert.equal(
-    resolveDispatchModel("claude", "claude-fable-5", "claude-haiku-4-5", "plan"),
-    "claude-fable-5",
-  );
+  for (const [agent, kind, taskModel, launchModel, model, tier] of [
+    ["claude", "plan", "claude-fable-5", "claude-haiku-4-5", "claude-fable-5", "task"],
+    ["claude", "plan", null, "claude-haiku-4-5", "claude-haiku-4-5", "automation"],
+    ["claude", "plan", null, null, "claude-opus-4-8", "kind"],
+    ["claude", "ship", null, null, "claude-sonnet-5", "harness_default"],
+    ["codex", "plan", null, null, "gpt-5.6-sol", "harness_default"],
+    ["pi", "plan", null, null, null, "harness"],
+    ["claude", "pipeline", null, null, "claude-sonnet-5", "harness_default"],
+    ["pi", null, null, null, null, "harness"],
+  ] as const) {
+    const expected = { model, tier };
+    assert.deepEqual(resolveLaunchModel(config, agent, kind, taskModel, launchModel), expected);
+    assert.deepEqual(resolveDispatchModelWithTier(agent, taskModel, launchModel, kind), expected);
+    // Existing UI/server convenience functions must agree with the combined result.
+    assert.equal(launchModelFor(config, agent, kind, taskModel, launchModel), model);
+    assert.equal(launchModelTier(config, agent, kind, taskModel, launchModel), tier);
+    assert.equal(resolveDispatchModel(agent, taskModel, launchModel, kind), model);
+    assert.equal(resolveDispatchModelTier(agent, taskModel, launchModel, kind), tier);
+  }
 });
 
 test("a kind's model is not applied to a task running a different harness - but its effort is", () => {

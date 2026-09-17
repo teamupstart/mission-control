@@ -1,3 +1,4 @@
+import { actionFetch } from "../lib/experience.ts";
 import {
   ForemanInstructionsConflictSchema,
   ForemanInstructionsViewSchema,
@@ -47,14 +48,14 @@ async function viewFromResponse(response: Response): Promise<ForemanInstructions
 
 /** Read the exact effective standing-guidance document only for the selected System profile. */
 export async function fetchForemanProfile(): Promise<ForemanInstructionsView> {
-  return viewFromResponse(await fetch("/api/foreman/instructions"));
+  return viewFromResponse(await actionFetch("/api/foreman/instructions"));
 }
 
 /** Replace or reset the document through Phase 1's compare-and-swap contract. */
 export async function updateForemanProfile(
   update: ForemanInstructionsUpdate,
 ): Promise<ForemanInstructionsView> {
-  return viewFromResponse(await fetch("/api/foreman/instructions", {
+  return viewFromResponse(await actionFetch("/api/foreman/instructions", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(update),

@@ -1,3 +1,5 @@
+import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
+import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -85,7 +87,7 @@ import {
   cardShortcutTarget,
   NO_CARD_SHORTCUTS,
 } from "./lib/card-shortcuts.ts";
-import { useUiConfig } from "./lib/uiConfig.ts";
+import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
@@ -156,10 +158,13 @@ import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
 import { GuidedTourController } from "./tour/GuidedTourController.tsx";
-import { useGuidedTour } from "./lib/guided-tour.ts";
+import { TourPicker } from "./components/TourPicker.tsx";
+import { TourPreferenceNotice } from "./components/TourPreferenceNotice.tsx";
+import { tourCatalog } from "./tour/catalog.ts";
+import { startupTourDecision } from "./tour/startup.ts";
 import type { TourId } from "./tour/contracts.ts";
 import { TOUR_DEFINITIONS } from "./tour/definitions.ts";
-import { FIRST_RUN_TOUR, tourEntry } from "./tour/entries.ts";
+import { tourEntry } from "./tour/entries.ts";
 import {
   SEE_WORK_TOUR,
   type SeeWorkTourNavigation,
@@ -364,6 +369,13 @@ export function App(): React.JSX.Element {
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
+  useEffect(() => {
+    const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
+      : route.page === "settings" ? "settings" : route.page === "library" ? "library"
+      : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.kind === "pipelines" ? "pipelines" : "runs";
+    featureVisit("page", JSON.stringify(route), feature);
+  }, [route]);
   const [layout, setLayout] = useLayoutMode();
   const [lineDensity, setLineDensity] = useLineDensity();
   const foreman = useForeman();
@@ -431,6 +443,10 @@ export function App(): React.JSX.Element {
     null,
   );
   const [reportOpen, setReportOpen] = useState(false);
+  useEffect(() => {
+    if (reportOpen) featureVisit("report", "open", "reports");
+    else endFeatureVisit("report");
+  }, [reportOpen]);
   // Whether the public Feedback form is on screen - and ONLY that. The draft, the last
   // result and this opening's request id belong to `ProductIssueLayer`, for the reason
   // `dispatchOpen` gives above: the draft has to outlive a close, and a fleet re-render
@@ -482,7 +498,8 @@ export function App(): React.JSX.Element {
   const seeWorkTourTaskIdRef = useRef<string | null>(null);
   const sessionsRef = useRef(sessions);
   const tasksRef = useRef(tasks);
-  activeTourRef.current = activeTour;
+  // Start/finish own this ref synchronously. During async cleanup the retiring controller
+  // stays mounted for error recovery, but renders must not reactivate its closed run.
   /** The active run, only when it is See the work's. Every other tour reads null here. */
   const seeWorkRun = activeTour?.tourId === "see-work" ? activeTour : null;
   seeWorkTourPreviewTaskIdRef.current = seeWorkTourPreviewTaskId;
@@ -880,7 +897,48 @@ export function App(): React.JSX.Element {
   // from any page, and `DispatchSettingsPanel` and the dispatch modal's header switch read
   // the same module-level store, so this is a third reader of one value rather than a copy.
   const [guidedDispatch, setGuidedDispatch] = useGuidedDispatch();
-  const [guidedTourEnabled, guidedTourHydrated, consumeGuidedTour] = useGuidedTour();
+  const showToursOnStartup = useUiConfig().showToursOnStartup;
+  const tourPreferenceHydrated = useUiConfigHydrated();
+  const catalog = useMemo(() => tourCatalog(), []);
+  const startupTourHandled = useRef(false);
+  const [tourPickerOpen, setTourPickerOpen] = useState(false);
+  const tourPickerOrigin = useRef<FocusBookmark>(captureFocusBookmark(null));
+  const [tourPreferenceSaving, setTourPreferenceSaving] = useState(false);
+  const tourPreferenceSavingRef = useRef(false);
+  const [tourPreferenceError, setTourPreferenceError] = useState(false);
+
+  const openTourPicker = useCallback((
+    origin = captureFocusBookmark(document.activeElement),
+    fromPalette = false,
+  ): void => {
+    if (activeTourRef.current || (fromPalette
+      ? !overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
+      : overlaysRef.current.anyOpen)) return;
+    startupTourHandled.current = true;
+    // A palette opened from the document root has no focusable invoker to return to.
+    tourPickerOrigin.current = origin.element === document.body
+      ? captureFocusBookmark(null) : origin;
+    setTourPickerOpen(true);
+  }, []);
+
+  const closeTourPicker = useCallback((): void => {
+    setTourPickerOpen(false);
+    // Restore synchronously on dismissal only. A successful handoff lets the tour own focus.
+    if (!restoreFocusBookmark(tourPickerOrigin.current)) {
+      tourTargets.get("setup:settings-gear")?.focus();
+    }
+  }, [tourTargets]);
+
+  const saveTourPreference = useCallback(async (next: boolean): Promise<void> => {
+    if (!tourPreferenceHydrated || tourPreferenceSavingRef.current) return;
+    tourPreferenceSavingRef.current = true;
+    setTourPreferenceSaving(true);
+    setTourPreferenceError(false);
+    const saved = await updateUiConfig({ showToursOnStartup: next });
+    setTourPreferenceError(!saved);
+    tourPreferenceSavingRef.current = false;
+    setTourPreferenceSaving(false);
+  }, [tourPreferenceHydrated]);
   /**
    * Runtime get/set for the settings toggles the palette may flip in place.
    *
@@ -1042,20 +1100,27 @@ export function App(): React.JSX.Element {
     // Set the ref in the same turn as state so a fast second activation cannot start a
     // second controller before React commits this one.
     activeTourRef.current = run;
+    startupTourHandled.current = true;
     starter.begin(run);
     setActiveTour(run);
     return true;
   }, [boardOpen, filter, layout, lineDrawer, navigate, route, selectedId, tourStarters]);
 
-  /**
-   * A fresh profile receives one automatic orientation, and `FIRST_RUN_TOUR` says which. The
-   * preference is consumed only after the preflight accepts, so a dirty route that declines
-   * navigation can try again after the operator resolves its ordinary leave dialog.
-   */
   useEffect(() => {
-    if (!guidedTourHydrated || !guidedTourEnabled) return;
-    if (startTour(FIRST_RUN_TOUR, captureFocusBookmark(null))) consumeGuidedTour();
-  }, [consumeGuidedTour, guidedTourEnabled, guidedTourHydrated, startTour]);
+    const decision = startupTourDecision({
+      handled: startupTourHandled.current,
+      hydrated: tourPreferenceHydrated,
+      enabled: showToursOnStartup,
+      hasTours: catalog.length > 0,
+      busy: overlaysRef.current.anyOpen || activeTour !== null,
+    });
+    if (decision === "settle") startupTourHandled.current = true;
+    if (decision === "open") openTourPicker(captureFocusBookmark(null));
+  }, [activeTour, catalog, openTourPicker, overlays.anyOpen, showToursOnStartup, tourPreferenceHydrated]);
+
+  const startPickerTour = useCallback((id: TourId): void => {
+    if (startTour(id, tourPickerOrigin.current)) setTourPickerOpen(false);
+  }, [startTour]);
 
   // Only an empty fleet needs a synthetic desk. Start its fixed Chat session as soon as the
   // repository is known, while the operator is reading the Line and Board stops. A late
@@ -1274,6 +1339,12 @@ export function App(): React.JSX.Element {
   const finishTour = useCallback(async (): Promise<void> => {
     const run = activeTourRef.current;
     if (!run) return;
+    // Existing tour-owned dialogs can take a commit to unregister during teardown.
+    // Only a newly opened overlay is a new focus owner.
+    const leavingOverlays = new Set(overlaysRef.current.openEntries.map((entry) => entry.token));
+    const leavingFocus = document.activeElement;
+    const newFocusOwner = (): boolean => activeTourRef.current !== null
+      || overlaysRef.current.openEntries.some((entry) => !leavingOverlays.has(entry.token));
     // A slow preview or Dispatch response must see the tour as closed while cleanup runs, so
     // it reclaims its own task instead of attaching it to a controller that is leaving.
     activeTourRef.current = null;
@@ -1311,8 +1382,7 @@ export function App(): React.JSX.Element {
      *
      * It keeps watching rather than acting once, because two things move focus out from under
      * it and both are late: the page it is waiting for commits, and the coachmark's own
-     * teardown refocuses whatever was active when the tour began, which on the automatic
-     * first-run tour is the document root. A single attempt lost that race on a loaded
+     * teardown refocuses whatever was active when the tour began, which on the startup picker is the document root. A single attempt lost that race on a loaded
      * machine, and abandoning the pass because the leaving popover still held focus lost it
      * every time.
      *
@@ -1330,10 +1400,12 @@ export function App(): React.JSX.Element {
      * invoker survived - its caller below decides that.
      */
     const land = (target: TourTargetId, frames = 120): void => {
-      if (activeTourRef.current) return;
+      if (newFocusOwner()) return;
       const element = tourTargets.get(target);
       if (element && document.activeElement === element) return;
       const active = document.activeElement;
+      if (active && active !== document.body && active !== leavingFocus
+        && !active.closest(".driver-popover")) return;
       if (element?.isConnected && (!active || active === document.body)) element.focus();
       if (frames > 0) requestAnimationFrame(() => land(target, frames - 1));
     };
@@ -1343,6 +1415,10 @@ export function App(): React.JSX.Element {
     let attempts = 5;
     let settledFocus: Element | null = null;
     const restore = (): void => {
+      if (newFocusOwner()) return;
+      const owner = document.activeElement;
+      if (owner && owner !== document.body && owner !== settledFocus
+        && owner !== focus.element && owner !== leavingFocus && !owner.closest(".driver-popover")) return;
       const restored = restoreFocusBookmark(focus);
       const active = restored ? document.activeElement : null;
       const settled = restored && active === settledFocus;
@@ -1352,9 +1428,9 @@ export function App(): React.JSX.Element {
       // started from the Settings rail ends with that row focused, on the very page it handed
       // over, and there is nothing left to land - starting the pass anyway would leave it
       // watching for two seconds, ready to pull focus off the next non-focusable click the
-      // operator makes. The automatic first-run tour has no invoker at all, so the retry
+      // operator makes. The startup picker has no invoker at all, so the retry
       // budget runs out unsettled, and that is the case this covers.
-      else if (!settled && exit) land(exit.focus);
+      else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
   }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout, tourTargets]);
@@ -1398,6 +1474,9 @@ export function App(): React.JSX.Element {
           // drawer open it: the dialog asks for the session and the published version itself.
           setWorkflowBindingTarget({});
           return;
+        case "browse-tours":
+          openTourPicker(paletteInvokerRef.current, true);
+          return;
         case "start-tour":
           startTour(target.tourId);
           return;
@@ -1423,6 +1502,7 @@ export function App(): React.JSX.Element {
       onOpenSchedule,
       paletteBindings,
       startTour,
+      openTourPicker,
     ],
   );
   /**
@@ -3574,6 +3654,8 @@ export function App(): React.JSX.Element {
           snapshot={desktopUpdates.snapshot}
           onApply={desktopUpdates.apply}
           onInstall={desktopUpdates.install}
+          onKeepSystem={desktopUpdates.keepSystem}
+          onRepairMigration={desktopUpdates.repairMigration}
           onCancel={desktopUpdates.cancel}
           onDefer={desktopUpdates.defer}
           onCheck={desktopUpdates.check}
@@ -3585,6 +3667,10 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        {tourPreferenceError && !tourPickerOpen && !overlays.anyOpen && !activeTour && (
+          <TourPreferenceNotice onBrowse={() => openTourPicker()}
+            onDismiss={() => setTourPreferenceError(false)} />
+        )}
 
         <AppPageShell
           page={route.page}
@@ -3767,7 +3853,7 @@ export function App(): React.JSX.Element {
               })}
               // The return leg of the Pipelines tab's own "Conductor settings" button.
               onOpenPipelines={() => navigate({ page: "runs", kind: "pipelines" })}
-              onLeave={() => navigate({ page: "fleet" })}
+              onLeave={() => { if (!isOverlayOpen()) navigate({ page: "fleet" }); }}
               foreman={foreman}
               cost={cost}
               llm={llm}
@@ -3779,6 +3865,7 @@ export function App(): React.JSX.Element {
               worktreesRevision={worktreesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={openPalette}
+              onBrowseTours={() => openTourPicker()}
               onStartTour={(tourId) => {
                 startTour(tourId, captureFocusBookmark(document.activeElement));
               }}
@@ -4044,6 +4131,13 @@ export function App(): React.JSX.Element {
                 onActivate={onPaletteActivate}
                 stores={paletteStores}
               />
+
+              {tourPickerOpen && (
+                <TourPicker entries={catalog} enabled={showToursOnStartup}
+                  hydrated={tourPreferenceHydrated} saving={tourPreferenceSaving}
+                  saveError={tourPreferenceError} onSave={saveTourPreference}
+                  onStart={startPickerTour} onClose={closeTourPicker} />
+              )}
 
               {/* One overlay slot for one active tour, whichever tour is running. */}
               {activeTourBinding && (

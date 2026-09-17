@@ -40,6 +40,12 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
 import { findSystemNode } from "./system-node.ts";
+import { createMigrationIntegrationPorts } from "./migration-integration-ports.ts";
+import { type MigrationIntegrationPorts } from "./migration-integrations.ts";
+
+export function migrationIntegrationPorts(): MigrationIntegrationPorts {
+  return createMigrationIntegrationPorts(app);
+}
 
 /**
  * The harness this installer wires. Named once, as a variable, because everything below

@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.21.0](https://github.com/teamupstart/mission-control/compare/v1.20.0...v1.21.0) (2026-09-17)
+
+
+### Features
+
+* **telemetry:** complete primary action and safe error coverage ([#1076](https://github.com/teamupstart/mission-control/issues/1076)) ([cf5520e](https://github.com/teamupstart/mission-control/commit/cf5520e2d3f9a5aaeb937c91fdd999e31245cd65))
+* **telemetry:** export bounded analytical cohort summaries ([#1075](https://github.com/teamupstart/mission-control/issues/1075)) ([25961c1](https://github.com/teamupstart/mission-control/commit/25961c13aa15f811f891c1ee8eb02aee62644069))
+* **telemetry:** track workflow execution and review outcomes ([#1071](https://github.com/teamupstart/mission-control/issues/1071)) ([dd30d5c](https://github.com/teamupstart/mission-control/commit/dd30d5c045071738a331102fd40116e70c1edfe1))
+* **tours:** add startup picker with saved opt-out ([#1072](https://github.com/teamupstart/mission-control/issues/1072)) ([f81c291](https://github.com/teamupstart/mission-control/commit/f81c2918c4c362d0ee31b3060d36f96dadbfb5d7))
+
+
+### Bug Fixes
+
+* **feedback:** route product issues to the base repository ([#1074](https://github.com/teamupstart/mission-control/issues/1074)) ([e955687](https://github.com/teamupstart/mission-control/commit/e95568784ac008bc606b0c36737dd1b202bd9e45))
+
+## [1.20.0](https://github.com/teamupstart/mission-control/compare/v1.19.0...v1.20.0) (2026-09-15)
+
+
+### Features
+
+* **updates:** enable automatic personal-install migration ([#1069](https://github.com/teamupstart/mission-control/issues/1069)) ([03421fb](https://github.com/teamupstart/mission-control/commit/03421fb706a88803cf9fe91e613e06271349cc9b))
+
+## [1.19.0](https://github.com/teamupstart/mission-control/compare/v1.18.0...v1.19.0) (2026-09-15)
+
+
+### Features
+
+* **telemetry:** attribute session activity and verified outcomes ([#1063](https://github.com/teamupstart/mission-control/issues/1063)) ([7706e2b](https://github.com/teamupstart/mission-control/commit/7706e2b90dc87a53080eb7155f1b4bba54394ff1))
+* **updates:** add gated user-install migration and recovery ([#1065](https://github.com/teamupstart/mission-control/issues/1065)) ([9a528c3](https://github.com/teamupstart/mission-control/commit/9a528c3687ed9c0e2cdbeb08f74b94c99f56ba28))
+
+
+### Bug Fixes
+
+* **cost:** preserve Claude utilization across restarts ([#1064](https://github.com/teamupstart/mission-control/issues/1064)) ([fc1d60a](https://github.com/teamupstart/mission-control/commit/fc1d60a234f055177445b4fcba50183394c43490))
+* **plans:** hand PR publication to bound workflows ([#1066](https://github.com/teamupstart/mission-control/issues/1066)) ([2c5f685](https://github.com/teamupstart/mission-control/commit/2c5f685948e62633bd669a9fc5f2e5fb68dc6782))
+
+## [1.18.0](https://github.com/teamupstart/mission-control/compare/v1.17.0...v1.18.0) (2026-09-15)
+
+
+### Features
+
+* **install:** default personal installs to ~/Applications ([#1058](https://github.com/teamupstart/mission-control/issues/1058)) ([9c4a54a](https://github.com/teamupstart/mission-control/commit/9c4a54ac3ae5f0d8b6f4efc3d09f471e1d1509e0))
+* **setup:** show UpstartClaw configuration status ([#1055](https://github.com/teamupstart/mission-control/issues/1055)) ([dd6dcff](https://github.com/teamupstart/mission-control/commit/dd6dcff31432a2960e3cf0e57d8d296e7a64cf03))
+* **telemetry:** export profiles, consent and Settings controls ([#1053](https://github.com/teamupstart/mission-control/issues/1053)) ([1fc3e84](https://github.com/teamupstart/mission-control/commit/1fc3e84fc60323b10a5fd6532b37798b7db46c2f))
+* **workflows:** add lint to initial review gates ([#1049](https://github.com/teamupstart/mission-control/issues/1049)) ([7e66dcb](https://github.com/teamupstart/mission-control/commit/7e66dcbc6f25ff2cee68054dd781f963ab729e1a))
+* **workflows:** lead the Evidence pane with canonical reconciliation ([#1057](https://github.com/teamupstart/mission-control/issues/1057)) ([37b94f5](https://github.com/teamupstart/mission-control/commit/37b94f52e8846ee119b7647540c077229fc1270a))
+
+
+### Bug Fixes
+
+* **pi:** read Pi's own toolCall part so its commands reach the dashboard ([#1059](https://github.com/teamupstart/mission-control/issues/1059)) ([c25b29e](https://github.com/teamupstart/mission-control/commit/c25b29ef61c4a3833cdf4c57d12854e596dfd651))
+* **workflows:** allow 48 evidence items per type ([#1056](https://github.com/teamupstart/mission-control/issues/1056)) ([36d55f2](https://github.com/teamupstart/mission-control/commit/36d55f2382cd1580a10b57f56a8228644efe6652))
+* **workflows:** continue review after evidence preflight exhaustion ([#1050](https://github.com/teamupstart/mission-control/issues/1050)) ([1aee5d4](https://github.com/teamupstart/mission-control/commit/1aee5d4f32b1f56ec2a418a16bec9f3a2129d60f))
+
 ## [1.17.0](https://github.com/teamupstart/mission-control/compare/v1.16.1...v1.17.0) (2026-09-14)
 
 

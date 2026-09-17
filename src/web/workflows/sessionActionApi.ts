@@ -1,3 +1,4 @@
+import { actionFetch } from "../lib/experience.ts";
 import { useEffect, useMemo, useState } from "react";
 import { SessionActionCapabilitiesSchema } from "@shared/protocol.ts";
 import type {
@@ -29,7 +30,7 @@ export type SessionActionRequestError = Error & {
 };
 
 export async function sessionActionRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await actionFetch(path, {
     ...init,
     headers: { "content-type": "application/json", ...init?.headers },
   });

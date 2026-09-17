@@ -1,6 +1,8 @@
+import type { WorkflowFindingReason } from "./workflow-reasons.ts";
 import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
+import type { PlanPublicationContext } from "./plan-publication.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type {
   InspectorComment,
@@ -3635,6 +3637,8 @@ export interface WorkflowCompletionClaim {
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
+  /** Comparison guard for verified plan ownership; never selects or creates a binding. */
+  expectedPlanPublication?: PlanPublicationContext;
 }
 
 export type WorkflowCompletionClaimResult =
@@ -4563,6 +4567,8 @@ export interface EvidenceRef {
 export const PERSONA_FINDING_BASES = ["substantive", "coverage_registration", "evidence_access"] as const;
 
 export interface RequestedChange {
+  /** Optional advisory topic. Missing and unrecognized values mean unknown. */
+  category?: WorkflowFindingReason;
   basis?: (typeof PERSONA_FINDING_BASES)[number];
   title: string;
   rationale: string;

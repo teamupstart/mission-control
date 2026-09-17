@@ -49,6 +49,7 @@ export function promptedCompletionClaim(input: {
   headSha: string | null;
   transcriptAnchor: number | null;
   summary: string;
+  expectedPlanPublication?: WorkflowCompletionClaim["expectedPlanPublication"];
 }): WorkflowCompletionClaim {
   return {
     completionKind: "prompted",
@@ -61,6 +62,7 @@ export function promptedCompletionClaim(input: {
       summary: input.summary,
     }),
     expectedIntent: input.intent,
+    ...(input.expectedPlanPublication ? { expectedPlanPublication: input.expectedPlanPublication } : {}),
   };
 }
 

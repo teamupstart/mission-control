@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -244,4 +245,124 @@ test("a fleet with no priced usage still gets a chip that opens onto its runway"
   // A click outside dismisses it, the way every other topbar popover does.
   await dashboard.locator("header.topbar .brand").click();
   await expect(popover).toBeHidden();
+});
+
+test("Claude utilization survives a daemon restart and missing reports, and refreshes over SSE", async ({ dashboard, daemon }) => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  await post(daemon, "/statusline", {
+    sessionId: "exhausted-claude", env: {},
+    rateLimits: {
+      fiveHour: { usedPercentage: 100, resetsAt: nowSec + 3600 },
+      sevenDay: { usedPercentage: 98, resetsAt: nowSec + 86_400 },
+    },
+  });
+  const chip = dashboard.getByRole("button", { name: /^Spend - / });
+  const popover = dashboard.getByRole("dialog", { name: "Spend today" });
+  const shortWindow = popover.locator(".spend-runway", { hasText: "Claude · 5-hr window" });
+  const longWindow = popover.locator(".spend-runway", { hasText: "Claude · 7-day window" });
+  await chip.click();
+  await expect(shortWindow).toContainText("100%");
+
+  await daemon.crash();
+  await daemon.restart();
+  await dashboard.reload();
+  await expect(chip).toBeVisible();
+  await chip.click();
+  await expect(shortWindow).toContainText("100%");
+  await expect(shortWindow).toContainText("Recorded");
+  await expect(longWindow).toContainText("98%");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/claude-utilization", { recursive: true });
+    await popover.getByRole("heading", { name: "Spend · today" }).click();
+    await popover.screenshot({ path: "e2e/.artifacts/claude-utilization/restored-usage.png" });
+  }
+  await post(daemon, "/statusline", { sessionId: "no-usage-available", env: {} });
+  await dashboard.reload();
+  await chip.click();
+  await expect(shortWindow).toContainText("100%");
+
+  // A completed window is historical, not zero headroom or a current quota alarm.
+  await post(daemon, "/statusline", {
+    sessionId: "expired-claude", env: {},
+    rateLimits: { fiveHour: { usedPercentage: 100, resetsAt: nowSec - 1 } },
+  });
+  await expect(shortWindow).toContainText("100% last reported");
+  await expect(shortWindow).toContainText("Reset passed · awaiting update");
+  await expect(shortWindow).toHaveAttribute("data-tone", "ok");
+  await expect(longWindow).toContainText("98%");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/claude-utilization", { recursive: true });
+    await popover.screenshot({ path: "e2e/.artifacts/claude-utilization/saved-usage.png" });
+  }
+
+  await post(daemon, "/statusline", {
+    sessionId: "fresh-claude", env: {},
+    rateLimits: { fiveHour: { usedPercentage: 7, resetsAt: nowSec + 5 * 3600 } },
+  });
+  await expect(shortWindow).toContainText("7%");
+  await expect(shortWindow).not.toContainText("awaiting update");
+  await expect(longWindow).toContainText("98%");
+});
+
+test("the spend popover explains when Claude has never reported utilization", async ({ dashboard, daemon }) => {
+  await post(daemon, "/v1/metrics", costMetrics("no-claude-quota", 2));
+  await dashboard.getByRole("button", { name: /^Spend - / }).click();
+  const popover = dashboard.getByRole("dialog", { name: "Spend today" });
+  await expect(popover).toContainText("Claude utilization unavailable");
+  await expect(popover).toContainText("Waiting for a usage report");
+  await expect(popover.locator(".spend-runway")).toHaveCount(0);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/claude-utilization", { recursive: true });
+    await popover.getByRole("heading", { name: "Spend · today" }).click();
+    await popover.screenshot({ path: "e2e/.artifacts/claude-utilization/unavailable-usage.png" });
+  }
+});
+
+test("Claude-unavailable explanation remains visible alongside a Codex runway", async ({ dashboard, daemon }) => {
+  const chip = dashboard.getByRole("button", { name: /^Spend - / });
+  await expect(chip).toHaveCount(0);
+  await post(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title: "Codex quota without Claude usage", intent: "Check quota display",
+    agent: "codex", workflowId: null,
+  }, false);
+  let session: Session | undefined;
+  await expect.poll(async () => {
+    const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    session = sessions.find((item) => item.agent === "codex" && item.agentSessionId);
+    return session?.state;
+  }).toBe("idle");
+
+  // The fake's own rollout passes through the real quota reader and SSE connection.
+  // This fresh daemon has no Claude reading, and no provider request is made.
+  const root = join(daemon.home, ".codex", "sessions");
+  const rollout = readdirSync(root, { recursive: true }).map(String)
+    .find((path) => path.endsWith(`${session!.agentSessionId}.jsonl`));
+  expect(rollout).toBeTruthy();
+  appendFileSync(join(root, rollout!), JSON.stringify({
+    type: "event_msg", timestamp: new Date().toISOString(),
+    payload: {
+      type: "token_count", info: {},
+      rate_limits: {
+        primary: { used_percent: 43, window_minutes: 10080, resets_at: Math.floor(Date.now() / 1000) + 6 * 86_400 },
+        secondary: null,
+      },
+    },
+  }) + "\n");
+
+  await chip.click();
+  const popover = dashboard.getByRole("dialog", { name: "Spend today" });
+  const unavailable = popover.locator(".runway-unavailable");
+  const codex = popover.locator(".spend-runway", { hasText: "Codex · 1-week window" });
+  await expect(unavailable).toBeVisible();
+  await expect(unavailable).toContainText("Claude utilization unavailable");
+  await expect(unavailable).toContainText("Waiting for a usage report from Claude.");
+  await expect(codex).toBeVisible();
+  await expect(codex).toContainText("43%");
+  await expect(codex.locator(".runway-fill")).toBeVisible();
+  await expect(popover.locator(".runway-meter")).toHaveCount(1);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/claude-utilization", { recursive: true });
+    await popover.getByRole("heading", { name: "Spend · today" }).click();
+    await popover.screenshot({ path: "e2e/.artifacts/claude-utilization/unavailable-with-codex.png" });
+  }
 });

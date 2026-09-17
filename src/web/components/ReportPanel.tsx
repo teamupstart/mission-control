@@ -1,3 +1,4 @@
+import { featureAction } from "../lib/experience.ts";
 import { useMemo, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
@@ -291,7 +292,7 @@ export function ReportPanel({
         throw new Error(`The sitrep markdown could not be read (${response.status}).`);
       }
       return await response.text();
-    });
+    }).then((state) => { if (state.copied) featureAction("reports", "complete"); });
   };
 
   async function markDone(taskId: string): Promise<void> {

@@ -38,7 +38,7 @@ import {
   profileProducesBatches,
   profileSalt,
 } from "./config.ts";
-import { digest } from "./identity.ts";
+import { digest, scopedRef } from "./identity.ts";
 import { PARENT_SPAN_REF, SPAN_REF, TRACE_REF, boundString, resourceAttributes } from "./capture.ts";
 import {
   registeredProjections,
@@ -53,6 +53,7 @@ import {
   getSeries,
   insertBatch,
   journalHead,
+  listGaps,
   putProjectionState,
   putResource,
   putSeries,
@@ -162,9 +163,17 @@ export const CATALOG_PROJECTION: TelemetryProjection<Record<string, never>> = {
           attributes[`mission.${key}`] = value;
         }
       }
+      // The declared ref keys, RAW. The engine scopes them per destination below, which is
+      // the only place the profile salt exists.
+      const refs: Record<string, string> = {};
+      for (const key of span.refAttributes) {
+        const value = event.refs[key];
+        if (typeof value === "string" && value.length > 0) refs[key] = value;
+      }
       emit.span({
         name: span.name,
         kind: span.kind,
+        refs,
         traceId: event.refs[TRACE_REF] ?? "",
         spanId: event.refs[SPAN_REF] ?? "",
         parentSpanId: event.refs[PARENT_SPAN_REF] ?? null,
@@ -272,7 +281,7 @@ function runOne(
       // zero. This is the "enabling authorizes new data from that point" rule in one line: a
       // fresh opt-in inherits no history, and a re-enable after a withdrawal cannot replay the
       // facts that withdrawal purged.
-      state = projection.initialState();
+      state = projection.initialState(now);
       consumedSeq = journalHead(d);
     } else if (stored.stateVersion === projection.stateVersion) {
       state = stored.state;
@@ -286,7 +295,7 @@ function runOne(
           `${projection.id} state v${stored.stateVersion} could not be migrated`,
           now,
         );
-        state = projection.initialState();
+        state = projection.initialState(now);
       } else {
         state = migrated;
       }
@@ -294,7 +303,7 @@ function runOne(
     }
 
     const events = readJournalAfter(d, consumedSeq, TELEMETRY_LIMITS.projectionBatchSize);
-    if (events.length === 0) {
+    if (events.length === 0 && !projection.idleSnapshots) {
       // Still persist a first checkpoint, so the head we just chose survives a restart and a
       // later pass cannot rediscover an empty journal and reset to a newer head.
       if (!stored) {
@@ -324,7 +333,7 @@ function runOne(
         envelope,
         state,
         collector,
-        { profile, policyEpoch: destination.policyEpoch, now },
+        { profile, policyEpoch: destination.policyEpoch, now, resource: getResource(d, event.resourceId) ?? undefined },
       );
     }
     collector.endEvent();
@@ -332,6 +341,8 @@ function runOne(
       profile,
       policyEpoch: destination.policyEpoch,
       now,
+      caughtUp: highest >= journalHead(d),
+      lastGapAt: listGaps(d).reduce<number | null>((latest, gap) => Math.max(latest ?? gap.lastAt, gap.lastAt), null),
     });
 
     const applied = collector.apply(d, producesBatches);
@@ -440,11 +451,20 @@ class Collector implements TelemetryEmitter {
       this.problems.push(`${span.name} emitted without correlation ids`);
       return;
     }
+    // Ref promotion, HERE rather than in the projection that declared them, because the
+    // per-profile salt lives here and a projection cannot know it. A projection that hashed
+    // these itself would either leak the mapping or invent a second one.
+    const attributes = { ...span.attributes };
+    for (const [key, value] of Object.entries(span.refs ?? {})) {
+      attributes[`mission.ref.${key}`] = scopedRef(this.profile, this.salt, `${key}:${value}`);
+    }
     // Per-profile translation. The same underlying operation reaches two audiences under two
-    // unrelated ids, so holders of one cannot join it to the other.
+    // unrelated ids, so holders of one cannot join it to the other - and that now covers the
+    // session, task and pull request refs above as well as the trace and span ids.
     this.spans.push({
       span: {
         ...span,
+        attributes,
         traceId: scopedTraceId(this.profile, this.salt, span.traceId),
         spanId: scopedSpanId(this.profile, this.salt, span.spanId),
         parentSpanId: span.parentSpanId

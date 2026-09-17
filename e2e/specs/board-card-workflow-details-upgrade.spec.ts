@@ -46,9 +46,10 @@ test("an upgraded profile that customised this panel still gets Workflow details
     db.prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-    ).run("ui", JSON.stringify({ layout: "board", hiddenDisplayItems: ["cost"] }));
+    ).run("ui", JSON.stringify({ layout: "board", hiddenDisplayItems: ["cost"], showToursOnStartup: false }));
   });
 
+  // The explicit startup opt-out keeps this legacy display-row test on its own surface.
   // The raw `page` fixture, not `dashboard`: that one PUTs preferences of its own on the way
   // in, which would overwrite the very row this spec is about.
   await page.goto(`${daemon.baseURL}/#/settings/display`);

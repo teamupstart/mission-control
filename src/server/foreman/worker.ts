@@ -1,5 +1,8 @@
 import { isShippingTaskKind } from "@shared/task.ts";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ForemanConfig,
   PromptedCompletionDisposition,
@@ -13,6 +16,7 @@ import {
   PROMPTED_DECISION_SUMMARY_MAX,
 } from "@shared/protocol.ts";
 import { taskCompletionContract } from "@shared/task-completion.ts";
+import { planPublicationStillCurrent, withPlanPublicationGuard } from "./plan-publication.ts";
 import type {
   AgentType,
   PromptedCompletionGap,
@@ -260,7 +264,7 @@ async function consumePromptedCycle(
    * generation and its reason are one durable fact - see `SessionQueue.promptedDecision`.
    */
   decision: PromptedCompletionDisposition,
-  opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
+  opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind; expectedPlanPublication?: PlanPublicationContext },
 ): Promise<boolean> {
   const expectedIntent = {
     objective: candidate.objective,
@@ -1543,10 +1547,9 @@ async function recordShipRecovery(
   );
   const next = recoveryNextLabel(decision, result.delivery);
   const purpose = `Pre-PR ship recovery: ${reasonLabel(decision.reason)}, ${attempt}, ${result.delivery}, ${next}.`;
-  // Composed by the shepherd's own pure helper rather than inline, for the reason
-  // `episodeFromPlan` lives in `verdict.ts`: this module calls `main()` at import, so a
-  // rule written here can never be unit-tested - and the rule this one carries decides
-  // whether an already-delivered instruction is printed to the operator a second time.
+  // Keep this presentation rule in the shepherd's pure helper, independently testable
+  // from worker orchestration: it decides whether an already-delivered instruction is
+  // printed to the operator a second time.
   const brief = shipRecoveryBrief({
     detail: result.detail,
     decisionSummary: decision.decision?.summary ?? null,
@@ -1994,7 +1997,7 @@ async function refreshPromptedCandidate(
  * this same session every BETWEEN_MS instead, which on the paths below the verifier
  * means a model call per 400ms for as long as one endpoint stays broken.
  */
-async function processPromptedWrapup(
+export async function processPromptedWrapup(
   client: ForemanClient,
   cfg: ForemanConfig,
   session: Session,
@@ -2050,7 +2053,14 @@ async function processPromptedWrapup(
   // No base sha: the whole branch since it diverged is the unit of work, because a
   // pane-typed session has no per-item scope to anchor to. That is also why
   // `diffMayIncludeOtherWork` is true below - it always may.
-  const completionContract = taskCompletionContract(session.task?.kind);
+  const planPublication = session.task?.kind === "plan"
+    ? await client.planPublicationContext(session.id).catch(() => null)
+    : null;
+  if (session.task?.kind === "plan" && (!planPublication || planPublication.owner === "unavailable")) {
+    log(`${session.name}: prompted wrap-up held - plan publication ownership is unavailable`);
+    return false;
+  }
+  const completionContract = taskCompletionContract(session.task?.kind, planPublication?.owner === "workflow");
   const [diff, transcriptRead, evidenceRead] = await Promise.all([
     client.diff(session.id).catch(() => null),
     client.transcriptSize(session.id).then(
@@ -2156,7 +2166,7 @@ async function processPromptedWrapup(
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
   // objective, in light of the latest focus?" is one question, and a second prompt for it
   // would be a second thing to keep true.
-  const result = await verifyItem({
+  const result = await withPlanPublicationGuard(planPublication, () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
     focus: candidate.focus,
@@ -2183,12 +2193,15 @@ async function processPromptedWrapup(
     // by its own lights and wrong about the boundary: it answers incomplete, the hold
     // spends the generation, and the bound workflow never gets the finished work.
     //
-    // A personal session has no task and gets none, so the generic prompted trigger's
-    // behavior is untouched - and so is every other task kind, because only `ship` has a
-    // contract to give.
+    // Ship/Bugfix always carry their implementation handoff. Plans carry a planning
+    // handoff only under current workflow ownership; personal sessions carry neither.
     completionContract,
     registeredEvidence,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify);
+  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify), () => client.planPublicationContext(session.id));
+  if (!result) {
+    log(`${session.name}: prompted wrap-up held - plan publication ownership changed during verification`);
+    return false;
+  }
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
@@ -2223,6 +2236,12 @@ async function processPromptedWrapup(
 
   let current = await refreshPromptedCandidate(client, pcfg, candidate);
   if (!current || current.candidate.kind !== "check") return false;
+
+  const completionSessionId = current.session.id;
+  if (planPublication && !await planPublicationStillCurrent(planPublication, () => client.planPublicationContext(completionSessionId))) {
+    log(`${session.name}: prompted wrap-up held - plan publication ownership changed before completion`);
+    return false;
+  }
 
   // A workflow can be attached or removed while the verifier runs. Do not consume a verdict
   // judged against an evidence obligation that no longer applies (or has just become due).
@@ -2265,6 +2284,7 @@ async function processPromptedWrapup(
         headSha: diff.headSha,
         transcriptAnchor,
         summary: claimSummary,
+        ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
       }),
     );
     if (claim.kind === "failed") {
@@ -2274,6 +2294,10 @@ async function processPromptedWrapup(
     if (claim.kind === "claimed") {
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (planPublication?.owner === "workflow" && claim.result.reason === "no_binding") {
+      log(`${session.name}: prompted wrap-up held - the plan workflow was removed before its claim`);
+      return false;
     }
     if (claim.result.reason === "manual_trigger" && !verificationEvidenceFallback) {
       // Preserve the active Manual binding and surface the verified boundary to the
@@ -2286,7 +2310,7 @@ async function processPromptedWrapup(
           current.session,
           current.candidate,
           { outcome: "asked", summary: claimSummary, gaps: [] },
-          { ask: true },
+          { ask: true, ...(planPublication ? { expectedPlanPublication: planPublication } : {}) },
         ))
       ) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
@@ -2314,13 +2338,24 @@ async function processPromptedWrapup(
         current.session,
         current.candidate,
         { outcome: "asked", summary: result.verdict.summary, gaps: [] },
-        { ask: true },
+        { ask: true, ...(planPublication ? { expectedPlanPublication: planPublication } : {}) },
       ))
     ) {
       return false;
     }
     log(`${session.name}: prompted work looks complete - asked about wrapping up`);
     return true;
+  }
+
+  // A no-binding claim is only an observation, not a reservation of direct publication.
+  // Re-read after the claim and candidate refresh, immediately before authorizing the
+  // direct handoff, so a newly attached workflow cannot inherit that stale fallback.
+  const directHandoffSessionId = current.session.id;
+  if (plan.kind === "auto-wrapup" && planPublication && !await planPublicationStillCurrent(
+    planPublication, () => client.planPublicationContext(directHandoffSessionId),
+  )) {
+    log(`${session.name}: prompted wrap-up held - plan publication ownership changed before direct handoff`);
+    return false;
   }
 
   // Consume the generation FIRST - before anything types - for the reason in the header.
@@ -2348,7 +2383,10 @@ async function processPromptedWrapup(
         // own words for what is missing, and the blocking gaps beside it are what Phase 2
         // sends back - so this is the one outcome that carries them.
         : { outcome: "held", summary: plan.why, gaps: blockingDecisionGaps(trackedDecisionGaps) },
-      plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" } : undefined,
+      {
+        ...(plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" as const } : {}),
+        ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
+      },
     ))
   ) return false;
 
@@ -3310,7 +3348,11 @@ function log(msg: string): void {
   console.log(`[foreman] ${msg}`);
 }
 
-main().catch((err) => {
-  console.error("[foreman] fatal:", err);
-  process.exit(1);
-});
+// Importing the orchestration must not acquire a lease or start the polling loop.
+// Direct source and bundled launches still enter main through the same path.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error("[foreman] fatal:", err);
+    process.exit(1);
+  });
+}

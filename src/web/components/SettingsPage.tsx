@@ -205,6 +205,7 @@ export function SettingsPage({
   workflowSummaries = [],
   onOpenPalette,
   onStartTour,
+  onBrowseTours,
   onOpenForemanProfile,
   jump = null,
 }: {
@@ -281,6 +282,7 @@ export function SettingsPage({
   onOpenPalette?: () => void;
   /** Start a user-invoked tour from the rail's permanent learning entry. */
   onStartTour: (tourId: TourId) => void;
+  onBrowseTours: () => void;
   /** Leave Settings for Foreman's fixed System profile in Library. */
   onOpenForemanProfile?: () => void;
   /**
@@ -773,8 +775,14 @@ export function SettingsPage({
           <p className="settings-rail-footer-label" id="settings-help-title">
             Help &amp; tours
           </p>
-          {/* One row per registered tour. With one tour registered this is the same single
-              button, the same copy, and the same accessible name it has always been. */}
+          <Tooltip label="Preview all available tours and choose a walkthrough">
+            <button type="button" className="settings-tour-start" onClick={onBrowseTours} aria-label="Browse tours">
+              <span className="settings-tour-start-icon" aria-hidden>☷</span>
+              <span className="settings-tour-start-copy"><strong>Browse tours</strong><small>Choose a walkthrough</small></span>
+              <span className="settings-tour-start-arrow" aria-hidden>→</span>
+            </button>
+          </Tooltip>
+          {/* Direct shortcuts retain registry order. */}
           {TOUR_ENTRIES.map((tour) => (
             <Tooltip key={tour.id} label={tour.settings.tooltip}>
               <button

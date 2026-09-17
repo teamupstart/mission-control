@@ -4,6 +4,7 @@ import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 import { clearSdkSessionTask, restoreSdkSessionTask } from "./store.ts";
+import { noteSessionHandoff } from "../telemetry/sessions.ts";
 
 /**
  * "Continue in terminal": end the embedded session and reopen the SAME conversation in a
@@ -134,6 +135,9 @@ async function transfer(
     registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
   }
 
+  // Preflight succeeded. Record the cause before stop can emit session_remove, even if
+  // opening the terminal takes longer than the Registry's eviction linger.
+  const cancelHandoff = noteSessionHandoff(session.id);
   try {
     await supervisor.stop(session.id);
   } catch (err) {
@@ -147,6 +151,7 @@ async function transfer(
     // would let the message describe a decision the code did not take, on the one path
     // where a human has nothing else to go on.
     const stillDriving = supervisor.handleFor(session.id) !== null;
+    if (stillDriving) cancelHandoff();
     if (task) {
       if (stillDriving) {
         // The driver survived its own stop, so this is a handoff that simply did not

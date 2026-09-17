@@ -1,3 +1,4 @@
+import { observeLlmFailure } from "./observations.ts";
 import { DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } from "@shared/llm.ts";
 import type { LlmRunner, LlmRunnerId } from "@shared/llm.ts";
 import { claudeRunner } from "./claude.ts";
@@ -16,8 +17,8 @@ import { codexRunner } from "./codex.ts";
 // labels; it does not need the implementations.
 
 export const LLM_RUNNERS: Record<LlmRunnerId, LlmRunner> = {
-  claude: claudeRunner,
-  codex: codexRunner,
+  claude: observedRunner(claudeRunner),
+  codex: observedRunner(codexRunner),
 };
 
 /**
@@ -53,4 +54,15 @@ export function allLlmRunners(): LlmRunner[] {
  */
 export function killLiveLlmRuns(): void {
   for (const id of LLM_RUNNER_IDS) LLM_RUNNERS[id].killLiveRuns();
+}
+
+// A daemon observer may describe failures. The HTTP-only Foreman installs no database sink.
+export function observedRunner(runner: LlmRunner): LlmRunner {
+  return { ...runner, async run(prompt, opts) {
+    try { return await runner.run(prompt, opts); }
+    catch (error) {
+      observeLlmFailure(error);
+      throw error;
+    }
+  } };
 }

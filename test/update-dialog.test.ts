@@ -301,3 +301,45 @@ test("a renderer that goes away settles every question it was holding", async ()
   assert.equal(presenter.outstanding, 0);
   assert.deepEqual([await ready, await notice], ["dismiss", "dismiss"]);
 });
+
+test('migration offers a distinct system choice while Escape and backdrop remain dismissal', () => {
+  const content = UPDATE_DIALOGS.ready('1.2.4', {source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'offered', repairs: []});
+  assert.match(content.detail!, /system copy is retained/);
+  assert.deepEqual(content.actions.map((a) => a.choice), ['confirm', 'system', 'dismiss']);
+  assert.equal(updateDialogDismissal(content).choice, 'dismiss');
+  assert.equal(isUpdateDialogRequest({...content, id: 'migration'}), true);
+});
+
+test("the presenter settles a migration-ready question with the system choice", async () => {
+  const rec = recorder({ visible: true });
+  const presenter = new UpdateDialogPresenter(rec.port);
+  presenter.attach();
+  const asked = presenter.present(UPDATE_DIALOGS.ready("1.2.4", {
+    source: "/Applications/Mission Control.app",
+    target: "/Users/Fixture/Applications/Mission Control.app",
+    status: "offered",
+    repairs: [],
+  }));
+  await Promise.resolve();
+  assert.equal(presenter.outstanding, 1);
+
+  presenter.answer(rec.sent[0]!.id, "system");
+  assert.equal(presenter.outstanding, 0);
+  assert.equal(await asked, "system");
+});
+
+test("the presenter rejects the system choice for a non-migration question", async () => {
+  const rec = recorder({ visible: true });
+  const presenter = new UpdateDialogPresenter(rec.port);
+  presenter.attach();
+  const asked = presenter.present(UPDATE_DIALOGS.ready("1.2.4"));
+  await Promise.resolve();
+  const id = rec.sent[0]!.id;
+
+  presenter.answer(id, "system");
+  assert.equal(presenter.outstanding, 1);
+
+  presenter.answer(id, "dismiss");
+  assert.equal(presenter.outstanding, 0);
+  assert.equal(await asked, "dismiss");
+});

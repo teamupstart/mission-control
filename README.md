@@ -409,6 +409,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
+  gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

@@ -40,6 +40,7 @@ export const WORKFLOW_PROGRESS_EVENT = event("repair.progress", "workflow_repair
 }, "duration_ms");
 export const WORKFLOW_RUN_EVENT = event("run", "workflow_run", "Which runs start, wait and finish?", {
   observation: z.enum(["started", "changed", "finished"]), status: z.enum(WORKFLOW_RUN_STATUSES),
+  automation_eligibility: z.enum(["eligible", "human_gate", "unknown"]).default("unknown"),
   wait: z.enum(["none", "agent", "external", "human", "unknown"]),
   previous_wait: z.enum(["none", "agent", "external", "human", "unknown"]),
   wait_ms: z.number().nonnegative().nullable(), duration_ms: z.number().nonnegative().nullable(),

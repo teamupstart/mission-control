@@ -1,4 +1,4 @@
-import { featureVisit } from "./experience.ts";
+import { featureAction } from "./experience.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionFileDocument, SessionFileEntry } from "@shared/types.ts";
 import { api } from "./api.ts";
@@ -390,8 +390,8 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [save]);
 
   const select = useCallback((sessionId: string, filePath: string) => {
-    featureVisit("file-selection", `${sessionId}:${filePath}`, "files", "select");
     const previous = sessionsRef.current[sessionId]?.selectedPath;
+    if (previous !== filePath) featureAction("files", "select");
     if (previous && previous !== filePath) void save(sessionId, previous);
     update(sessionId, (s) => ({
       ...s,

@@ -8,6 +8,7 @@ import { PRIMARY_ACTION_ROUTES, PRIMARY_FEATURES, matchPrimaryAction } from "../
 import { ACTION_RESULT_SCHEMA } from "../src/shared/telemetry-sources/actions.ts";
 import { ERROR_SCHEMA, FEATURE_EVENT, FEATURE_SCHEMA } from "../src/shared/telemetry-sources/experience.ts";
 import { resolveOperationContext } from "../src/shared/telemetry-ingress.ts";
+import { TELEMETRY_LIMITS } from "../src/shared/telemetry.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-actions-"));
 process.env.MISSION_HOME = home;
@@ -217,4 +218,27 @@ test("declared automation surfaces do not replace the caller's independently kno
     assert.equal(resolveOperationContext(declared, "unknown").actor.origin, "unknown");
     assert.equal(resolveOperationContext(declared, "mcp").actor.origin, "mcp");
   }
+});
+
+test("capture refusal cannot escape automation owners or nested pending-action settlement", async () => {
+  const { runPrimaryOwnerFixture } = await import("./helpers/primary-telemetry.ts");
+  const { retainPendingAction, settlePendingAction } = await import("../src/server/telemetry/experience.ts");
+  const { execFileSync } = await import("node:child_process");
+  const repo = mkdtempSync(join(home, "full-store-repo-"));
+  execFileSync("git", ["init", "--quiet", repo]);
+  retainPendingAction("commission:1", { action: "pipeline.start", feature: "pipelines", context: context(),
+    operationId: "0123456789abcdef", startedAt: Date.now() });
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    assert.doesNotThrow(() => settlePendingAction("commission:1", "applied"));
+    const { queues, sessionId } = await runPrimaryOwnerFixture(repo);
+    assert.equal(queues.get(sessionId)!.items[0]!.state, "verified", "queue publication survives capture refusal");
+    assert.equal(events("mission.automation.transition").length, 0, "the store really refused automation capture");
+    assert.equal(events("mission.action.result").length, 0, "owner responses survived refused primary capture");
+  } finally { limits.maxTotalBytes = original; }
+  settlePendingAction("commission:1", "applied");
+  assert.equal(events("mission.action.result").filter((e) => e.facts.action === "pipeline.start").length, 1,
+    "refusal retained the pending observation for later settlement");
 });

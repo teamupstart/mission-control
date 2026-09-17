@@ -1,3 +1,4 @@
+import { observePipeline, observePipelineCommission } from "../telemetry/automation.ts";
 import {
   MAX_PIPELINE_INSTALLER_CANDIDATES,
   PIPELINE_PROVIDER_IDS,
@@ -1022,6 +1023,7 @@ async function runPipelineRepoPass(
       eventsIdentity: cursor?.identity ?? "",
     });
     if (settled && recordFeatureSpend(provider, key, settled)) spent = true;
+    observePipeline(projected);
     sink.upsertPipelineRun(projected);
   }
   // Once per pass rather than once per feature: a repository that shipped four features
@@ -1231,6 +1233,7 @@ function replayError(
   if (error === held.error) return;
   const next = { ...held, error, updatedAt: Date.now() };
   upsertPipelineCommissionAttempt(next, attempt);
+  observePipelineCommission(next);
   sink.upsertPipelineCommission(next);
 }
 
@@ -1274,6 +1277,7 @@ async function refreshPipelineSuccessorCandidate(
   if (!latestActive) return latest;
   const next = { ...latest, successorCandidate: candidate, updatedAt: Date.now() };
   upsertPipelineCommissionAttempt(next, latestActive);
+  observePipelineCommission(next);
   sink.upsertPipelineCommission(next);
   return next;
 }

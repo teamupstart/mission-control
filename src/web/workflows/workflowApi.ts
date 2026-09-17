@@ -1,3 +1,4 @@
+import { actionFetch } from "../lib/experience.ts";
 import { beginOperation } from "../lib/operation-context.ts";
 import { parseMissionRoute } from "./useWorkflowRoute.ts";
 import type { TelemetryOperationSurface } from "@shared/telemetry-ingress.ts";
@@ -20,11 +21,11 @@ export class WorkflowApiError extends Error {
 }
 
 export async function workflowRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const operation = init?.method && init.method.toUpperCase() !== "GET" ? beginOperation(workflowOperationSurface()) : undefined;
+  const response = await actionFetch(path, {
     ...init,
-    headers: { "content-type": "application/json",
-      ...(init?.method && init.method !== "GET" ? beginOperation(workflowOperationSurface()).headers : {}), ...init?.headers },
-  });
+    headers: { "content-type": "application/json", ...init?.headers },
+  }, operation);
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok) {
     throw new WorkflowApiError(

@@ -1,3 +1,4 @@
+import { registerExperienceTelemetrySource, recordSafeError } from "./experience.ts";
 import { registerWorkflowTelemetrySource } from "./workflows.ts";
 import { registerAnalyticalTelemetry } from "./projections/index.ts";
 /**
@@ -51,6 +52,7 @@ export function registerBuiltinTelemetry(): void {
   registerSessionTelemetrySource();
   registerWorkflowTelemetrySource();
   registerPrTelemetrySource();
+  registerExperienceTelemetrySource();
 }
 
 export interface TelemetryCycleResult {
@@ -223,6 +225,8 @@ export function startTelemetry(
   // a never-opted-in installation still writes nothing.
   const enabled = getTelemetryConfig().enabled;
   if (noteTelemetryRunStart(enabled, deps.now?.() ?? Date.now())) {
+    recordSafeError({ component: "process", family: "process", code: "termination_unknown", retryable: "unknown",
+      handled: true, fingerprint: "unknown", suppressed: 0 });
     console.warn(
       "[telemetry] the previous run did not shut down cleanly; recorded an unknown capture gap",
     );

@@ -117,7 +117,10 @@ if (args[0] === "api" && args[1] === "user") {
     const loseResponse = state.loseNextPostResponse;
     state.loseNextPostResponse = false;
     save(state);
-    if (loseResponse) process.kill(process.pid, "SIGKILL");
+    if (loseResponse) {
+      process.stderr.write("PRIVATE_SENTINEL lost response at /private/review-output", () => process.kill(process.pid, "SIGKILL"));
+      return;
+    }
     process.stdout.write("{}");
   });
 } else if (args.some((arg) => /repos\\/mission\\/control\\/pulls\\/\\d+$/.test(arg))) {
@@ -169,11 +172,11 @@ function readGithubState(): FakeGithubState {
   return JSON.parse(readFileSync(statePath, "utf8")) as FakeGithubState;
 }
 
-function registryStub(): Registry {
+function registryStub(onRefresh = () => {}): Registry {
   return {
     onPrOpened: () => () => {},
     onPipelineRun: () => () => {},
-    refreshInspections: () => {},
+    refreshInspections: onRefresh,
     snapshot: () => ({ sessions: [] }),
   } as unknown as Registry;
 }
@@ -218,6 +221,8 @@ after(() => {
 });
 
 test("clean review is live-only, follows resolution, and is not duplicated after a lost response", async () => {
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  enableExperience();
   const fingerprint = "prior-finding";
   process.env.FAKE_RESOLVED = JSON.stringify([fingerprint]);
   const priorMarker = formatMarker({ id: "prior-1", fingerprint, round: 1 });
@@ -256,12 +261,38 @@ test("clean review is live-only, follows resolution, and is not duplicated after
   };
   upsertInspectorComment(priorRow);
 
-  const stopLive = startInspector(registryStub());
-  await waitFor(
-    "the retry to recover the accepted review and finish the head",
-    () => getInspectorPr(liveKey)?.headSha === "head-live",
-  );
-  stopLive();
+  const reviewFacts = () => experienceFacts("mission.automation.transition")
+    .filter((e) => e.facts.feature === "inspector" && e.facts.action === "review");
+  const failures: Array<{ headSha: string | null; facts: ReturnType<typeof reviewFacts> }> = [];
+  let completedSweeps = 0;
+  const stopLive = startInspector(registryStub(() => {
+    const row = getInspectorPr(liveKey);
+    if (row?.failCount) failures.push({ headSha: row.headSha, facts: reviewFacts() });
+    if (row?.headSha === "head-live") completedSweeps++;
+  }));
+  try {
+    await waitFor(
+      "the retry to recover, followed by a no-op sweep of the same head",
+      () => completedSweeps >= 2,
+    );
+  } finally { stopLive(); }
+
+  assert.ok(failures.length > 0, "the real publication failure must be observed before recovery");
+  assert.equal(failures[0]!.headSha, null, "a failed publication does not complete the review");
+  assert.deepEqual(failures[0]!.facts, [{
+    facts: { feature: "inspector", action: "review", outcome: "failed", coverage: "owner_transition" },
+    actor: { kind: "system", origin: "daemon", basis: "owner" },
+  }], "one safe failure is recorded before any completed analysis");
+  const automationRefs = openDb().prepare("SELECT source_id, refs_json FROM telemetry_journal WHERE name = ?").all("mission.automation.transition");
+  assert.ok(!JSON.stringify(automationRefs).includes(liveKey), "repository keys are opaque even in the local journal");
+  assert.deepEqual(reviewFacts().map((e) => e.facts.outcome), ["failed", "applied"],
+    "recovery adds one completion; subsequent polling repeats neither failure nor completion");
+  assert.deepEqual(reviewFacts().filter((e) => e.facts.outcome === "failed"), failures[0]!.facts,
+    "recovery preserves the original failed outcome rather than replacing or duplicating it");
+  const captured = openDb().prepare("SELECT facts_json, refs_json, actor_json FROM telemetry_journal").all();
+  assert.ok(captured.length > 0);
+  assert.ok(!JSON.stringify(captured).includes("PRIVATE_SENTINEL"));
+  assert.ok(!JSON.stringify(captured).includes("/private/review-output"));
 
   const liveState = readGithubState();
   assert.deepEqual(
@@ -281,6 +312,7 @@ test("clean review is live-only, follows resolution, and is not duplicated after
   assert.equal(loadInspectorComments(liveKey)[0]?.status, "resolved");
   assert.equal(getInspectorPr(liveKey)?.lastError, null, "the recovered retry completes cleanly");
   const recoveredLiveHead = getInspectorPr(liveKey)?.headSha;
+  assert.equal(experienceFacts("mission.automation.transition").filter((e) => e.facts.feature === "inspector" && e.facts.outcome === "applied").length, 1, "the recovered review contributes one completed analysis");
 
   openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments");
   writeGithubState({

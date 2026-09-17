@@ -1,3 +1,4 @@
+import { installExperienceReporting } from "./lib/experience.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
@@ -21,6 +22,8 @@ if (window.missionDesktop?.isDesktop) document.documentElement.classList.add("is
 // three of those four are used outside the tree. The first paint has already happened
 // from the local cache by the time this resolves, so there is nothing to wait for.
 void hydrateUiConfig();
+
+installExperienceReporting();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");

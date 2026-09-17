@@ -2162,3 +2162,51 @@ test("live-first, replay-first, and restart reconciliation converge on one proje
     PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
   }
 });
+
+test("Phase 5: persisted provider failure settles a pending launch once", async () => {
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  const { retainPendingAction, recordPrimaryAction } = await import("../src/server/telemetry/experience.ts");
+  enableExperience(); reset();
+  const held = commission("telemetry-launch");
+  const action = { action: "pipeline.start", feature: "pipelines", operationId: "pipeline00000001", startedAt: Date.now(),
+    context: { operationId: "pipeline00000001", surface: "runs", actor: { kind: "human", origin: "dashboard", basis: "app_context" } } } as const;
+  recordPrimaryAction({ ...action, outcome: "pending" });
+  retainPendingAction(`${held.id}:1`, action);
+  const failure = event("engineer_run_failed", 1, { error: "PRIVATE_SENTINEL", class: "provider", code: "provider_failed", summary: "PRIVATE_SENTINEL", retryable: true, remedy: "PRIVATE_SENTINEL", diagnostic: null }, "telemetry-launch");
+  assert.equal(applyEngineerEvent(failure).outcome, "stored");
+  applyEngineerEvent(failure);
+  const facts = experienceFacts("mission.action.result").filter((e) => e.facts.action === "pipeline.start");
+  assert.deepEqual(facts.map((e) => [e.facts.outcome, e.facts.observation]), [["pending", "initial"], ["failed", "outcome_update"]]);
+  assert.ok(!JSON.stringify(facts).includes("PRIVATE_SENTINEL"));
+});
+
+test("Phase 5: an uncertain HTTP launch retains correlation until commission reconciliation", async () => {
+  const { Hono } = await import("hono");
+  const { primaryActionTelemetry } = await import("../src/server/telemetry/primary-actions.ts");
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  enableExperience(); reset();
+  task("telemetry-timeout");
+  const held = createPipelineCommission({ taskId: "telemetry-timeout", provider: "ai-conductor", repoRoot: repo,
+    correlationId: "correlation-telemetry-timeout", launchKey: "launch-telemetry-timeout" });
+  const app = new Hono();
+  app.use("*", primaryActionTelemetry());
+  // The provider may have launched after its acknowledgement was lost. Its HTTP response
+  // omits the commission id; the existing task owns the durable link used for reconciliation.
+  app.post("/api/tasks/:id/pipeline/start", (c) => c.json({ ok: false, outcomeUnknown: true }, 504));
+  const response = await app.request("/api/tasks/telemetry-timeout/pipeline/start", { method: "POST",
+    headers: { "x-mission-operation-id": "pipeline00000002", "x-mission-operation-surface": "runs", "x-mission-operation-actor": "human" } });
+  assert.equal(response.status, 504);
+  const actions = () => experienceFacts("mission.action.result").filter((e) => e.facts.action === "pipeline.start");
+  const before = actions().length;
+  assert.equal(actions().at(-1)?.facts.outcome, "pending");
+  bindPipelineCommissionAttempt({ commissionId: held.id, attempt: 1, engineerRunId: "run-telemetry-timeout",
+    providerAttempt: 1, attemptKey: "launch-telemetry-timeout", previousEngineerRunId: null });
+  assert.equal(actions().length, before, "binding an identity alone does not prove the reserved launch completed");
+  const created = event("engineer_run_created", 1, { idea: "PRIVATE_SENTINEL" }, "telemetry-timeout");
+  assert.equal(applyEngineerEvent(created).outcome, "stored");
+  applyEngineerEvent(created);
+  assert.equal(actions().length, before + 1);
+  assert.equal(actions().at(-1)?.facts.outcome, "applied");
+  assert.equal(actions().at(-1)?.facts.observation, "outcome_update");
+  assert.equal(actions().at(-1)?.actor.kind, "human");
+});

@@ -1,3 +1,4 @@
+import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -2757,6 +2758,7 @@ export class TaskManager {
       completedAt: null,
     };
     this.registry.upsertTask(task);
+    observeTaskCreated(task.id, internal?.schedule !== undefined);
     if (explicitTitle) {
       if (task.status === "dispatching") void this.dispatcher.dispatch(task.id);
     } else {

@@ -356,6 +356,7 @@ import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { shellCommand } from "./terminal/shell.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
+import type { EnvironmentDeps } from "./environment/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
@@ -1148,6 +1149,8 @@ export interface RouteDeps {
   settingsBackups?: SettingsBackupService;
   /** Read-only setup probe seams. */
   setupDeps?: SetupDeps;
+  /** Read-only environment-check seams. Omitted in production, so the route reads this machine. */
+  environmentDeps?: EnvironmentDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
   setupInstallDeps?: SetupInstallRouteDeps;
   /**
@@ -1198,6 +1201,7 @@ export const ROUTE_DEP_NAMES = [
   "fileCommentWalkthrough",
   "settingsBackups",
   "setupDeps",
+  "environmentDeps",
   "setupInstallDeps",
   "focusTerminals",
 ] as const satisfies readonly (keyof RouteDeps)[];
@@ -1488,6 +1492,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     fileCommentWalkthrough,
     settingsBackups,
     setupDeps,
+    environmentDeps,
     setupInstallDeps,
     focusTerminals,
   } = resolveRouteDeps(deps);
@@ -7299,7 +7304,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Computed per request rather than at boot; see `environmentCheckViews` for why an operator
   // who fixes what a warning names must not have to restart the daemon to stop seeing it.
   app.get("/api/environment/checks", async (c) =>
-    c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
+    c.json({ checks: await environmentCheckViews(environmentDeps) } satisfies EnvironmentChecksView));
 
   // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
   // remedy remains inert data for the browser to link or copy. The one write during this read

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SETUP_DEPENDENCY_IDS } from "../src/shared/setup-catalog.ts";
@@ -126,6 +126,41 @@ test("a positively ready environment check remains visible as a satisfied row", 
     && candidate.rowId.id === "upstartclaw-core-setup"
   );
   assert.deepEqual(row?.status, { state: "satisfied", evidence: "Core plugin setup completed" });
+});
+
+test("the environment-check route uses its default live dependency when no route override is supplied", async () => {
+  const environmentHome = mkdtempSync(join(tmpdir(), "mission-environment-route-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = environmentHome;
+  try {
+    const claudeDir = join(environmentHome, ".claude");
+    mkdirSync(join(claudeDir, "plugins"), { recursive: true });
+    writeFileSync(
+      join(claudeDir, "plugins", "installed_plugins.json"),
+      '{"upstartclaw-core@upstartclaw":{}}',
+    );
+    writeFileSync(join(claudeDir, "upstartclaw-core-setup"), "in_progress");
+
+    const response = await appFor(deps(null, null)).request("/api/environment/checks", { headers: LOOPBACK });
+    const body = await response.json() as {
+      checks: Array<{ id: string; warning: string | null; ready?: boolean }>;
+    };
+    const upstartclaw = body.checks.find((check) => check.id === "upstartclaw-core-setup");
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(upstartclaw, {
+      id: "upstartclaw-core-setup",
+      label: "UpstartClaw core setup",
+      warning:
+        "Finish /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires its interactive sign-ins to finish before agents can reliably use its tools.",
+      detail: null,
+      ready: false,
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(environmentHome, { recursive: true, force: true });
+  }
 });
 
 test("the read prunes repaired acknowledgements before composing its banner", async () => {

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Factory AI at Upstart: access and installation</title>
+  <style>
+    :root{color-scheme:dark;--page:#0d1117;--panel:#161b22;--panel2:#1d2430;--line:#364152;--text:#f0f6fc;--muted:#b2c0cf;--dim:#8b9bb0;--blue:#72b7ff;--amber:#f4c86b;--code:#111823;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    @media (prefers-color-scheme:light){:root{color-scheme:light;--page:#f6f8fa;--panel:#fff;--panel2:#edf2f7;--line:#b7c2d0;--text:#182230;--muted:#394b61;--dim:#617286;--blue:#075fb9;--amber:#765100;--code:#eef3f8}}
+    *{box-sizing:border-box} body{margin:0;background:var(--page);color:var(--text);font:16px/1.6 var(--sans)} main{max-width:980px;padding:52px 26px 88px;margin:auto} header{border-bottom:1px solid var(--line);padding-bottom:32px}.eyebrow{color:var(--blue);font:600 12px/1.4 var(--mono);letter-spacing:.09em;text-transform:uppercase;margin:0 0 14px}h1{font-size:clamp(32px,5vw,48px);letter-spacing:-.035em;line-height:1.08;margin:0 0 16px}h2{font-size:25px;letter-spacing:-.02em;margin:48px 0 12px;padding-top:26px;border-top:1px solid var(--line)}p{max-width:78ch;margin:0 0 14px}a{color:var(--blue)}.lead{font-size:19px;color:var(--muted);max-width:71ch}.callout{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:8px;padding:18px 20px;margin:26px 0}.steps{counter-reset:steps;display:grid;gap:13px;margin:22px 0}.step{counter-increment:steps;position:relative;padding:16px 17px 16px 58px;background:var(--panel);border:1px solid var(--line);border-radius:8px}.step:before{content:counter(steps);position:absolute;left:17px;top:16px;display:grid;place-items:center;width:26px;height:26px;border-radius:999px;background:var(--blue);color:#07121f;font:bold 14px/1 var(--mono)}.step p:last-child{margin-bottom:0}code{font-family:var(--mono);background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:.9em;color:var(--text)}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin:20px 0}table{border-collapse:collapse;min-width:680px;width:100%}th,td{text-align:left;padding:13px 15px;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);background:var(--panel2);font:600 12px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.06em}tr:last-child td{border-bottom:0}.tag{display:inline-block;padding:2px 7px;border-radius:999px;font:700 11px/1.4 var(--mono);letter-spacing:.03em;background:#563d0d;color:#ffe4a0}@media (prefers-color-scheme:light){.tag{background:#fff0c2;color:#624600}}ul{max-width:78ch;padding-left:22px}li{margin:7px 0}.source,.fine{color:var(--dim);font-size:14px}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Upstart access and setup guide · verified 2026-09-17</p>
+      <h1>Installing Factory AI at Upstart</h1>
+      <p class="lead"><strong>Start with access, not the installer.</strong> Factory is an <span class="tag">EARLY TESTING</span> coding-agent option with limited access for agent power users. Once provisioned, the supported local path is to sign in with the Upstart account, install the Droid CLI, and run <code>droid</code> from a repository.</p>
+    </header>
+    <section>
+      <h2>Recommended path</h2>
+      <div class="callout"><strong>Use Factory only if you have a concrete power-user need.</strong> Upstart's AI Tools Overview says Factory is model-agnostic but is not the recommended path. Claude and ChatGPT/Codex are the recommended tools for core development. Do not install Factory merely to obtain a default coding agent.</div>
+      <div class="steps">
+        <div class="step"><strong>Request or confirm access.</strong><p>Use <a href="https://go/access">go/access</a> and search for the <code>Factory: User</code> entitlement. The entitlement is enabled and prior grants are recorded as Access Requests. Include a short, specific agent-power-user use case. Do not request Manager or Owner access for ordinary development.</p></div>
+        <div class="step"><strong>Sign in to Factory with your Upstart identity.</strong><p>After access is provisioned, open <a href="https://app.factory.ai/">app.factory.ai</a> and complete sign-in. This is the checkpoint that confirms the entitlement is effective before changing your local machine.</p></div>
+        <div class="step"><strong>Install Droid on macOS or Linux.</strong><p>From a terminal, use the current Factory installer, then open a new terminal if the installer tells you it changed your shell path: <code>curl -fsSL https://app.factory.ai/cli | sh</code>.</p></div>
+        <div class="step"><strong>Verify in a repository.</strong><p>Change into a local Git checkout and launch <code>droid</code>. Complete browser login if prompted. Start with a narrow, reviewable task and keep the default approval flow.</p></div>
+        <div class="step"><strong>Add an editor integration only if useful.</strong><p>For VS Code-family editors, Droid can offer the extension from the integrated terminal. For JetBrains, Factory's current documentation supports installation through AI Assistant's ACP registry. The terminal path works in any editor, so an IDE plugin is optional.</p></div>
+      </div>
+    </section>
+    <section>
+      <h2>What each boundary means</h2>
+      <div class="table-wrap"><table><thead><tr><th>Boundary</th><th>What is established</th><th>What to do</th></tr></thead><tbody>
+        <tr><td>Policy</td><td>Factory is approved only for early testing, has limited access, and is intended for agent power users.</td><td>Use Claude or Codex unless Factory's model-agnostic harness features are materially needed.</td></tr>
+        <tr><td>Entitlement</td><td><code>Factory: User</code> is the ordinary member entitlement. Factory records show it is granted through an Access Request.</td><td>Request that entitlement through <a href="https://go/access">go/access</a>. Do not infer access from a successful local installation.</td></tr>
+        <tr><td>Local client</td><td>The Factory CLI is named <code>droid</code>. Current vendor documentation presents the curl installer and browser-based sign-in.</td><td>Install only after the access checkpoint, then launch it in a repository.</td></tr>
+        <tr><td>Repository connection</td><td>The Factory GitHub app is self-service per a completed Delivery request, rather than enabled for every teamupstart repository.</td><td>Expect a separate repository opt-in or GitHub-app authorization when you need hosted Factory features. CLI-only use does not prove a repository integration is enabled.</td></tr>
+      </tbody></table></div>
+    </section>
+    <section>
+      <h2>Usage and escalation</h2>
+      <ul>
+        <li>The current Factory monthly limit is <strong>$2,520 (200M FST)</strong>, on a calendar-month basis. Check usage at <a href="https://app.factory.ai/settings/usage">Factory Settings - Usage</a>.</li>
+        <li>For a limit increase, the published prerequisites include using the Codex allocation first, being within $500 of the limit, a specific project, and readiness to share work at the monthly guild meeting. Factory and Cursor increases use the published Google form; the source says to contact <code>@ai_acceleration</code> in <code>#ai-acceleration</code> if no decision arrives within one business day.</li>
+        <li>Do not store Factory API keys in a repository. Factory's CLI reference says API keys belong in an environment variable or secure secret-management system. An interactive browser login is enough for the initial local setup.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Sources and limits</h2>
+      <p class="source"><a href="https://upstartnetwork.atlassian.net/wiki/spaces/GENAI/pages/6050611308">AI Tools Overview</a> (Confluence, updated 2026-09-10): policy tier, intended audience, and recommended alternatives.</p>
+      <p class="source"><a href="https://upstartnetwork.atlassian.net/browse/TEAM-538455">Factory: User</a> (Jira entitlement, updated 2026-09-05): ordinary Factory member entitlement.</p>
+      <p class="source"><a href="https://upstartnetwork.atlassian.net/browse/DELSUPPORT-3063">DELSUPPORT-3063</a> (Delivery request): Factory GitHub app is a self-service repository opt-in.</p>
+      <p class="source"><a href="https://upstartnetwork.atlassian.net/wiki/spaces/GENAI/pages/7358120030">Rate Limits</a> (Confluence, updated 2026-09-04): limit, usage page, and increase process.</p>
+      <p class="source"><a href="https://docs.factory.ai/droid-cli/quickstart">Droid CLI Quickstart</a> and <a href="https://docs.factory.ai/ide-integrations">IDE Integrations</a> (Factory documentation, read 2026-09-17): current installation and editor-integration instructions.</p>
+      <p class="fine">This report does not confirm an individual employee's current access, device compatibility, or authorization for a particular repository. The access portal and Factory sign-in are the authoritative checks. The older internal analytics guide contains the same curl installer, but its editor instructions predate the current Factory documentation, so this guide uses the vendor's current integration guidance. Automated visual contrast analysis was not included; the report was structurally checked and rendered in Chromium.</p>
+    </section>
+  </main>
+</body>
+</html>

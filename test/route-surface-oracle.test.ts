@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
+import type { EnvironmentDeps } from "../src/server/environment/types.ts";
 
 /**
  * The whole route surface, checked against a committed oracle.
@@ -213,12 +214,14 @@ function concrete(path: string): string {
 }
 
 /** A machine that never changes, so setup rows record the route rather than the host. */
+const ENVIRONMENT_PROBES: EnvironmentDeps = {
+  homeDir: home,
+  readText: async () => ({ ok: false, missing: true, reason: "missing" }),
+  subdirectories: async () => [],
+};
+
 const SETUP_PROBES = {
-  environment: {
-    homeDir: home,
-    readText: async () => ({ ok: false, missing: true, reason: "missing" }),
-    subdirectories: async () => [],
-  },
+  environment: ENVIRONMENT_PROBES,
   agentBin: (agent: string) => `/fixture/${agent}`,
   installedBackend: async (id: string) => `/fixture/${id}`,
   herdrServer: async () => ({ state: "ready", socket: "/fixture/herdr.sock", version: "0.9.0" }),
@@ -252,6 +255,10 @@ async function surveyRouteSurface(): Promise<Record<string, string>> {
     // description of whoever ran it. This is the seam the route already exposes for exactly
     // that reason: a fixed machine, so the recorded values describe the ROUTE.
     setupDeps: SETUP_PROBES,
+    // `/api/environment/checks` reads the same class of operator-owned files as Setup, but it
+    // is a separate route with its own injection seam. Without this, a completed local
+    // UpstartClaw setup changes the oracle's response on one developer machine only.
+    environmentDeps: ENVIRONMENT_PROBES,
   });
 
   const keys = [

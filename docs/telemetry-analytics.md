@@ -14,7 +14,7 @@ source counters remain the event-time activity view and are not an exact cohort 
 ## Time and population contract
 
 At calculation time T, run and task starts qualify in `[T - 14 days, T - 7 days)`. Outcomes,
-actions, reviews and attributed usage qualify from each start through its start plus seven
+actions, reviews, findings and attributed usage qualify from each start through its start plus seven
 days, including that final instant. The declared `window="7d"` and `horizon="7d"` are bounded
 enums, not user-selected durations. Recent runs are `immature`; observed runs without a start
 are `left_censored`, excluded from the eligible denominator. A missing terminal fact is
@@ -24,7 +24,8 @@ Repeat use compares `[T - 14 days, T - 7 days)` with `[T - 7 days, T)`. Quality 
 14-day observation interval. PR `merged` and task `with_merged_pr` also include positively
 observed merges through T for the same task-start cohort; the separately named
 `merged_within_horizon` and `with_merged_pr_within_horizon` retain the seven-day outcome boundary.
-A late merge does not turn an unknown task outcome into a completed task.
+All other PR facts stop at the task's seven-day horizon. A late merge does not turn an unknown
+task outcome into a completed task.
 
 | View | Grain and numerator | Denominator and important exclusions |
 | --- | --- | --- |

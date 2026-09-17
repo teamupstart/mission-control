@@ -171,7 +171,8 @@ export function calculateAnalytics(state: AnalyticalState, now: number, quality:
     }
   }
   const executed = new Set(reviews.map((f) => f.attempt).filter(Boolean));
-  const findings = facts.filter((f) => f.kind === "workflow.finding" && executed.has(f.attempt));
+  const findings = [...runCohort.values()].flatMap(({ rows }) =>
+    rows.filter((f) => f.kind === "workflow.finding" && executed.has(f.attempt)));
   for (const [category, rows] of group(findings, (f) => text(f, "category"))) {
     const targets = [get("reasons"), get("reasons", "category", category)];
     add(targets, "findings", rows.length);
@@ -229,8 +230,12 @@ export function calculateAnalytics(state: AnalyticalState, now: number, quality:
     if (outcome?.values.status === "done" && outcome.values.completion_evidence === "recorded") add([get("usage")], "qualifying_outcomes");
     if (!usage.length) get("usage").complete = false;
   }
-  const prFacts = facts.filter((f) => f.kind === "pr.observed" && taskCohort.has(f.task)
-    && f.at >= taskCohort.get(f.task)!.start.at && f.at <= now);
+  const prFacts = facts.filter((f) => {
+    if (f.kind !== "pr.observed") return false;
+    const task = taskCohort.get(f.task);
+    return task !== undefined && f.at >= task.start.at
+      && f.at <= (f.values.fact === "merged" ? now : task.end);
+  });
   for (const rows of group(prFacts, (f) => f.pr).values()) {
     const target = get("prs");
     add([target], "associated");

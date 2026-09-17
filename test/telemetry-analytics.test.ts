@@ -74,6 +74,54 @@ test("late facts revise current horizon results without moving original facts or
   assert.equal(values(state).tasks!.unknown, 1); assert.equal(values(state).tasks!.completed, 0);
   assert.equal(events[1]!.facts.status, "failed"); assert.equal(late.occurredAt, start + 3 * DAY);
 });
+
+test("PR facts stop at the task horizon except for positive merges through calculation time", () => {
+  const start = NOW - 10 * DAY, end = start + 7 * DAY;
+  const pr = (id: string, fact: string, at: number, key = id) => analyticalEvent("pr.observed", id, at,
+    { fact, delivery: "late" }, { task_id: "T", repo_key: "repo", pr_key: key });
+  const events = [analyticalEvent("dispatch.finished", "dispatch", start, {}, { task_id: "T" }),
+    pr("at-start", "creation_verified", start), pr("at-end", "associated_existing", end),
+    pr("closed-at-end", "closed_unmerged", end), pr("merged-at-end", "merged", end),
+    pr("before-start", "creation_verified", start - 1),
+    pr("created-after", "creation_verified", end + 1),
+    pr("associated-after", "associated_existing", end + 1),
+    pr("closed-after", "closed_unmerged", end + 1),
+    pr("existing-closed-after", "closed_unmerged", end + 1, "at-start"),
+    pr("merged-after", "merged", NOW)];
+  // Late delivery does not move an event beyond its qualifying occurrence-time boundary.
+  for (const event of events) event.observedAt = NOW;
+  for (const replay of [events, [...events].reverse(), [...events, ...events]]) {
+    const result = values(project(replay));
+    assert.equal(result.prs!.associated, 5);
+    assert.equal(result.prs!.created, 1); assert.equal(result.prs!.existing, 1);
+    assert.equal(result.prs!.closed_unmerged, 1);
+    assert.equal(result.prs!.merged, 2); assert.equal(result.prs!.merged_within_horizon, 1);
+    assert.equal(result.prs!.late_merges, 2); assert.equal(result.prs!.visibility_unknown, 5);
+    assert.equal(result.tasks!.with_new_pr, 1); assert.equal(result.tasks!.with_existing_pr, 1);
+    assert.equal(result.tasks!.with_merged_pr, 1); assert.equal(result.tasks!.with_merged_pr_within_horizon, 1);
+    assert.equal(result.tasks!.pending, 1);
+  }
+});
+
+test("finding totals and category review denominators use only each executed run's outcome horizon", () => {
+  const start = NOW - 10 * DAY, end = start + 7 * DAY;
+  const events = [analyticalEvent("workflow.run", "run", start, {}, { run_id: "R" }),
+    ...["A", "B"].map((attempt) => analyticalEvent("workflow.review.finished", attempt, start + 10,
+      { verdict: "fail" }, { run_id: "R", node_id: attempt, attempt_id: attempt })),
+    analyticalEvent("workflow.finding", "at-start", start, {}, { run_id: "R", attempt_id: "A" }),
+    analyticalEvent("workflow.finding", "at-end", end, {}, { run_id: "R", attempt_id: "A" }),
+    analyticalEvent("workflow.finding", "before-start", start - 1, { category: "correctness" }, { run_id: "R", attempt_id: "B" }),
+    analyticalEvent("workflow.finding", "after-end", end + 1, { category: "security" }, { run_id: "R", attempt_id: "B" })];
+  for (const event of events) event.observedAt = NOW;
+  for (const replay of [events, [...events].reverse(), [...events, ...events]]) {
+    const snapshots = calculateAnalytics(project(replay), NOW, quality);
+    const reasons = snapshots.find((s) => s.view === "reasons" && s.sliceBy === "all")!.values;
+    assert.equal(reasons.findings, 2); assert.equal(reasons.reviews, 1);
+    const categories = snapshots.filter((s) => s.view === "reasons" && s.sliceBy === "category");
+    assert.deepEqual(categories.map((s) => s.slice), ["test_coverage"]);
+    assert.equal(categories[0]!.values.findings, 2); assert.equal(categories[0]!.values.reviews, 1);
+  }
+});
 test("repeat-use denominators require the first period and consent continuity; unknown features are bounded", () => {
   const events = [analyticalEvent("action.result", "one", NOW - 10 * DAY, {}, { operation_id: "one" }),
     analyticalEvent("action.result", "two", NOW - DAY, {}, { operation_id: "two" })];

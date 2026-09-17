@@ -512,3 +512,22 @@ test("DELETE /api/ensembles/:id demands the id echoed and a terminal run", async
   assert.equal(store.getRun(done.id), null, "the terminal run's rows are gone");
   assert.deepEqual(events, [done.id], "ensemble_remove was emitted");
 });
+
+test("Phase 5: a real ensemble decision and repeat publication count each outcome once", async () => {
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  enableExperience();
+  const { store, gateway, driver, manager, app } = build();
+  const runId = await driveToDecision(store, gateway, driver);
+  manager.publish(runId);
+  manager.publish(runId);
+  const cancelled = await req(app, `/api/ensembles/${runId}/actions`, { kind: "cancel", reason: "PRIVATE_SENTINEL" });
+  assert.equal(cancelled.status, 200);
+  manager.publish(runId);
+  manager.publish(runId);
+  const actions = experienceFacts("mission.action.result");
+  assert.equal(actions.filter((e) => e.facts.action === "ensemble.cancel" && e.facts.outcome === "applied").length, 1);
+  const runs = experienceFacts("mission.automation.transition").filter((e) => e.facts.feature === "ensembles" && e.facts.action === "run");
+  assert.equal(runs.filter((e) => e.facts.outcome === "waiting").length, 1);
+  assert.equal(runs.filter((e) => e.facts.outcome === "cancelled").length, 1);
+  assert.ok(!JSON.stringify([...actions, ...runs]).includes("PRIVATE_SENTINEL"));
+});

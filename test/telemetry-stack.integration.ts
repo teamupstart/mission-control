@@ -815,3 +815,40 @@ test("the daemon's journal is unchanged by everything the backend did", async ()
     .get() as { n: number };
   assert.ok(rows.n > 0, "facts captured during this run are still in the journal");
 });
+
+test("Phase 5 source replay exports single logical outcomes and correlated safe errors to both audiences", async () => {
+  const { recordPrimaryAction, recordSafeError, recordAutomationTransition } = await import("../src/server/telemetry/experience.ts");
+  const { resolveOperationContext } = await import("../src/shared/telemetry-ingress.ts");
+  for (const profile of ["user", "product"] as const) {
+    resetTelemetryState();
+    assert.equal(setTelemetryConfig({ enabled: true, [profile]: { enabled: true, endpoint: ENDPOINTS.otlp } }).ok, true);
+    const operation = { operationId: `phase5${RUN}operation`, startedAt: Date.now(), context: resolveOperationContext(new Headers({
+      "x-mission-operation-id": `phase5${RUN}operation`, "x-mission-operation-surface": "runs", "x-mission-operation-actor": "human",
+    })) };
+    const action = { ...operation, feature: "pipelines", action: "pipeline.start" } as const;
+    recordPrimaryAction({ ...action, outcome: "pending" });
+    recordSafeError({ component: "provider", family: "provider", code: "timeout", handled: true, retryable: "yes", fingerprint: "unknown", suppressed: 0 }, new Error("PRIVATE_SENTINEL /private/file"), operation);
+    recordPrimaryAction({ ...action, outcome: "applied" });
+    recordAutomationTransition("PRIVATE_SENTINEL-owner-id", { feature: "schedules", action: "occurrence", outcome: "applied", coverage: "owner_transition" }, { kind: "scheduler", origin: "daemon", basis: "owner" });
+    closeDb(); openDb();
+    recordPrimaryAction({ ...action, outcome: "applied" });
+    recordAutomationTransition("PRIVATE_SENTINEL-owner-id", { feature: "schedules", action: "occurrence", outcome: "applied", coverage: "owner_transition" }, { kind: "scheduler", origin: "daemon", basis: "owner" });
+    runProjectionPass(); runProjectionPass();
+    const instance = resourceAttributes()["service.instance.id"];
+    assert.ok((await runDeliveryPass()).accepted > 0);
+    for (const metric of ["mission_action_count_total", "mission_feature_used_total", "mission_errors_total", "mission_automation_actions_total"]) {
+      const value = await promEventually(`${metric}{service_instance_id="${instance}"}`, (r) => r.data.result.reduce((sum, p) => sum + Number(p.value[1]), 0) === 1);
+      assert.equal(value.data.result.reduce((sum, p) => sum + Number(p.value[1]), 0), 1, `${profile}: ${metric}`);
+    }
+    const row = openDb().prepare("SELECT refs_json FROM telemetry_journal WHERE name = 'mission.error.occurrence' LIMIT 1").get() as { refs_json: string };
+    const refs = JSON.parse(row.refs_json) as Record<string, string>;
+    const traceId = scopedTraceId(profile, profileSalt(profile), refs.__trace_id!);
+    const trace = await tempoTrace(traceId);
+    assert.ok(trace, `${profile}: correlated trace must arrive in Tempo`);
+    const text = JSON.stringify(trace);
+    assert.ok(text.includes("mission.error.occurrence"));
+    assert.ok(text.includes("mission.action.result"));
+    assert.ok(!text.includes("PRIVATE_SENTINEL"));
+    checkpoint(`Phase 5 ${profile}`, `action=1, feature use=1, error=1, schedule outcome=1 after restart/replay; Tempo trace ${traceId} contains action and error, no private sentinel`);
+  }
+});

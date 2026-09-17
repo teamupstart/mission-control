@@ -560,3 +560,5 @@ invocation may need `DOCKER_CLI_HINTS=false COMPOSE_MENU=false`.
 **The Collector refuses to start over its queue directory.** That refusal is correct - it will not
 fall back to an in-memory queue. The `queue-permissions` one-shot service in `compose.yaml` gives
 the volume to the Collector's user; if you removed it, put it back.
+
+See [primary actions and safe errors](observability-actions.md) for Phase 5 source semantics, the operation inventory and coverage limits.

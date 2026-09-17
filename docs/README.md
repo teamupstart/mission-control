@@ -22,6 +22,7 @@ Mission Control's product reference is organized by feature below.
 - [Foreman](foreman.md)
 - [Work queues and backlog autopilot](work-queues.md)
 - [Observability and telemetry](observability.md): what Mission Control can record about itself, and the local Grafana stack.
+- [Primary actions and safe error telemetry](observability-actions.md): source semantics, operation coverage, privacy and recovery limits.
 - [Skills and settings](skills-and-settings.md)
 - [Automatic settings snapshots](configuration.md#automatic-settings-snapshots)
 - [Repository memory](repository-memory.md)

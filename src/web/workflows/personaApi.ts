@@ -1,3 +1,4 @@
+import { actionFetch } from "../lib/experience.ts";
 import { beginOperation } from "../lib/operation-context.ts";
 import { personaNameFromMarkdown } from "@shared/workflow.ts";
 import type { PersonaDriftView, PersonaUpstreamState, PersonaView } from "@shared/workflow.ts";
@@ -9,7 +10,7 @@ interface PersonaErrorBody {
 }
 
 export async function personaRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await actionFetch(path, {
     ...init,
     headers: { "content-type": "application/json",
       ...(init?.method && init.method !== "GET" ? beginOperation("library").headers : {}), ...init?.headers },

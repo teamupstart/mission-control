@@ -1085,3 +1085,18 @@ test("the submission route answers 503 when this build has no scout library", as
   });
   assert.equal(res.status, 503);
 });
+
+test("Phase 5: archive cleanup records one owner outcome without title or file content", async () => {
+  const { enableExperience, experienceFacts } = await import("./helpers/experience-assertions.ts");
+  enableExperience();
+  const { app, root, manager } = harness();
+  const written = writeScoutBundle(root, { title: "PRIVATE_SENTINEL" });
+  await settle(manager);
+  const res = await app.request(`/api/archives/${written.key}`, { method: "DELETE", headers: JSON_HEADERS,
+    body: JSON.stringify({ confirmArchiveKey: written.key }) });
+  assert.equal(res.status, 200);
+  const facts = experienceFacts("mission.action.result").filter((e) => e.facts.action === "archive.delete");
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0]!.facts.outcome, "applied");
+  assert.ok(!JSON.stringify(facts).includes("PRIVATE_SENTINEL"));
+});

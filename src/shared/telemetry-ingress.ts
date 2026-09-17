@@ -54,6 +54,8 @@ export const TELEMETRY_OPERATION_SURFACES = [
   "files",
   "topbar",
   "unknown",
+  "mcp",
+  "automation",
 ] as const;
 export type TelemetryOperationSurface = (typeof TELEMETRY_OPERATION_SURFACES)[number];
 
@@ -116,7 +118,7 @@ export function resolveOperationContext(
 
   // `owner` is unreachable here by construction - there is no branch that produces it.
   let basis: TelemetryActorBasis = "unknown";
-  if (operationId !== null && surface !== "unknown") basis = "app_context";
+  if (operationId !== null && surface !== "unknown" && surface !== "mcp" && surface !== "automation") basis = "app_context";
   else if (declaredKind !== null) basis = "declared";
 
   return {
@@ -126,7 +128,7 @@ export function resolveOperationContext(
       // A dashboard request with app context is a person doing something in the app. Without
       // it we do not claim to know, and `unknown` is a real actor kind rather than a gap.
       kind: declaredKind ?? (basis === "app_context" ? "human" : "unknown"),
-      origin,
+      origin: surface === "mcp" ? "mcp" : surface === "automation" ? "daemon" : origin,
       basis,
     },
   };

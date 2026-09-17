@@ -1,3 +1,4 @@
+import { recordAutomationTransition } from "../telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { envVar } from "../config.ts";
@@ -377,6 +378,8 @@ function noteFailure(
   tick: TickState,
   kind: InspectorFailKind = "persistent",
 ): false {
+  recordAutomationTransition(`${pr.key}:${now}`, { feature: "inspector", action: "review", outcome: "failed", coverage: "owner_transition" },
+    { kind: "system", origin: "daemon", basis: "owner" }, now);
   tick.failed = true;
   // Re-read rather than trusting the snapshot: an earlier failure in this same pass has
   // already written a higher count, and incrementing the stale one would discard it.
@@ -1106,6 +1109,8 @@ async function reviewRound(
     },
     now,
   );
+  recordAutomationTransition(`${pr.key}:${s.headSha}:${round}`, { feature: "inspector", action: "review", outcome: "applied", coverage: "owner_transition" },
+    { kind: "system", origin: "daemon", basis: "owner" }, now);
   return true;
 }
 

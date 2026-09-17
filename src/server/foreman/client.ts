@@ -122,7 +122,9 @@ async function get<T>(path: string): Promise<T> {
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
   return fetch(BASE_URL + path, {
     method,
-    headers: body ? { "content-type": "application/json" } : {},
+    headers: { ...(body ? { "content-type": "application/json" } : {}),
+      "x-mission-operation-id": randomUUID().replaceAll("-", ""),
+      "x-mission-operation-surface": "automation", "x-mission-operation-actor": "foreman" },
     body: body ? JSON.stringify(body) : undefined,
   });
 }

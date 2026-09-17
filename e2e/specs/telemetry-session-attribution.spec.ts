@@ -85,7 +85,7 @@ test("a dispatched session's model, effort and conversation facts are captured a
   // collection ON is recorded by the daemon that applied it - which is exactly why the check
   // is for an absence of SESSION facts rather than an empty journal.
   const before = captured(daemon);
-  expect(before.map((f) => f.name)).toEqual(["mission.telemetry.control.applied"]);
+  expect(before.filter((f) => f.name.startsWith("mission.session.")).length).toBe(0);
   note("collection enabled, local-only; no session facts captured yet");
 
   // 2. Dispatch, through the dialog a person uses.
@@ -161,10 +161,9 @@ test("a dispatched session's model, effort and conversation facts are captured a
     expect(["send", "queued"]).toContain(operation.facts.operation);
     expect(operation.facts.outcome).toBe("delivered");
     // A user-role message does not prove a human sender. The app says `human`; the BASIS says
-    // how much that is worth, and the dashboard does not yet mint an operation id for these
-    // routes - Phase 5 owns propagating that context. `unknown` is the honest answer today
-    // and is asserted rather than left to drift into a false `app_context`.
-    expect(operation.facts.actor_basis).toBe("unknown");
+    // how much that is worth. Phase 5 carries the app context through the durable outbox;
+    // replaying a delivery must preserve that context without counting another send.
+    expect(operation.facts.actor_basis).toBe("app_context");
     expect(operation.facts.runtime).toBe("sdk");
   }
   note(`composer operations captured: ${operations.map((o) => String(o.facts.operation)).join(", ")}`);

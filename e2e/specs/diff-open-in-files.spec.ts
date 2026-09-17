@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -91,6 +92,7 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
   dashboard,
   daemon,
 }) => {
+  await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, { data: { enabled: true } });
   await dispatch(dashboard, daemon);
   const cwd = await sessionCwd(daemon);
 
@@ -161,6 +163,12 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
     "aria-pressed",
     "true",
   );
+  const facts = () => withDaemonDb(daemon, (db) => db.prepare("SELECT facts_json FROM telemetry_journal WHERE name = 'mission.feature.entry'").all().map((row) => JSON.parse(row.facts_json as string)));
+  await expect.poll(() => facts().filter((f) => f.feature === "diff" && f.action === "enter").length).toBe(1);
+  await expect.poll(() => facts().filter((f) => f.feature === "files" && f.action === "select").length).toBeGreaterThan(0);
+  expect(JSON.stringify(facts())).not.toContain("beta.html");
+  expect(JSON.stringify(facts())).not.toContain(cwd);
+
 });
 
 test("a changed file whose name ends in a line-number suffix opens as itself", async ({

@@ -62,6 +62,9 @@ async function http(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
+    "x-mission-operation-id": crypto.randomUUID().replaceAll("-", ""),
+    "x-mission-operation-surface": "mcp",
+    "x-mission-operation-actor": "agent",
     ...extraHeaders,
     "content-type": "application/json",
     "x-harness-token": readClientToken(),

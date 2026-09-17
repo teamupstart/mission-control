@@ -16,6 +16,7 @@ import { Registry } from "./registry.ts";
 import { observeInjections } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
+import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
   claudeTransportChoice,
   codexTransportChoice,
@@ -541,13 +542,15 @@ attachSessionTelemetry(registry);
 registry.onTurnDelivered((e) => {
   const session = registry.getSession(e.sessionId);
   if (!session) return;
+  const operation = retainedTurnOperation(e.turnId);
   observeSessionOperation({
     session,
     operation: "send",
     outcome: "delivered",
-    // `PendingTurnManager.submit` is reached only for a human-origin turn, and the basis says
-    // what that is worth: the app believes a person typed it, and nothing proves it.
-    actor: { kind: "human", origin: "dashboard", basis: "unknown" },
+    // Phase 5 retains the submitting surface across the outbox; older/unobserved turns keep
+    // unknown provenance. The turn owner still contributes exactly one delivery fact.
+    actor: operation?.actor ?? { kind: "unknown", origin: "dashboard", basis: "unknown" },
+    operationId: operation?.operationId,
     identity: e.turnId,
     now: e.deliveredAt,
   });

@@ -182,7 +182,8 @@ Every task whose kind is **scout** is told, in its own prompt, that its delivera
 
 > Write the report to `docs/reports/<slug>/report.html` ... Answer first ... Self-contained and
 > static ... call the `submit_scout_artifacts` tool with the report path, a short plain-text
-> summary of the finding, optional tags, and only the additional files worth preserving.
+> summary of the finding, optional tags, and only the additional files worth preserving. Do not
+> commit the report or other scout output unless the operator's task explicitly requests a commit.
 
 That instruction is appended by the daemon, not by a skill, so it arrives whether Skills are
 enabled or not, and on both delivery paths - a fresh dispatch and a backlog scout dropped onto

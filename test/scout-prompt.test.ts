@@ -90,8 +90,8 @@ test("a scout's intent arrives intact, with the contract appended after it", () 
   assert.ok(marker > task.intent.length - 1, "and the contract follows it");
   assert.ok(authorization < marker, "the narrower scout contract remains authoritative");
   assert.ok(
-    marker < delivered.indexOf("Do NOT open a pull request"),
-    "the scout's explicit no-PR instruction remains last and specific",
+    marker < delivered.indexOf("Do NOT commit the report"),
+    "the scout's explicit no-commit instruction remains last and specific",
   );
 });
 
@@ -180,7 +180,7 @@ test("a ship task hands completed implementation back before any pull-request wo
   assert.match(delivered, /Only an instruction delivered after this handoff/);
 });
 
-test("the contract names the path, the rules, the tool, and the no-pull-request rule", () => {
+test("the contract names the path, the rules, the tool, and the delivery-only git rules", () => {
   const appendix = scoutReportAppendix(scoutRepoSlots(mkTask()));
   assert.match(appendix, new RegExp(escape(SCOUT_REPORT_PATH_SHAPE)));
   assert.match(appendix, /NO JavaScript/);
@@ -189,6 +189,8 @@ test("the contract names the path, the rules, the tool, and the no-pull-request 
   assert.match(appendix, /Answer first/);
   assert.match(appendix, /one sentence/, "a short scout still writes the page");
   assert.match(appendix, new RegExp(escape(SUBMIT_SCOUT_ARTIFACTS_TOOL)));
+  assert.match(appendix, /Do NOT commit the report or other scout output/);
+  assert.match(appendix, /unless the operator's task explicitly requests\s+a commit/);
   assert.match(appendix, /Do NOT open a pull request/);
   assert.match(appendix, /no href/, "citations stay visible text");
   assert.match(appendix, /cannot be marked done/);

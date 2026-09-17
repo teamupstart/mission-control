@@ -1224,6 +1224,33 @@ test("an overdue closure says so even when no attempt was ever refused", async (
   assert.match(summary?.detail ?? "", /has not gone away yet/);
 });
 
+for (const scope of ["single-task", "task-list"] as const) {
+  test(`a retired closure without an error is immediately visible in a ${scope} summary`, (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: T0 + MISSION_SESSION_CLOSURE_ESCALATE_MS });
+    const taskId = uid("retired-summary");
+    const sessionId = uid("retired-session");
+    db.upsertTask(mkTask({ id: taskId, sessionId, status: "done", completedAt: T0 }));
+    db.openTaskSessionClosure(taskId, sessionId, T0, T0 + MISSION_SESSION_CLOSURE_DEADLINE_MS);
+    const ids = scope === "single-task" ? [taskId] : [taskId, uid("unrelated")];
+    assert.equal(db.taskAutomaticCleanupSummaries(ids).has(taskId), false,
+      "a normal close with no error stays quiet before its deadline");
+
+    db.retireTaskSessionClosure(taskId, sessionId, Date.now());
+    const owed = db.getTaskSessionClosure(taskId)!;
+    assert.equal(owed.lastError, null);
+    assert.ok(owed.deadlineAt > Date.now(), "retirement precedes the absolute close deadline");
+    const summary = db.taskAutomaticCleanupSummaries(ids).get(taskId);
+    assert.equal(summary?.state, "retrying");
+    assert.match(summary?.detail ?? "", /session was retired; agent cleanup is still unconfirmed/);
+    assert.match(summary?.detail ?? "", /has not gone away yet/);
+    assert.equal(db.getTask(taskId)?.status, "done");
+
+    db.clearTaskSessionClosure(taskId);
+    assert.equal(db.taskAutomaticCleanupSummaries(ids).has(taskId), false,
+      "confirmed cleanup removes the warning");
+  });
+}
+
 test("retirement refuses a task and session the durable ledger does not pair", async () => {
   // `retireConcludedMissionSession` is the one call that can evict a session nobody stopped,
   // so it authorizes itself from the ledger rather than trusting its caller. A caller that has

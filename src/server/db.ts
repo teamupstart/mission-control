@@ -7485,8 +7485,8 @@ export function taskAutomaticCleanupSummaries(
 /**
  * Fold owed session closures into the automatic-cleanup projection.
  *
- * Only a closure that has already been REFUSED once, or that is past its four-minute
- * guarantee, says anything. The ordinary case - a stop that was serviced and a session the
+ * A closure that has been REFUSED, forcibly retired, or passed its four-minute guarantee
+ * needs a visible warning. The ordinary case - a stop that was serviced and a session the
  * daemon is about to watch disappear - is a second or two long and is not a maintenance note;
  * announcing it would put "automatic cleanup is retrying" onto the card of every recurring
  * mission run that finished perfectly.
@@ -7505,11 +7505,11 @@ function applySessionClosureSummaries(
   const rows = (one === null
     ? d.prepare(
       `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
-        WHERE last_error IS NOT NULL OR deadline_at <= ?`,
+        WHERE last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?`,
     ).all(now)
     : d.prepare(
       `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
-        WHERE task_id = ? AND (last_error IS NOT NULL OR deadline_at <= ?)`,
+        WHERE task_id = ? AND (last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?)`,
     ).all(one, now)) as unknown as Array<{
       task_id: string;
       deadline_at: number;

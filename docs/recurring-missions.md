@@ -238,14 +238,11 @@ session is actually gone:
 - The guarantee is **four minutes from the completion time on the task row** - not from when
   the daemon got around to it - and the session is out of the active-session list by then. An
   exited row may remain in the SDK history; no live session does.
-- It is four minutes **of daemon uptime**, and that is a real qualification rather than a
-  hedge. Nothing enforces a deadline while Mission Control is not running: a daemon that is
-  stopped, asleep or restarting is not closing anything, and after a restart it deliberately
-  waits for its first completed discovery sweep before it acts, because until the process table
-  has been read a missing session has not been observed to be gone. A closure interrupted that
-  way is resumed rather than lost. Its original deadline is retained, so overdue cleanup
-  escalates on recovery without granting another four-minute window. No process can enforce
-  the deadline while the daemon is down.
+- The deadline is absolute. Enforcement can be delayed while the daemon is stopped or
+  restarting, or the host is asleep. Recovery retains the original deadline and escalates
+  overdue cleanup without granting another four-minute window. It first waits for a completed
+  discovery sweep, because a missing session cannot be confirmed gone until the process table
+  has been read.
 - A stop that was *serviced* is not a session that has *left*. The closure clears only once the
   daemon has observed the session leave, through the same eviction path every other session
   leaves by. Anything short of that is retried.

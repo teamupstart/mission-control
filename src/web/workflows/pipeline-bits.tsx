@@ -477,6 +477,10 @@ export function TerminusCard({
  * `status` and `detail` are the RUN's answers - the gate chip and the sentence saying what it
  * is waiting on. Absent in the editor, where there is no run to have an opinion.
  */
+export const INSPECTOR_COMPLETION_REQUIREMENT =
+  "This gate cannot pass until GitHub Inspector has reviewed the matching PR commit and every "
+  + "Inspector finding is resolved. In Live mode, its final clean review must also be published. GitHub Inspector must be enabled in Settings.";
+
 export function InspectorFooter({
   policy,
   status = null,
@@ -505,13 +509,12 @@ export function InspectorFooter({
                 screenshot and a reader who never sees the styling. */}
             <span className="wf-pipeline-inspector-fixed">Fixed</span>
           </span>
-          {/* Two facts and no more. A strip card is read at a glance beside four others, and
-              the first draft of this spent eight lines restating what the Fixed badge and
-              the absent controls already say. What is left is what an operator cannot see
-              from the card: what Inspector looks at, and where its switches actually live. */}
           <span className="wf-pipeline-inspector-sub">
             Reviews the finished pull request once the workflow succeeds. Set in Workflow
             settings, not on the graph.
+          </span>
+          <span className="wf-pipeline-inspector-detail">
+            {INSPECTOR_COMPLETION_REQUIREMENT}
           </span>
           {detail && <span className="wf-pipeline-inspector-detail">{detail}</span>}
         </span>

@@ -1796,6 +1796,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       state            TEXT NOT NULL,     -- open | closed
       head_sha         TEXT,              -- head as of the last completed review
       review_posture   TEXT,              -- consent posture that produced head_sha
+      review_complete  INTEGER,           -- all verdict findings retained; null for legacy reviews
+      clean_review_head_sha TEXT,         -- confirmed final clean review on GitHub
       round            INTEGER NOT NULL DEFAULT 0,
       last_reviewed_at INTEGER,
       last_error       TEXT,
@@ -1842,6 +1844,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       replies             INTEGER NOT NULL DEFAULT 0,
       answered_comment_id INTEGER,           -- newest foreign comment we've answered
       created_at          INTEGER NOT NULL,
+      resolution_pending INTEGER NOT NULL DEFAULT 0,
       updated_at          INTEGER NOT NULL
     );
     -- No index on (pr_key) alone: it is the leftmost prefix of the unique index below,
@@ -3706,6 +3709,9 @@ function migrate(d: DatabaseSync): void {
   // fail-closed for rows written by older builds: their reviewed head must be run again
   // before it can authorize a merge.
   addColumn(d, "inspector_prs", "review_posture", "TEXT");
+  addColumn(d, "inspector_prs", "review_complete", "INTEGER");
+  addColumn(d, "inspector_comments", "resolution_pending", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_prs", "clean_review_head_sha", "TEXT");
   // What the last poll SAW, as against what the last review was about.
   //
   // All four nullable with no default, and NULL reads as "this build has not looked at this
@@ -12871,6 +12877,8 @@ interface InspectorPrRow {
   state: string;
   head_sha: string | null;
   review_posture: string | null;
+  review_complete: number | null;
+  clean_review_head_sha: string | null;
   round: number;
   last_reviewed_at: number | null;
   last_error: string | null;
@@ -12903,6 +12911,8 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
     reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,
+    reviewComplete: r.review_complete === null ? null : r.review_complete === 1,
+    cleanReviewHeadSha: r.clean_review_head_sha,
     round: r.round,
     lastReviewedAt: r.last_reviewed_at,
     lastError: r.last_error,
@@ -12935,11 +12945,11 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
     .prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
+          head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -12955,6 +12965,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.state,
       pr.headSha,
       pr.reviewPosture,
+      pr.reviewComplete == null ? null : Number(pr.reviewComplete),
+      pr.cleanReviewHeadSha ?? null,
       pr.round,
       pr.lastReviewedAt,
       pr.lastError,
@@ -12992,6 +13004,8 @@ export function updateInspectorPr(
     state?: InspectorPrState;
     headSha?: string | null;
     reviewPosture?: InspectorPr["reviewPosture"];
+    reviewComplete?: boolean | null;
+    cleanReviewHeadSha?: string | null;
     round?: number;
     lastReviewedAt?: number | null;
     lastError?: string | null;
@@ -13017,6 +13031,7 @@ export function updateInspectorPr(
     .prepare(
       `UPDATE inspector_prs
           SET state = ?, head_sha = ?, review_posture = ?, round = ?,
+              review_complete = ?, clean_review_head_sha = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
@@ -13030,6 +13045,8 @@ export function updateInspectorPr(
       next.headSha,
       next.reviewPosture,
       next.round,
+      next.reviewComplete == null ? null : Number(next.reviewComplete),
+      next.cleanReviewHeadSha ?? null,
       next.lastReviewedAt,
       next.lastError,
       next.failCount,
@@ -13139,6 +13156,7 @@ interface InspectorCommentRow {
   status: string;
   replies: number;
   answered_comment_id: number | null;
+  resolution_pending: number;
   created_at: number;
   updated_at: number;
 }
@@ -13157,6 +13175,7 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     status: r.status as InspectorCommentStatus,
     replies: r.replies,
     answeredCommentId: r.answered_comment_id,
+    ...(r.resolution_pending === 1 ? { resolutionPending: true } : {}),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -13176,8 +13195,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
     .prepare(
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity,
-          round, status, replies, answered_comment_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          round, status, replies, answered_comment_id, resolution_pending, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
@@ -13188,6 +13207,7 @@ export function upsertInspectorComment(c: InspectorComment): void {
          status = excluded.status,
          replies = excluded.replies,
          answered_comment_id = excluded.answered_comment_id,
+         resolution_pending = excluded.resolution_pending,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -13203,6 +13223,7 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.status,
       c.replies,
       c.answeredCommentId,
+      Number(c.resolutionPending ?? false),
       c.createdAt,
       c.updatedAt,
     );

@@ -1504,11 +1504,17 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
     };
   }
   if (inspector.open === 0) {
+    const head = inspector.reviewedHeadSha;
+    const current = !!head && head === inspector.observedHeadSha;
+    const published = current && inspector.cleanReviewHeadSha === head;
+    const passed = current && (published || dry);
+    const conclusion = !current ? "Waiting for the current PR commit to be reviewed."
+      : dry ? "" : published ? "Final clean review published." : "Final clean review pending.";
     return {
-      mark: "✓",
-      tone: "insp-clean",
+      mark: passed ? "✓" : "…",
+      tone: passed ? "insp-clean" : "insp-queued",
       dry,
-      title: `GitHub Inspector: reviewed, nothing outstanding${suffix}`,
+      title: `GitHub Inspector: no open findings${head ? ` at ${head.slice(0, 8)}` : ""}${suffix}. ${conclusion ? `${conclusion} ` : ""}Workflow completion is separate.`,
     };
   }
   return {

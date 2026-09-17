@@ -23,6 +23,7 @@ import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
 import { personaNodeRouting } from "./node-execution.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { missionRouteHash } from "./useWorkflowRoute.ts";
+import { INSPECTOR_COMPLETION_REQUIREMENT } from "./pipeline-bits.tsx";
 
 /**
  * What the rail says about the action a node names: the skill it needs and the proof it
@@ -125,6 +126,7 @@ export function WorkflowSettingsFields({
       </label>
       {workflow.completionPolicy.kind === "inspector" && (
         <>
+          <p className="settings-hint">{INSPECTOR_COMPLETION_REQUIREMENT}</p>
           <label>After findings
             <Tooltip label="What re-runs when GitHub Inspector reports findings">
               <select disabled={readOnly} value={workflow.completionPolicy.onFindings} onChange={(event) => workflow.completionPolicy.kind === "inspector" && onUpdate({ completionPolicy: { ...workflow.completionPolicy, onFindings: event.target.value as "restart_workflow" | "inspector_only" } })}>

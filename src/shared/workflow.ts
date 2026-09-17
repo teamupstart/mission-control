@@ -2604,6 +2604,7 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
   "review_error",
   "findings",
   "pr_closed",
+  "clean_review_pending",
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 

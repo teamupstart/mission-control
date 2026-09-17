@@ -82,6 +82,7 @@ export const WORKFLOW_INSPECTOR_GATE_PHASES = [
   "inspector_round_limit",
   "inspector_unadopted_pr",
   "inspector_working_tree_not_pushed",
+  "inspector_clean_review",
 ] as const;
 
 /**
@@ -105,6 +106,7 @@ export const WORKFLOW_INSPECTOR_ENTRY_PHASE: Record<WorkflowGateWaitReason, Work
   working_tree_not_pushed: "inspector_working_tree_not_pushed",
   head_mismatch: "inspector_head_mismatch",
   review_pending: "inspector_review",
+  clean_review_pending: "inspector_clean_review",
   review_backoff: "inspector_review_backoff",
   review_error: "inspector_review_error",
   findings: "inspector_findings",
@@ -294,6 +296,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   inspector_pr_closed: ["blocked"],
   inspector_pr_switch_refused: ["blocked"],
   inspector_review: ["waiting_for_inspector"],
+  inspector_clean_review: ["waiting_for_inspector"],
   inspector_review_backoff: ["waiting_for_inspector"],
   inspector_review_error: ["waiting_for_inspector"],
   inspector_round_limit: ["blocked"],
@@ -578,6 +581,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   inspector_pr_closed: [],
   inspector_pr_switch_refused: [],
   inspector_review: [],
+  inspector_clean_review: [],
   inspector_review_backoff: [],
   inspector_review_error: [],
   inspector_round_limit: ["maxRepairRounds", "parkedPhase"],

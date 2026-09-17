@@ -651,10 +651,6 @@ async function processPr(
   }
   if (!unpark && backedOff) return false;
 
-  if (pr.round >= INSPECTOR_LIMITS.maxRounds) {
-    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, now, tick);
-  }
-
   // Who we are, for every ownership decision below.
   //
   // FAIL CLOSED means ABSTAIN, not "fall back to local state". Without the login we
@@ -673,6 +669,19 @@ async function processPr(
   const post = posture === "live";
   const readDiff = diffOncePerTick(dir, pr);
   let acted = false;
+  const resolvedThreadIds = new Set<string>();
+  // A review or reply may have succeeded before resolving its thread failed. Its durable marker
+  // authorizes retrying that mutation, without treating an operator's ledger override
+  // as permission to close GitHub threads.
+  for (const [fingerprint, thread] of ourThreads(s, login)) {
+    if (!post) break;
+    if (!rows.get(fingerprint)?.resolutionPending) continue;
+    const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
+    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", now, tick);
+    resolvedThreadIds.add(thread.threadId);
+    closeRow(rows, fingerprint, now);
+    acted = true;
+  }
 
   // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
   //    pushes ago should not queue behind a fresh review of a big diff.
@@ -694,10 +703,13 @@ async function processPr(
         login,
         now,
         tick,
+        resolvedThreadIds,
       );
       if (replied) acted = true;
     }
   }
+
+  if (tick.failed) return acted;
 
   // 2. Ship it, if YOLO mode says every gate is green.
   //
@@ -708,9 +720,10 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
-  if (await maybeMerge(cfg, pr, dir, s, rows, now, workflowGate)) return true;
+  // Incomplete provenance must recover before it can authorize Shipping too.
+  if (pr.reviewComplete !== false && await maybeMerge(cfg, pr, dir, s, rows, now, workflowGate)) return true;
 
-  // 3. Nothing pushed since the last review: there is nothing new to say.
+  // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
   // A dry-run review is current as an analysis result, but not as merge provenance.
   // Once the operator switches to live, deliberately fall through and review this same
@@ -725,7 +738,11 @@ async function processPr(
     s.headSha &&
     s.headSha === pr.headSha &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
+    // A legacy or incomplete review cannot certify safety. Once its retained findings
+    // are resolved, review again on this head; only complete provenance can be reused.
+    && (!post || pr.reviewComplete === true || [...rows.values()].some((row) => row.status !== "resolved"))
   ) {
+    const published = await publishCleanReview(pr, dir, s, rows, post, login, now, tick, resolvedThreadIds);
     if (!tick.failed) {
       const current = getInspectorPr(pr.key);
       if (current && (current.lastError || current.failCount > 0)) {
@@ -736,10 +753,13 @@ async function processPr(
         );
       }
     }
-    return acted;
+    return acted || published;
   }
 
-  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff);
+  if (pr.round >= INSPECTOR_LIMITS.maxRounds) {
+    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, now, tick);
+  }
+  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff, resolvedThreadIds);
   return acted || reviewed;
 }
 
@@ -756,6 +776,7 @@ async function answerFollowUp(
   login: string,
   now: number,
   tick: TickState,
+  resolvedThreadIds: Set<string>,
 ): Promise<boolean> {
   // A reply we cannot actually send must not be drafted, spent or stamped. Comments
   // have `drafted` for exactly this and replies have no equivalent: burning a
@@ -815,6 +836,7 @@ async function answerFollowUp(
     ...w.row,
     replies: w.row.replies + 1,
     answeredCommentId: w.newest.databaseId,
+    resolutionPending: answer.resolved,
     updatedAt: now,
   };
   rows.set(w.row.fingerprint, answered);
@@ -826,24 +848,55 @@ async function answerFollowUp(
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
   if (answer.resolved) {
-    // A refused GitHub mutation does NOT hold the ledger row open, which is the opposite
-    // of the review round's rule, and the asymmetry is the point. There, a failed resolve
-    // is retried by the next round; here there is no next round - the head has been
-    // reviewed, `answeredCommentId` is stamped, and nothing would ever revisit this
-    // thread. Leaving the row open on a transient `gh` failure is exactly the permanent
-    // block this whole path exists to end.
-    //
-    // Closing it is safe because the row is only OUR opinion of the finding, and it is not
-    // the only thing standing between this pull request and the default branch: a thread
-    // that did not close is still counted by `mergeVerdict`'s `threads` gate, which reads
-    // GitHub's own snapshot on every sweep. So a failed resolve degrades to "blocked on an
-    // unresolved thread", which an operator can clear on GitHub, rather than to a merge.
-    //
-    // Unconditional rather than guarded on `post`: this function returns at its top when we
-    // could not publish, so reaching here means the reply was posted for real.
-    await resolveThread(dir, w.thread.id);
-    closeRow(rows, w.row.fingerprint, now);
+    const resolved = await resolveThread(dir, w.thread.id);
+    if (resolved.ok) {
+      closeRow(rows, w.row.fingerprint, now);
+      resolvedThreadIds.add(w.thread.id);
+    } else {
+      noteFailure(pr, resolved.error ?? "could not resolve the answered thread", now, tick);
+    }
   }
+  return true;
+}
+
+/** Retry the public conclusion independently of the expensive model review. */
+async function publishCleanReview(
+  pr: InspectorPr,
+  dir: string,
+  snapshot: PrSnapshot,
+  rows: Map<string, InspectorComment>,
+  post: boolean,
+  login: string,
+  now: number,
+  tick: TickState,
+  resolvedThreadIds: Set<string>,
+): Promise<boolean> {
+  if (!post || tick.failed || pr.headSha !== snapshot.headSha || pr.reviewPosture !== "live"
+    || pr.reviewComplete !== true || [...rows.values()].some((row) => row.status !== "resolved")) return false;
+  if (pr.cleanReviewHeadSha === snapshot.headSha) return false;
+  const consent = getInspectorConfig();
+  if (!consent.enabled || inspectorPosture(consent, pr.cwd, pr.repoRoot) !== "live") return false;
+
+  const fresh = await fetchPr(dir, pr.owner, pr.repo, pr.number);
+  if (!fresh.ok || !fresh.value) return noteFailure(pr, fresh.error ?? "could not confirm current PR head", now, tick);
+  if (fresh.value.state !== "OPEN" || fresh.value.headSha !== snapshot.headSha) return false;
+  const input = { cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: fresh.value, login,
+    headSha: snapshot.headSha, resolvedThreadIds };
+  const threads = await ownedThreadsResolved(input);
+  if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", now, tick);
+  if (!threads.value) return false;
+  const bodyOnly = await hasBodyOnlyFindings(input);
+  if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", now, tick);
+  if (bodyOnly.value) return false;
+  const existing = await cleanReviewExists(input);
+  if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", now, tick);
+  if (!existing.value) {
+    const body = renderCleanReview(formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round: pr.round }), pr.round);
+    const sent = await postReview(dir, pr.owner, pr.repo, pr.number, body, [], snapshot.headSha);
+    if (!sent.ok) return noteFailure(pr, sent.error ?? "could not post the clean review", now, tick);
+  }
+  updateInspectorPr(pr.key, { cleanReviewHeadSha: snapshot.headSha, lastError: null,
+    failCount: 0, nextAttemptAt: null, lastFailKind: null }, now);
   return true;
 }
 
@@ -858,6 +911,7 @@ async function reviewRound(
   now: number,
   tick: TickState,
   readDiff: TickDiff,
+  resolvedThreadIds: Set<string>,
 ): Promise<boolean> {
   const threads = ourThreads(s, login);
   reconcilePosting(rows, threads, now);
@@ -880,6 +934,9 @@ async function reviewRound(
   const { diff, truncated } = diffRes.value;
   const paths = changedPaths(diff);
   if (paths.length === 0) {
+    // Retrying an incomplete Live review must not spin on an unchanged empty diff.
+    // Surface the reason and use the existing push-fixable backoff until work changes.
+    if (post) return noteFailure(pr, "no reviewable files in the PR diff", now, tick, "push-fixable");
     // Nothing reviewable (an empty or purely-binary diff). Still advance the head, or
     // every tick forever would re-fetch and re-decide the same nothing.
     updateInspectorPr(
@@ -888,6 +945,8 @@ async function reviewRound(
         headSha: s.headSha,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
         lastReviewedAt: now,
+        reviewComplete: false,
+        cleanReviewHeadSha: null,
         lastError: null,
         failCount: 0,
         lastFailKind: null,
@@ -944,11 +1003,20 @@ async function reviewRound(
 
   // Resolve BEFORE posting: the other order raises a fresh comment about an issue and
   // only then closes the old thread for the same issue, which reads as churn.
-  const resolvedThreadIds = new Set<string>();
+  let resolutionError: string | null = null;
   for (const r of plan.resolve) {
     if (post) {
+      const row = rows.get(r.fingerprint);
+      if (row) {
+        const pending = { ...row, resolutionPending: true };
+        rows.set(r.fingerprint, pending);
+        upsertInspectorComment(pending);
+      }
       const res = await resolveThread(dir, r.threadId);
-      if (!res.ok) continue; // leave the row open; we'll try again next round
+      if (!res.ok) {
+        resolutionError = res.error ?? "could not resolve the reviewed thread";
+        continue;
+      }
     }
     resolvedThreadIds.add(r.threadId);
     closeRow(rows, r.fingerprint, now);
@@ -956,62 +1024,6 @@ async function reviewRound(
   // Findings with no thread to close - everything drafted in dry run, and anything
   // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
   for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
-
-  // A clean verdict is only safe when every earlier finding is resolved too. A model
-  // omitting an old finding is not evidence that it was fixed, and a failed GitHub
-  // resolve above must not be followed by a contradictory "safe to merge" review.
-  let clean = plan.clean && [...rows.values()].every((row) => row.status === "resolved");
-  if (clean) {
-    const threadsResolved = await ownedThreadsResolved({
-      cwd: dir,
-      owner: pr.owner,
-      repo: pr.repo,
-      number: pr.number,
-      snapshot: s,
-      login,
-      resolvedThreadIds,
-    });
-    if (!threadsResolved.ok) {
-      return noteFailure(pr, threadsResolved.error ?? "could not inspect all review threads", now, tick);
-    }
-    clean = threadsResolved.value === true;
-  }
-  let cleanAlreadyPosted = false;
-  if (post && clean) {
-    const bodyOnly = await hasBodyOnlyFindings({
-      cwd: dir,
-      owner: pr.owner,
-      repo: pr.repo,
-      number: pr.number,
-      snapshot: s,
-      login,
-      headSha: s.headSha,
-    });
-    if (!bodyOnly.ok) {
-      return noteFailure(pr, bodyOnly.error ?? "could not inspect prior body-only findings", now, tick);
-    }
-    clean = bodyOnly.value !== true;
-  }
-  if (post && clean) {
-    const priorClean = await cleanReviewExists({
-      cwd: dir,
-      owner: pr.owner,
-      repo: pr.repo,
-      number: pr.number,
-      snapshot: s,
-      login,
-      headSha: s.headSha,
-    });
-    if (!priorClean.ok) {
-      return noteFailure(
-        pr,
-        priorClean.error ?? "could not inspect earlier pull request reviews",
-        now,
-        tick,
-      );
-    }
-    cleanAlreadyPosted = priorClean.value === true;
-  }
 
   const inline = plan.inline.map((c) => ({
     path: c.path,
@@ -1058,19 +1070,13 @@ async function reviewRound(
   });
   for (const row of planned) upsertInspectorComment(row);
 
-  if (post && (inline.length > 0 || plan.demoted.length > 0 || (clean && !cleanAlreadyPosted))) {
-    const body = clean
-      ? renderCleanReview(
-          formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round }),
-          round,
-        )
-      : plan.body;
+  if (post && (inline.length > 0 || plan.demoted.length > 0)) {
     const res = await postReview(
       dir,
       pr.owner,
       pr.repo,
       pr.number,
-      body,
+      plan.body,
       inline,
       s.headSha,
     );
@@ -1102,6 +1108,8 @@ async function reviewRound(
       headSha: s.headSha,
       reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
       round,
+      reviewComplete: plan.droppedOffDiff === 0 && plan.droppedOverCap === 0,
+      cleanReviewHeadSha: null,
       lastReviewedAt: now,
       lastError: null,
       failCount: 0,
@@ -1111,6 +1119,9 @@ async function reviewRound(
   );
   recordAutomationTransition(`${pr.key}:${s.headSha}:${round}`, { feature: "inspector", action: "review", outcome: "applied", coverage: "owner_transition" },
     { kind: "system", origin: "daemon", basis: "owner" }, now);
+  if (resolutionError) return noteFailure(pr, resolutionError, now, tick);
+  await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
+    post, login, now, tick, resolvedThreadIds);
   return true;
 }
 
@@ -1118,7 +1129,7 @@ async function reviewRound(
 function closeRow(rows: Map<string, InspectorComment>, fingerprint: string, now: number): void {
   const row = rows.get(fingerprint);
   if (!row) return;
-  const next: InspectorComment = { ...row, status: "resolved", updatedAt: now };
+  const next: InspectorComment = { ...row, status: "resolved", resolutionPending: false, updatedAt: now };
   rows.set(fingerprint, next);
   upsertInspectorComment(next);
 }

@@ -3197,7 +3197,8 @@ export class WorkflowManager {
     const canEvaluate = run.status === "waiting_for_pr"
       || run.status === "waiting_for_inspector"
       || run.status === "waiting_for_new_head"
-      || (run.status === "waiting_for_session" && run.currentPhase === "pr_handoff")
+      || (run.status === "waiting_for_session"
+        && (run.currentPhase === "pr_handoff" || run.currentPhase === "inspector_head_mismatch"))
       || (run.status === "blocked" && run.currentPhase === "inspector_disabled");
     if (!canEvaluate) {
       return {
@@ -4191,11 +4192,13 @@ export class WorkflowManager {
     let state = run ? this.gateState(run) : null;
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
+    const waitingForMatchingHead = run?.status === "waiting_for_session"
+      && run.currentPhase === "inspector_head_mismatch";
     if (
       !run
       || !state
       || runIsTerminal(run)
-      || (run.status === "waiting_for_session" && !waitingForPrHandoff)
+      || (run.status === "waiting_for_session" && !waitingForPrHandoff && !waitingForMatchingHead)
     ) return;
     if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
     // A legacy record decodes as non-executable, and the gate is an execution path, so it
@@ -4380,11 +4383,18 @@ export class WorkflowManager {
 
     let submission = this.store.latestSubmission(run.id);
     if (!submission) return;
+    // A recovered binding may predate repository capture. The pinned adopted PR is
+    // durable repository provenance; never fall back to an unrelated session's cwd.
+    const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      const priorHeads = new Set(
-        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : []),
-      );
+      const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+      const priorHeads = new Set(await Promise.all(
+        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
+          .map((head) => repositoryRoot
+            ? resolve(repositoryRoot, head).catch(() => head)
+            : head),
+      ));
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(
           run,
@@ -4398,43 +4408,51 @@ export class WorkflowManager {
         );
         return;
       }
-      if (newHead === state.failedHeadSha || priorHeads.has(newHead)) return;
-      if (submission.round > run.maxRepairRounds) {
-        this.transitionInspectorGate(
-          run,
-          state,
-          { ...state, waitReason: "findings" },
-          "blocked",
-          "round_limit",
-          "inspector_round_limit",
-          { maxRepairRounds: run.maxRepairRounds },
+      if (newHead === state.failedHeadSha) {
+        // Inspector can withdraw a finding in a reply without another push. Its current
+        // review and publication prove that conclusion; do not require an empty commit.
+        if (ledger.headSha !== newHead
+          || loadInspectorComments(state.prKey!).some((row) => row.status !== "resolved")
+          || (ledger.reviewPosture === "live" && ledger.cleanReviewHeadSha !== newHead)) return;
+      } else {
+        if (priorHeads.has(newHead)) return;
+        if (submission.round > run.maxRepairRounds) {
+          this.transitionInspectorGate(
+            run,
+            state,
+            { ...state, waitReason: "findings" },
+            "blocked",
+            "round_limit",
+            "inspector_round_limit",
+            { maxRepairRounds: run.maxRepairRounds },
+            now,
+          );
+          return;
+        }
+        const nextState: WorkflowInspectorGateState = {
+          ...state,
+          targetHeadSha: newHead,
+          reviewPosture: ledger.reviewPosture,
+          waitReason: "review_pending",
+        };
+        const created = this.store.createInspectorOnlySubmission({
+          id: randomUUID(),
+          runId: run.id,
+          triggerKey: `inspector-head:${run.id}:${newHead}`,
+          newHeadSha: newHead,
+          failedHeadSha: state.failedHeadSha,
+          priorFindingFingerprints: state.findingFingerprints,
+          bypassReason: "Published GitHub Inspector-only findings policy",
+          expectedState: state,
+          state: nextState,
           now,
-        );
-        return;
+        });
+        if (!created) return;
+        run = created.run;
+        submission = created.submission;
+        state = nextState;
+        this.publishRun(run.id);
       }
-      const nextState: WorkflowInspectorGateState = {
-        ...state,
-        targetHeadSha: newHead,
-        reviewPosture: ledger.reviewPosture,
-        waitReason: "review_pending",
-      };
-      const created = this.store.createInspectorOnlySubmission({
-        id: randomUUID(),
-        runId: run.id,
-        triggerKey: `inspector-head:${run.id}:${newHead}`,
-        newHeadSha: newHead,
-        failedHeadSha: state.failedHeadSha,
-        priorFindingFingerprints: state.findingFingerprints,
-        bypassReason: "Published GitHub Inspector-only findings policy",
-        expectedState: state,
-        state: nextState,
-        now,
-      });
-      if (!created) return;
-      run = created.run;
-      submission = created.submission;
-      state = nextState;
-      this.publishRun(run.id);
     }
 
     const fullContext = submission.mode === "full_workflow"
@@ -4466,8 +4484,11 @@ export class WorkflowManager {
       );
       return;
     }
-    const submittedHead = submission.prHeadSha
+    const capturedHead = submission.prHeadSha
       ?? (fullContext?.success ? fullContext.data.evidence.headSha : null);
+    const submittedHead = capturedHead && repositoryRoot
+      ? await (this.options.resolveCommit ?? resolveCapturedCommit)(repositoryRoot, capturedHead).catch(() => null)
+      : null;
     if (!submittedHead) {
       this.transitionInspectorGate(
         run,
@@ -4482,16 +4503,11 @@ export class WorkflowManager {
       return;
     }
     if (state.observedHeadSha !== submittedHead) {
-      const afterPin = state.targetHeadSha !== null;
-      const handoffChangedHead = submission.mode === "full_workflow"
-        && this.submissionHadPrHandoff(run.id, submission.id);
       this.transitionInspectorGate(
         run,
         state,
         { ...state, waitReason: "head_mismatch" },
-        afterPin || handoffChangedHead
-          ? submission.mode === "full_workflow" ? "waiting_for_session" : "blocked"
-          : "waiting_for_inspector",
+        submission.mode === "full_workflow" ? "waiting_for_session" : "blocked",
         "inspector_head_mismatch",
         null,
         null,
@@ -4561,6 +4577,12 @@ export class WorkflowManager {
       await this.handleInspectorFindings(run, submission, binding, version, state, ledger.round, findings, now);
       return;
     }
+    if (ledger.reviewPosture === "live" && ledger.cleanReviewHeadSha !== state.targetHeadSha) {
+      this.transitionInspectorGate(run, state,
+        { ...state, reviewPosture: ledger.reviewPosture, waitReason: "clean_review_pending" },
+        "waiting_for_inspector", "inspector_clean_review", null, null, now);
+      return;
+    }
     const cleanState: WorkflowInspectorGateState = {
       ...state,
       reviewPosture: ledger.reviewPosture,
@@ -4606,12 +4628,6 @@ export class WorkflowManager {
       || inspection.repoRoot !== binding.sessionRepoRoot
     ) return false;
     return true;
-  }
-
-  /** Whether PR preparation was requested for the submission whose head is being compared. */
-  private submissionHadPrHandoff(runId: string, submissionId: string): boolean {
-    return this.store.listDeliveries(runId).some((delivery) =>
-      delivery.submissionId === submissionId && delivery.kind === "pr_handoff");
   }
 
   private async handleInspectorFindings(

@@ -2,17 +2,11 @@
 
 # GitHub Inspector (automated PR review)
 
-GitHub Inspector is the optional remote reviewer. It is separate from the built-in
-[Code Quality Judge](workflows.md#built-in-personas), which No-Mistakes Review runs locally before
-its verified Pull Request action. Version 9 introduced the judge as a singleton stage; version 10
-runs it alongside Code Risk Reviewer in stage 3, version 11 adds
-[Code Design Reviewer](workflows.md#built-in-personas) to that same stage, version 12
-adds Slop Filter beside Test Evidence Auditor and Documentation Steward in stage 4, and current
-version 15 retains v13's criterion-mapped evidence preflight, adds Test Coverage Judge beside Intent
-Conformance Judge in stage 2, and routes every Persona through Codex, using Sol for Code Design and
-Terra for the other reviewers. Versions 9 onward complete after verified publication and do not wait
-for GitHub Inspector. Enabling this service adds review of pushed heads on GitHub; it does not enable
-or skip the local Personas.
+GitHub Inspector is the optional remote reviewer. It is separate from the local Personas
+in [No-Mistakes Review](workflows.md#built-in-personas). No-Mistakes versions 9 through 17
+completed after verified PR publication; versions 18 and 19 include the final Inspector gate.
+A published workflow keeps its own completion policy. Installing that gate does not enable
+Inspector globally or grant posting permission.
 
 The GitHub Inspector reviews the pull requests **Mission Control opened** - and only those -
 against the reviewed repo's [`INSPECTOR.md`](#inspectormd), leaves inline review comments for what it finds,
@@ -20,6 +14,35 @@ answers replies in its own threads, re-reviews on every push, and resolves its o
 threads once a push fixes what they were about. When a live review finds nothing further
 and every earlier GitHub Inspector finding is resolved, it leaves one top-level comment for that
 head saying the pull request is safe to merge.
+
+### Completion and status
+
+An Inspector completion gate waits for the exact commit the workflow reviewed and every
+Inspector finding to be resolved. Captured short commit IDs are resolved in the bound repository
+before comparison with GitHub's full ID. A genuinely different PR head requires a fresh workflow
+submission; the gate shows both expected and observed commits instead of implying a review is
+still running. Existing waiting gates use the same normalization after restart.
+If an older binding lacks a repository root, normalization uses the pinned adopted PR's
+repository provenance. Missing provenance still blocks the gate.
+
+In Live mode, the gate also waits for the final clean review to be confirmed on GitHub. Review
+completion and publication are separate durable facts. A failed clean-review post is retried without
+another model review, and a lost response is reconciled against the review marker before posting
+again. Findings resolved through replies use the same publication path. An Inspector-only repair
+can complete on the same commit when Inspector withdraws the last finding and confirms the clean
+review. Legacy reviews without complete provenance are reviewed once before claiming safety.
+Reviews that dropped off-diff or over-cap findings are reviewed again on the same commit once
+their retained findings resolve. The existing review-round limit still applies. An unreviewable
+Live diff reports an error with backoff instead of silently waiting for clean publication.
+
+The session chip says **no open findings** and names the reviewed commit. Its Live checkmark means
+the final clean review was confirmed for the observed PR head; a pending or stale review shows an
+ellipsis. Workflow completion remains a separate state. Dry run also requires a review of the
+observed PR head for a checkmark; it is labeled explicitly and publishes nothing. The gate does
+not itself certify CI or authorize a merge.
+
+If Inspector's reply was posted but resolving its thread failed, that resolution is retried without
+another reply. An operator resolving local ledger findings does not authorize closing GitHub threads.
 
 It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
 separate acts in Settings → GitHub Inspector, and the first two are reversible without anyone

@@ -175,7 +175,7 @@ async function announcePullRequest(daemon: DaemonHandle, session: SessionRow, ur
 }
 
 /**
- * Write the review the Inspector's poll would have recorded: one round, nothing outstanding.
+ * Write a current review: one round, nothing outstanding. Publication is a separate fact.
  *
  * The same lever `ship-log.spec.ts` uses for the columns only a `gh` call can fill. A real
  * round is a real model call against a real GitHub, and this suite reaches neither.
@@ -184,7 +184,8 @@ function observeCleanReview(daemon: DaemonHandle): void {
   withDaemonDb(daemon, (db) => {
     db.prepare(
       `UPDATE inspector_prs
-          SET round = 1, last_reviewed_at = ?, observed_state = 'OPEN', observed_at = ?
+          SET round = 1, last_reviewed_at = ?, observed_state = 'OPEN', observed_at = ?,
+              head_sha = 'abcdef1234567890', observed_head_sha = 'abcdef1234567890'
         WHERE state = 'open'`,
     ).run(Date.now(), Date.now());
   });

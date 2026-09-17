@@ -11580,6 +11580,17 @@ select:not([multiple]) option:focus-visible {
 .report-row:last-child {
   border-bottom: none;
 }
+.report-row:has(.report-row-cleanup) {
+  flex-wrap: wrap;
+}
+.report-row-main.report-row-cleanup {
+  flex-basis: 100%;
+  order: 1;
+}
+.report-row-cleanup .report-sub {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* A backlog row whose autopilot switch is off. Recedes by the same amount the board's
    parked card does, so the two surfaces agree about how loud a hold is - and stops
    short of hiding it, because a held item is still work you queued and still has to be

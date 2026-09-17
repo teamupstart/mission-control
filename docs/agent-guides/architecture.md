@@ -104,6 +104,13 @@ Do not add another teardown route. Do not use `state === "exited"` for durable c
 
 Each durable `session_remove` subscriber needs a startup twin that reconciles after sessions have been observed. SDK restore completes before that first observation.
 
+A concluded recurring mission records its owed session closure alongside task completion.
+Forced retirement is durable and still uses `beginEviction`; terminal discovery cannot cancel
+it or republish the retired process. The Registry retains only a cleanup target for a surviving
+runtime, outside active sessions, until discovery or the SDK supervisor confirms shutdown.
+The closure and its visible failure remain owed meanwhile. SDK restore evicts concluded runs
+without launching their drivers or sending continuation prompts.
+
 An SDK shutdown suspends its session. `taskLiveness` reads persisted rows during startup, before in-memory handles exist. `turn_in_progress` records interrupted work and is cleared only when the turn finishes or a successful context reset establishes an idle replacement.
 
 ## Tasks and worktrees

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * What a person sees when a Recurring Mission set to complete automatically finishes a run.
@@ -305,4 +306,104 @@ test("a mission left on manual keeps its agent, because nothing concluded its ru
   expect(
     (await api<SessionSnapshot[]>(daemon, "/api/sessions")).some((s) => s.id === session.id),
   ).toBe(true);
+});
+
+test("restart finishes a concluded SDK run without continuing its interrupted turn", async ({ dashboard, daemon }) => {
+  const filed = await fileOneRun(daemon, "Restarted approval sweep", AUTO_INTENT, "auto-on-conclusion");
+  await api(daemon, `/api/tasks/${filed.id}/dispatch`, { body: {} });
+  const session = await sessionForTask(daemon, filed.id);
+  await daemon.crash();
+  // Seed the crash boundary: completion and its intent committed, but stopping the driver
+  // did not. Unit coverage separately proves this pair commits atomically in production.
+  const completedAt = Date.now();
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ?,
+      outcome = 'Foreman concluded this recurring mission run: nothing to ship' WHERE id = ?`)
+      .run(completedAt, completedAt, filed.id);
+    db.prepare(`INSERT INTO task_session_closures
+      (task_id, session_id, requested_at, deadline_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(filed.id, session.id, completedAt, completedAt + 240_000, completedAt);
+    db.prepare(`UPDATE sdk_sessions SET status = 'suspended', turn_in_progress = 1 WHERE id = ?`).run(session.id);
+  });
+  await daemon.restart();
+  await dashboard.reload();
+  await expect.poll(() => withDaemonDb(daemon, (db) => {
+    const row = db.prepare(`SELECT status, turn_in_progress FROM sdk_sessions WHERE id = ?`).get(session.id);
+    return row ? { ...row } : null;
+  })).toEqual({ status: "exited", turn_in_progress: 0 });
+  await expect.poll(() => owedClosure(daemon, filed.id)).toBe(false);
+  await expect(railRows(dashboard)).toHaveCount(0);
+  expect(Date.now() - completedAt).toBeLessThanOrEqual(240_000);
+  const followup = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/inject`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "late work", origin: "human" }),
+  });
+  expect(followup.status).toBe(404);
+  expect(await followup.json()).toMatchObject({ error: "no such session", pasted: false });
+  const sitrep = await openSitrep(dashboard);
+  await expectContentClearsBorder(sitrep);
+  await expect(sitrep.locator(".report-row", { hasText: "Restarted approval sweep" })).toContainText("done");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync("e2e/.artifacts/mission-session-closure", { recursive: true });
+    await dashboard.screenshot({ path: "e2e/.artifacts/mission-session-closure/restart-completed.png" });
+  }
+});
+
+test.describe("terminal retirement", () => {
+  test.use({ daemonEnv: {
+    MC_E2E_TERMINAL_BOUNDARY: "1", MISSION_POLL_MS: "100",
+    MISSION_DISPATCH_HOOK_READY_MS: "50", MISSION_DISPATCH_SETTLE_MS: "0",
+  } });
+
+  test("a surviving terminal stays off the fleet after restart and shows unconfirmed cleanup", async ({ dashboard, daemon }) => {
+    test.setTimeout(180_000);
+    await dashboard.goto(`${daemon.baseURL}/#/settings`);
+    await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+    await dashboard.getByRole("combobox", { name: "Session runtime for dispatched Claude Code sessions" }).selectOption("terminal");
+    await dashboard.getByRole("button", { name: /Terminal preference for Claude Code/ }).click();
+    await dashboard.getByRole("menu", { name: "Choose a terminal for dispatched Claude Code sessions" })
+      .getByRole("menuitemradio", { name: /Ghostty/ }).click();
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    const filed = await fileOneRun(daemon, "Surviving approval terminal", AUTO_INTENT, "auto-on-conclusion");
+    await api(daemon, `/api/tasks/${filed.id}/dispatch`, { body: {} });
+    const running = await pollTask(daemon, AUTO_INTENT, (task) => task.status === "running" && task.sessionId !== null);
+    const session = (await api<SessionSnapshot[]>(daemon, "/api/sessions")).find((s) => s.id === running.sessionId)!;
+    session.agentSessionId = "terminal-closure-native";
+    const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+    const hook = await fetch(`${daemon.baseURL}/hooks/UserPromptSubmit`, {
+      method: "POST", headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({ agent: session.agent, sessionId: session.agentSessionId, cwd: session.cwd, prompt: AUTO_INTENT, env: {} }),
+    });
+    expect(hook.status).toBe(204);
+    await concludeRun(daemon, session);
+    // Advance the owed window rather than spending three real minutes waiting for escalation.
+    withDaemonDb(daemon, (db) => db.prepare(`UPDATE task_session_closures
+      SET requested_at = requested_at - 180000, deadline_at = deadline_at - 180000 WHERE task_id = ?`).run(filed.id));
+    await expect(railRows(dashboard)).toHaveCount(0, { timeout: 40_000 });
+    expect(owedClosure(daemon, filed.id)).toBe(true);
+    await daemon.crash();
+    await daemon.restart();
+    await dashboard.reload();
+    await expect(railRows(dashboard)).toHaveCount(0);
+    const sitrep = await openSitrep(dashboard);
+    await expectContentClearsBorder(sitrep);
+    const row = sitrep.locator(".report-row", { hasText: "Surviving approval terminal" });
+    await expect(row).toContainText("done");
+    await expect(row).toContainText("agent cleanup is still unconfirmed");
+    const notice = row.getByText(/automatic cleanup is retrying/);
+    await expect(notice).toHaveCSS("white-space", "normal");
+    const bounds = await notice.evaluate((element) => ({
+      content: element.scrollWidth, visible: element.clientWidth,
+    }));
+    expect(bounds.content).toBeLessThanOrEqual(bounds.visible);
+    expect(owedClosure(daemon, filed.id)).toBe(true);
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync("e2e/.artifacts/mission-session-closure", { recursive: true });
+      await dashboard.screenshot({ path: "e2e/.artifacts/mission-session-closure/unconfirmed-cleanup.png" });
+    }
+    // The scripted process finally disappears. The real discovery sweep confirms cleanup.
+    rmSync(join(daemon.home, "terminal-boundary.json"));
+    await expect.poll(() => owedClosure(daemon, filed.id), { timeout: 20_000 }).toBe(false);
+    await expect(row).not.toContainText("agent cleanup is still unconfirmed");
+    await expect(row).toContainText("done");
+  });
 });

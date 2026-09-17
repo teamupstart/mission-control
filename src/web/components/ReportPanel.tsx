@@ -504,7 +504,7 @@ export function ReportPanel({
                   produced and why it failed, and a maintenance note overwriting either would
                   destroy the only account of the run. */}
               {t.automaticCleanup && (
-                <div className="report-row-main">
+                <div className="report-row-main report-row-cleanup">
                   <span className="report-sub dim">
                     automatic cleanup is retrying
                     {t.automaticCleanup.detail ? ` - ${t.automaticCleanup.detail}` : ""}

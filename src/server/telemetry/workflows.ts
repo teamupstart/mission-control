@@ -5,7 +5,7 @@ import type { TelemetryProfileId } from "@shared/telemetry.ts";
 import type { z } from "zod";
 import type { TelemetryEventDefinition } from "@shared/telemetry-catalog.ts";
 import type { WorkflowRun, WorkflowNodeAttempt, WorkflowLlmCall, WorkflowSubmission } from "@shared/workflow.ts";
-import { WORKFLOW_RUN_TERMINAL_STATUSES } from "@shared/workflow.ts";
+import { WORKFLOW_RUN_TERMINAL_STATUSES, workflowRunResumesItself } from "@shared/workflow.ts";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import { decodeWorkflowRunLifecycle } from "@shared/workflow-lifecycle.ts";
 import { projectStages, stageMembers } from "@shared/workflow-stages.ts";
@@ -109,7 +109,8 @@ export function workflowWait(run: WorkflowRun): "none" | "agent" | "external" | 
   if (decoded.detail.kind === "round_limit" || decoded.detail.kind === "capture_failure" || decoded.detail.kind === "check_cleanup") return "human";
   return run.status === "blocked" ? "unknown" : "none";
 }
-interface RunState { signature: string; revision: number; generation: string; wait: ReturnType<typeof workflowWait>; since: number; start: number | null }
+interface RunState { signature: string; revision: number; generation: string; wait: ReturnType<typeof workflowWait>; since: number; start: number | null;
+  automationEligibility?: "eligible" | "human_gate" | "unknown" }
 export function observeWorkflowRun(scope: WorkflowObservationScope, store: WorkflowMutationView, id: string, now: number, atCreation = false): void {
   const run = store.getRun(id);
   if (!run) return;
@@ -121,19 +122,26 @@ export function observeWorkflowRun(scope: WorkflowObservationScope, store: Workf
   const terminal = WORKFLOW_RUN_TERMINAL_STATUSES.includes(run.status as typeof WORKFLOW_RUN_TERMINAL_STATUSES[number]);
   const started = !previous && atCreation;
   const start = previous?.start ?? (started ? run.startedAt : null);
+  const binding = started ? store.getBinding(run.bindingId) : null;
+  const version = started ? store.getWorkflowVersionById(run.workflowVersionId) : null;
+  const automationEligibility = previous?.automationEligibility ?? (binding && version
+    ? workflowRunResumesItself({ deliveryMode: binding.deliveryMode, resumptionPolicy: version.resumptionPolicy })
+      ? "eligible" : "human_gate"
+    : "unknown");
   const revision = (previous?.revision ?? 0) + 1;
   // A consent boundary resets this audience's checkpoints; accepted journal identities remain. A new
   // observation window must not collide with an earlier window's revision 1.
   const generation = previous?.generation ?? randomUUID();
   emit(scope, WORKFLOW_RUN_EVENT, terminal ? `${key}:finished` : `${key}:${generation}:${revision}`, context(scope, store, run, store.latestSubmissionForRun(id), now), {
     observation: terminal ? "finished" : started ? "started" : "changed", status: run.status,
+    automation_eligibility: automationEligibility,
     wait, previous_wait: previous?.wait ?? "unknown",
     wait_ms: previous && previous.wait !== wait ? Math.max(0, now - previous.since) : null,
     duration_ms: terminal && start !== null ? Math.max(0, now - start) : null,
     time_quality: start === null ? "unknown" : "wall_clock",
   }, now);
   writeSourceState(scope.namespace, key, { signature, revision, generation, wait,
-    since: previous?.wait === wait ? previous.since : now, start }, now);
+    since: previous?.wait === wait ? previous.since : now, start, automationEligibility }, now);
 }
 export function observeWorkflowSubmission(scope: WorkflowObservationScope, store: WorkflowMutationView, id: string, now: number): void {
   const submission = store.getSubmission(id);

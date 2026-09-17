@@ -640,6 +640,8 @@ if (argv[0] === "--version") {
   // A product report, distinguished from every other \`issue create\` by the fixed triage
   // label only the product reporter attaches. Task sources and the PR path keep their
   // existing behavior below.
+  const target = argv[argv.indexOf("--repo") + 1];
+  const issueUrl = "https://github.com/" + target + "/issues/4242";
   if (product.issueCreate === "refused") {
     process.stderr.write("could not create issue: label not found\\n");
     process.exit(1);
@@ -647,14 +649,14 @@ if (argv[0] === "--version") {
     // The shape the daemon must treat as "may have happened": exit 0, no URL.
     process.stdout.write("\\n");
   } else if (product.issueCreate === "partial") {
-    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stdout.write(issueUrl + "\\n");
     process.stderr.write("failed to upload second.png: request failed\\n");
     process.exit(1);
   } else if (product.issueCreate === "partial-no-url") {
     process.stderr.write("attachment publication failed before gh returned the issue URL\\n");
     process.exit(1);
   } else {
-    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stdout.write(issueUrl + "\\n");
   }
 } else if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue in the requested repository,

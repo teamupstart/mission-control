@@ -398,7 +398,7 @@ export function setTelemetryConfig(
             {
               stateVersion: projection.stateVersion,
               consumedSeq: head,
-              state: projection.initialState(),
+              state: projection.initialState(now),
             },
             now,
           );

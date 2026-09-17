@@ -880,7 +880,8 @@ test("a fact projected long after it happened keeps its own timestamp", () => {
 
   // And the exported point, which is what a backend actually stores.
   const batch = openDb()
-    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile = 'user' AND signal = 'metrics'`)
+    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile = 'user' AND signal = 'metrics'
+      AND EXISTS (SELECT 1 FROM json_each(payload_json, '$.metrics') WHERE json_extract(value, '$.name') = 'mission.daemon.starts')`)
     .get() as { payload_json: string };
   const payload = JSON.parse(batch.payload_json) as {
     metrics: Array<{ name: string; startTimeMs: number; endTimeMs: number }>;

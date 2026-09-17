@@ -395,7 +395,8 @@ and build contracts.
 
 Sessions can [report product feedback](docs/sessions.md) with the
 `report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue automatically and returns its GitHub URL, without a second dashboard approval.
+issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
+dashboard approval. The dashboard feedback form uses the same destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
@@ -408,6 +409,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
+  gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

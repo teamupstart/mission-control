@@ -2819,14 +2819,15 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- computed on read for the reason the retention ledger stores its own deadline: a restart
     -- resumes the boundary that was actually granted.
     --
-    -- No state column on purpose. Overdue is now past deadline_at and closed is "no row", so
-    -- there is no stored state that can disagree with the clock or with the sweep.
+    -- retired_at records forced registry retirement, NOT confirmed runtime shutdown. Keep
+    -- retrying until the runtime is observed gone, including after a daemon restart.
     CREATE TABLE IF NOT EXISTS task_session_closures (
       task_id      TEXT NOT NULL PRIMARY KEY,
       session_id   TEXT NOT NULL,
       requested_at INTEGER NOT NULL,
       deadline_at  INTEGER NOT NULL,
       attempts     INTEGER NOT NULL DEFAULT 0,
+      retired_at   INTEGER,
       -- Bounded internal diagnosis of the last attempt that did not stop the session, or NULL
       -- while every attempt so far has been serviced. Same rule as the retention ledger's
       -- column: what crosses to a browser is a sentence, never provider output or a path.
@@ -2997,6 +2998,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
@@ -7265,6 +7267,7 @@ export interface TaskSessionClosureRow {
   requestedAt: number;
   deadlineAt: number;
   attempts: number;
+  retiredAt: number | null;
   lastError: string | null;
   updatedAt: number;
 }
@@ -7275,6 +7278,7 @@ interface TaskSessionClosureDbRow {
   requested_at: number;
   deadline_at: number;
   attempts: number;
+  retired_at: number | null;
   last_error: string | null;
   updated_at: number;
 }
@@ -7286,6 +7290,7 @@ function rowToTaskSessionClosure(r: TaskSessionClosureDbRow): TaskSessionClosure
     requestedAt: r.requested_at,
     deadlineAt: r.deadline_at,
     attempts: r.attempts,
+    retiredAt: r.retired_at,
     lastError: r.last_error,
     updatedAt: r.updated_at,
   };
@@ -7319,6 +7324,8 @@ export function openTaskSessionClosure(
                            THEN task_session_closures.deadline_at ELSE excluded.deadline_at END,
        attempts     = CASE WHEN task_session_closures.session_id = excluded.session_id
                            THEN task_session_closures.attempts ELSE 0 END,
+       retired_at   = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.retired_at ELSE NULL END,
        last_error   = CASE WHEN task_session_closures.session_id = excluded.session_id
                            THEN task_session_closures.last_error ELSE NULL END,
        updated_at   = excluded.updated_at`,
@@ -7417,6 +7424,12 @@ export function clearTaskSessionClosure(taskId: string): void {
   openDb().prepare(`DELETE FROM task_session_closures WHERE task_id = ?`).run(taskId);
 }
 
+/** Persist retirement before eviction, so discovery cannot readopt a surviving process. */
+export function retireTaskSessionClosure(taskId: string, sessionId: string, at: number): void {
+  openDb().prepare(`UPDATE task_session_closures SET retired_at = COALESCE(retired_at, ?)
+    WHERE task_id = ? AND session_id = ?`).run(at, taskId, sessionId);
+}
+
 /**
  * The bounded, browser-safe view of a task's automatic cleanup, or null.
  *
@@ -7478,8 +7491,8 @@ export function taskAutomaticCleanupSummaries(
 /**
  * Fold owed session closures into the automatic-cleanup projection.
  *
- * Only a closure that has already been REFUSED once, or that is past its four-minute
- * guarantee, says anything. The ordinary case - a stop that was serviced and a session the
+ * A closure that has been REFUSED, forcibly retired, or passed its four-minute guarantee
+ * needs a visible warning. The ordinary case - a stop that was serviced and a session the
  * daemon is about to watch disappear - is a second or two long and is not a maintenance note;
  * announcing it would put "automatic cleanup is retrying" onto the card of every recurring
  * mission run that finished perfectly.
@@ -7497,24 +7510,26 @@ function applySessionClosureSummaries(
   const one = wanted.size === 1 ? [...wanted][0]! : null;
   const rows = (one === null
     ? d.prepare(
-      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
-        WHERE last_error IS NOT NULL OR deadline_at <= ?`,
+      `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
+        WHERE last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?`,
     ).all(now)
     : d.prepare(
-      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
-        WHERE task_id = ? AND (last_error IS NOT NULL OR deadline_at <= ?)`,
+      `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
+        WHERE task_id = ? AND (last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?)`,
     ).all(one, now)) as unknown as Array<{
       task_id: string;
       deadline_at: number;
       attempts: number;
       last_error: string | null;
+      retired_at: number | null;
     }>;
   for (const row of rows) {
     if (!wanted.has(row.task_id)) continue;
     const overdue = row.deadline_at <= now;
     const reason = row.last_error ?? "the agent has not gone away yet";
-    const detail =
-      `${overdue ? "this run's agent session is still open past its close deadline" : "closing this run's agent session"} - ${reason}`;
+    const detail = row.retired_at !== null
+      ? `this run's session was retired; agent cleanup is still unconfirmed - ${reason}`
+      : `${overdue ? "this run's agent session is still open past its close deadline" : "closing this run's agent session"} - ${reason}`;
     out.set(row.task_id, {
       state: "retrying",
       // The closure sweep runs on a fixed cadence rather than a scheduled instant, so there is

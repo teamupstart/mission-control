@@ -20,7 +20,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
@@ -43,6 +43,54 @@ type SdkTurn = import("../src/server/harness/types.ts").SdkTurn;
 type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
 type MissionMcpDescriptor = NonNullable<LaunchOptions["mcp"]>;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
+
+test("a retired mission's failed SDK stop stays owed and rejects follow-up until the driver leaves", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  const handle = fakeHandle();
+  const normalStop = handle.stop;
+  handle.stop = async () => { throw new Error("driver refused stop"); };
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  t.after(() => tasks.stopMissionSessionClosures());
+  const session = await supervisor.start(START);
+  const taskId = "retired-sdk-mission";
+  t.after(() => clearTaskSessionClosure(taskId));
+  registry.upsertTask(mkTask({
+    id: taskId, sessionId: session.id, status: "done", completedAt: Date.now() - 180_000,
+  }));
+  openTaskSessionClosure(taskId, session.id, Date.now() - 180_000, Date.now() + 60_000);
+  registry.applyDiscovery([]);
+  const removed: number[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "session_remove" && event.id === session.id) removed.push(Date.now());
+  });
+  await tasks.sweepMissionSessionClosures();
+  handle.push({ kind: "state", state: "working", activity: "late driver event" });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.state, "exited", "driver events cannot undo retirement");
+  t.mock.timers.tick(9_000);
+  await drain();
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(removed.length, 1);
+  assert.ok(removed[0]! - registry.getTask(taskId)!.completedAt! <= 240_000);
+  assert.equal(registry.getSession(session.id), undefined);
+  assert.equal(supervisor.handleFor(session.id), handle, "a rejected stop still has a real runtime");
+  assert.ok(getTaskSessionClosure(taskId), "card removal cannot discard an unconfirmed SDK cleanup");
+  assert.match(registry.getTask(taskId)?.automaticCleanup?.detail ?? "", /cleanup is still unconfirmed/);
+  await assert.rejects(supervisor.send(session.id, { text: "late follow-up" }), /no live driver/);
+  assert.equal(handle.sent.length, 0);
+
+  handle.stop = normalStop;
+  await tasks.sweepMissionSessionClosures();
+  await drain();
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(supervisor.handleFor(session.id), null);
+  assert.equal(getTaskSessionClosure(taskId), null);
+  assert.equal(registry.getTask(taskId)?.status, "done");
+});
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -578,6 +626,28 @@ test("a queued send rechecks its target inside session serialization", async () 
   } finally {
     fake.restore();
   }
+});
+
+test("a prompt queued before mission completion cannot reach the concluded SDK driver", async (t) => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const supervisor = new SdkSupervisor(new Registry());
+  const session = await supervisor.start(START);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  handle.send = async (turn) => { handle.sent.push(turn); await held; return "started"; };
+  const first = supervisor.send(session.id, { text: "accepted work" });
+  await waitFor(() => handle.sent.length === 1);
+  const queued = supervisor.send(session.id, { text: "queued follow-up" });
+  const rejected = assert.rejects(queued, /no live driver/);
+  openTaskSessionClosure("queued-mission", session.id, Date.now(), Date.now() + 240_000);
+  t.after(() => clearTaskSessionClosure("queued-mission"));
+  release();
+  await first;
+  await rejected;
+  assert.deepEqual(handle.sent, [{ text: "accepted work" }]);
+  await supervisor.stop(session.id);
 });
 
 test("idle-only delivery rolls back its durable reservation when the driver became busy", async () => {

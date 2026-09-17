@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScheduleDefinition } from "../src/shared/schedules.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
 import type { Session } from "../src/shared/types.ts";
+import type { HookIngest } from "../src/shared/protocol.ts";
 import type { ActionResult } from "../src/server/actions.ts";
 
 /**
@@ -427,6 +428,9 @@ test("a closure that will not close is retired inside its guarantee, not asked f
   t.mock.timers.tick(9_000);
   await settle();
   assert.equal(f.registry.getSession(f.sessionId), undefined);
+  await f.tasks.sweepMissionSessionClosures();
+  assert.ok(db.getTaskSessionClosure(f.taskId), "retirement alone does not confirm shutdown");
+  f.registry.applyDiscovery([]);
   await f.tasks.sweepMissionSessionClosures();
   assert.equal(db.getTaskSessionClosure(f.taskId), null);
   assert.equal(f.registry.getTask(f.taskId)?.status, "done", "and the task was never disturbed");
@@ -1220,6 +1224,33 @@ test("an overdue closure says so even when no attempt was ever refused", async (
   assert.match(summary?.detail ?? "", /has not gone away yet/);
 });
 
+for (const scope of ["single-task", "task-list"] as const) {
+  test(`a retired closure without an error is immediately visible in a ${scope} summary`, (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: T0 + MISSION_SESSION_CLOSURE_ESCALATE_MS });
+    const taskId = uid("retired-summary");
+    const sessionId = uid("retired-session");
+    db.upsertTask(mkTask({ id: taskId, sessionId, status: "done", completedAt: T0 }));
+    db.openTaskSessionClosure(taskId, sessionId, T0, T0 + MISSION_SESSION_CLOSURE_DEADLINE_MS);
+    const ids = scope === "single-task" ? [taskId] : [taskId, uid("unrelated")];
+    assert.equal(db.taskAutomaticCleanupSummaries(ids).has(taskId), false,
+      "a normal close with no error stays quiet before its deadline");
+
+    db.retireTaskSessionClosure(taskId, sessionId, Date.now());
+    const owed = db.getTaskSessionClosure(taskId)!;
+    assert.equal(owed.lastError, null);
+    assert.ok(owed.deadlineAt > Date.now(), "retirement precedes the absolute close deadline");
+    const summary = db.taskAutomaticCleanupSummaries(ids).get(taskId);
+    assert.equal(summary?.state, "retrying");
+    assert.match(summary?.detail ?? "", /session was retired; agent cleanup is still unconfirmed/);
+    assert.match(summary?.detail ?? "", /has not gone away yet/);
+    assert.equal(db.getTask(taskId)?.status, "done");
+
+    db.clearTaskSessionClosure(taskId);
+    assert.equal(db.taskAutomaticCleanupSummaries(ids).has(taskId), false,
+      "confirmed cleanup removes the warning");
+  });
+}
+
 test("retirement refuses a task and session the durable ledger does not pair", async () => {
   // `retireConcludedMissionSession` is the one call that can evict a session nobody stopped,
   // so it authorizes itself from the ledger rather than trusting its caller. A caller that has
@@ -1298,4 +1329,231 @@ test("a mission left on manual closes nothing, because it concluded nothing", as
   await f.tasks.sweepMissionSessionClosures();
   assert.deepEqual(f.kill.killed, [], "a verdict alone never closes a manual mission's session");
   assert.equal(f.registry.promptResourceBlockerForSession(f.sessionId), null);
+});
+
+test("every run meets its own deadline when many stops hang during restart recovery", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const registry = new Registry();
+  const kill = killRecorder();
+  kill.deps.kill = async (s) => {
+    kill.killed.push(s.id);
+    return new Promise<ActionResult>(() => {});
+  };
+  const runs = Array.from({ length: 16 }, () => ({ taskId: uid("task"), sessionId: uid("sess") }));
+  for (const run of runs) {
+    registry.upsertTask(mkTask({
+      id: run.taskId, sessionId: run.sessionId, status: "done", completedAt: T0,
+    }));
+    db.openTaskSessionClosure(run.taskId, run.sessionId, T0, T0 + 240_000);
+  }
+  const tasks = new TaskManager(registry, kill.deps);
+  managers.push(tasks);
+  const removed = new Map<string, number>();
+  registry.subscribe((event) => {
+    if (event.type === "session_remove") removed.set(event.id, Date.now());
+  });
+  registry.applyDiscovery(runs.map((run) => discovered(run.sessionId)));
+  for (let second = 0; second < 240; second++) {
+    t.mock.timers.tick(1_000);
+    await settle();
+  }
+  for (const run of runs) {
+    assert.ok(removed.has(run.sessionId), `session_remove missing for ${run.sessionId}`);
+    assert.ok(removed.get(run.sessionId)! - T0 <= 240_000);
+    assert.equal(registry.getTask(run.taskId)?.status, "done");
+  }
+});
+
+test("retirement survives continuous discovery and restart while failed cleanup stays visible", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const kill = killRecorder({ ok: false, error: "stop refused" });
+  const f = terminalMission({}, kill);
+  const removed: number[] = [];
+  f.registry.subscribe((event) => {
+    if (event.type === "session_remove" && event.id === f.sessionId) removed.push(Date.now());
+  });
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  for (let second = 0; second < 240; second++) {
+    f.registry.applyDiscovery([discovered(f.sessionId)]);
+    t.mock.timers.tick(1_000);
+    await settle();
+  }
+  assert.equal(removed.length, 1, "discovery must not cancel the retirement's eviction");
+  assert.ok(removed[0]! - f.registry.getTask(f.taskId)!.completedAt! <= 240_000);
+  assert.equal(f.registry.getSession(f.sessionId), undefined);
+  assert.ok(db.getTaskSessionClosure(f.taskId), "removing a card did not stop the process");
+  assert.match(f.registry.getTask(f.taskId)?.automaticCleanup?.detail ?? "", /stop refused/);
+  assert.ok(f.registry.promptResourceBlockerForSession(f.sessionId));
+  assert.ok(f.registry.promptRefusalForHook({
+    agent: "claude", event: "UserPromptSubmit", sessionId: f.agentSessionId,
+    cwd: "/repo", transcriptPath: null, env: {},
+  }), "a retired process still cannot accept a hooked prompt");
+  f.tasks.stopMissionSessionClosures();
+
+  const restarted = new Registry();
+  const tasks = new TaskManager(restarted, kill.deps);
+  managers.push(tasks);
+  restarted.applyDiscovery([discovered(f.sessionId)]);
+  assert.equal(restarted.getSession(f.sessionId), undefined, "restart must not readopt the retired process");
+  const before = kill.killed.length;
+  await tasks.sweepMissionSessionClosures();
+  assert.ok(kill.killed.length > before, "cleanup retries even without an active card");
+  assert.equal(restarted.getTask(f.taskId)?.status, "done");
+  assert.ok(db.getTaskSessionClosure(f.taskId));
+
+  restarted.applyDiscovery([]);
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(db.getTaskSessionClosure(f.taskId), null, "only observed process absence settles cleanup");
+});
+
+test("retired mission prompt refusal uses pane, registered id, native id, and unique cwd identity", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const f = terminalMission({}, killRecorder({ ok: false, error: "stop refused" }));
+  const pane = "%1077";
+  f.registry.applyDiscovery([{ ...discovered(f.sessionId), terminals: [mkMuxHandle({ paneId: pane })] }]);
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  f.tasks.stopMissionSessionClosures();
+  assert.ok(f.registry.retireConcludedMissionSession(f.taskId, f.sessionId));
+  const prompt: HookIngest = {
+    agent: "claude", event: "UserPromptSubmit", sessionId: null,
+    cwd: "/repo", transcriptPath: null, env: {},
+  };
+  assert.ok(f.registry.promptRefusalForHook(prompt), "a lingering card and its retired snapshot are one cwd candidate");
+  t.mock.timers.tick(9_000);
+  assert.equal(f.registry.getSession(f.sessionId), undefined);
+
+  const identities: Array<[string, Partial<HookIngest>]> = [
+    ["pane", { cwd: null, env: { tmuxPane: pane } }],
+    ["registered id", { cwd: null, sessionId: f.sessionId }],
+    ["native id", { cwd: null, sessionId: f.agentSessionId }],
+    ["unique cwd", {}],
+  ];
+  for (const [identity, fields] of identities) {
+    const hook = { ...prompt, ...fields };
+    assert.ok(f.registry.promptRefusalForHook(hook), `${identity} must still refuse the retired run's prompt`);
+    assert.equal(f.registry.promptRefusalForHook({ ...hook, agent: "codex" }), null, `${identity} must check the agent`);
+    assert.equal(f.registry.findSessionByEnv(hook.env, hook.sessionId, hook.cwd), undefined,
+      `${identity} must not expose retired targets to ordinary live-session lookup`);
+  }
+  assert.equal(f.registry.promptRefusalForHook({ ...prompt, cwd: null }), null);
+  assert.equal(f.registry.promptRefusalForHook({ ...prompt, event: "Stop" }), null);
+  f.registry.applyHook({ ...prompt, sessionId: f.agentSessionId, prompt: "late follow-up" });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getSession(f.sessionId), undefined);
+});
+
+test("retired mission prompt refusal preserves live pane precedence and cross-agent rejection", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const f = terminalMission({}, killRecorder({ ok: false, error: "stop refused" }));
+  const pane = "%1078";
+  const retired = { ...discovered(f.sessionId), terminals: [mkMuxHandle({ paneId: pane })] };
+  f.registry.applyDiscovery([retired]);
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  f.tasks.stopMissionSessionClosures();
+  assert.ok(f.registry.retireConcludedMissionSession(f.taskId, f.sessionId));
+  t.mock.timers.tick(9_000);
+
+  const active = { ...discovered(uid("active")), agent: "codex" as const, terminals: retired.terminals };
+  f.registry.applyDiscovery([retired, active]);
+  const prompt: HookIngest = {
+    agent: "claude", event: "UserPromptSubmit", sessionId: f.agentSessionId,
+    cwd: "/repo", transcriptPath: null, env: { tmuxPane: pane },
+  };
+  assert.equal(f.registry.promptRefusalForHook(prompt), null,
+    "an active pane's cross-agent rejection must not fall back to the retired native id");
+  f.registry.applyDiscovery([retired, { ...active, agent: "claude" }]);
+  assert.equal(f.registry.promptRefusalForHook(prompt), null,
+    "the live occupant takes precedence over a retired snapshot of the same pane");
+  assert.ok(f.registry.promptRefusalForHook({ ...prompt, env: {} }),
+    "without a pane, the native id still identifies the retired run");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getSession(f.sessionId), undefined);
+});
+
+test("retired mission prompt refusal requires cwd uniqueness across live and retired agents", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const f = terminalMission({}, killRecorder({ ok: false, error: "stop refused" }));
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  f.tasks.stopMissionSessionClosures();
+  assert.ok(f.registry.retireConcludedMissionSession(f.taskId, f.sessionId));
+  t.mock.timers.tick(9_000);
+  const prompt: HookIngest = {
+    agent: "claude", event: "UserPromptSubmit", sessionId: null,
+    cwd: "/repo", transcriptPath: null, env: {},
+  };
+  assert.ok(f.registry.promptRefusalForHook(prompt));
+
+  const other = { ...discovered(uid("other")), agent: "codex" as const };
+  f.registry.applyDiscovery([discovered(f.sessionId), other]);
+  assert.equal(f.registry.promptRefusalForHook(prompt), null, "a live agent in the cwd makes it ambiguous");
+  const otherTaskId = uid("task");
+  f.registry.upsertTask(mkTask({ id: otherTaskId, sessionId: other.syntheticId, status: "done", completedAt: T0 }));
+  db.openTaskSessionClosure(otherTaskId, other.syntheticId, T0, T0 + 240_000);
+  assert.ok(f.registry.retireConcludedMissionSession(otherTaskId, other.syntheticId));
+  t.mock.timers.tick(9_000);
+  assert.equal(f.registry.promptRefusalForHook(prompt), null, "two retired agents in the cwd remain ambiguous");
+  assert.ok(f.registry.promptRefusalForHook({ ...prompt, sessionId: f.agentSessionId }),
+    "native identity still resolves when cwd alone is ambiguous");
+});
+
+test("SDK restart closes a concluded run without launching another generation", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  const sdkStore = await import("../src/server/sdk/store.ts");
+  let launches = 0;
+  const previous = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    answersRequests: true,
+    launch: async () => { launches++; throw new Error("a concluded run must not launch"); },
+  };
+  t.after(() => { HARNESSES.claude.sdk = previous; });
+  const taskId = uid("task");
+  const sessionId = `${SDK_SESSION_ID_PREFIX}${uid("restart")}`;
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: taskId, sessionId, status: "done", completedAt: T0 }));
+  db.openTaskSessionClosure(taskId, sessionId, T0, T0 + 240_000);
+  sdkStore.upsertSdkSession({
+    id: sessionId, agent: "claude", agentSessionId: "interrupted-conversation", cwd: home,
+    taskId, model: null, effort: null, permissionMode: null, status: "suspended",
+    turnInProgress: true,
+  });
+  const supervisor = new SdkSupervisor(registry);
+  const tasks = new TaskManager(registry, killRecorder().deps, supervisor);
+  managers.push(tasks);
+  const removed: string[] = [];
+  registry.subscribe((event) => { if (event.type === "session_remove") removed.push(event.id); });
+  await supervisor.restore();
+  registry.applyDiscovery([]);
+  t.mock.timers.tick(9_000);
+  await settle();
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(launches, 0, "an owed closure must bypass SDK resume and its continuation prompt");
+  assert.equal(sdkStore.getSdkSession(sessionId)?.status, "exited");
+  assert.ok(removed.includes(sessionId));
+  assert.equal(registry.getTask(taskId)?.status, "done");
+  assert.equal(registry.getSession(sessionId), undefined);
+  assert.equal(db.getTaskSessionClosure(taskId), null);
+});
+
+test("an exited hook cannot strand a concluded terminal that discovery still sees", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
+  const f = terminalMission({}, killRecorder({ ok: false, error: "stop refused" }));
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  f.registry.applyHook({
+    agent: "claude", event: "SessionEnd", sessionId: f.agentSessionId,
+    cwd: "/repo", transcriptPath: null, env: {},
+  });
+  assert.equal(f.registry.getSession(f.sessionId)?.state, "exited");
+  const removed: number[] = [];
+  f.registry.subscribe((event) => {
+    if (event.type === "session_remove" && event.id === f.sessionId) removed.push(Date.now());
+  });
+  for (let second = 0; second < 240; second++) {
+    f.registry.applyDiscovery([discovered(f.sessionId)]);
+    t.mock.timers.tick(1_000);
+    await settle();
+  }
+  assert.equal(removed.length, 1);
+  assert.ok(removed[0]! - T0 <= 240_000);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
 });

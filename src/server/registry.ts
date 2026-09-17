@@ -225,6 +225,7 @@ import {
   taskAutomaticCleanupSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
+  retireTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -904,6 +905,8 @@ export class Registry extends EventEmitter {
    */
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
+  private retiredMissionTargets = new Map<string, Session>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
   private overlays = new Map<string, HookOverlay>();
@@ -1333,20 +1336,27 @@ export class Registry extends EventEmitter {
    * DURABLE closure ledger says that exact task is owed that exact session's close. A caller
    * that has confused two sessions cannot get one retired through here.
    *
-   * What this cannot promise. Retiring the card is a statement about the registry, not about
-   * the operating system: if a pane's multiplexer genuinely refused to kill it, the process may
-   * still be alive, and passive discovery may re-adopt it as a new sighting later. The task it
-   * ran stays `done` either way - the completion is terminal - and the refusal is on the record
-   * in the daemon log. That residue is strictly better than the alternative it replaces, which
-   * was a live session bound to a finished mission for ever.
+   * Retirement is not proof of runtime shutdown. Persist it before eviction so discovery
+   * cannot readopt a surviving process, and retain its cleanup target until observation or
+   * the SDK supervisor confirms the runtime is gone.
    */
   retireConcludedMissionSession(taskId: string, sessionId: string): boolean {
     const owed = getTaskSessionClosure(taskId);
     if (!owed || owed.sessionId !== sessionId) return false;
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    retireTaskSessionClosure(taskId, sessionId, Date.now());
+    if (!this.retiredMissionTargets.has(sessionId)) this.retiredMissionTargets.set(sessionId, session);
     this.beginEviction(session);
-    return true;
+    return owed.retiredAt === null;
+  }
+
+  missionSessionClosureTarget(sessionId: string): Session | undefined {
+    return this.retiredMissionTargets.get(sessionId) ?? this.sessions.get(sessionId);
+  }
+
+  forgetMissionSessionClosureTarget(sessionId: string): void {
+    this.retiredMissionTargets.delete(sessionId);
   }
 
   beginManagedPipelineLaunch(taskId: string, sessionId: string, cwd: string): void {
@@ -2205,6 +2215,17 @@ export class Registry extends EventEmitter {
 
     for (const d of discovered) {
       seen.add(d.syntheticId);
+      const closing = taskSessionClosureForSession(d.syntheticId);
+      if (closing?.retiredAt != null) {
+        // Refresh only the teardown target. A sighting must neither cancel the eviction
+        // timer nor publish this retired process as a usable session, even after restart.
+        const previous = this.retiredMissionTargets.get(d.syntheticId) ?? this.sessions.get(d.syntheticId);
+        this.retiredMissionTargets.set(d.syntheticId, this.mergeDiscovered(previous, d, now));
+        const live = this.sessions.get(d.syntheticId);
+        if (live) this.beginEviction(live);
+        continue;
+      }
+      this.retiredMissionTargets.delete(d.syntheticId);
       const timer = this.exitTimers.get(d.syntheticId);
       if (timer) {
         clearTimeout(timer);
@@ -2214,6 +2235,11 @@ export class Registry extends EventEmitter {
       const next = this.mergeDiscovered(prev, d, now);
       this.sessions.set(d.syntheticId, next);
       if (!prev || !sessionEqual(prev, next)) this.emitSession(next);
+    }
+
+    // Only a completed process observation can confirm a retired terminal is gone.
+    for (const [id, target] of this.retiredMissionTargets) {
+      if (target.runtime === "terminal" && !seen.has(id)) this.retiredMissionTargets.delete(id);
     }
 
     // Anything a COMPLETED sweep didn't see is gone, and gets an eviction timer -
@@ -2703,6 +2729,7 @@ export class Registry extends EventEmitter {
   ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
+    if (taskSessionClosureForSession(id)?.retiredAt != null && evt.kind !== "exited") return;
     const now = Date.now();
     switch (evt.kind) {
       case "bound":
@@ -3012,6 +3039,7 @@ export class Registry extends EventEmitter {
     const { state, activity } = spec.toState(evt);
     const workCycleSignal = spec.workCycleSignal(evt);
     const target = this.findSessionForHook(evt, key);
+    if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
@@ -3605,7 +3633,7 @@ export class Registry extends EventEmitter {
    */
   promptRefusalForHook(evt: HookIngest): string | null {
     if (evt.event !== "UserPromptSubmit") return null;
-    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env));
+    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env), { includeRetiredMissionTargets: true });
     if (!session) return null;
     const closing = taskSessionClosureForSession(session.id);
     if (!closing) return null;
@@ -3614,7 +3642,8 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * The live card this event speaks for, or undefined.
+   * The session this event speaks for, or undefined. Prompt refusal may include retired
+   * cleanup targets; ordinary hook ingest only resolves live cards.
    *
    * The agent check is the same property the overlay's is, arriving by the other door:
    * a pane is reused, and `findSessionByEnv` resolves by pane first. A Claude hook that
@@ -3624,40 +3653,55 @@ export class Registry extends EventEmitter {
    * cwd branch deliberately does NOT filter by agent (see the note there), and its other
    * caller is the MCP channel, which identifies itself differently.
    */
-  private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
-    const s = this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
+  private findSessionForHook(
+    evt: HookIngest,
+    key: string | null,
+    options: { includeRetiredMissionTargets?: boolean } = {},
+  ): Session | undefined {
+    const s = this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key, options);
     return s?.agent === evt.agent ? s : undefined;
   }
 
   /**
    * Resolve which live session a hook / MCP call belongs to, using the terminal
    * pane it captured (preferred), then its registered or linked agent session id,
-   * then a unique cwd match. Shared by hook ingest and the MCP review channel.
+   * then a unique cwd match. Shared by hook ingest and the MCP review channel. Only prompt
+   * refusal opts into retired cleanup targets, using these same identity rules.
    */
   findSessionByEnv(
     env: HookIngest["env"],
     agentSessionId?: string | null,
     cwd?: string | null,
     key: string | null = overlayKeyFromEnv(env),
+    options: { includeRetiredMissionTargets?: boolean } = {},
   ): Session | undefined {
+    let candidates = this.sessions;
+    if (options.includeRetiredMissionTargets) {
+      candidates = new Map(this.sessions);
+      // A live pane occupant wins over a retired snapshot. A card still lingering during
+      // retirement counts once, so its snapshot cannot make a unique cwd ambiguous.
+      for (const [id, target] of this.retiredMissionTargets) {
+        if (!candidates.has(id)) candidates.set(id, target);
+      }
+    }
     if (key) {
-      for (const s of this.sessions.values()) if (sessionKey(s) === key) return s;
+      for (const s of candidates.values()) if (sessionKey(s) === key) return s;
     }
     if (agentSessionId) {
-      const registered = this.sessions.get(agentSessionId);
+      const registered = candidates.get(agentSessionId);
       if (registered) return registered;
-      for (const s of this.sessions.values())
+      for (const s of candidates.values())
         if (s.agentSessionId === agentSessionId) return s;
     }
     if (cwd) {
-      // Every live session in that cwd, whatever it runs. The agent was pinned to
+      // Every candidate in that cwd, whatever it runs. The agent was pinned to
       // "claude" here, which was an accident rather than a capability: the caller is a
       // hook or an MCP call that has already identified itself, and the tie-break this
       // fallback needs is UNIQUENESS - exactly one session in the directory. Filtering by
       // agent doesn't make the match safer, it makes it wrong in the one case that
       // matters, a Claude and a Codex session sharing a worktree: the filter hides the
       // ambiguity and binds the caller to the Claude card with full confidence.
-      const matches = [...this.sessions.values()].filter((s) => s.cwd === cwd);
+      const matches = [...candidates.values()].filter((s) => s.cwd === cwd);
       if (matches.length === 1) return matches[0];
     }
     return undefined;

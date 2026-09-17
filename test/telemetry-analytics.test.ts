@@ -8,6 +8,7 @@ import { TELEMETRY_LIMITS } from "../src/shared/telemetry.ts";
 import type { TelemetryEnvelope } from "../src/shared/telemetry.ts";
 import { MODEL_CATALOG } from "../src/shared/model.ts";
 import { ANALYTICAL_METADATA } from "../src/shared/telemetry-projections/index.ts";
+import { analyticalPromName } from "../src/shared/telemetry-projections/queries.ts";
 const NOW = 1_800_000_000_000;
 const quality = { lastGapAt: null, caughtUp: true };
 function project(events: TelemetryEnvelope[], now = NOW) {
@@ -19,6 +20,12 @@ function project(events: TelemetryEnvelope[], now = NOW) {
 function values(state: ReturnType<typeof initialAnalyticalState>, now = NOW) {
   return Object.fromEntries(calculateAnalytics(state, now, quality).filter((s) => s.sliceBy === "all").map((s) => [s.view, s.values]));
 }
+test("analytical query names reject fields undeclared for the requested view", () => {
+  assert.throws(() => analyticalPromName("runs", "executed"), {
+    name: "Error",
+    message: "undeclared analytical field: mission.analytics.v1.runs.executed",
+  });
+});
 test("six-run oracle: exact review, recovery, human-free and automation denominators", () => {
   const result = values(project(analyticalGoldenFixture(NOW)));
   assert.equal(result.reviews!.executed, 8); assert.equal(result.reviews!.pass, 6); assert.equal(result.reviews!.fail, 2);

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.21.0](https://github.com/teamupstart/mission-control/compare/v1.20.0...v1.21.0) (2026-09-17)
+
+
+### Features
+
+* **telemetry:** complete primary action and safe error coverage ([#1076](https://github.com/teamupstart/mission-control/issues/1076)) ([cf5520e](https://github.com/teamupstart/mission-control/commit/cf5520e2d3f9a5aaeb937c91fdd999e31245cd65))
+* **telemetry:** export bounded analytical cohort summaries ([#1075](https://github.com/teamupstart/mission-control/issues/1075)) ([25961c1](https://github.com/teamupstart/mission-control/commit/25961c13aa15f811f891c1ee8eb02aee62644069))
+* **telemetry:** track workflow execution and review outcomes ([#1071](https://github.com/teamupstart/mission-control/issues/1071)) ([dd30d5c](https://github.com/teamupstart/mission-control/commit/dd30d5c045071738a331102fd40116e70c1edfe1))
+* **tours:** add startup picker with saved opt-out ([#1072](https://github.com/teamupstart/mission-control/issues/1072)) ([f81c291](https://github.com/teamupstart/mission-control/commit/f81c2918c4c362d0ee31b3060d36f96dadbfb5d7))
+
+
+### Bug Fixes
+
+* **feedback:** route product issues to the base repository ([#1074](https://github.com/teamupstart/mission-control/issues/1074)) ([e955687](https://github.com/teamupstart/mission-control/commit/e95568784ac008bc606b0c36737dd1b202bd9e45))
+
 ## [1.20.0](https://github.com/teamupstart/mission-control/compare/v1.19.0...v1.20.0) (2026-09-15)
 
 

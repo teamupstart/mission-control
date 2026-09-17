@@ -91,10 +91,13 @@ export function recordSafeError(facts: z.input<typeof ERROR_SCHEMA>, error?: unk
 }
 /** One normalized outcome per existing business identity, including restart and replay. */
 export function recordAutomationTransition(id: string, facts: z.input<typeof AUTOMATION_SCHEMA>, actor: TelemetryActor, now = Date.now()): void {
+  // Composite business keys can contain repository paths or names. Minimize before local
+  // capture as well as the audience-specific reference salting performed at export.
+  const subject = digest(["automation", facts.feature, facts.action, id]);
   observeExperience((profile) => {
     const result = captureTelemetry({ event: AUTOMATION_EVENT, profiles: [profile],
-      source: { kind: "mission.automation", id: `${profile}:${facts.feature}:${facts.action}:${id}:${facts.outcome}`, revision: 1 }, facts, actor,
-      refs: { subject_id: id, ...(operationObservation.getStore() ? { operation_id: operationObservation.getStore()!.operationId } : {}) }, now });
+      source: { kind: "mission.automation", id: `${profile}:${facts.feature}:${facts.action}:${subject}:${facts.outcome}`, revision: 1 }, facts, actor,
+      refs: { subject_id: subject, ...(operationObservation.getStore() ? { operation_id: operationObservation.getStore()!.operationId } : {}) }, now });
     if (result.kind === "refused") throw new Error("automation capture refused");
   });
 }

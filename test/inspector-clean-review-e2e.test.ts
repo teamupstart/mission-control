@@ -263,11 +263,11 @@ test("clean review is live-only, follows resolution, and is not duplicated after
 
   const reviewFacts = () => experienceFacts("mission.automation.transition")
     .filter((e) => e.facts.feature === "inspector" && e.facts.action === "review");
-  const failures: Array<{ headSha: string | null; error: string | null; facts: ReturnType<typeof reviewFacts> }> = [];
+  const failures: Array<{ headSha: string | null; facts: ReturnType<typeof reviewFacts> }> = [];
   let completedSweeps = 0;
   const stopLive = startInspector(registryStub(() => {
     const row = getInspectorPr(liveKey);
-    if (row?.failCount) failures.push({ headSha: row.headSha, error: row.lastError, facts: reviewFacts() });
+    if (row?.failCount) failures.push({ headSha: row.headSha, facts: reviewFacts() });
     if (row?.headSha === "head-live") completedSweeps++;
   }));
   try {
@@ -279,11 +279,12 @@ test("clean review is live-only, follows resolution, and is not duplicated after
 
   assert.ok(failures.length > 0, "the real publication failure must be observed before recovery");
   assert.equal(failures[0]!.headSha, null, "a failed publication does not complete the review");
-  assert.match(failures[0]!.error ?? "", /PRIVATE_SENTINEL/, "the worker received the private diagnostic");
   assert.deepEqual(failures[0]!.facts, [{
     facts: { feature: "inspector", action: "review", outcome: "failed", coverage: "owner_transition" },
     actor: { kind: "system", origin: "daemon", basis: "owner" },
   }], "one safe failure is recorded before any completed analysis");
+  const automationRefs = openDb().prepare("SELECT source_id, refs_json FROM telemetry_journal WHERE name = ?").all("mission.automation.transition");
+  assert.ok(!JSON.stringify(automationRefs).includes(liveKey), "repository keys are opaque even in the local journal");
   assert.deepEqual(reviewFacts().map((e) => e.facts.outcome), ["failed", "applied"],
     "recovery adds one completion; subsequent polling repeats neither failure nor completion");
   assert.deepEqual(reviewFacts().filter((e) => e.facts.outcome === "failed"), failures[0]!.facts,

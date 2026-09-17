@@ -10,11 +10,11 @@ interface PersonaErrorBody {
 }
 
 export async function personaRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const operation = init?.method && init.method.toUpperCase() !== "GET" ? beginOperation("library") : undefined;
   const response = await actionFetch(path, {
     ...init,
-    headers: { "content-type": "application/json",
-      ...(init?.method && init.method !== "GET" ? beginOperation("library").headers : {}), ...init?.headers },
-  });
+    headers: { "content-type": "application/json", ...init?.headers },
+  }, operation);
   const body = (await response.json().catch(() => ({}))) as T & PersonaErrorBody;
   if (!response.ok) {
     const error = new Error(body.error ?? `Persona request failed (${response.status})`) as Error & {

@@ -38,7 +38,10 @@ export async function runPrimaryOwnerFixture(repo: string) {
   await request(`/api/reviews/${attention.id}/resolve`, { action: "approve", response: "PRIVATE_SENTINEL", by: "human" });
   await request(`/api/sessions/${session.id}/rename`, { name: "PRIVATE_SENTINEL renamed" });
   await request("/api/setup/install", { id: "node-runtime", backend: "cmux" });
-  const task = await request("/api/tasks", { title: "PRIVATE_SENTINEL", intent: "PRIVATE_SENTINEL", repoRoot: repo, kind: "ship", workflowId: null, backlog: true });
+  const taskInput = { title: "PRIVATE_SENTINEL", intent: "PRIVATE_SENTINEL", repoRoot: repo, kind: "ship", workflowId: null, backlog: true, requestId: "unsupported-task-request-id" };
+  const task = await request("/api/tasks", taskInput);
+  const secondTask = await request("/api/tasks", taskInput);
+  assert.notEqual(secondTask.id, task.id, "task creation has no requestId replay contract; a fresh request creates another task");
   await request(`/api/tasks/${task.id}/update`, { title: "PRIVATE_SENTINEL edited" });
   await request("/api/session-actions", { name: "PRIVATE_SENTINEL", promptMarkdown: "PRIVATE_SENTINEL", requiredSkillId: "pull-request" });
   await request(`/api/sessions/${session.id}/file-comments`, { path: "PRIVATE_SENTINEL.md", startLine: 1, endLine: 1, quote: "PRIVATE_SENTINEL", revision: "r1", surface: "editor", body: "PRIVATE_SENTINEL" });

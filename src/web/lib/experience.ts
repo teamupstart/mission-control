@@ -31,15 +31,24 @@ export async function flushExperience(): Promise<void> {
         if (pending[0] === item) pending.shift(); // A refusal is terminal and does not fail the UI.
       } catch { break; }
     }
-  } finally { flushing = false; }
+  } finally {
+    flushing = false;
+    if (pending.length && !timer) {
+      timer = setTimeout(() => { timer = undefined; void flushExperience(); }, Math.min(4_000, 1_000 * 2 ** pending[0]!.attempts));
+    }
+  }
 }
-const visits = new Map<string, string>();
+const visits = new Map<string, { key: string }>();
 /** Keys can contain local navigation identity, but only the declared feature/action leaves the page. */
-export function featureVisit(channel: string, key: string, feature: FeatureId, action: "enter" | "select" = "enter"): void {
-  if (visits.get(channel) === key) return;
+export function featureVisit(channel: string, key: string, feature: FeatureId, action: "enter" | "select" = "enter"): () => void {
+  const previous = visits.get(channel);
+  const visit = { key };
   if (visits.size >= 16 && !visits.has(channel)) visits.delete(visits.keys().next().value!);
-  visits.set(channel, key);
-  featureAction(feature, action);
+  visits.set(channel, visit);
+  if (previous?.key !== key) featureAction(feature, action);
+  // StrictMode immediately sets the effect up again. Only a departure with no replacement
+  // ends the visit; an old cleanup must also leave a newly mounted reader alone.
+  return () => queueMicrotask(() => { if (visits.get(channel) === visit) visits.delete(channel); });
 }
 export function endFeatureVisit(channel: string): void { visits.delete(channel); }
 export function featureAction(feature: FeatureId, action: "enter" | "select" | "filter" | "no_results" | "dismiss" | "cancel" | "complete"): void {

@@ -124,5 +124,41 @@ test("development remounts do not repeat entry and a copied report records compl
     await expect.poll(() => captured(daemon, "mission.feature.entry").filter((e) => e.facts.feature === "reports" && e.facts.action === "complete").length).toBe(1);
     await report.getByRole("button", { name: "Close", exact: true }).click();
     await expect(report).toBeHidden();
+
+    await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "console" } });
+    const created = await dashboard.request.post(`${daemon.baseURL}/api/tasks`, { data: {
+      repoRoot: daemon.repo, kind: "chat", agent: "claude", intent: "Reader revisit fixture", workflowId: null,
+    } });
+    expect(created.ok()).toBe(true);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Reader Revisit Fixture/ }).click();
+    const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
+    await expect(tabs).toBeVisible();
+    const readerEntries = () => captured(daemon, "mission.feature.entry").filter((e) => e.facts.feature === "conversation" && e.facts.action === "enter");
+    await expect.poll(() => readerEntries().length).toBe(1);
+    await dashboard.evaluate(() => { location.hash = "#/library"; });
+    await expect(tabs).toBeHidden();
+    await dashboard.evaluate(() => { location.hash = "#/fleet"; });
+    await expect(tabs).toBeVisible();
+    await expect.poll(() => readerEntries().length).toBe(2);
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}reader-reentered.png`, animations: "disabled" });
   } finally { dev.stop(); }
+});
+
+
+test("a transient ingress failure recovers without another user gesture", async ({ dashboard, daemon }) => {
+  await enable(daemon);
+  const attempts: Array<{ id: string; body: string }> = [];
+  await dashboard.route("**/api/telemetry/ingress", async (route) => {
+    const body = route.request().postDataJSON();
+    if (!body.records.some((r: { facts: { feature?: string } }) => r.facts.feature === "library")) return route.continue();
+    attempts.push({ id: route.request().headers()["x-mission-operation-id"]!, body: route.request().postData()! });
+    if (attempts.length === 1) await route.fulfill({ status: 503, body: "temporarily unavailable" });
+    else await route.continue();
+  });
+  await dashboard.getByRole("button", { name: /Library/ }).first().click();
+  await expect(dashboard).toHaveURL(/#\/library/);
+  await expect.poll(() => captured(daemon, "mission.feature.entry").filter((e) => e.facts.feature === "library" && e.facts.action === "enter").length).toBe(1);
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
 });

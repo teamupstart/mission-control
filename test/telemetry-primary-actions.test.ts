@@ -153,9 +153,12 @@ test("expected refusal is a domain result, and browser ingress cannot forge an o
 test("owner automation outcomes dedupe across restart without importing external content", () => {
   const facts = { feature: "pipelines", action: "stage", outcome: "applied", coverage: "external_observation" } as const;
   const actor = { kind: "unknown", origin: "external_observation", basis: "unknown" } as const;
-  recordAutomationTransition("opaque-stage", facts, actor); closeDb(); openDb(); recordAutomationTransition("opaque-stage", facts, actor);
+  recordAutomationTransition("/Users/PRIVATE_SENTINEL/repo:run:step", facts, actor); closeDb(); openDb(); recordAutomationTransition("/Users/PRIVATE_SENTINEL/repo:run:step", facts, actor);
   runProjectionPass(); assert.equal(total("mission.automation.actions"), 1);
   assert.equal(events("mission.automation.transition")[0]!.actor.kind, "unknown");
+  const stored = openDb().prepare("SELECT source_id, refs_json FROM telemetry_journal WHERE name = ?").all("mission.automation.transition");
+  assert.ok(stored.length > 0);
+  assert.ok(!JSON.stringify(stored).includes("PRIVATE_SENTINEL"), "opaque business identifiers enter the journal before export minimization");
 });
 
 test("the manifest is an explicit list, never a prefix catch-all", () => {
@@ -186,7 +189,7 @@ test("real owners create, configure and complete actions without exporting their
   for (const action of ["attention.resolve", "session.rename", "setup.installer_launch", "task.create", "task.edit", "library.action_create", "file.comment", "queue.enqueue", "foreman.invite", "foreman.withdraw", "settings.appearance", "away.configure", "inspector.configure", "schedule.create", "schedule.run_now"]) {
     assert.ok(actions.some((e) => e.facts.action === action && e.facts.outcome === "applied"), `${action} must observe an applied real owner result`);
   }
-  assert.equal(actions.filter((e) => e.facts.action === "task.create").length, 2, "route and owner observe one creation each, including the scheduled task");
+  assert.equal(actions.filter((e) => e.facts.action === "task.create").length, 3, "count both distinct HTTP creations and the scheduled task once each");
   assert.equal(actions.filter((e) => e.facts.action === "task.create" && e.actor.kind === "scheduler").length, 1);
   const automation = events("mission.automation.transition");
   assert.ok(automation.some((e) => e.facts.feature === "queues" && e.facts.outcome === "applied"));
@@ -205,4 +208,13 @@ test("bootstrap registration is idempotent and a provider observer preserves the
   await assert.rejects(runner.run("PRIVATE_SENTINEL"), (caught) => caught === error);
   recordSafeError({ component: "route", family: "execution", code: "unexpected", retryable: "unknown", handled: true, fingerprint: "unknown", suppressed: 0 }, error);
   assert.equal(events("mission.error.occurrence").length, 1);
+});
+
+test("declared automation surfaces do not replace the caller's independently known origin", () => {
+  for (const surface of ["mcp", "automation"]) {
+    const declared = new Headers({ ...headers, "x-mission-operation-surface": surface, "x-mission-operation-actor": "foreman" });
+    assert.deepEqual(resolveOperationContext(declared).actor, { kind: "foreman", basis: "declared", origin: "dashboard" });
+    assert.equal(resolveOperationContext(declared, "unknown").actor.origin, "unknown");
+    assert.equal(resolveOperationContext(declared, "mcp").actor.origin, "mcp");
+  }
 });

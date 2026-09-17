@@ -190,7 +190,7 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   useEffect(() => {
-    featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab);
+    return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab);
   }, [session.id, tab]);
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;

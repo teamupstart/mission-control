@@ -128,7 +128,7 @@ export function resolveOperationContext(
       // A dashboard request with app context is a person doing something in the app. Without
       // it we do not claim to know, and `unknown` is a real actor kind rather than a gap.
       kind: declaredKind ?? (basis === "app_context" ? "human" : "unknown"),
-      origin: surface === "mcp" ? "mcp" : surface === "automation" ? "daemon" : origin,
+      origin,
       basis,
     },
   };

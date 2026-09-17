@@ -14,14 +14,14 @@ import {
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { SkillsSpec, ExtensionsSpec } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
-import { piExtensionPath } from "../config.ts";
+import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -707,16 +707,36 @@ export function extensionsDirs(): string[] {
 }
 
 /**
- * Recognize our target, or a previous checkout's marked build. The reserved link name
- * alone never licenses replacing another extension. An unknown dangling link is refused.
- * Reading the marker establishes ownership only; this is not a health/staleness probe.
+ * A dangling link that still points at Mission Control's own build output path.
+ *
+ * An installation that moved or was deleted - an app bundle dragged from /Applications
+ * to ~/Applications, a checkout removed - leaves a link whose target cannot be read, so
+ * the marker below has nothing to read and the path is the only evidence left of who
+ * wrote it. `PI_EXTENSION_OUTPUT` under the reserved link name is evidence enough: no
+ * other tool writes `dist/pi-extension/index.js` into Pi's extension directory under the
+ * one name we reserve. Only a MISSING target qualifies. A target that exists without the
+ * marker is somebody else's, and an unreadable one (EACCES, a symlink cycle) is refused
+ * rather than guessed at - an unknown dangling link stays unknown.
+ */
+function danglingMissionOutput(error: unknown, target: string): boolean {
+  if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+  const parts = target.split(sep);
+  return parts.length > PI_EXTENSION_OUTPUT.length
+    && PI_EXTENSION_OUTPUT.every((segment, i) => parts[parts.length - PI_EXTENSION_OUTPUT.length + i] === segment);
+}
+
+/**
+ * Recognize our target, a previous checkout's marked build, or an installation of ours
+ * that has gone missing. The reserved link name alone never licenses replacing another
+ * extension, and an unknown dangling link is still refused. Reading the marker
+ * establishes ownership only; this is not a health/staleness probe.
  */
 function ownsExtensionTarget(target: string, desired: string): boolean {
   if (target === desired) return true;
   try {
     return statSync(target).isFile() && readFileSync(target, "utf8").includes("missionControlBuild");
-  } catch {
-    return false;
+  } catch (error) {
+    return danglingMissionOutput(error, target);
   }
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.21.1](https://github.com/teamupstart/mission-control/compare/v1.21.0...v1.21.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **inspector:** align completion gates with published review state ([#1081](https://github.com/teamupstart/mission-control/issues/1081)) ([7f2c2cb](https://github.com/teamupstart/mission-control/commit/7f2c2cb242a31a43d5d8fc5fb2c81599992a624d))
+* **missions:** keep concluded sessions closed through cleanup and restart ([#1079](https://github.com/teamupstart/mission-control/issues/1079)) ([7a182a1](https://github.com/teamupstart/mission-control/commit/7a182a16f06e29fb98265b6d88f16ad9be56b189))
+* **pi:** repair an extension link left by a moved installation ([#1080](https://github.com/teamupstart/mission-control/issues/1080)) ([1cc9d41](https://github.com/teamupstart/mission-control/commit/1cc9d41aea9df139feb2508e737b003285020f27))
+* **scouts:** prevent implicit report commits ([#1083](https://github.com/teamupstart/mission-control/issues/1083)) ([26878fc](https://github.com/teamupstart/mission-control/commit/26878fce3012d8875d4898da9cc1451ae79a9004))
+
 ## [1.21.0](https://github.com/teamupstart/mission-control/compare/v1.20.0...v1.21.0) (2026-09-17)
 
 

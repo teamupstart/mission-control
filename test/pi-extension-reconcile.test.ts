@@ -143,7 +143,9 @@ test("the build output layout the reconciler recognizes is the one this build wr
   delete process.env.MISSION_PI_EXTENSION;
   try {
     assert.equal(piExtensionPath().endsWith(`/${PI_EXTENSION_OUTPUT.join("/")}`), true, piExtensionPath());
-  } finally { process.env.MISSION_PI_EXTENSION = previous; }
+    // Assigning an absent value back would restore it as the string "undefined", which
+    // every later test in this worker would then resolve as a real override.
+  } finally { if (previous === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = previous; }
 });
 
 test("a moved or deleted installation's dangling link is repaired instead of refused", () => {

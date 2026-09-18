@@ -1603,6 +1603,11 @@ function RunRecordTabs({
   const fallback = offers(initial) ? initial : offered[0]?.pane.id ?? "worklist";
   const selected = routed ?? localPick ?? fallback;
   const tabs = useRef(new Map<RunRecordPane, HTMLButtonElement>());
+  // The workflows tour spotlights two of these panes. The shared tabpanel wrapper is the
+  // registered element, under the id of whichever pane is showing, so each target has one
+  // owner and switching panes re-registers through React's own ref detach.
+  const tourEvidenceRef = useTourTargetRef<HTMLDivElement>("workflows:run-evidence");
+  const tourCompletionRef = useTourTargetRef<HTMLDivElement>("workflows:run-completion");
   const select = (pane: RunRecordPane): void => {
     if (pane !== selected) featureAction("runs", "select");
     if (pane === selected) return;
@@ -1678,6 +1683,9 @@ function RunRecordTabs({
           role="tabpanel"
           id={runRecordPaneId(active.pane.id)}
           aria-labelledby={runRecordTabId(active.pane.id)}
+          ref={active.pane.id === "evidence"
+            ? tourEvidenceRef
+            : active.pane.id === "completion" ? tourCompletionRef : undefined}
         >
           {active.content}
         </div>
@@ -2297,6 +2305,8 @@ function EvidencePane({
   onRecover?: (submissionId: string) => Promise<void>;
 }): React.JSX.Element {
   const bodies = useFrozenImageBodies(runId, images);
+  /** The workflows tour's handle on the readiness strip. Inert unless a tour is running. */
+  const tourReadinessRef = useTourTargetRef<HTMLDivElement>("workflows:run-readiness");
   const [preview, setPreview] = useState<string | null>(null);
   const returnFocus = useRef<FocusBookmark | null>(null);
   const [busy, setBusy] = useState<"retry" | "override" | null>(null);
@@ -2399,7 +2409,7 @@ function EvidencePane({
 
   return (
     <>
-      <div className="wf-run-strip">
+      <div className="wf-run-strip" ref={tourReadinessRef}>
         <RunStat
           label="Readiness"
           value={summary.status ? evidenceCodeLabel(summary.status) : "not evaluated"}
@@ -3426,6 +3436,8 @@ export function WorkflowRunView({
     .map((node) => node.id));
   /** The guided tour's handle on the worklist. Inert unless a tour is running. */
   const tourWorklistRef = useTourTargetRef<HTMLElement>("library:run-worklist");
+  /** The workflows tour's handle on the round scrubber. Inert unless a tour is running. */
+  const tourRoundsRef = useTourTargetRef<HTMLElement>("workflows:run-rounds");
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
   const [worklistFocus, setWorklistFocus] = useState<{
     runId: string;
@@ -3811,7 +3823,7 @@ export function WorkflowRunView({
       </header>
 
       {rounds.length > 0 && (
-        <section className="wf-run-rounds" aria-label="Rounds">
+        <section className="wf-run-rounds" aria-label="Rounds" ref={tourRoundsRef}>
           {/* One tile per ROUND. Eleven captures in one repair round is a detail OF that
               round, and drawn as eleven tiles it claimed eleven rounds had happened - so the
               tile carries a COUNT, and the captures themselves live in a tray below that
@@ -4542,6 +4554,9 @@ export function WorkflowRuns({
   const selectedIndex = useRef(0);
   const page = useRef<HTMLElement>(null);
   const runRows = useRef(new Map<string, HTMLButtonElement>());
+  /** The workflows tour's close stop reads the chips; its exit lands on All. Inert otherwise. */
+  const tourFiltersRef = useTourTargetRef<HTMLDivElement>("workflows:run-filters");
+  const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
@@ -4966,10 +4981,16 @@ export function WorkflowRuns({
     <section ref={page} className="workflow-runs">
       <aside className="wf-run-rail">
         {listError && <p className="wf-run-error" role="alert">{listError}</p>}
-        <div className="wf-run-chips" role="group" aria-label="Filter runs by state">
+        <div
+          className="wf-run-chips"
+          role="group"
+          aria-label="Filter runs by state"
+          ref={tourFiltersRef}
+        >
           {RUN_FILTER_CHIPS.map((chip) => (
             <Tooltip key={chip.label} label={chip.hint}>
               <button
+                ref={chip.status === undefined ? tourFilterAllRef : undefined}
                 className={`wf-run-chip${filters?.status === chip.status ? " active" : ""}`}
                 aria-pressed={filters?.status === chip.status}
                 onClick={() => {

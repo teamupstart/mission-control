@@ -178,6 +178,13 @@ import {
   type LibraryTourRun,
   type LibraryTourRuntime,
 } from "./tour/tours/library.ts";
+import {
+  WORKFLOWS_TOUR,
+  selectWorkflowsTourSession,
+  type WorkflowsTourNavigation,
+  type WorkflowsTourRun,
+  type WorkflowsTourRuntime,
+} from "./tour/tours/workflows.ts";
 import { SETUP_TOUR, type SetupTourNavigation } from "./tour/tours/setup.ts";
 import { createTourTargetRegistry, type TourTargetId } from "./tour/target-registry.ts";
 import { TourTargetHost, useOwnedTourTargetRef } from "./tour/target-context.tsx";
@@ -490,6 +497,19 @@ export function App(): React.JSX.Element {
    * drops the session it reviewed.
    */
   const [libraryTourRun, setLibraryTourRun] = useState<LibraryTourRun | null>(null);
+  /**
+   * The run the workflows tour pinned when it started, held for the same reason the Library
+   * tour's is: a newer run landing mid-tour must not move the operator off the artifact the
+   * previous stop just explained.
+   */
+  const [workflowsTourRun, setWorkflowsTourRun] = useState<WorkflowsTourRun | null>(null);
+  const [workflowsTourSeedError, setWorkflowsTourSeedError] = useState<string | null>(null);
+  const workflowsTourSeedStartedRef = useRef<string | null>(null);
+  const [workflowsTourPreviewTaskId, setWorkflowsTourPreviewTaskId] = useState<string | null>(null);
+  const [workflowsTourPreviewError, setWorkflowsTourPreviewError] = useState<string | null>(null);
+  const [workflowsTourRepoRoot, setWorkflowsTourRepoRoot] = useState<string | null>(null);
+  const workflowsTourPreviewTaskIdRef = useRef<string | null>(null);
+  const workflowsTourPreviewStartedRef = useRef<string | null>(null);
   const tourSequence = useRef(0);
   const activeTourRef = useRef<TourRun | null>(null);
   const tourBindingsRef = useRef<Record<TourId, TourBinding> | null>(null);
@@ -502,8 +522,11 @@ export function App(): React.JSX.Element {
   // stays mounted for error recovery, but renders must not reactivate its closed run.
   /** The active run, only when it is See the work's. Every other tour reads null here. */
   const seeWorkRun = activeTour?.tourId === "see-work" ? activeTour : null;
+  /** The active run, only when it is the workflows tour's. Every other tour reads null. */
+  const workflowsRun = activeTour?.tourId === "workflows" ? activeTour : null;
   seeWorkTourPreviewTaskIdRef.current = seeWorkTourPreviewTaskId;
   seeWorkTourTaskIdRef.current = seeWorkTourTaskId;
+  workflowsTourPreviewTaskIdRef.current = workflowsTourPreviewTaskId;
   sessionsRef.current = sessions;
   tasksRef.current = tasks;
   const dispatchTourRef = useOwnedTourTargetRef<HTMLButtonElement>(tourTargets, "see-work:dispatch");
@@ -1058,6 +1081,47 @@ export function App(): React.JSX.Element {
     setLibraryTourRun(pickLibraryTourRun());
   }, [pickLibraryTourRun]);
 
+  /** The session whose chip and dialog the workflows tour stands on, armed sessions first. */
+  const pickWorkflowsTourSession = useCallback((): string | null => (
+    selectWorkflowsTourSession(
+      sessions.map((session) => session.id),
+      new Set(
+        workflowBindingSummaries
+          .filter((binding) => binding.state === "active" && binding.sessionId)
+          .map((binding) => binding.sessionId!),
+      ),
+    )
+  ), [sessions, workflowBindingSummaries]);
+
+  /**
+   * Clear the previous workflows tour run's temporary state, and on an empty fleet resolve
+   * the repository its temporary conversation needs - the same launch See the work's
+   * preview uses, because the two stops that point at a binding chip and the Bind workflow
+   * dialog need a session desk to exist, whichever session it is.
+   */
+  const beginWorkflowsTourRun = useCallback((run: TourRun): void => {
+    workflowsTourPreviewTaskIdRef.current = null;
+    workflowsTourPreviewStartedRef.current = null;
+    setWorkflowsTourPreviewTaskId(null);
+    setWorkflowsTourPreviewError(null);
+    if (run.sessionId !== null) {
+      setWorkflowsTourRepoRoot(null);
+      return;
+    }
+    const preferredRepo = tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    setWorkflowsTourRepoRoot(preferredRepo);
+    if (preferredRepo) return;
+    void fetchRepos().then((repos) => {
+      if (activeTourRef.current?.id !== run.id) return;
+      const repoRoot = repos[0] ?? null;
+      setWorkflowsTourRepoRoot(repoRoot);
+      if (!repoRoot) {
+        setWorkflowsTourPreviewError("No git repository is available for the tour conversation.");
+      }
+    });
+  }, [tasks]);
+
+
   /**
    * How each tour opens: the resource it wants to point at, and the run state it seeds.
    *
@@ -1072,8 +1136,19 @@ export function App(): React.JSX.Element {
     // The Library tour singles out a run rather than a session, and it pins it in `begin`
     // rather than as the run's `resource`: the run is a whole summary, not an id.
     "library": { resource: () => null, begin: beginLibraryRun },
+    // The workflows tour singles out the session its chip stops stand on - an armed one
+    // first, any live one next, and on an empty fleet its `begin` starts a temporary
+    // conversation to point at. Its run is NOT picked from history: the seed effect below
+    // pins the daemon's deterministic demonstration run, whatever the fleet holds.
+    "workflows": { resource: pickWorkflowsTourSession, begin: beginWorkflowsTourRun },
     "setup": { resource: () => null, begin: () => {} },
-  }), [beginLibraryRun, beginSeeWorkRun, pickSeeWorkSession]);
+  }), [
+    beginLibraryRun,
+    beginSeeWorkRun,
+    beginWorkflowsTourRun,
+    pickSeeWorkSession,
+    pickWorkflowsTourSession,
+  ]);
 
   /**
    * Start a tour. One active run at a time, whichever tour asks.
@@ -1159,6 +1234,74 @@ export function App(): React.JSX.Element {
       }
     });
   }, [seeWorkRun, seeWorkTourRepoRoot]);
+
+  // The workflows tour's run chapter reads the daemon's demonstration record and nothing
+  // else, so every machine walks the identical run whatever its own history holds. The ask
+  // is idempotent server-side: the record is fabricated on the first start and the same run
+  // answers every later one.
+  useEffect(() => {
+    const run = activeTour;
+    if (
+      !run ||
+      run.tourId !== "workflows" ||
+      workflowsTourRun !== null ||
+      workflowsTourSeedStartedRef.current === run.id
+    ) return;
+    workflowsTourSeedStartedRef.current = run.id;
+    void api.seedTourRun("workflows").then((result) => {
+      if (activeTourRef.current?.id !== run.id) return;
+      if (result.ok && result.runId) {
+        setWorkflowsTourRun({ id: result.runId });
+      } else {
+        setWorkflowsTourSeedError(
+          result.error ?? "Mission Control did not return a run to read.",
+        );
+      }
+    }).catch((error: unknown) => {
+      if (activeTourRef.current?.id !== run.id) return;
+      setWorkflowsTourSeedError(
+        error instanceof Error ? error.message : "The demonstration run could not be seeded.",
+      );
+    });
+  }, [activeTour, workflowsTourRun]);
+
+  // An empty fleet gives the workflows tour's binding stops no desk to point at, so it
+  // starts the fixed temporary conversation its server recipe describes, exactly as See
+  // the work's preview does. A late response after Exit is reclaimed immediately.
+  useEffect(() => {
+    const run = workflowsRun;
+    const repoRoot = workflowsTourRepoRoot;
+    if (
+      !run ||
+      run.sessionId !== null ||
+      !repoRoot ||
+      workflowsTourPreviewStartedRef.current === run.id
+    ) return;
+    workflowsTourPreviewStartedRef.current = run.id;
+    void api.startTourPreview("workflows", repoRoot).then(async (result) => {
+      const taskId = result.task?.id ?? null;
+      if (!result.ok || !taskId) {
+        if (activeTourRef.current === run) {
+          setWorkflowsTourPreviewError(
+            result.error ?? "Mission Control did not return a tour conversation.",
+          );
+        }
+        return;
+      }
+      if (activeTourRef.current !== run) {
+        await api.completeTourTask("workflows", taskId);
+        return;
+      }
+      workflowsTourPreviewTaskIdRef.current = taskId;
+      setWorkflowsTourPreviewTaskId(taskId);
+    }).catch((error: unknown) => {
+      if (activeTourRef.current === run) {
+        setWorkflowsTourPreviewError(
+          error instanceof Error ? error.message : "The tour conversation could not start.",
+        );
+      }
+    });
+  }, [workflowsRun, workflowsTourRepoRoot]);
 
   const dispatchSeeWorkTourDemo = useCallback(async (repoRoot: string) => {
     if (seeWorkTourTaskIdRef.current) {
@@ -1319,6 +1462,28 @@ export function App(): React.JSX.Element {
    */
   const cleanupLibraryRun = useCallback(async (): Promise<void> => {
     setLibraryTourRun(null);
+  }, []);
+  /**
+   * Reclaim what a workflows run held: one pinned run id, plus the read-only Bind workflow
+   * dialog it may have left open - the one overlay `finishTour`'s generic closes miss.
+   */
+  const cleanupWorkflowsRun = useCallback(async (): Promise<void> => {
+    // Close the temporary conversation FIRST: a refusal leaves the run installed so the
+    // controller can retry against the same task, exactly as See the work's cleanup does.
+    const taskId = workflowsTourPreviewTaskIdRef.current;
+    if (taskId) {
+      const result = await api.completeTourTask("workflows", taskId);
+      if (!result.ok) throw new Error(result.error ?? `task ${taskId} could not be closed`);
+    }
+    workflowsTourPreviewTaskIdRef.current = null;
+    workflowsTourPreviewStartedRef.current = null;
+    setWorkflowsTourPreviewTaskId(null);
+    setWorkflowsTourPreviewError(null);
+    setWorkflowsTourRepoRoot(null);
+    setWorkflowsTourRun(null);
+    setWorkflowsTourSeedError(null);
+    workflowsTourSeedStartedRef.current = null;
+    setWorkflowBindingTarget(null);
   }, []);
   // Setup only navigates and spotlights existing page chrome, so it creates nothing to reclaim.
   const cleanupSetupRun = useCallback(async (): Promise<void> => {}, []);
@@ -1729,6 +1894,48 @@ export function App(): React.JSX.Element {
       return true;
     },
   }), [layout, navigate, requestWorkflowsTab]);
+  /**
+   * Every move the workflows tour makes: route transitions the dashboard already performs,
+   * plus the two existing modal owners - Dispatch and the Bind workflow dialog. Opening the
+   * dialog writes nothing; only its own buttons do, and the tour never presses them.
+   */
+  const workflowsNavigation = useMemo<WorkflowsTourNavigation>(() => ({
+    showRuns: () => navigate({ page: "runs" }),
+    showDispatchModal: () => {
+      if (!navigate({ page: "fleet" })) return false;
+      setFilter("");
+      setLineDrawer(null);
+      setBoardOpen(false);
+      openDispatch();
+      return true;
+    },
+    closeDispatch,
+    showBindingChip: (sessionId) => {
+      closeDispatch();
+      setWorkflowBindingTarget(null);
+      if (!navigate({ page: "fleet" })) return false;
+      setFilter("");
+      setLineDrawer(null);
+      // With no session to stand on, the fleet itself is the surface the fallback copy
+      // describes, so the move still succeeds.
+      if (!sessionId) return true;
+      setLayout("board");
+      setSelectedId(sessionId);
+      setBoardOpen(true);
+      return true;
+    },
+    openBindingDialog: (sessionId) => {
+      if (!sessionId) return true;
+      setWorkflowBindingTarget({ sessionId });
+      return true;
+    },
+    closeBindingDialog: () => setWorkflowBindingTarget(null),
+    showRun: (runId, pane) => {
+      setWorkflowBindingTarget(null);
+      closeDispatch();
+      return navigate({ page: "runs", runId, pane });
+    },
+  }), [closeDispatch, navigate, openDispatch, setLayout]);
   /**
    * The Setup tour's four moves, all of them ordinary route transitions.
    *
@@ -2305,6 +2512,35 @@ export function App(): React.JSX.Element {
     ),
   };
 
+  // The session the binding stops stand on: the one pinned from the fleet at start, or the
+  // tour's own temporary conversation once its task has a live session.
+  const workflowsPreviewSession = workflowsRun && workflowsRun.sessionId === null
+    && workflowsTourPreviewTaskId
+      ? sessions.find((session) => session.task?.id === workflowsTourPreviewTaskId) ?? null
+      : null;
+  const workflowsPreviewTask = workflowsTourPreviewTaskId
+    ? tasks.find((task) => task.id === workflowsTourPreviewTaskId) ?? null
+    : null;
+  const workflowsTourSessionId = workflowsRun?.sessionId ?? workflowsPreviewSession?.id ?? null;
+  const workflowsTourRuntime: WorkflowsTourRuntime = {
+    run: workflowsTourRun,
+    seedError: workflowsTourSeedError,
+    sessionId: workflowsTourSessionId,
+    // Read every render against the LIVE collection, so a session evicted between the chip
+    // stop and the dialog stop moves the tour to its own fallback through the ordinary
+    // event path rather than through a state reading of the session it lost.
+    sessionLive: Boolean(
+      workflowsTourSessionId
+      && sessions.some((session) => session.id === workflowsTourSessionId),
+    ),
+    sessionError: workflowsTourPreviewError
+      ?? (taskLaunchStopped(workflowsPreviewTask)
+        ? workflowsPreviewTask?.error ?? "the tour conversation stopped before it joined the fleet"
+        : null),
+    dispatchOpen,
+    bindingDialogOpen: workflowBindingTarget !== null,
+  };
+
   /**
    * Every tour's binding, keyed by `TourId`.
    *
@@ -2340,6 +2576,23 @@ export function App(): React.JSX.Element {
           registry={tourTargets}
           navigation={libraryNavigation}
           runtime={libraryTourRuntime}
+          isTop={isTop}
+          onFinish={onFinish}
+        />
+      ),
+    },
+    "workflows": {
+      // This tour creates nothing: the session and run it singles out already existed, and
+      // forgetting them - plus closing the read-only dialog - is the whole of its cleanup.
+      activeTaskId: null,
+      activeRunId: workflowsTourRun?.id ?? null,
+      cleanup: cleanupWorkflowsRun,
+      mount: ({ isTop, onFinish }) => (
+        <GuidedTourController
+          definition={WORKFLOWS_TOUR}
+          registry={tourTargets}
+          navigation={workflowsNavigation}
+          runtime={workflowsTourRuntime}
           isTop={isTop}
           onFinish={onFinish}
         />

@@ -35,6 +35,7 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
 import { fitDetailTabs, observeDetailTabs } from "../../detailTabsLadder.ts";
+import { useTourTargetRef } from "../../tour/target-context.tsx";
 import {
   AgentDot,
   CostChip,
@@ -199,6 +200,8 @@ export function ConsoleDetail({
   // gate above read every one. Derived from the same list so the two cannot disagree.
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
+  /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
+  const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
@@ -570,6 +573,7 @@ export function ConsoleDetail({
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
           <Tooltip label={workflowBindChipTitle(workflowBinding)}>
             <button
+              ref={tourBindChipRef}
               className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
               onClick={() => view.onBindWorkflow?.(session.id)}
             >

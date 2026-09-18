@@ -25,11 +25,11 @@ test("the generated module is exactly what the authored tour Markdown regenerate
   );
   assert.deepEqual(
     TOUR_CONTENT_SOURCES.map((source) => source.slug),
-    ["library", "see-work", "setup"],
+    ["library", "see-work", "setup", "workflows"],
   );
   assert.deepEqual(
     readdirSync(toursDir).filter((entry) => entry.endsWith(".md")).sort(),
-    ["README.md", "library.md", "see-work.md", "setup.md"],
+    ["README.md", "library.md", "see-work.md", "setup.md", "workflows.md"],
   );
   for (const source of TOUR_CONTENT_SOURCES) {
     assert.equal(source.markdown, readFileSync(join(toursDir, `${source.slug}.md`), "utf8"));

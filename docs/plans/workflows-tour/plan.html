@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflows tour: "Follow the review"</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1c2128;
+    --muted: #57606a;
+    --line: #d0d7de;
+    --card: #f6f8fa;
+    --accent: #0969da;
+    --chip-bg: #ddf4ff;
+    --chip-fg: #0550ae;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --line: #30363d;
+      --card: #161b22;
+      --accent: #58a6ff;
+      --chip-bg: #121d2f;
+      --chip-fg: #79c0ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 4px; }
+  h2 { font-size: 1.35rem; margin: 2.2em 0 0.5em; padding-top: 0.6em; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 1.6em 0 0.4em; }
+  p { margin: 0.6em 0; }
+  .lede { color: var(--muted); }
+  ol, ul { padding-left: 1.4em; }
+  li { margin: 0.25em 0; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin: 1em 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { background: var(--card); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  code {
+    font: 0.88em ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 0.08em 0.35em;
+  }
+  .stop {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 14px 18px;
+    margin: 14px 0;
+  }
+  .stop .kicker {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--chip-fg);
+    background: var(--chip-bg);
+    border-radius: 999px;
+    padding: 1px 10px;
+    margin-bottom: 6px;
+  }
+  .stop h3 { margin: 0.2em 0 0.3em; }
+  .stop dl { margin: 0.5em 0 0.2em; }
+  .stop dt { font-weight: 600; display: inline; }
+  .stop dd { display: inline; margin: 0; }
+  .stop .pair { margin: 0.25em 0; }
+  .note { color: var(--muted); font-size: 0.92rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Workflows tour: &ldquo;Follow the review&rdquo;</h1>
+  <p class="lede">A fourth guided tour that walks a person through one run of the built-in
+  No-Mistakes Review, in the order the run itself executes, and teaches the handful of
+  moves an operator actually makes: pick a workflow at dispatch, bind one by hand, trigger
+  one manually, and read a run without hunting.</p>
+  <p class="lede">This document is the review mockup: the flow layout first, then the exact
+  copy for every stop. Nothing here is implemented yet.</p>
+
+  <h2>What the tour must teach</h2>
+  <p>From the request, in the tour's own order:</p>
+  <ol>
+    <li>What a workflow is.</li>
+    <li>How workflows are attached based on the dispatch kind.</li>
+    <li>How to bind a workflow.</li>
+    <li>How to manually trigger a workflow.</li>
+    <li>The run itself, stage by stage: evidence, evidence readiness, Commands, Personas
+      as judges, repair rounds, session actions, and the pull request plus GitHub
+      Inspector gates.</li>
+  </ol>
+  <p>The existing &ldquo;Author what runs&rdquo; tour covers authoring Personas, Actions,
+  Commands, and workflow definitions, and only briefly reads a finished run. This tour
+  deliberately does not repeat the authoring story. It owns the run story: the Evidence
+  tab, evidence readiness, the repair loop, manual triggering, and the Completion tab,
+  none of which any existing tour visits.</p>
+
+  <h2>Shape of the tour</h2>
+  <ul>
+    <li>Tour id <code>workflows</code>, registered beside <code>see-work</code>,
+      <code>library</code>, and <code>setup</code>.</li>
+    <li>Title: <strong>Follow the review</strong> (adopted).</li>
+    <li>13 stops. &ldquo;See the work&rdquo; has 14 and &ldquo;Author what runs&rdquo; has
+      15, so this is normal size.</li>
+    <li>Entry route: the Runs page. Exit leaves the operator on the Runs page.</li>
+    <li>The tour writes nothing: no binding created, no run started, no task dispatched,
+      no model call. It walks the newest existing run of the built-in No-Mistakes Review,
+      preferring a finished one, and every run-anchored stop carries fallback copy for a
+      machine that has never run one. This is the same discipline the &ldquo;Author what
+      runs&rdquo; tour already follows.</li>
+    <li>Copy lives in <code>tours/workflows.md</code> and compiles through
+      <code>npm run tours</code>, exactly like the three existing tours. Behavior lives in
+      <code>src/web/tour/tours/workflows.ts</code> with a <code>workflows:*</code> target
+      namespace.</li>
+  </ul>
+
+  <h2>The flow</h2>
+  <p>The narrative arc is lifecycle order: what a workflow is, how one gets attached to
+  work, then one real run walked in the order the run executes.</p>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Stop id</th><th>Where it points</th><th>Concept</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td><code>workflows</code></td><td>Centered card</td><td>What a workflow is</td></tr>
+        <tr><td>2</td><td><code>after-work</code></td><td>Dispatch modal, the After work field</td><td>Attachment by dispatch kind</td></tr>
+        <tr><td>3</td><td><code>binding</code></td><td>A session's workflow binding chip</td><td>What a binding is</td></tr>
+        <tr><td>4</td><td><code>bind-dialog</code></td><td>The Bind workflow dialog</td><td>Binding one by hand</td></tr>
+        <tr><td>5</td><td><code>pipeline</code></td><td>Runs page, the run's stage strip</td><td>The five stages at a glance</td></tr>
+        <tr><td>6</td><td><code>evidence</code></td><td>The run's Evidence tab</td><td>Evidence: the frozen submission</td></tr>
+        <tr><td>7</td><td><code>readiness</code></td><td>The Evidence tab's readiness verdict</td><td>Evidence readiness</td></tr>
+        <tr><td>8</td><td><code>commands</code></td><td>Stage 1 in the stage strip</td><td>Commands as deterministic gates</td></tr>
+        <tr><td>9</td><td><code>judges</code></td><td>The reviewer stages in the strip</td><td>Personas as judges</td></tr>
+        <tr><td>10</td><td><code>rounds</code></td><td>The round scrubber</td><td>Repair rounds</td></tr>
+        <tr><td>11</td><td><code>pull-request</code></td><td>The Pull Request action in the strip</td><td>Session actions and the PR</td></tr>
+        <tr><td>12</td><td><code>inspector</code></td><td>The run's Completion tab</td><td>The GitHub Inspector final gate</td></tr>
+        <tr><td>13</td><td><code>close</code></td><td>The Runs page state filter chips</td><td>Where to watch, and finish</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Stops 5 through 12 all live on one run's detail page, so the second half of the tour
+  settles in one place and moves between the strip, the tabs, and the scrubber rather than
+  between pages.</p>
+
+  <h2>The copy</h2>
+  <p>This is the full authored text, in the exact format <code>tours/*.md</code> uses. An
+  H2 is the stop's popover title; the body is the popover copy; a
+  <code>- **Label:** text</code> list renders as the term list under the copy. House
+  style: second person, declarative, no exclamation marks, and the last sentence names
+  what Next does when the stop changes surface.</p>
+
+  <div class="stop">
+    <span class="kicker">Stop 1 &middot; centered card</span>
+    <h3>Work gets reviewed</h3>
+    <p>When an agent finishes a task, Mission Control does not take its word for it. A
+    workflow is post-work verification - a published chain of stages that judges the
+    finished work and walks it to a shipped pull request. Every run is durable and lives
+    on the Runs page. This tour follows one run of the built-in No-Mistakes Review from
+    frozen evidence to shipped.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 2 &middot; Dispatch modal, After work field</span>
+    <h3>Dispatch picks the workflow</h3>
+    <p>Every dispatch provides a choice for &ldquo;After work&rdquo;. After work is a
+    workflow that executes when a session has finished its work and Foreman has validated
+    it is completed. Depending on the task Kind, different tasks have different After work
+    workflows configured by default. You may always override them manually, and change the
+    &ldquo;ship&rdquo; Kind default in Settings &rarr; Workflows.</p>
+    <dl>
+      <div class="pair"><dt>Ship:</dt> <dd>Uses the machine default - No-Mistakes Review out of the box.</dd></div>
+      <div class="pair"><dt>Bugfix:</dt> <dd>Defaults to Bug Fix Review, which adds a root-cause judge.</dd></div>
+      <div class="pair"><dt>Plan:</dt> <dd>Defaults to Plan Validation, which reviews the plan instead of a diff.</dd></div>
+      <div class="pair"><dt>None:</dt> <dd>Opts this one task out of review entirely.</dd></div>
+    </dl>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 3 &middot; session binding chip</span>
+    <h3>A binding pins the version</h3>
+    <p>When a workflow attaches, the session wears this chip. A session that changed
+    several repositories gets one binding, and one review, per repository.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 4 &middot; Bind workflow dialog</span>
+    <h3>Bind one yourself</h3>
+    <p>Manually bind your own workflow here.</p>
+    <dl>
+      <div class="pair"><dt>Trigger:</dt> <dd>Manual means you must manually trigger the workflow. Foreman complete means the workflow automatically runs when Foreman judges work as complete.</dd></div>
+      <div class="pair"><dt>Delivery:</dt> <dd>Preview only reads. Live may send repair instructions to the session.</dd></div>
+      <div class="pair"><dt>Max repair rounds:</dt> <dd>How many times failed reviews may send the work back.</dd></div>
+    </dl>
+    <p>Bind and submit is also a manual trigger: it reviews the session's current work
+    right now.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 5 &middot; run stage strip</span>
+    <h3>A run walks its stages</h3>
+    <p>This is a real No-Mistakes Review run. The strip draws its five stages in order -
+    commands first, then three waves of reviewers, then the Pull Request action - with the
+    fixed GitHub Inspector gate after End. A stage moves on only when every member in it
+    passes, and any failure returns the work to the session.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 6 &middot; Evidence tab</span>
+    <h3>Evidence is frozen first</h3>
+    <p>Every run begins by freezing one submission: the diff, the transcript, and the
+    proof the session registered - screenshots, logs, and completed command output. Every
+    reviewer judges exactly this snapshot. What the session never registered, no reviewer
+    can see.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 7 &middot; readiness verdict</span>
+    <h3>Readiness comes before judges</h3>
+    <p>Before any reviewer runs, a preflight evidence readiness check runs. This ensures
+    the session submitted sufficient evidence to be judged. If insufficient evidence has
+    been submitted, the check will send a repair packet back to the session to fix the
+    evidence.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 8 &middot; stage 1 in the strip</span>
+    <h3>Commands fail fast</h3>
+    <p>Commands are deterministic code run by the workflow. Like tests, lint, build, and
+    type checks.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 9 &middot; reviewer stages</span>
+    <h3>Personas judge the work</h3>
+    <p>The next stages hold Personas - reusable review roles with authored standards.
+    Everyone in a stage reads the same frozen submission and returns a verdict: Passed, or
+    Changes requested with the exact changes it wants. One dissent holds the whole
+    stage.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 10 &middot; round scrubber</span>
+    <h3>Changes requested come back as rounds</h3>
+    <p>Changes requested does not end the run. Mission Control delivers the requested
+    changes to the session as a repair packet, and when the session finishes, the pipeline
+    runs again as the next round. This scrubber keeps every round inspectable. Rounds are
+    budgeted, so if the session can't satisfy all the judges across the configured number
+    of repair rounds, the workflow parks for human intervention.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 11 &middot; Pull Request action</span>
+    <h3>An action ships the pull request</h3>
+    <p>Not every stage judges. A session action stage sends one instruction to the session
+    instead - here, the Pull Request action tells it to open the pull request, and
+    completes only when Mission Control holds durable proof that one opened. The session
+    saying so is not proof. Next opens the run's final gate.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 12 &middot; Completion tab</span>
+    <h3>GitHub Inspector holds the door</h3>
+    <p>After every stage passes, one gate remains. GitHub Inspector reviews the exact pull
+    request head this run produced, and the run completes only when that review comes back
+    clean. Its findings live here on the Completion tab, beside the controls to recheck
+    the gate, grant more rounds, or cancel.</p>
+  </div>
+
+  <div class="stop">
+    <span class="kicker">Stop 13 &middot; state filter chips</span>
+    <h3>Where to watch</h3>
+    <p>You never have to hunt for a review. These chips filter every run, and Needs you is
+    your queue. Each session shows its bound run on a Workflows tab, and Settings,
+    Workflows leads with the runs that need attention. Finish leaves you here on the Runs
+    page.</p>
+  </div>
+
+  <h2>Discovery copy</h2>
+  <p>The picker, the Settings rail, and the command palette all draw from one
+  <code>TourEntry</code>.</p>
+  <ul>
+    <li>Picker summary: &ldquo;Follow one No-Mistakes Review run from frozen evidence to a
+      shipped pull request.&rdquo;</li>
+    <li>Picker outcomes: &ldquo;Know what each stage of a review is doing&rdquo;,
+      &ldquo;Bind or trigger a review yourself&rdquo;, &ldquo;Read evidence, rounds, and
+      the GitHub Inspector gate&rdquo;.</li>
+    <li>Settings heading: &ldquo;Follow the review&rdquo;, hint: &ldquo;Walk one real
+      No-Mistakes Review run, stage by stage.&rdquo;</li>
+    <li>Palette row: &ldquo;Start Follow the review tour&rdquo;, keywords: workflow,
+      review, run, evidence, inspector, no-mistakes.</li>
+  </ul>
+
+  <h2>Behavior notes for implementation</h2>
+  <ul>
+    <li><strong>Run selection.</strong> The tour always targets the seeded demonstration
+      run, never the operator's own history, so every machine walks the identical record.
+      The daemon seeds it on the first start
+      (<code>POST /api/tours/workflows/seed-run</code>,
+      <code>src/server/workflows/tour-demo-run.ts</code>): a completed run named
+      &ldquo;Tour demo&rdquo; with every stage passed and a clean GitHub Inspector gate,
+      fabricated through the workflow store with no session, task, or model call, durable
+      under a fixed id and idempotent across starts.</li>
+    <li><strong>Stops 2 through 4 fall back too.</strong> Stop 2 opens the real Dispatch
+      modal and closes it on leaving, the way &ldquo;See the work&rdquo; already does.
+      Stops 3 and 4 prefer a session that holds a binding, then any session's unarmed
+      chip, then fallback copy. Stop 4 opens the real Bind workflow dialog read-only and
+      closes it without binding (decision below).</li>
+    <li><strong>Engine seams.</strong> New <code>TourId</code> member,
+      <code>tours/workflows.md</code> plus <code>npm run tours</code>,
+      <code>src/web/tour/tours/workflows.ts</code>, a <code>workflows:*</code> entry in
+      the target namespace registry, <code>useTourTargetRef</code> calls on the owning
+      components (dispatch After work field, binding chip, binding dialog, run strip,
+      Evidence tab pane, readiness region, round scrubber, Completion pane, state filter
+      chips), a <code>TourEntry</code>, and the App binding plus
+      navigation object. No server-side tour recipes: this tour creates no tasks.</li>
+    <li><strong>Vocabulary guardrails baked into the copy.</strong> Stage, never phase.
+      Command, never check. Changes requested, never fail or kickback. GitHub Inspector by
+      full name. Session action, distinct from GitHub Actions. No em dashes.</li>
+    <li><strong>Tests.</strong> A new <code>e2e/specs/workflows-tour.spec.ts</code>: both entry
+      points start the tour, the full walk over a seeded finished run, every fallback stop
+      renders its fallback copy on an empty machine, Exit restores the pre-tour route, and
+      no write or model call happens (fake agents as always). Unit tests mirror
+      <code>library-tour.test.ts</code> for the run selector and stop table.
+      <code>docs/ui.md</code> gains this tour's stop list.</li>
+  </ul>
+
+  <h2>Adopted decisions</h2>
+  <p>Resolved in the operator's review of this mockup on 2026-09-18:</p>
+  <ol>
+    <li><strong>Tour title:</strong> Follow the review.</li>
+    <li><strong>Stop 4 depth:</strong> the tour opens the real Bind workflow dialog
+      read-only and closes it without binding.</li>
+    <li><strong>Follow-up:</strong> implemented directly in the same session. The tour, its
+      unit tests (<code>test/workflows-tour.test.ts</code>), its browser spec
+      (<code>e2e/specs/workflows-tour.spec.ts</code>), and the documentation
+      (<code>docs/ui.md</code>) ship together.</li>
+    <li><strong>Deterministic run (added after walking the tour):</strong> the tour
+      auto-seeds one demonstration No-Mistakes run directly in the database, in live mode,
+      and ALWAYS targets it - even when real history exists - so every machine walks the
+      identical record. The seeder is
+      <code>src/server/workflows/tour-demo-run.ts</code> behind
+      <code>POST /api/tours/workflows/seed-run</code>, guarded by
+      <code>test/workflow-tour-demo-run.test.ts</code>.</li>
+    <li><strong>Binding stops on an empty fleet (added after walking the tour):</strong>
+      with no live session to wear the chip, the tour starts the fixed temporary Chat
+      conversation its server recipe describes (<code>WORKFLOWS_PREVIEW</code> in
+      <code>src/server/tours.ts</code>, the See the work preview pattern) so the chip and
+      Bind workflow dialog stops point at a real desk, and closes it on exit through the
+      tour complete route. It is deliberately not the session behind the seeded run.</li>
+  </ol>
+  <p class="note">Source of truth: <code>docs/plans/workflows-tour/plan.md</code>. This
+  page is a rendering of that file.</p>
+</main>
+</body>
+</html>

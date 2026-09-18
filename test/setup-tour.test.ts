@@ -150,9 +150,11 @@ test("Setup is recommended in the catalog", () => {
 });
 
 test("only a tour that hands a page over declares an exit route", () => {
+  // Setup ends on Trust, and the workflows tour ends on the Runs page its own close stop
+  // promises. The other two only demonstrate, so they owe back the page they borrowed.
   assert.deepEqual(
     TOUR_ENTRIES.filter((entry) => entry.exit).map((entry) => entry.id),
-    ["setup"],
+    ["workflows", "setup"],
     "a demonstrating tour still owes back the page it borrowed",
   );
 });

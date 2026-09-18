@@ -1125,6 +1125,12 @@ export const SEE_WORK_TOUR_PREVIEW_INTENT = [
   "Reply briefly with a welcome and explain that Conversation holds the exchange, Work queue holds follow-up turns, Workflows holds reusable checks, Diff holds changes, and Files holds the checkout. Do nothing else after that reply.",
 ].join("\n\n");
 
+export const WORKFLOWS_TOUR_PREVIEW_INTENT = [
+  "[Mission Control workflows tour conversation]",
+  "This is a temporary Chat session used only so the Follow the review product tour can point at a session's workflow binding chip and Bind workflow dialog. Do not edit files, run commands, use tools, change settings, or create any external side effect.",
+  "Reply with one short sentence acknowledging the tour, and do nothing else after that reply.",
+].join("\n\n");
+
 /**
  * A tour's one deliberately narrow dispatch input.
  *

@@ -192,6 +192,7 @@ import {
   type WorkflowStoreWrite,
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
+import { TOUR_DEMO_RUN_ID, seedWorkflowsTourDemoRun } from "./tour-demo-run.ts";
 import { getWorkflowPolicy } from "./config.ts";
 import {
   renderInspectorFeedback,
@@ -1016,6 +1017,26 @@ export class WorkflowManager {
 
   runs(): WorkflowRunSummary[] {
     return this.store.listRunSummaries();
+  }
+
+  /**
+   * The Follow the review tour's one daemon ask: THE demonstration run, deterministically.
+   *
+   * Always the seeded record, never the operator's own history - the tour's whole point is
+   * that every machine walks the identical run, so a fleet full of real reviews changes
+   * nothing about what the tour shows. The record is durable and keyed by a fixed id, so the
+   * first ask fabricates it (see `tour-demo-run.ts`) and every later ask answers with the
+   * same run; a fresh fabrication is published onto the fleet stream exactly as a real run
+   * and its orphaned binding would be.
+   */
+  seedTourDemoRun(): { runId: string; seeded: boolean } {
+    if (this.store.getRun(TOUR_DEMO_RUN_ID)) {
+      return { runId: TOUR_DEMO_RUN_ID, seeded: false };
+    }
+    const run = seedWorkflowsTourDemoRun(this.store);
+    this.publishRun(run.id);
+    this.publishBinding(run.bindingId);
+    return { runId: run.id, seeded: true };
   }
 
   runPage(input: {

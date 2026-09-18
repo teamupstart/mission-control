@@ -7489,6 +7489,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // only supported way Chat can launch.
   app.post("/api/tours/:tourId/preview", (c) => runTourRecipe(c, "preview"));
 
+  // The Follow the review tour's one daemon ask: a No-Mistakes run to read. With any run of
+  // the built-in already in history the newest answers and nothing is written; only a machine
+  // with no history at all receives the fabricated demonstration record (tour-demo-run.ts).
+  // Only this tour seeds runs, so the guard is the literal id rather than a recipe table.
+  app.post("/api/tours/:tourId/seed-run", (c) => {
+    if (c.req.param("tourId") !== "workflows") {
+      return c.json({ ok: false, error: "no such tour" }, 404);
+    }
+    const manager = workflowManager();
+    if (!manager) return c.json({ ok: false, error: "Workflow manager unavailable" }, 503);
+    return c.json({ ok: true, ...manager.seedTourDemoRun() });
+  });
+
   // A tour's single terminal path for every task it created. A live demo follows
   // CompleteModal's ordering: record the outcome, then stop the session. An Exit during
   // provisioning has no session to stop, so cancellation first closes that race.

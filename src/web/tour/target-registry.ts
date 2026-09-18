@@ -69,6 +69,28 @@ export const TOUR_TARGET_NAMESPACES = {
     "session-workflow-ladder": "run",
   },
   /**
+   * The workflows tour's targets follow one run's lifecycle rather than one page: the
+   * dispatch modal's After work field, a session's binding chip, the Bind workflow dialog,
+   * and then the Runs page's own reading surfaces - the stage strip, the Evidence pane and
+   * its readiness strip, the round scrubber, the Completion pane, and the state filter
+   * chips. All of them are page-scoped: each has exactly one rendered owner at a time, and
+   * the stage-level beats resolve INSIDE the registered strip rather than owning targets of
+   * their own, so the strip's registration is the only handle the run pipeline gives up.
+   */
+  "workflows": {
+    "dispatch-modal": "page",
+    "dispatch-after-work": "page",
+    "binding-chip": "page",
+    "bind-dialog": "page",
+    "run-pipeline": "page",
+    "run-evidence": "page",
+    "run-readiness": "page",
+    "run-rounds": "page",
+    "run-completion": "page",
+    "run-filters": "page",
+    "run-filter-all": "page",
+  },
+  /**
    * Setup's targets are the PATH to two panels, not a reading of either: the gear that opens
    * Settings, the rail row that opens Setup, the dependency list to work through, Re-check,
    * then the rail row that opens Trust, its grant matrix, and the row that adds a repository

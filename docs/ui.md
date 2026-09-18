@@ -422,14 +422,16 @@ The existing direct tour shortcuts remain. A dirty draft keeps the picker beneat
 leave dialog: Cancel keeps the draft; Discard and leave changes route, then **Start this tour**
 must be pressed again.
 
-Three tours are registered, and none stores progress or resumes. Exiting a tour restores the
+Four tours are registered, and none stores progress or resumes. Exiting a tour restores the
 page, asset, and control it started from, unless its entry declares an exit route because
-handing that page over is the point; see **Set up this machine** below. Finishing or exiting a
+handing that page over is the point; see **Follow the review** and **Set up this machine**
+below. Finishing or exiting a
 tour does not reopen the picker. Each tour can always be started manually at stop one.
 
 The tour names, stage titles, stage descriptions, and stage definition lists have one authored
 location per tour: [`tours/see-work.md`](../tours/see-work.md),
-[`tours/library.md`](../tours/library.md), and [`tours/setup.md`](../tours/setup.md). Their H1 is
+[`tours/library.md`](../tours/library.md), [`tours/workflows.md`](../tours/workflows.md), and
+[`tours/setup.md`](../tours/setup.md). Their H1 is
 the tour name, each H2 is a stage title,
 and the prose below it is the stage description. Edit those Markdown files and run
 `npm run tours`; `src/web/tour/content.generated.ts` is generated build input and is never
@@ -572,6 +574,74 @@ or run, which is why it declares no server-side recipe at all: `POST /api/tours/
 refused with the same answer an invented tour id gets. If the operator is already holding a
 dirty draft when they start it, the entry-route preflight raises the existing leave dialog with
 no tour active.
+
+#### Follow the review
+
+**Follow the review** in the same **Help & tours** footer, or **Start Follow the review
+tour** in the palette, teaches the VERIFICATION half from the run's side: what a workflow is,
+how one attaches to work, and one real run of the built-in No-Mistakes Review read in the
+order the run executes. It is thirteen stops and fourteen spotlights - the Inspector stop
+spends two beats on one gate - and it opens on the Runs page.
+
+1. **Work gets reviewed** is a centered card over the Runs page: a workflow is post-work
+   verification, and every run is durable.
+2. **Dispatch picks the workflow** opens the real Dispatch modal and spotlights the **After
+   work** field, with the per-kind defaults as its term list.
+3. **A binding pins the version** opens a session's detail and spotlights the binding chip,
+   preferring a session already armed so the chip reads `⌘ <name> v<n>` rather than the bare
+   offer; an empty fleet gets the tour's own temporary conversation to point at.
+4. **Bind one yourself** opens the real **Bind workflow** dialog read-only and names Trigger,
+   Delivery, Max repair rounds, and **Bind and submit** as the dialog's own manual trigger.
+5. **A run walks its stages** opens the pinned run on `#/runs/:id` and spotlights its stage
+   strip.
+6. **Evidence is frozen first** selects the run's **Evidence** pane.
+7. **Readiness comes before judges** spotlights the readiness strip inside that pane.
+8. **Commands fail fast** resolves stage 1 inside the registered strip rather than owning a
+   target of its own.
+9. **Personas judge the work** resolves the first reviewer wave the same way.
+10. **Changes requested come back as rounds** spotlights the round scrubber.
+11. **An action ships the pull request** resolves the stage holding a session action member,
+    wherever the run's version placed it.
+12. **GitHub Inspector holds the door** spends two beats on one gate: the fixed footer the
+    strip draws after End, then the **Completion** pane. A run that never reached the gate
+    holds no record, and the second beat says so instead of pointing at a pane the run record
+    does not offer.
+13. **Where to watch** spotlights the Runs rail's state filter chips and finishes.
+
+**The run it opens is the seeded demonstration run, always.** Deterministic on purpose:
+every machine walks the identical record, and a fleet full of real reviews changes nothing
+about what the tour shows. On the tour's first start the daemon fabricates it through
+`POST /api/tours/workflows/seed-run`, directly through the workflow store: a completed run
+named **Tour demo**, every stage passed, the Pull Request action complete, and a clean GitHub
+Inspector gate on the Completion tab. No session, task, or model call is involved - the
+Persona verdicts say they are seeded demo verdicts, the three Commands are recorded as
+honestly **Skipped**, and the fabricated conversation is orphaned at birth so no chip, dialog,
+or open-session affordance can ever point at it. The record is durable and keyed by a fixed
+id, so every later start answers with the same run rather than writing a sibling, and it stays
+ordinary history that retention compacts on the same schedule as any completed run. While the
+seed is landing the run stops say so, and a refused seed carries the daemon's own reason.
+
+**An empty fleet gets a temporary conversation for the binding stops.** The session stops 3
+and 4 stand on is pinned when the tour starts - a session already armed with a binding first,
+then the first live one - and when neither exists, the tour starts the fixed Chat conversation
+its server recipe describes, exactly as See the work's preview does, so the binding chip and
+the Bind workflow dialog have a real session desk to point at. That conversation is
+deliberately NOT the session behind the seeded run - the run is fabricated with no session at
+all - and finishing or exiting the tour closes it through the same complete route every tour
+task uses. Like See the work's preview, its one short reply is a real model call. While it is
+joining the fleet the two stops say so, and a refused launch - no git repository is the
+ordinary case - carries the daemon's own reason.
+
+**Beyond that seed and that temporary conversation, it writes nothing.** Opening the
+Dispatch modal stages no task, and opening the Bind workflow dialog stages no binding - only
+their own buttons do, and the tour never presses them. The seeded demonstration run is the
+single durable record it may add, once; the temporary conversation is closed on exit and its
+task recorded done, the same lifecycle every tour task has.
+
+**It ends on the Runs page.** Its close stop hands the page over - "Finish leaves you here"
+is its own copy - so like Set up this machine it declares an `exit` route rather than
+replaying the snapshot's. The keyboard landing is the rail's **All** filter chip, when a run
+exists to draw the rail and no surviving invoker reclaims focus first.
 
 #### Set up this machine
 

@@ -202,8 +202,15 @@ export function RunPipeline({
   // Memoised for the reason `WorkflowLibrary` memoises its own: the canvas lists this in the
   // dependency array of the projection it syncs into React Flow's store from an effect, so a
   // fresh closure per render re-runs that sync per render.
-  /** The guided tour's handle on THIS strip - one run's real state, not the authored graph. */
-  const tourStripRef = useTourTargetRef<HTMLDivElement>("library:run-pipeline-strip");
+  /** The guided tours' handle on THIS strip - one run's real state, not the authored graph.
+   * Two tours read it under their own namespaces, so the element carries one merged
+   * callback; the workflows tour's stage-level beats resolve inside this registration. */
+  const libraryTourStripRef = useTourTargetRef<HTMLDivElement>("library:run-pipeline-strip");
+  const workflowsTourStripRef = useTourTargetRef<HTMLDivElement>("workflows:run-pipeline");
+  const tourStripRef = useCallback((element: HTMLDivElement | null) => {
+    libraryTourStripRef(element);
+    workflowsTourStripRef(element);
+  }, [libraryTourStripRef, workflowsTourStripRef]);
   const labelFor = useCallback(
     (node: StageNode): string => nodeLabel(graph, node, []),
     [graph],

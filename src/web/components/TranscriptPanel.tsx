@@ -18,7 +18,12 @@ import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { useComposerActivity } from "../lib/composer-activity.ts";
-import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import {
+  composerEditorRequested,
+  composerExpandHint,
+  composerKeysHint,
+} from "../lib/composer-editor.ts";
+import { chordFromEvent, formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
 import {
@@ -81,6 +86,7 @@ import {
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ConversationArtifacts } from "./ConversationArtifacts.tsx";
+import { ComposerEditorModal } from "./ComposerEditorModal.tsx";
 import {
   conversationArtifacts,
   retainDiscoveredArtifacts,
@@ -256,6 +262,7 @@ export function TranscriptPanel({
   const agent = session.agent;
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
+  const expandChord = bindings.composerEditor;
   // Only a session with a checkout and a handler that can open one has any use for the
   // listing; without both, a path in the prose stays the text the agent typed.
   const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
@@ -363,6 +370,12 @@ export function TranscriptPanel({
    * Null when no restore is pending.
    */
   const pendingRestore = useRef<number | null>(null);
+  /**
+   * The full-size editor's seed text, or null while it is closed. The TEXT rather than a
+   * boolean, captured when the chord is pressed: the reply box is uncontrolled, so "what is
+   * in it" is a DOM read, and the dialog must not open on a value the box no longer has.
+   */
+  const [composerEditorText, setComposerEditorText] = useState<string | null>(null);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
 
   // The reply box is deliberately NOT conditioned on the transcript. Replying needs a
@@ -422,6 +435,11 @@ export function TranscriptPanel({
    */
   const { view } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
+  // Content differs by rendering; the element and its narrow-width hide do not. Empty is a
+  // real answer - see `composerKeysHint`.
+  const composerLegend = terminal
+    ? composerKeysHint(expandChord)
+    : composerExpandHint(expandChord);
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
   // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
   // owns the whole displayed string, prefix included - see its note on why a leaf plus a
@@ -838,6 +856,26 @@ export function TranscriptPanel({
     }
   }
 
+  /**
+   * Put the editor's text back in the reply box, unsent, and close the dialog.
+   *
+   * The DOM value and the draft move together, never one without the other: the box is
+   * uncontrolled, so React will not push this value in, and the draft is what re-hydrates it
+   * on the next mount. Updating only one would look right until the card was collapsed.
+   */
+  function stageComposerText(next: string): void {
+    const el = inputRef.current;
+    writeDraft(sessionId, "reply", next);
+    setComposerEditorText(null);
+    if (!el) return;
+    el.value = next;
+    el.focus();
+    el.setSelectionRange(next.length, next.length);
+    // The signal typing raises, which Foreman reads to stay out of a conversation somebody
+    // is mid-sentence in. Writing in the editor is as mid-sentence as writing in the strip.
+    composerActivity.onInput();
+  }
+
   async function recall(turn: PendingTurn): Promise<void> {
     const input = inputRef.current;
     if (!input || pendingAction) return;
@@ -1156,6 +1194,15 @@ export function TranscriptPanel({
                 void recall(latestEditable);
                 return;
               }
+              // Dispatched by the FIELD, because App's handler returns before its action
+              // table whenever the cursor is in a text box - which is the premise of this
+              // gesture. `composerEditorRequested` re-checks the chord is typing-safe; the
+              // registry refuses to store any other, so this is a second lock, not a policy.
+              if (composerEditorRequested(chordFromEvent(e.nativeEvent), expandChord)) {
+                e.preventDefault();
+                setComposerEditorText(e.currentTarget.value);
+                return;
+              }
               // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
               // the same keystroke as the one that sends, and the browser tells them
               // apart only by `isComposing`. Without this, picking a candidate fires
@@ -1188,12 +1235,16 @@ export function TranscriptPanel({
               {drop.uploading ? "Uploading…" : "Send"}
             </button>
           </Tooltip>
-          {/* The mockup's `enter sends`, carrying the two facts the terminal placeholder
-              no longer has room for. Hidden at narrow container widths, where the box
-              needs every pixel it can get - the keys still work, unannounced. */}
-          {terminal && (
-            <span className="pty-sendkey">enter sends · shift+enter newline · drop images</span>
-          )}
+          {/* The mockup's `enter sends`, now carrying the expand chord too. Hidden at narrow
+              container widths, where the box needs every pixel - the keys still work.
+
+              Chat takes only the expand clause: it is the one key a placeholder cannot
+              teach, since the placeholder is gone by the time you are typing. See
+              `composerKeysHint` for why the rest cannot move here.
+
+              Nothing rather than an empty element when that clause is empty, or `gap` holds
+              a 6px hole open beside Send. Same rule `Keycap` keeps. */}
+          {composerLegend && <span className="pty-sendkey">{composerLegend}</span>}
         </div>
         {flash && (
           <span className={`action-flash${flash.ok ? " is-ok" : ""}`} role="status">
@@ -1202,6 +1253,22 @@ export function TranscriptPanel({
         )}
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
       </div>
+      )}
+      {/* Outside `.transcript-compose` though it is that box's dialog: that element carries
+          the image-drop handlers, so a full-screen backdrop inside it would raise the "Drop
+          images to attach" veil on every drag across the dialog. */}
+      {composerEditorText !== null && (
+        <ComposerEditorModal
+          text={composerEditorText}
+          reopenHint={formatChord(expandChord)}
+          onStage={stageComposerText}
+          onClose={() => {
+            setComposerEditorText(null);
+            // Closing discards the edit, not the person's place: a reply box left
+            // unfocused by a dismissed dialog is one they have to click to resume.
+            inputRef.current?.focus();
+          }}
+        />
       )}
     </>
   );

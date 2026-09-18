@@ -75,6 +75,10 @@ export const OVERLAY_IDS = {
   // app. Registered like any other confirm: while one is up the fleet's `k` and `r` must not
   // reach the session behind it, and a native sheet was invisible to that guard entirely.
   updateDialog: "update-dialog",
+  // The send box's full-size editor. Registered like any other modal even though it opens
+  // FROM a text field: the field it opens from is behind it, so while it is up the fleet's
+  // `k` and `r` must reach neither that field nor the session it belongs to.
+  composerEditor: "composer-editor",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -1046,6 +1046,29 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Writing a longer message
+
+The reply box is two lines tall, which is the right shape for a reply and the wrong one for
+a correction with three numbered points, a spec, or a pasted stack trace with a question
+around it. <kbd>⌃</kbd><kbd>G</kbd>, from inside the box, opens what you have written in a
+full-size editor with room to read it.
+
+**It never sends.** <kbd>⌘</kbd><kbd>Enter</kbd> puts the text back in the reply box,
+unsent, with the cursor at the end - so the message you spent time on is still a draft you
+read over and deliver yourself, with the ordinary <kbd>Enter</kbd>, when you mean to.
+<kbd>Enter</kbd> inside the editor is a newline, which is the whole reason it commits on a
+chord. <kbd>Esc</kbd> or **Cancel** closes it and leaves the reply box holding exactly what
+it had. Press <kbd>⌃</kbd><kbd>G</kbd> again to keep working on the staged text.
+
+The keys are printed beside the box, in both conversation renderings. Attachments stay on
+the composer: the editor is text, and images you had dropped survive it untouched.
+
+The chord is rebindable in **Settings → Keyboard**, with one constraint no other shortcut
+has. This is the only action that fires while the cursor is already in a text field, so its
+key has to be one a message could never contain: a <kbd>⌘</kbd> or <kbd>⌃</kbd>
+combination, or a function key. The editor refuses a bare letter and says why, rather than
+accepting a binding that would open a dialog every time you typed that letter.
+
 ### Reading a session's whole conversation
 
 The Conversation tab opens on the session's **recent** turns, and scrolls back through the

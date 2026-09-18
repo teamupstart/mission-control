@@ -53,7 +53,8 @@ export type ActionId =
   | "scouts"
   | "review"
   | "delete"
-  | "lineDensity";
+  | "lineDensity"
+  | "composerEditor";
 
 export interface ActionDef {
   id: ActionId;
@@ -63,6 +64,15 @@ export interface ActionDef {
   defaultBinding: string;
   /** "global" fires anywhere on the grid; "selection" needs a selected card. */
   group: "global" | "selection";
+  /**
+   * Whether this action is dispatched by a text FIELD rather than by App, which returns
+   * before its action table whenever `isTypingTarget` is true. A field has no such guard,
+   * so a bare `z` bound to one would fire every time somebody typed the letter z.
+   *
+   * The constraint therefore travels with the action: `typingUnsafeChordReason` refuses an
+   * unsafe chord in the editor and on every read of the stored overrides.
+   */
+  firesWhileTyping?: boolean;
 }
 
 // Order here is the order shown in the settings panel.
@@ -254,6 +264,19 @@ export const ACTIONS: readonly ActionDef[] = [
     description: "Compose and send a message to the selected session.",
     defaultBinding: "s",
     group: "selection",
+  },
+  {
+    // After Send, because it is the same box. ⌃G rather than a bare letter is a requirement
+    // and not a taste: this is the registry's only `firesWhileTyping` action, so its chord
+    // must be one a textarea never receives as text, and ⌃G is not an editing key in a
+    // browser textarea on any of the three platforms.
+    id: "composerEditor",
+    label: "Expand the message box",
+    description:
+      "Open what you are writing in a full-size editor. ⌘Enter puts the result back in the send box without sending it.",
+    defaultBinding: "ctrl+g",
+    group: "selection",
+    firesWhileTyping: true,
   },
   {
     id: "terminal",
@@ -557,6 +580,28 @@ export function chordUsesFunctionKey(chord: string): boolean {
 }
 
 /**
+ * True when a chord can be dispatched from inside a text field without eating typed text.
+ *
+ * The two shapes App's own typing guard already allows, named once so the registry's
+ * `firesWhileTyping` rule and its readers cannot drift apart: ⌘/⌃ is unambiguous
+ * mid-sentence, a function key produces no character. Anything else may just be typing.
+ */
+export function chordSurvivesTyping(chord: string): boolean {
+  return chordHasCommandModifier(chord) || chordUsesFunctionKey(chord);
+}
+
+/**
+ * Why a chord cannot be bound to THIS action, or null when it can. Distinct from
+ * `reservedChordReason`, which is about the chord alone: ⌃G and `z` are both bindable, and
+ * only one can go to an action that fires while the cursor is in a message.
+ */
+export function typingUnsafeChordReason(id: ActionId, chord: string): string | null {
+  if (!ACTION_BY_ID.get(id)?.firesWhileTyping) return null;
+  if (chordSurvivesTyping(chord)) return null;
+  return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.`;
+}
+
+/**
  * Whether a keypress must be handed back to the browser because it is a copy in progress.
  *
  * The interrupt chord defaults to ⌃C, which on Windows and Linux - and so in the Electron
@@ -615,7 +660,13 @@ function sanitize(raw: Record<string, string>): Overrides {
   const clean: Overrides = {};
   for (const a of ACTIONS) {
     const v = raw[a.id];
-    if (typeof v === "string" && v && v !== a.defaultBinding && !isReservedChord(v)) {
+    if (
+      typeof v === "string"
+      && v
+      && v !== a.defaultBinding
+      && !isReservedChord(v)
+      && !typingUnsafeChordReason(a.id, v)
+    ) {
       clean[a.id] = v;
     }
   }
@@ -743,6 +794,10 @@ export function bindingValidationError(
   if (reserved) {
     return `${formatChord(chord)} is reserved for ${reserved}.`;
   }
+  // Ahead of the conflict check: told only that `z` collides with nothing, an operator
+  // would simply try `x`.
+  const unsafe = typingUnsafeChordReason(id, chord);
+  if (unsafe) return unsafe;
   const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
   if (!owner) return null;
   return `${formatChord(chord)} is already bound to ${ACTION_BY_ID.get(owner)?.label ?? owner}.`;

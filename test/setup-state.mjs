@@ -130,6 +130,25 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // The PORT aliases go the same way, and for the same reason one step further along: an
+  // operator running their own daemon on a non-default port exports `MISSION_PORT`, every
+  // process they launch inherits it, and `harness-runtime.mjs` resolves `PORT` through the
+  // identical MISSION_/FLEET_/HARNESS_ chain. A worker that inherited 7318 then disagreed
+  // with the suite about what the shipped default IS - which is a thing several files assert
+  // directly, and which no amount of care inside a test file can defend against, because the
+  // value was already resolved by the time the file's first line ran.
+  //
+  // Nothing is seeded in their place: `PORT` has its own documented fallback and the suite
+  // is asserting THAT. A file needing a different port assigns one in its body, after this,
+  // exactly as `mission-tools-dispatch.test.ts` already does - and a file that spawns a
+  // daemon passes the port in that child's env, which this never touches.
+  //
+  // Not a state dir, so nothing here can reach the operator's database. What it protects is
+  // the weaker but more visible thing: a suite that passes or fails on whose machine it ran.
+  delete process.env.MISSION_PORT;
+  delete process.env.FLEET_PORT;
+  delete process.env.HARNESS_PORT;
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.

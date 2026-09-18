@@ -34256,3 +34256,58 @@ body.foreman-sidecar-open .modal-backdrop {
 .tele-queue p {
   margin: 0 0 4px;
 }
+
+/* ---- the send box's full-size editor ----
+   The legend beside the box needs no rule of its own: both renderings print it through the
+   existing `.pty-sendkey`, which already supplies the type and the narrow-width hide, so
+   they can never disagree about either.
+
+   The dialog is the answer to a cramped box, so its whole job is height. `flex` + `min-height:
+   0` on the body rather than a fixed textarea size, so the box takes whatever the viewport
+   allows and shrinks honestly on a short screen instead of pushing the footer off it. */
+.composer-editor {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.composer-editor .modal-head,
+.composer-editor .modal-foot {
+  flex: 0 0 auto;
+}
+.composer-editor-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+.composer-editor-input {
+  flex: 1 1 auto;
+  min-height: 46vh;
+  resize: none;
+  font: 13px/1.5 var(--sans);
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.composer-editor-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.composer-editor-note {
+  flex: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+/* Mono, like every other key legend in this app, and dimmed: it is the footer's least
+   important thing and the two buttons beside it are its most. */
+.composer-editor-keys {
+  color: var(--dim);
+  font: 9.5px/1.4 var(--mono);
+}

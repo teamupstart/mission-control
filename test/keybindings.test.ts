@@ -346,6 +346,10 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     // bare "l" was already taken, so the Line's chord is only expressible if shift survives
     // the round trip.
     chordFromEvent(key("L", { shift: true })),
+    // ⌃G, the composer's expand. Produced from a plain "g" with Ctrl held - the same
+    // letter the bare `conversation` chord uses, which is the point of deriving this set
+    // from real keydowns: the modifier has to survive or the two would be one chord.
+    chordFromEvent(key("g", { ctrl: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });

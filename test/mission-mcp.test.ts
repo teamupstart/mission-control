@@ -24,6 +24,9 @@ import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-"));
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
+// Resolve a fixture port before importing runtime constants, independent of the caller.
+const daemonPort = 17317;
+process.env.MISSION_PORT = String(daemonPort);
 
 // A stand-in for the built bundle: only its EXISTENCE is checked, and pointing at a real
 // file keeps this test off `npm run build`.
@@ -91,7 +94,7 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   );
   assert.notEqual(d.env.MISSION_HOME, join(home, "state"));
   assert.ok(statSync(d.env.MISSION_HOME!).isDirectory(), "the MCP child receives a disposable state home");
-  assert.equal(d.env.MISSION_PORT, "7317");
+  assert.equal(d.env.MISSION_PORT, String(daemonPort));
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);

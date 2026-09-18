@@ -326,6 +326,11 @@ written returns the row to `queued`. If text may have landed but pickup cannot b
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
 
+For Codex terminal sessions, passive rollout reads retain the start of the newest turn even
+when it finishes between reads. A start at or after the message's write boundary confirms pickup;
+the matching idle completion releases the next queued message. A completion without its start,
+or a start from before delivery, does not confirm the message.
+
 The outbox is stored in SQLite under the native conversation id when Mission Control knows
 it, and otherwise under the discovered session id. It survives browser and daemon restarts.
 A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and

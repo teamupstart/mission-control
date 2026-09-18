@@ -678,6 +678,7 @@ interface PassiveState {
   state: SessionState;
   /** Epoch ms of the newest transcript record (drives `settledIdle`'s settle gap). */
   lastActivity: number;
+  turnStartedAt?: number;
   /** When the poller last refreshed this read; bounds staleness if the poller stalls. */
   updatedAt: number;
 }
@@ -2234,7 +2235,12 @@ export class Registry extends EventEmitter {
       const prev = this.sessions.get(d.syntheticId);
       const next = this.mergeDiscovered(prev, d, now);
       this.sessions.set(d.syntheticId, next);
-      if (!prev || !sessionEqual(prev, next)) this.emitSession(next);
+      // Passive reads can observe a whole turn between sweeps: idle stays idle,
+      // but its lifecycle timestamp moved. Delivery subscribers need that edge
+      // just as they need applyHook's timestamp-only updates.
+      if (!prev || !sessionEqual(prev, next) || prev.lastActivity !== next.lastActivity) {
+        this.emitSession(next);
+      }
     }
 
     // Only a completed process observation can confirm a retired terminal is gone.
@@ -5981,6 +5987,7 @@ export class Registry extends EventEmitter {
       transcriptPath: discovered?.transcriptPath ?? session.transcriptPath,
       state: read.state,
       lastActivity: read.lastActivity,
+      turnStartedAt: read.turnStartedAt,
       updatedAt: Date.now(),
     });
   }
@@ -6046,6 +6053,14 @@ export class Registry extends EventEmitter {
       return undefined;
     }
     return passive;
+  }
+
+  /** Pickup evidence from this process and conversation, including a turn missed between polls. */
+  passiveTurnStartedAt(session: Session): number | null {
+    if (session.runtime !== "terminal") return null;
+    const passive = this.passiveStateFor(session);
+    if (!passive || Date.now() - passive.updatedAt >= OVERLAY_TTL_MS) return null;
+    return passive.turnStartedAt ?? null;
   }
 
   private pruneOverlays(now: number): void {

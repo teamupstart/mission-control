@@ -128,9 +128,9 @@ interface AgentTty {
  *
  * The tty a backend reports itself is the strong key and always wins. A tty-less
  * multiplexer pane gets an exact second key when its root process is a unique closest
- * ancestor of the representative agent in this same process snapshot. A tty-less emulator
- * pane gets the separate bounded heuristic described by `HostProcessSpec` and
- * `pairUniquely` below.
+ * ancestor of, or identical to, the representative agent in this same process snapshot.
+ * A tty-less emulator pane gets the separate bounded heuristic described by
+ * `HostProcessSpec` and `pairUniquely` below.
  *
  * Declining is the important half. A wrong pairing does not degrade, it MISDIRECTS - the
  * card would focus someone else's tab and type a prompt into it, which is the failure mode
@@ -178,9 +178,10 @@ function panesByTty(
   }
 
   // Exact second key for multiplexers that cannot report a tty. The pane's root process
-  // must be present on the representative agent's real parent chain in this same snapshot;
-  // a missing or merely nearby pid proves nothing. Within a backend the closest ancestor
-  // wins only when unique, and an existing tty candidate suppresses this fallback entirely.
+  // must be the representative agent itself (an exec-replaced shell) or on its real parent
+  // chain in this same snapshot; a missing or merely nearby pid proves nothing. The closest
+  // match within a backend wins only when unique, and an existing tty candidate suppresses
+  // this fallback entirely.
   const byPid = new Map(procs.map((proc) => [proc.pid, proc]));
   const muxPanes = new Map<MultiplexerId, MuxPane[]>();
   for (const terminal of terminals) {
@@ -237,9 +238,9 @@ function panesByTty(
   return byTty;
 }
 
-/** Every resolvable parent of `root`, keyed by its exact distance from the agent. */
+/** The agent itself and every resolvable parent, keyed by exact distance from the agent. */
 function ancestorDistances(root: Proc, byPid: ReadonlyMap<number, Proc>): Map<number, number> {
-  const distances = new Map<number, number>();
+  const distances = new Map<number, number>([[root.pid, 0]]);
   const visited = new Set([root.pid]);
   let current = root;
   let distance = 0;
@@ -397,7 +398,7 @@ export function representativeAgentPids(procs: Proc[]): number[] {
  * Correlate processes with terminal panes to produce one session per agent.
  *
  * The strongest join is process -> controlling tty -> pane. A multiplexer that cannot
- * report a tty may instead join through an exact shell-PID ancestor in the same process
+ * report a tty may instead join through an exact root PID or ancestor in the same process
  * snapshot. We group agent processes by tty, pick the representative agent process on each tty
  * (`chooseAgentRoot`), and name the session by the highest-priority terminal backend
  * holding a pane on that tty - which no longer means "tmux, else wezterm, else the pid",

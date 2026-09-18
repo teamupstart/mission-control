@@ -18,9 +18,9 @@ const operatorState = join(root, "operator-state");
 mkdirSync(operatorState, { recursive: true });
 writeFileSync(join(operatorState, "token"), "loopback-test-token\n", { mode: 0o600 });
 process.env.HARNESS_HOME = operatorState;
-// Pin a non-default port before runtime imports, independent of the operator's environment.
-const daemonPort = "17317";
-process.env.MISSION_PORT = daemonPort;
+// Resolve a known nondefault port before imports, independent of the workflow's port.
+const daemonPort = 17317;
+process.env.MISSION_PORT = String(daemonPort);
 
 const { shellCommand } = await import("../src/server/terminal/shell.ts");
 const {
@@ -42,7 +42,7 @@ const {
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test("the subprocess helper resolves the shared runtime port export", () => {
-  assert.equal(PORT, Number(daemonPort));
+  assert.equal(PORT, daemonPort);
   const env = agentSubprocessEnv({}, { loopbackAccess: true });
   try {
     assert.equal(env.MISSION_PORT, String(PORT));
@@ -87,7 +87,7 @@ test("agent launch env replaces every inherited state alias and preserves loopba
   assert.notEqual(first.MISSION_HOME, operatorState);
   assert.notEqual(first.MISSION_HOME, second.MISSION_HOME, "each launch receives its own home");
   assert.ok(existsSync(first.MISSION_HOME!));
-  assert.equal(first.MISSION_PORT, daemonPort);
+  assert.equal(first.MISSION_PORT, String(daemonPort));
   assert.equal(first[MISSION_API_TOKEN_ENV], undefined);
   assert.equal(readFileSync(first[MISSION_API_TOKEN_FILE_ENV]!, "utf8").trim(), "loopback-test-token");
   assert.equal(statSync(first[MISSION_API_TOKEN_FILE_ENV]!).mode & 0o777, 0o600);

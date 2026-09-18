@@ -24,7 +24,7 @@ import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-"));
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
-// Resolve a fixture port before importing runtime constants, independent of the caller.
+// Resolve a known nondefault port before imports, independent of the workflow's port.
 const daemonPort = 17317;
 process.env.MISSION_PORT = String(daemonPort);
 

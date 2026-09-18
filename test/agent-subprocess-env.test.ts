@@ -18,7 +18,7 @@ const operatorState = join(root, "operator-state");
 mkdirSync(operatorState, { recursive: true });
 writeFileSync(join(operatorState, "token"), "loopback-test-token\n", { mode: 0o600 });
 process.env.HARNESS_HOME = operatorState;
-// Resolve a fixture port before importing runtime constants, independent of the caller.
+// Resolve a known nondefault port before imports, independent of the workflow's port.
 const daemonPort = 17317;
 process.env.MISSION_PORT = String(daemonPort);
 

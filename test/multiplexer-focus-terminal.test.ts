@@ -67,6 +67,8 @@ function sessions(over: Partial<MuxSessions> = {}): MuxSessions {
     attachArgv: (name) => ["fake-mux", "attach", "-t", name],
     rename: async () => OK,
     kill: async () => OK,
+    alive: null,
+    closeIfOnlyPane: null,
     names: { validate: () => null, sanitize: (t) => t },
     ...over,
   };

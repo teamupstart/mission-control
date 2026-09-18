@@ -109,6 +109,27 @@ function batchCount(profile: string): number {
   ).n;
 }
 
+test("profile-specific capture narrows consent and persists only the selected audience", () => {
+  enableUserBackend();
+  const request = {
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "user-specific", revision: 1 },
+    facts: { startup_ms: 1, schema_upgraded: false, launch_mode: "daemon" as const },
+    profiles: ["user"] as const,
+  };
+  assert.equal(captureTelemetry(request).kind, "accepted");
+  const row = openDb().prepare("SELECT profiles_json, epochs_json FROM telemetry_journal").get()!;
+  assert.deepEqual(JSON.parse(String(row.profiles_json)), ["user"]);
+  assert.deepEqual(Object.keys(JSON.parse(String(row.epochs_json))), ["user"]);
+  assert.equal(captureTelemetry(request).kind, "duplicate");
+  assert.equal(captureTelemetry({ ...request, profiles: [] }).kind, "refused");
+  setTelemetryConfig({ user: { enabled: false } });
+  assert.equal(captureTelemetry({ ...request, source: { ...request.source, id: "withdrawn" } }).kind, "refused");
+  assert.equal(journalCount(), 1);
+  setTelemetryConfig({ enabled: false });
+  assert.equal(captureTelemetry(request).kind, "disabled");
+});
+
 // ---- default-off and upgrade safety ----
 
 test("collection is off by default and capture writes nothing", () => {
@@ -859,7 +880,8 @@ test("a fact projected long after it happened keeps its own timestamp", () => {
 
   // And the exported point, which is what a backend actually stores.
   const batch = openDb()
-    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile = 'user' AND signal = 'metrics'`)
+    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile = 'user' AND signal = 'metrics'
+      AND EXISTS (SELECT 1 FROM json_each(payload_json, '$.metrics') WHERE json_extract(value, '$.name') = 'mission.daemon.starts')`)
     .get() as { payload_json: string };
   const payload = JSON.parse(batch.payload_json) as {
     metrics: Array<{ name: string; startTimeMs: number; endTimeMs: number }>;

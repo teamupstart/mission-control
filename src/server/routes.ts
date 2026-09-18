@@ -1,3 +1,6 @@
+import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
+import { retainTurnOperation } from "./telemetry/experience.ts";
+import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
@@ -1539,6 +1542,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  app.use("/api/*", primaryActionTelemetry());
+  app.use("/mcp/*", primaryActionTelemetry());
+
   app.get("/api/health", (c) =>
     c.json({
       ok: true,
@@ -1862,6 +1868,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
     spawn: spawnUniquely,
@@ -1901,7 +1908,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             if (!launched.ok && launched.status !== 504) {
               throw new Error(launched.error ?? `${launched.label} could not open a window`);
             }
-            return launched.homeName ?? name;
+            return {
+              homeName: launched.homeName ?? name,
+              homeBackend: backend,
+              terminalResourceId: launched.terminalResourceId ?? null,
+            };
           },
         }
       : defaultHandoffDeps;
@@ -5057,6 +5068,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
@@ -8034,6 +8046,9 @@ function promptActor(
   headers: { get(name: string): string | null },
 ): TelemetryActor {
   const context = resolveOperationContext(headers);
+  if (context.actor.kind !== "unknown" && context.actor.kind !== origin) {
+    return { kind: "unknown", origin: context.actor.origin, basis: "unknown" };
+  }
   if (origin === "foreman") return { kind: "foreman", origin: "mcp", basis: "declared" };
   if (origin === "workflow") return { kind: "workflow", origin: "daemon", basis: "declared" };
   return { kind: "human", origin: "dashboard", basis: context.actor.basis };

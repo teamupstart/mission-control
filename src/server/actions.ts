@@ -2231,7 +2231,7 @@ async function raiseOutward(
       // `binUnavailableReason` rather than `deps.installed` directly: it owns the
       // host-support-then-installed precedence, and `raiser` asks it the same way.
       if (binUnavailableReason(emulator.bin, emulator.label, deps)) continue;
-      const opened = await emulator.spawn.tab({ argv, title: inside.session, cwd: null });
+      const opened = await emulator.spawn.tab({ argv, title: inside.sessionName, cwd: null });
       if (opened.ok) return { ok: true };
     }
   }
@@ -2288,15 +2288,9 @@ export interface KillDeps {
 const defaultKillDeps: KillDeps = { signal: signalProcess, terminals: defaultTerminalDeps };
 
 /**
- * Terminate the agent and tear down its terminal home. SIGTERMs the leaf agent process, then
- * - for a session whose home IS a killable group - kills the whole group so no orphaned
- * window or pane is left behind. The UI confirms before calling this.
- *
- * "Has a killable group" is `MuxSessions.kill`, asked out loud, and not the implicit else it
- * used to be. An emulator tab is not a group: closing the window is the human's to do, and
- * the agent is reached by its pid, which is exactly what the signal above already did. A
- * multiplexer that declared no `kill` would have silently inherited that same path with
- * nothing saying why its other panes were still running.
+ * Stop the selected agent. Only a backend that can atomically establish that its session
+ * still contains just this pane may close the container too. Discovery is not ownership:
+ * another agent, shell or editor may share even a home Mission Control originally created.
  *
  * The two steps race by nature: the agent's own exit can collapse its session before (or
  * after) we reach the kill, so the action counts as successful when EITHER landed, and only
@@ -2307,10 +2301,10 @@ export async function kill(session: Session, deps: KillDeps = defaultKillDeps): 
 
   const inside = muxHandle(session);
   const mux = inside ? deps.terminals.multiplexers[inside.backend] : null;
-  const killGroup = mux?.sessions?.kill;
-  if (!inside || !mux || !killGroup) return signalled;
+  const closeIfOnlyPane = mux?.sessions?.closeIfOnlyPane;
+  if (!inside || !mux || !closeIfOnlyPane) return signalled;
 
-  const killed = await killGroup(inside.session);
+  const killed = await closeIfOnlyPane(inside);
   if (killed.ok || signalled.ok) return { ok: true };
   // Both failed: the session was already gone AND the process couldn't be signalled.
   return {

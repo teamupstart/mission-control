@@ -238,12 +238,11 @@ session is actually gone:
 - The guarantee is **four minutes from the completion time on the task row** - not from when
   the daemon got around to it - and the session is out of the active-session list by then. An
   exited row may remain in the SDK history; no live session does.
-- It is four minutes **of daemon uptime**, and that is a real qualification rather than a
-  hedge. Nothing enforces a deadline while Mission Control is not running: a daemon that is
-  stopped, asleep or restarting is not closing anything, and after a restart it deliberately
-  waits for its first completed discovery sweep before it acts, because until the process table
-  has been read a missing session has not been observed to be gone. A closure interrupted that
-  way is resumed rather than lost, but it lands late by however long the outage was.
+- The deadline is absolute. Enforcement can be delayed while the daemon is stopped or
+  restarting, or the host is asleep. Recovery retains the original deadline and escalates
+  overdue cleanup without granting another four-minute window. It first waits for a completed
+  discovery sweep, because a missing session cannot be confirmed gone until the process table
+  has been read.
 - A stop that was *serviced* is not a session that has *left*. The closure clears only once the
   daemon has observed the session leave, through the same eviction path every other session
   leaves by. Anything short of that is retried.
@@ -271,21 +270,24 @@ session is actually gone:
 - **A stop that never answers is given up on.** Asking a driver to stop waits for it to go all
   the way down, and a wedged one never answers at all. Each attempt therefore has a bound: past
   it the daemon stops waiting, records the attempt as refused, and carries on to the decision
-  below. Without that, one stuck driver would hold the closure open for ever and the escalation
-  built for an agent that will not go would be the one thing that never ran.
+  below. Outstanding sessions are attempted independently, so several stuck drivers cannot
+  consume one another's four-minute budgets.
 - **Asking is not the last resort.** A multiplexer can refuse a kill, and a driver can accept a
   stop and then not go. Three minutes in, the daemon stops asking and retires the session
   itself - through that same eviction, so the card leaves and everything keyed on it settles
-  normally, inside the four minutes. The refusal is written to the daemon log with the session
-  it names. Mission Control can promise you the *session* is gone; if a pane's multiplexer
-  genuinely refused to kill its process, that process is no longer something Mission Control
-  can speak for, and passive discovery may later re-adopt it as a new sighting. The task it ran
-  stays `done` either way.
+  normally, inside the four minutes. Retirement is persisted before eviction. Discovery cannot
+  cancel it or readopt the surviving process after restart. Removing a session does not prove
+  its runtime stopped: cleanup keeps retrying and the task says **agent cleanup is still
+  unconfirmed** until terminal discovery or the SDK supervisor confirms shutdown. The task
+  stays `done` throughout.
 - It is durable, so **an interrupted or restarted daemon resumes it** - and acts only after its
   first completed discovery sweep, because until the process table has been read a missing
   session has not been observed to be gone. The completion and the closure it owes are written
   in one transaction, so there is no instant at which a run is finished and nothing records
   that its agent still needs closing.
+- **A concluded SDK run is never resumed.** Startup retires its saved session through normal
+  eviction without launching a driver or sending a restart continuation, even if its history
+  row still records an interrupted turn.
 - **While a closure is outstanding it is visible.** The task stays `done` and its row says
   automatic cleanup is retrying and why - including the quiet case, where nothing errored and
   the agent simply did not go - rather than the daemon calling a live agent closed.

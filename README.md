@@ -225,6 +225,10 @@ head that passed those gates.
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
 
+Inspector completion gates require the matching reviewed PR commit and all findings resolved.
+In Live mode they also wait for the final clean review on GitHub. The session chip distinguishes
+that publication from workflow completion.
+
 Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
 ## AI Conductor
@@ -351,6 +355,10 @@ This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.
 the integration enabled. Start a fresh Pi session normally; it loads the extension without
 being launched through Mission Control or passing `-e`. Building alone installs nothing.
 Keep the built checkout available because the installed link points to its extension artifact.
+If that installation later moves or is removed, an app bundle dragged to another folder or a
+checkout deleted, the link it left behind is dangling and Pi silently loads nothing. The next
+daemon start, or a run of the installer above, repoints it at the current build. A link
+written by anything other than Mission Control is still never replaced or removed.
 The standalone installer also works when the running app predates the configuration API.
 
 Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP
@@ -395,7 +403,8 @@ and build contracts.
 
 Sessions can [report product feedback](docs/sessions.md) with the
 `report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue automatically and returns its GitHub URL, without a second dashboard approval.
+issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
+dashboard approval. The dashboard feedback form uses the same destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
@@ -408,6 +417,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
+  gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

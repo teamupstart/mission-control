@@ -172,6 +172,23 @@ export function codexHookPath(): string {
   return envVar("CODEX_HOOK") ?? fileURLToPath(new URL("../../dist/satellites/codex-hook.mjs", import.meta.url));
 }
 
+/**
+ * Where every Mission Control build writes the Pi extension, relative to its install
+ * root - a clone, or an app bundle's `Contents/Resources/app`.
+ *
+ * Named because the reconciler has to recognize this shape in a link whose target no
+ * longer exists: a moved or deleted installation leaves a dangling link, and the path it
+ * points at is then the only evidence of who wrote it.
+ *
+ * It does NOT build the specifier below, which stays a literal on purpose.
+ * `smokeSatellitePaths` reads that path out of the built `dist/server/index.mjs` with a
+ * regex and re-resolves it against the bundle's own location - the one check that catches
+ * a specifier written from a source file esbuild has since collapsed four levels up. An
+ * interpolated URL is unreadable to it, so the guard reports no path at all rather than
+ * a wrong one. The two are pinned in agreement by a test instead.
+ */
+export const PI_EXTENSION_OUTPUT = ["dist", "pi-extension", "index.js"] as const;
+
 /** Single self-contained Pi extension. Pi discovers only filenames ending in .js. */
 export function piExtensionPath(output = envVar("PI_EXTENSION") ?? fileURLToPath(new URL("../../dist/pi-extension/index.js", import.meta.url))): string {
   if (!output.endsWith(".js")) throw new Error("Pi extension output (MISSION_PI_EXTENSION) must end in .js for Pi discovery");
@@ -263,7 +280,7 @@ export function jiraBin(): string {
   return envVar("JIRA_BIN") || "jira";
 }
 
-export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej-cyc/mission-control-issues";
+export const DEFAULT_PRODUCT_ISSUES_REPO = "teamupstart/mission-control";
 
 export type ProductIssuesRepoConfig =
   | { ok: true; repo: string }

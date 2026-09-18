@@ -9,7 +9,7 @@ import {
 import { PLAIN_NAMES } from "./names.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./registry.ts";
 import { underTestRunner } from "../util/test-runner.ts";
-import type { NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
+import type { MuxSpawnResult, NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
 
 /**
  * Where a DISPATCHED agent's terminal home comes from, and what can be asked of it
@@ -82,6 +82,13 @@ export interface HomeSpec {
   sidePane: boolean;
 }
 
+/** The complete terminal-home record returned by a successful launch. */
+export interface SpawnedHome {
+  homeName: string;
+  homeBackend: TerminalBackendId;
+  terminalResourceId: string | null;
+}
+
 /**
  * One backend that can hold a dispatched agent's home, with the axis's differences already
  * resolved into four verbs.
@@ -94,14 +101,10 @@ export interface HomeSpec {
  *
  * ## A name is not an address
  *
- * `held` answers with a MAP from the name a human sees to the string this backend is
- * addressed by, and the two are only the same string on tmux - where a session's name IS its
- * target spec, which is why nothing here needed the distinction until cmux. A cmux workspace
- * has a UUID stable for its lifetime and a title someone can rename; `close-workspace
- * --workspace <title>` does not resolve, so a teardown that passed the recorded NAME to
- * `kill` would quietly tear down nothing and hand a live agent's worktree back to the pool.
- * Which is the failure this whole file is written against, arriving through the one door it
- * had left open.
+ * `held` maps human names to backend addresses for discovery and name allocation. Cleanup
+ * uses the address recorded at creation or discovery, never a fresh lookup by mutable name.
+ * tmux addresses include a native session ID and the identity of the allocating server;
+ * cmux workspaces use UUIDs.
  */
 export interface HomeBackend {
   id: TerminalBackendId;
@@ -114,7 +117,7 @@ export interface HomeBackend {
    * when it cannot be enumerated. See "A name is not an address" above.
    */
   held: (() => Promise<Map<string, string>>) | null;
-  open(spec: HomeSpec): Promise<TerminalResult>;
+  open(spec: HomeSpec): Promise<MuxSpawnResult>;
   kill: ((name: string) => Promise<TerminalResult>) | null;
 }
 
@@ -149,7 +152,7 @@ export function homeBackends(
       // "alive" would leave a tree standing forever.
       //
       // `sessionName` keyed, `session` valued - the two halves of "a name is not an address".
-      // On tmux they are the same string; on cmux the first is a title and the second a UUID.
+      // Never use this name lookup to authorize teardown.
       held: async () =>
         new Map((await backend.list()).map((p) => [p.sessionName, p.session] as const)),
       open: (spec) =>
@@ -233,7 +236,7 @@ export async function heldHomeNames(
 
 /** What opening a home produced. `where` names the backend, for the error a human reads. */
 export type LaunchResult =
-  | { ok: true; backend: HomeBackend }
+  | { ok: true; backend: HomeBackend; resourceId: string | null }
   | { ok: false; error: string };
 
 /**
@@ -296,7 +299,11 @@ export async function launchHome(
   let last = "";
   for (const backend of backends) {
     const r = await backend.open(spec);
-    if (r.ok) return { ok: true, backend };
+    if (r.ok) return {
+      ok: true,
+      backend,
+      resourceId: r.session ? `multiplexer:${backend.id}:${r.session}` : null,
+    };
     last = r.error ?? `${backend.label} could not open a session`;
   }
   return { ok: false, error: last };
@@ -312,6 +319,18 @@ export async function homeAlive(
   preferredBackend: string | null = null,
   resourceId: string | null = null,
 ): Promise<boolean | null> {
+  if (resourceId?.startsWith("multiplexer:")) {
+    const id = MULTIPLEXER_IDS.find((candidate) => resourceId.startsWith(`multiplexer:${candidate}:`));
+    if (!id || (preferredBackend !== null && preferredBackend !== id)) return null;
+    const backend = deps.multiplexers[id];
+    if (binUnavailableReason(backend.bin, backend.label, deps)) return null;
+    if (backend.sessions?.alive) {
+      return backend.sessions.alive(resourceId.slice(`multiplexer:${id}:`.length));
+    }
+    return (await backend.list()).some((pane) =>
+      terminalResourceId({ ...pane, kind: "multiplexer", backend: id }) === resourceId,
+    );
+  }
   if (resourceId?.startsWith("emulator:")) {
     const id = EMULATOR_IDS.find((candidate) => resourceId.startsWith(`emulator:${candidate}:`));
     if (!id || (preferredBackend !== null && preferredBackend !== id)) return null;
@@ -341,33 +360,24 @@ export interface KillHomeResult {
 }
 
 /**
- * Kill the group a home name holds, on every backend of the chosen axis that has one.
- *
- * "Every backend" rather than the first, because a name is all we record: with two
- * multiplexers installed there is no field saying which one made this home, so the honest
- * act is to ask both. An explicit choice asks only its recorded backend. Killing a name that
- * does not exist there is a no-op that reports a failure, which is why `ok` is true if ANY
- * kill landed.
+ * Close only the recorded resource. A mutable name cannot authorize destructive cleanup:
+ * another session may have claimed it since launch. Legacy tasks without an identity
+ * remain available for manual cleanup instead of resolving their name to a new owner.
  */
 export async function killHome(
   name: string,
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
+  resourceId: string | null = null,
 ): Promise<KillHomeResult> {
-  const killers = homeBackends(deps, preferredBackend).filter((b) => b.kill);
-  if (!killers.length) return { ok: false, asked: false };
-  let error: string | undefined;
-  let ok = false;
-  for (const backend of killers) {
-    // Resolve the recorded NAME to the address this backend is killed by - see "A name is
-    // not an address". A backend that cannot be enumerated, or one that has no home under
-    // this name, gets the name passed through unchanged: that is exactly right for tmux,
-    // where the two are one string, and it is what keeps a backend's own "no such session"
-    // the reported error rather than a lookup miss of ours wearing its clothes.
-    const address = (await backend.held?.())?.get(name) ?? name;
-    const r = await backend.kill!(address);
-    if (r.ok) ok = true;
-    else error ??= r.error;
+  const id = MULTIPLEXER_IDS.find((candidate) => resourceId?.startsWith(`multiplexer:${candidate}:`));
+  if (!id || (preferredBackend !== null && preferredBackend !== id)) {
+    return { ok: false, asked: false, error: `terminal identity for '${name}' is unknown; terminal preserved` };
   }
-  return ok ? { ok: true, asked: true } : { ok: false, asked: true, error };
+  const backend = homeBackends(deps, id).find((candidate) => candidate.id === id);
+  if (!backend?.kill) return { ok: false, asked: false };
+  const address = resourceId!.slice(`multiplexer:${id}:`.length);
+  if (!address) return { ok: false, asked: false, error: "terminal identity is empty; terminal preserved" };
+  const result = await backend.kill(address);
+  return result.ok ? { ok: true, asked: true } : { ok: false, asked: true, error: result.error };
 }

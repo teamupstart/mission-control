@@ -1,3 +1,5 @@
+import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
+import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -367,6 +369,13 @@ export function App(): React.JSX.Element {
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
+  useEffect(() => {
+    const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
+      : route.page === "settings" ? "settings" : route.page === "library" ? "library"
+      : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.kind === "pipelines" ? "pipelines" : "runs";
+    featureVisit("page", JSON.stringify(route), feature);
+  }, [route]);
   const [layout, setLayout] = useLayoutMode();
   const [lineDensity, setLineDensity] = useLineDensity();
   const foreman = useForeman();
@@ -434,6 +443,10 @@ export function App(): React.JSX.Element {
     null,
   );
   const [reportOpen, setReportOpen] = useState(false);
+  useEffect(() => {
+    if (reportOpen) featureVisit("report", "open", "reports");
+    else endFeatureVisit("report");
+  }, [reportOpen]);
   // Whether the public Feedback form is on screen - and ONLY that. The draft, the last
   // result and this opening's request id belong to `ProductIssueLayer`, for the reason
   // `dispatchOpen` gives above: the draft has to outlive a close, and a fleet re-render

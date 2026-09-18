@@ -1,3 +1,4 @@
+import { workflowModel } from "@shared/telemetry-sources/workflows.ts";
 /**
  * Phase 3's source owner: what was actually KNOWN about a session while it did work.
  *
@@ -1114,4 +1115,15 @@ let operationCounter = 0;
 function operationNonce(): string {
   operationCounter = (operationCounter + 1) % Number.MAX_SAFE_INTEGER;
   return String(operationCounter);
+}
+
+/** Immutable submission handoff; pending effort is deliberately not read. */
+export function workflowAuthorContext(sessionId: string) {
+  const track = tracks.get(sessionId);
+  return { facts: {
+    author_model: workflowModel(track?.modelId),
+    author_effort: track?.effort ?? "unknown",
+    author_quality: track?.quality ?? "unknown",
+  }, refs: track ? refsOf({ session_id: sessionId, task_id: track.taskId,
+    segment_id: track.segmentId, conversation_id: track.conversationId }) : {} };
 }

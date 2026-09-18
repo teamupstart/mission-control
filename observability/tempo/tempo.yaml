@@ -43,6 +43,8 @@ storage:
     backend: local
     wal:
       path: /var/tempo/wal
+      # Preserve original-time search after the supported seven-day offline backlog.
+      ingestion_time_range_slack: 336h
     local:
       path: /var/tempo/blocks
     # How often the query path notices new blocks. Short, for the same reason as above.
@@ -63,3 +65,6 @@ overrides:
       rate_limit_bytes: 15000000
     global:
       max_bytes_per_trace: 5000000
+
+usage_report:
+  reporting_enabled: false

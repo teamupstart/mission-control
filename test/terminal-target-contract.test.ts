@@ -48,6 +48,8 @@ function sessions(over: Partial<MuxSessions> = {}): MuxSessions {
     attachArgv: (name) => ["fake-mux", "attach", "-t", name],
     rename: async () => OK,
     kill: async () => OK,
+    alive: null,
+    closeIfOnlyPane: null,
     names: PLAIN_NAMES,
     ...over,
   };
@@ -332,8 +334,18 @@ test("a session that was created and never shown is a failure, not a success", a
   assert.deepEqual(mux.killed, ["api-abc123"]);
 });
 
+test("failed terminal attach cleans up the created identity, never its reusable name", async () => {
+  const address = "captured-session-address";
+  const mux = recordingMux({ sessions: { spawnDetached: async () => ({ ...OK, session: address }) } });
+  const emu = recordingEmu({ result: { ...FAIL("window refused"), target: null } });
+  const result = await launchTerminal("tmux", SPEC, deps({ multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend } }));
+  assert.equal(result.ok, false);
+  assert.deepEqual(mux.killed, [address]);
+  assert.equal(emu.opened[0]?.argv.at(-1), address);
+});
+
 test("an uncertain raise leaves the detached session alone", async () => {
-  const mux = recordingMux();
+  const mux = recordingMux({ sessions: { spawnDetached: async () => ({ ...OK, session: "captured-pending-session" }) } });
   const emu = recordingEmu({
     result: { ok: false, outcomeUnknown: true, target: null },
   });
@@ -347,8 +359,19 @@ test("an uncertain raise leaves the detached session alone", async () => {
   assert.equal(outcome.ok, false);
   assert.equal(outcome.status, 504);
   assert.equal(outcome.homeName, "api-abc123");
+  assert.equal(outcome.terminalResourceId, "multiplexer:tmux:captured-pending-session");
   assert.equal(outcome.error, "tmux did not report back - the window may still be opening");
   assert.deepEqual(mux.killed, []);
+});
+
+test("a successful terminal launch returns the captured session identity", async () => {
+  const mux = recordingMux({ sessions: { spawnDetached: async () => ({ ...OK, session: "captured-visible-session" }) } });
+  const emu = recordingEmu();
+  const outcome = await launchTerminal("tmux", SPEC, deps({
+    multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend },
+  }));
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.terminalResourceId, "multiplexer:tmux:captured-visible-session");
 });
 
 test("a known raise failure reports when the detached session cannot be cleaned up", async () => {

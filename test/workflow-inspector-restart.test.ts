@@ -201,6 +201,7 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
   store.setRunState("run", "running", "persona_review", null, 2);
 
   const manager = new WorkflowManager(registry, store, {
+    resolveCommit: async (_root, head) => head,
     readContextRaw: async (_registry, activeBinding) => {
       const next = captured(captureHead);
       const raw = {
@@ -289,6 +290,7 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
   upsertInspectorComment({ ...finding, status: "resolved", updatedAt: Date.now() });
   updateInspectorPr(key, {
     headSha: newHead,
+    cleanReviewHeadSha: newHead,
     lastAttemptSha: newHead,
     reviewPosture: "live",
     round: 2,

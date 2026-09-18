@@ -13,6 +13,7 @@ import type { InspectorComment } from "../src/shared/types.ts";
 const temp = mkdtempSync(join(tmpdir(), "mission-inspector-resolution-"));
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
+const reviewCountPath = join(temp, "review-count.txt");
 const claudePath = join(binDir, "claude");
 const ghPath = join(binDir, "gh");
 const project = fileURLToPath(new URL("..", import.meta.url));
@@ -22,6 +23,7 @@ process.env.MISSION_HOME = join(temp, "state");
 process.env.MISSION_CLAUDE_BIN = claudePath;
 process.env.MISSION_INSPECTOR_POLL_MS = "25";
 process.env.FAKE_GITHUB_STATE = statePath;
+process.env.FAKE_REVIEW_COUNT_PATH = reviewCountPath;
 process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
 // One fake for both jobs. The reply prompt ends with a line the review prompt never
@@ -41,9 +43,13 @@ process.stdin.on("end", () => {
     process.stdout.write(JSON.stringify({ result: JSON.stringify(answer) }));
     return;
   }
+  const fs = require("node:fs");
+  const countPath = process.env.FAKE_REVIEW_COUNT_PATH;
+  const count = Number(fs.readFileSync(countPath, "utf8")) + 1;
+  fs.writeFileSync(countPath, String(count));
   const verdict = {
     summary: "Nothing else to flag.",
-    findings: [],
+    findings: count === 1 ? JSON.parse(process.env.FAKE_FIRST_FINDINGS || "[]") : [],
     resolved: JSON.parse(process.env.FAKE_RESOLVED || "[]"),
   };
   process.stdout.write(JSON.stringify({ result: JSON.stringify(verdict) }));
@@ -79,6 +85,13 @@ if (args[0] === "api" && args[1] === "user") {
   const query = args.find((arg) => arg.startsWith("query=")) || "";
   const state = load();
   if (query.includes("resolveReviewThread")) {
+    if (state.failResolves > 0) {
+      state.failResolves -= 1;
+      state.actions.push("resolve failed");
+      save(state);
+      process.stderr.write("transient resolution failure");
+      process.exit(1);
+    }
     state.threadResolved = true;
     state.actions.push("resolved thread T_1");
     save(state);
@@ -146,6 +159,7 @@ if (args[0] === "api" && args[1] === "user") {
   save(state);
   process.stdout.write("{}");
 } else if (args.some((arg) => /repos\\/mission\\/control\\/pulls\\/\\d+$/.test(arg))) {
+  if (process.env.FAKE_EMPTY_DIFF === "1") process.exit(0);
   process.stdout.write([
     "diff --git a/src/example.ts b/src/example.ts",
     "--- a/src/example.ts",
@@ -176,6 +190,7 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { formatMarker } = await import("../src/server/inspector/marker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
+const { INSPECTOR_LIMITS } = await import("../src/shared/inspector.ts");
 
 interface FakeComment {
   databaseId: number;
@@ -189,6 +204,7 @@ interface FakeGithubState {
   threadBody: string | null;
   threadComments: FakeComment[];
   threadResolved: boolean;
+  failResolves?: number;
   merged: boolean;
   sweeps: number;
   reviews: { body: string; author: { login: string }; commit: { oid: string } }[];
@@ -222,11 +238,12 @@ function readGithubState(): FakeGithubState {
   return JSON.parse(readFileSync(statePath, "utf8")) as FakeGithubState;
 }
 
+let stopAtSweepEnd: (() => void) | null = null;
 function registryStub(): Registry {
   return {
     onPrOpened: () => () => {},
     onPipelineRun: () => () => {},
-    refreshInspections: () => {},
+    refreshInspections: () => { stopAtSweepEnd?.(); },
     snapshot: () => ({ sessions: [] }),
   } as unknown as Registry;
 }
@@ -251,14 +268,18 @@ async function waitFor(description: string, predicate: () => boolean): Promise<v
  * harness rather than by the code under test.
  */
 async function stopAndSettle(stop: () => void): Promise<void> {
-  stop();
-  let last = "";
-  for (let i = 0; i < 50; i++) {
-    const now = JSON.stringify(readGithubState());
-    if (now === last) return;
-    last = now;
-    await new Promise((resolve) => setTimeout(resolve, 120));
-  }
+  await new Promise<void>((resolve) => {
+    stopAtSweepEnd = () => { stop(); stopAtSweepEnd = null; resolve(); };
+  });
+}
+
+async function runOneSweep(): Promise<void> {
+  let stop = () => {};
+  const finished = new Promise<void>((resolve) => {
+    stopAtSweepEnd = () => { stop(); stopAtSweepEnd = null; resolve(); };
+  });
+  stop = startInspector(registryStub());
+  await finished;
 }
 
 function adopt(number: number): string {
@@ -320,6 +341,68 @@ beforeEach(() => {
   resetAuthenticatedLogin();
   delete process.env.FAKE_RESOLVED;
   delete process.env.FAKE_REPLY;
+  delete process.env.FAKE_FIRST_FINDINGS;
+  delete process.env.FAKE_EMPTY_DIFF;
+  writeFileSync(reviewCountPath, "0");
+});
+
+for (const reason of ["over-cap", "off-diff"] as const) {
+  test(`an incomplete ${reason} review recovers on the same commit after its retained findings resolve`, async () => {
+    const finding = { path: "src/example.ts", line: 1, title: "Retained finding", body: "Needs attention", severity: "major" };
+    process.env.FAKE_FIRST_FINDINGS = JSON.stringify(reason === "over-cap"
+      ? [finding, { ...finding, title: "Finding over the cap" }]
+      : [{ ...finding, path: "outside-the-diff.ts" }]);
+    writeGithubState({});
+    setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 1 });
+    setShippingConfig({ autoMerge: false });
+    const key = adopt(601);
+    await runOneSweep();
+    assert.equal(getInspectorPr(key)?.reviewComplete, false, "the first verdict really loses a finding");
+    assert.equal(getInspectorPr(key)?.cleanReviewHeadSha, null);
+    const retained = loadInspectorComments(key);
+    assert.equal(retained.length, reason === "over-cap" ? 1 : 0);
+    for (const row of retained) upsertInspectorComment({ ...row, status: "resolved" });
+
+    // A stopped/restarted loop sees persisted incomplete provenance on an unchanged head.
+    await runOneSweep();
+    assert.equal(getInspectorPr(key)?.reviewComplete, true);
+    assert.equal(getInspectorPr(key)?.cleanReviewHeadSha, "head-fixed");
+    assert.equal(getInspectorPr(key)?.round, 2);
+    assert.equal(readFileSync(reviewCountPath, "utf8"), "2");
+    const published = readGithubState().posts.length;
+    assert.equal(published, reason === "over-cap" ? 2 : 1);
+    await runOneSweep();
+    assert.equal(readFileSync(reviewCountPath, "utf8"), "2", "completed provenance reuses the review");
+    assert.equal(readGithubState().posts.length, published, "publication stays idempotent");
+  });
+}
+
+test("an incomplete same-commit review still respects the review-round limit", async () => {
+  writeGithubState({});
+  armConsent();
+  const key = adopt(602);
+  updateInspectorPr(key, { headSha: "head-fixed", reviewPosture: "live", reviewComplete: false,
+    round: INSPECTOR_LIMITS.maxRounds }, Date.now());
+  await runOneSweep();
+  assert.match(getInspectorPr(key)?.lastError ?? "", /stopped after .* rounds/);
+  assert.equal(readFileSync(reviewCountPath, "utf8"), "0");
+  assert.equal(readGithubState().posts.length, 0);
+  assert.equal(readGithubState().merged, false, "incomplete provenance cannot ship before recovery");
+});
+
+test("an unreviewable live diff reports a bounded recovery wait instead of pending clean publication", async () => {
+  writeGithubState({});
+  process.env.FAKE_EMPTY_DIFF = "1";
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project] });
+  setShippingConfig({ autoMerge: false });
+  const key = adopt(603);
+  await runOneSweep();
+  assert.match(getInspectorPr(key)?.lastError ?? "", /no reviewable.*diff/i);
+  assert.ok((getInspectorPr(key)?.nextAttemptAt ?? 0) > Date.now());
+  assert.equal(getInspectorPr(key)?.cleanReviewHeadSha, null);
+  await runOneSweep();
+  assert.equal(readFileSync(reviewCountPath, "utf8"), "0");
+  assert.equal(readGithubState().posts.length, 0);
 });
 
 after(() => {
@@ -447,7 +530,7 @@ test("a finding the Inspector drops in conversation closes its thread, its row, 
   assert.equal(state.threadResolved, true, "and its GitHub thread is closed too");
   // Reply first, then the thread it belongs to, and only then the merge - never a thread
   // closed without an answer, and never a merge over a thread still open.
-  assert.deepEqual(state.actions, ["posted reply", "resolved thread T_1", "MERGED"]);
+  assert.deepEqual(state.actions, ["posted reply", "resolved thread T_1", "accepted review for head-fixed", "MERGED"]);
   assert.notEqual(getInspectorPr(key)!.mergedAt, null, "the ledger records that WE merged it");
 });
 
@@ -488,3 +571,49 @@ test("a reply that only answers a question leaves the finding blocking the merge
   assert.equal(getInspectorPr(key)!.mergeBlock, "findings", "so the gate still holds");
   assert.equal(state.merged, false, "an answered question must never land the pull request");
 });
+
+for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resolution-in-review", "reply-resolution-retry", "resolution-retry"] as const) {
+  test(`final clean review after finding resolution: ${scenario}`, async () => {
+    const viaReview = scenario === "resolution-in-review" || scenario === "resolution-retry";
+    const fingerprint = "dc436b4e2f";
+    const marker = formatMarker({ id: "finding-1", fingerprint, round: 4 });
+    process.env.FAKE_REPLY_RESOLVED = "1";
+    process.env.FAKE_RESOLVED = JSON.stringify(viaReview ? [fingerprint] : []);
+    const comments: FakeComment[] = [
+      { databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z", author: { login: "operator" } },
+    ];
+    if (!viaReview) comments.push({
+      databaseId: 202, body: "The latest push fixes this issue.",
+      createdAt: "2026-07-23T13:00:00Z", author: { login: "author" },
+    });
+    writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: false, threadComments: comments,
+      failResolves: scenario.endsWith("retry") ? 1 : 0 });
+    setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
+    setShippingConfig({ autoMerge: false });
+    const key = adopt(501);
+    seedReviewedPr(key, fingerprint);
+    updateInspectorPr(key, { reviewComplete: true }, Date.now());
+    if (scenario !== "reply-on-reviewed-head") updateInspectorPr(key, { headSha: "head-before-fix" }, Date.now());
+    const stop = startInspector(registryStub());
+    try {
+      await waitFor("finding to resolve and head to be recorded", () =>
+        loadInspectorComments(key)[0]?.status === "resolved" && getInspectorPr(key)?.headSha === "head-fixed");
+      const firstSweep = readGithubState().sweeps;
+      await waitFor("three subsequent polls", () => readGithubState().sweeps >= firstSweep + 3);
+    } finally { await stopAndSettle(stop); }
+    const state = readGithubState();
+    const ledger = getInspectorPr(key)!;
+    console.log(JSON.stringify({ scenario, threadResolved: state.threadResolved,
+      findingStatus: loadInspectorComments(key)[0]?.status, reviewedHead: ledger.headSha,
+      reviewRound: ledger.round, lastError: ledger.lastError,
+      replies: state.replies.length, cleanReviewPosts: state.posts.length, actions: state.actions,
+      pollCount: state.sweeps }));
+    assert.equal(state.threadResolved, true);
+    assert.equal(ledger.lastError, null);
+    assert.equal(state.posts.length, 1, "every resolution path publishes exactly one final clean review");
+    assert.equal(ledger.cleanReviewHeadSha, "head-fixed");
+    assert.equal(ledger.round, scenario === "reply-on-reviewed-head" ? 5 : 6);
+    assert.equal(state.replies.length, viaReview ? 0 : 1);
+    assert.equal(loadInspectorComments(key)[0]?.resolutionPending ?? false, false);
+  });
+}

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
 
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { displayItemsShowing } from "../fixtures/display-items.ts";
@@ -161,6 +162,7 @@ const detail = (daemon: DaemonHandle, runId: string): Promise<RunDetail> =>
 
 for (const enabled of [true, false]) {
   test(`Foreman CI setting ${enabled ? "adds" : "omits"} workflow PR instructions`, async ({ dashboard, daemon }) => {
+    await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, { data: { enabled: true } });
     await api(daemon, "/api/foreman/config", {
       enabled: true,
       mode: "dry-run",
@@ -192,6 +194,12 @@ for (const enabled of [true, false]) {
 
     await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
     await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+    const selections = () => withDaemonDb(daemon, (db) => db.prepare("SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.feature.entry' AND json_extract(facts_json, '$.feature') = 'runs' AND json_extract(facts_json, '$.action') = 'select'").get()!.n as number);
+    await expect.poll(selections).toBeGreaterThan(0);
+    const selected = selections();
+    await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+    expect(selections()).toBe(selected);
+
     await dashboard.getByRole("button", { name: "Show packet" }).click();
     const payload = dashboard.locator("pre").filter({ hasText: "Mission Control session action:" });
     await expect(payload).toBeVisible();

@@ -172,9 +172,7 @@ export function ActionBar({
   // No pane to raise, so Focus is replaced rather than disabled: the affordance an embedded
   // session wants in that slot is the handoff that GIVES it one.
   const isEmbedded = session.runtime === "sdk";
-  // What Kill tears down beyond the process itself: a multiplexer's named session, which an
-  // emulator has no equivalent of. The backend names itself in the sentence, so the tmux
-  // copy is unchanged and a second multiplexer's is true rather than borrowed.
+  // Only a verified sole-pane home can be closed along with the agent.
   const killsMux = muxHandle(session);
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
@@ -190,7 +188,7 @@ export function ActionBar({
     ? `Record an outcome for "${session.task.title}" and close this session (${formatChord(bindings.complete)})`
     : "This session has no Mission Control task to complete";
   const killLabel = killsMux
-    ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
+    ? `Terminates the agent; closes its terminal session only if it is the sole pane - confirms first (${formatChord(bindings.kill)})`
     : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
   // Drawn in every session detail, and DISABLED rather than hidden when it cannot be used, because
   // the two reasons it cannot are worth different sentences and both are worth reading. A

@@ -1,3 +1,4 @@
+import type { WorkflowFindingReason } from "./workflow-reasons.ts";
 import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
@@ -2603,6 +2604,7 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
   "review_error",
   "findings",
   "pr_closed",
+  "clean_review_pending",
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
@@ -4565,6 +4567,8 @@ export interface EvidenceRef {
 export const PERSONA_FINDING_BASES = ["substantive", "coverage_registration", "evidence_access"] as const;
 
 export interface RequestedChange {
+  /** Optional advisory topic. Missing and unrecognized values mean unknown. */
+  category?: WorkflowFindingReason;
   basis?: (typeof PERSONA_FINDING_BASES)[number];
   title: string;
   rationale: string;

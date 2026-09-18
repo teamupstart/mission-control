@@ -1,3 +1,4 @@
+import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
@@ -5434,6 +5435,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
 });
 
 export const WorkflowRequestedChangeSchema = z.object({
+  category: z.unknown().transform(workflowFindingReason).optional(),
   basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),

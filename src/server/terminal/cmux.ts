@@ -481,6 +481,8 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     },
 
     sessions: {
+      alive: null,
+      closeIfOnlyPane: null,
       /**
        * `new-workspace`, with explicit selection intent, running the agent.
        *

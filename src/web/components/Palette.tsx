@@ -1,3 +1,4 @@
+import { featureAction, featureVisit, endFeatureVisit } from "../lib/experience.ts";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   nextPaletteKind,
@@ -64,12 +65,23 @@ export function Palette({
   const inputRef = useRef<HTMLInputElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
+  const noResultQuery = useRef<string | null>(null);
+  const visitOpen = useRef(false);
+  const recordedClose = useRef(false);
 
   // Fresh every open: a query and a kind filter left over from last time would be the palette
   // answering something the operator did not just ask. Focus follows, so the shortcut lands
   // you typing.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      if (visitOpen.current && !recordedClose.current) featureAction("search", "dismiss");
+      visitOpen.current = false;
+      endFeatureVisit("palette"); return;
+    }
+    visitOpen.current = true;
+    recordedClose.current = false;
+    noResultQuery.current = null;
+    featureVisit("palette", "open", "search");
     setQuery("");
     setKind(null);
     setSel(0);
@@ -109,7 +121,8 @@ export function Palette({
 
   function activate(index: number): void {
     const row = rows[index];
-    if (!row) return;
+    if (!row) { if (query.trim()) recordNoResult(); return; }
+    featureAction("search", "select");
     if (row.target.kind === "toggle") {
       // Flip in place and stay open, exactly as the settings-only palette did. The switch
       // re-reads the binding on the next render, so a daemon round-trip that has not landed
@@ -122,7 +135,19 @@ export function Palette({
     // and the palette would be the topmost - so its Escape would close the palette and leave
     // the dialog the operator just asked for behind it.
     onClose();
+    recordedClose.current = true;
     onActivate(row.target);
+  }
+
+  function recordNoResult(): void {
+    if (noResultQuery.current !== query) featureAction("search", "no_results");
+    noResultQuery.current = query; // Kept in memory only, never emitted or hashed.
+  }
+  function dismiss(): void {
+    if (query.trim() && rows.length === 0) recordNoResult();
+    else featureAction("search", "dismiss");
+    recordedClose.current = true;
+    onClose();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
@@ -157,7 +182,7 @@ export function Palette({
         break;
       case "Escape":
         e.preventDefault();
-        onClose();
+        dismiss();
         break;
     }
   }
@@ -167,7 +192,7 @@ export function Palette({
   return (
     <Overlay
       id={OVERLAY_IDS.palette}
-      onClose={onClose}
+      onClose={dismiss}
       className="pal"
       role="dialog"
       ariaLabel="Search everything"

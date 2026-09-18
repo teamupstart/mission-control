@@ -360,6 +360,7 @@ export function setTelemetryConfig(
       // In the consent transaction: neither a late merge nor a pending association from
       // the old window may be captured after collection resumes. Journal facts stay intact.
       retirePrObservationWindows(d);
+      d.exec("DELETE FROM telemetry_source_state");
     }
 
     for (const profile of TELEMETRY_PROFILE_IDS) {
@@ -397,7 +398,7 @@ export function setTelemetryConfig(
             {
               stateVersion: projection.stateVersion,
               consumedSeq: head,
-              state: projection.initialState(),
+              state: projection.initialState(now),
             },
             now,
           );

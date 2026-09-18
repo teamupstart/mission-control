@@ -1,0 +1,1480 @@
+{
+  "uid": "mission-reliability",
+  "title": "Mission Control: Reliability and data quality",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "mission-control",
+    "product-telemetry"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment (every panel)",
+        "type": "custom",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "local,demo,test",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "local",
+          "value": "local"
+        },
+        "options": []
+      },
+      {
+        "name": "installation",
+        "label": "Installation (every panel)",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "label_values(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",audience=\"user\",slice_by=\"all\"},service_instance_id)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Adoption and first value",
+      "type": "link",
+      "url": "/d/mission-adoption",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Workflow completion",
+      "type": "link",
+      "url": "/d/mission-workflows",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Persona quality and burden",
+      "type": "link",
+      "url": "/d/mission-personas",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Models and effort",
+      "type": "link",
+      "url": "/d/mission-models",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Human involvement",
+      "type": "link",
+      "url": "/d/mission-interventions",
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Reliability and data quality",
+      "type": "link",
+      "url": "/d/mission-reliability",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Scope and interpretation",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Backend health is last exported health and cannot diagnose a completely disconnected producer in real time. Use Settings > Telemetry locally during an outage. Error observations are not a distinct affected-operation census; suppression and coverage are shown separately.\n\n**Environment and installation apply everywhere.** Axis/slice controls affect only their labelled cohort panels, including coverage. Other panels use only environment and installation. Cohorts show the 7-day start window ending 7 days before the selected end time. Activity panels show last observed cumulative streams in the selected time range. Missing, stale (>2h) or partial snapshots are absent, never zero. An explicit 0 is an observed zero; Incomplete means coverage gaps.\n\n[Signal and query contract](https://github.com/teamupstart/mission-control/blob/main/docs/telemetry-analytics.md)"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Safe errors by component and family (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (component,family,code) (last_over_time(mission_errors_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Safe errors by component and family (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Renderer errors (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (component,family,code) (last_over_time(mission_renderer_errors_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Renderer errors (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Suppressed repeat errors (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (component,code) (last_over_time(mission_errors_suppressed_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Suppressed repeat errors (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Installations with failed operations",
+      "description": "Exact features snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_features_affected_installation{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_features:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_features_observed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_second_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"second_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeat_eligible{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeat_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeated{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeated\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_successful_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"successful_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_failed_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_affected_installation{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"affected_installation\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Installations with failed operations"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Distinct failed operations",
+      "description": "Exact features snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 28,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_features_failed_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_features:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_features_observed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_second_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"second_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeat_eligible{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeat_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeated{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeated\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_successful_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"successful_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_failed_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_affected_installation{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"affected_installation\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Distinct failed operations"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Pending batches",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_pending{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Pending batches"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Pending queue bytes",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_pending_bytes{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Pending queue bytes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Oldest pending age",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_oldest_pending_age_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Oldest pending age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Retrying delivery batches",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_retrying{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Retrying delivery batches"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Rejected delivery batches",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 63,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_rejected{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Rejected delivery batches"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Expired delivery batches",
+      "description": "User destination health before its last drain. Absent after two minutes means no recent export, never a healthy zero. Other profile health stays private to that destination.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile) (last_over_time(mission_telemetry_health_expired{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",profile=\"user\"}[2m]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Expired delivery batches"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Session restart recovery (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (outcome) (last_over_time(mission_session_restores_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "Session restart recovery (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Browser reconnections (cumulative)",
+      "description": "Last observed cumulative stream totals in the selected range, not events occurring in this range and not a distinct cohort census. Environment and installation only. Streams can reset with consent or resource changes.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum (last_over_time(mission_connection_recoveries_total{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Browser reconnections (cumulative)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 15,
+      "title": "Late-arriving facts",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 84,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Late-arriving facts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 16,
+      "title": "Omitted joining context",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 84,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Omitted joining context"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 17,
+      "title": "Rejected bounded state facts",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Rejected bounded state facts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 18,
+      "title": "Expired minimal state facts",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Expired minimal state facts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 19,
+      "title": "Unknown actor facts",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum((last_over_time(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Unknown actor facts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 20,
+      "title": "features: observation coverage",
+      "description": "Exact features snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 98,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "min((last_over_time(mission_analytics_v1_features_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_features:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_features_observed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_second_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"second_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeat_eligible{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeat_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeated{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeated\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_successful_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"successful_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_failed_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_affected_installation{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"affected_installation\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "features: observation coverage"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Incomplete",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Complete",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 21,
+      "title": "features: snapshot age",
+      "description": "Exact features snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 98,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "max(time() - (last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_features:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_features_observed{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"observed\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_second_period{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"second_period\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeat_eligible{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeat_eligible\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_repeated{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"repeated\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_successful_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"successful_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_failed_operations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"failed_operations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_affected_installation{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"affected_installation\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_features_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_features_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "features: snapshot age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 22,
+      "title": "Observation coverage",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 98,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "min((last_over_time(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Observation coverage"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Incomplete",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Complete",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 23,
+      "title": "Snapshot age",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 105,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "max(time() - (last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Snapshot age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 24,
+      "title": "Coherent producers",
+      "description": "Exact quality snapshot at the selected end time. Starts in [T-14d,T-7d); outcomes through start+7d. Observed counts include incomplete coverage. Environment and installation scope only.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 105,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "count(max by (service_instance_id) ((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) and (((last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]) == mission:analytics_quality:calculated_at{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) >= 0) and ((time() - last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h])) < 7200)) unless (max without(__name__, analytical_field) (label_replace(timestamp(mission_analytics_v1_quality_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_late_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"late_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_omitted_facts{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"omitted_facts\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_unknown_actor{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"unknown_actor\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_model_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"model_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_model{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_model\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_effort_observations{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"effort_observations\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_known_effort{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"known_effort\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_rejected_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"rejected_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expired_state{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expired_state\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"calculated_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_start_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_start\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_window_end_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"window_end\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_horizon_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"horizon\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_complete_ratio{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"complete\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_expected_points{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"expected_points\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_first_observed_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"first_observed_at\", \"__name__\", \".*\") or label_replace(timestamp(mission_analytics_v1_quality_consent_epoch{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}), \"analytical_field\", \"consent_epoch\", \"__name__\", \".*\")) > last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=~\"all\"}[2h]))))))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Coherent producers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 25,
+      "title": "Producers seen in 30 days",
+      "description": "Environment and installation only. Previously seen producers, not a configured inventory. With the cohort axis set to all, compare with coherent producers to expose stale or partial installations. A narrower cohort slice can also reduce the coherent count; never-seen producers cannot be counted.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 105,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "count(max by (service_instance_id) (last_over_time(mission_analytics_v1_quality_calculated_at_seconds{deployment_environment_name=~\"$environment\",service_instance_id=~\"$installation\",audience=\"user\",window=\"7d\",horizon=\"7d\",slice_by=\"all\",slice=\"all\"}[30d])))",
+          "instant": true,
+          "format": "time_series",
+          "legendFormat": "Producers seen in 30 days"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "Absent / stale / partial",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 900,
+      "title": "Event-time traces: select a Trace ID",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "mission-tempo"
+      },
+      "description": "Safe workflow, review, session and error context. Trace sampling never changes metric denominators. Environment, installation and time only. Trace attributes support persona, revision, stage and model inspection.",
+      "gridPos": {
+        "x": 0,
+        "y": 112,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "mission-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"mission-control\" && resource.deployment.environment.name =~ \"$environment\" && resource.service.instance.id =~ \"$installation\" && name = \"mission.error.occurrence\" }",
+          "limit": 100,
+          "tableType": "traces"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No traces in this range"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import type { WorkflowConfig, WorkflowRunDetail } from "../../src/shared/workflo
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 // The real settings write controls real workflow rounds; all model calls hit the fixture CLI.
 const EVIDENCE = artifactsDir("workflow-judge-passes");
@@ -61,6 +62,7 @@ for (const { enabled, changedFeedback } of [
   const behavior = changedFeedback ? "rerun a passed judge after changed feedback"
     : enabled ? "skip the passed judge" : "rerun judges when unchecked";
   test(`repair rounds ${behavior}`, async ({ dashboard, daemon }) => {
+    if (reuse) await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, { data: { enabled: true } });
     await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
     const checkbox = dashboard.getByRole("checkbox", { name: "Skip judges that already passed" });
     await expect(checkbox).toBeEnabled();
@@ -140,6 +142,30 @@ for (const { enabled, changedFeedback } of [
       await shoot(dashboard, "repair-skips-passed-judge");
       await pipeline.getByRole("button", { name: /Passed in Round 1.*Show that round/ }).first().click();
       await expect(row).toContainText("Passed");
+      // Filtering exists only when the ledger contains a packet from a different round.
+      // This real repair has a round-one packet and a completed second round.
+      await dashboard.getByRole("group", { name: "Select a round" }).getByRole("button", { name: /^Round 2/ }).click();
+      const selections = () => withDaemonDb(daemon, (db) => db.prepare("SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.feature.entry' AND json_extract(facts_json, '$.feature') = 'runs' AND json_extract(facts_json, '$.action') = 'select'").get()!.n as number);
+      const selected = selections();
+      // The automatic first selection is already visible. Clicking it pins local state,
+      // but only moving to the next item represents another feature-use outcome.
+      await dashboard.clock.install();
+      await dashboard.locator("button.wf-run-worklist-row[aria-current='true']").click();
+      await dashboard.getByRole("button", { name: "Next item", exact: true }).click();
+      await dashboard.clock.runFor(200);
+      await expect.poll(selections).toBe(selected + 1);
+      await dashboard.locator("button.wf-run-worklist-row[aria-current='true']").click();
+      await dashboard.clock.runFor(200);
+      expect(selections()).toBe(selected + 1);
+      await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+      await dashboard.clock.runFor(200);
+      await dashboard.getByRole("button", { name: "Show round 2 only" }).click();
+      await expect(dashboard.getByText(/Showing round 2's 0 of/)).toBeVisible();
+      await dashboard.getByRole("button", { name: "Show every round" }).click();
+      await dashboard.clock.runFor(200);
+      await expect(dashboard.getByText(/Showing all .* packets, every round/)).toBeVisible();
+      const filters = () => withDaemonDb(daemon, (db) => db.prepare("SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.feature.entry' AND json_extract(facts_json, '$.feature') = 'runs' AND json_extract(facts_json, '$.action') = 'filter'").get()!.n as number);
+      await expect.poll(filters).toBe(2);
     } else {
       await expect(row).toContainText("Passed");
       await expect(row).not.toContainText("Not re-run");

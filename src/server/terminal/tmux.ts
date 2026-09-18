@@ -3,6 +3,7 @@ import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
 import { shellCommand } from "./shell.ts";
+import { readTmuxAddress, tmuxAddress, tmuxIdentityCondition, tmuxScopedArgs, tmuxSessionTarget, TMUX_ADDRESS_FORMAT } from "./tmux-target.ts";
 import type {
   DetachedSessionSpec,
   Key,
@@ -101,9 +102,10 @@ const PANE_FMT = [
   "#{pane_pid}",
   "#{pane_tty}",
   "#{pane_current_path}",
+  ...TMUX_ADDRESS_FORMAT,
 ].join(SEP);
 
-const CLIENT_FMT = ["#{client_tty}", "#{client_session}"].join(SEP);
+const CLIENT_FMT = ["#{client_tty}", "#{client_session}", ...TMUX_ADDRESS_FORMAT].join(SEP);
 
 /**
  * A SPACE, not the unit separator the two `-F` formats use, and the difference is
@@ -157,11 +159,8 @@ export function parsePanes(stdout: string): MuxPane[] {
     // fleet is a visible absence, where one pane misaddressed is an invisible wrong.
     if (!/^%\d+$/.test(f[3] ?? "")) continue;
     panes.push({
-      session: f[0] ?? "",
-      // The same string, and that is the whole reason `sessionName` had to become its own
-      // field: in tmux a session's name IS its target spec, so nothing here had ever needed
-      // to tell "what a human calls it" apart from "what `-t` resolves". A backend whose
-      // sessions carry an id and a mutable title cannot set both from one value.
+      session: tmuxAddress(f.slice(7)) ?? f[0] ?? "",
+      // A human label only. Destructive commands require the server-scoped native ID.
       sessionName: f[0] ?? "",
       windowIndex: Number(f[1] ?? 0),
       windowName: f[2] ?? "",
@@ -191,7 +190,7 @@ export function parseClients(stdout: string): MuxClient[] {
     if (!f) continue;
     const tty = normTty(f[0] ?? "");
     if (!tty) continue;
-    clients.push({ tty, session: f[1] ?? "" });
+    clients.push({ tty, session: tmuxAddress(f.slice(2)) ?? f[1] ?? "" });
   }
   return clients;
 }
@@ -218,8 +217,9 @@ export function parseClients(stdout: string): MuxClient[] {
 export async function readTmuxPaneMode(
   paneId: string,
   exec: TerminalExec = defaultExec,
+  session = "",
 ): Promise<string | null> {
-  const res = await exec(resolveBin(TMUX_BIN), ["display-message", "-p", "-t", paneId, MODE_FMT], {
+  const res = await exec(resolveBin(TMUX_BIN), tmuxScopedArgs(session, ["display-message", "-p", "-t", paneId, MODE_FMT]), {
     env: binEnv(TMUX_BIN),
   });
   if (res.code !== 0) return null;
@@ -298,13 +298,16 @@ function pasteBuffer(t: MuxTarget): string {
   return `harness-${t.paneId.replace(/[^a-zA-Z0-9]/g, "")}`;
 }
 
+function serverAbsent(result: Awaited<ReturnType<TerminalExec>>, socket: string): boolean {
+  return !result.outcomeUnknown && result.code === 1 && (
+    result.stderr.trim() === `no server running on ${socket}` ||
+    result.stderr.trim() === `error connecting to ${socket} (No such file or directory)`
+  );
+}
+
 export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
   const bin = () => resolveBin(TMUX_BIN);
-  /**
-   * Every tmux command, with the inherited socket pin dropped. Uniform on purpose: the
-   * enumeration and the writes have to reach the SAME server, or a pane id from one is
-   * addressed against another.
-   */
+  /** Discovery uses the configured environment; captured handles explicitly pin their socket. */
   const tmux = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
     exec(bin(), args, { ...opts, env: binEnv(TMUX_BIN) });
   const cmd = async (
@@ -312,6 +315,43 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     fail: string,
     opts: { timeoutMs?: number; input?: string } = {},
   ): Promise<TerminalResult> => toResult(await tmux(args, opts), fail);
+
+  /** The check and the destructive command run together in tmux's non-waiting queue. */
+  const closeSession = async (session: string, paneId?: string): Promise<TerminalResult> => {
+    const address = readTmuxAddress(session);
+    if (!address || (paneId !== undefined && !/^%\d+$/.test(paneId))) {
+      return { ok: false, outcomeUnknown: false, error: "tmux session identity is unknown; terminal preserved" };
+    }
+    const identity = tmuxIdentityCondition(address);
+    const condition = paneId === undefined ? identity :
+      `#{&&:${identity},#{&&:#{==:#{session_windows},1},#{&&:#{==:#{window_panes},1},#{==:#{pane_id},${paneId}}}}}`;
+    const result = await tmux([
+      "-S", address.socket, "if-shell", "-F", "-t", `${address.id}:`, condition,
+      `kill-session -t '${address.id}' ; display-message -p mission-closed`,
+      "display-message -p mission-preserved",
+    ], { timeoutMs: SESSION_TIMEOUT_MS });
+    if (result.code !== 0) {
+      // The original server is gone. Never retry on the default socket or by name.
+      if (paneId === undefined && (serverAbsent(result, address.socket) || (
+        !result.outcomeUnknown && result.code === 1 &&
+        result.stderr.trim() === `can't find session: ${address.id}`
+      ))) {
+        return { ok: true, outcomeUnknown: false };
+      }
+      return toResult(result, "tmux session teardown failed");
+    }
+    const outcome = result.stdout.trim();
+    if (outcome === "mission-closed" || (paneId === undefined && outcome === "mission-preserved")) {
+      return { ok: true, outcomeUnknown: false };
+    }
+    return {
+      ok: false,
+      outcomeUnknown: outcome !== "mission-preserved",
+      error: outcome === "mission-preserved"
+        ? "tmux session has other panes or its identity changed; terminal preserved"
+        : "tmux did not confirm session teardown",
+    };
+  };
 
   /**
    * Put `text` in this pane's buffer and hand it to the pane - the shape BOTH write verbs
@@ -345,7 +385,7 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     // `-` is the stdin form. No `--` terminator is needed or possible here: the payload is
     // not an argument any more, which is exactly what makes a body starting with a dash
     // safe by construction rather than by remembering a terminator.
-    const loaded = await cmd(["load-buffer", "-b", buf, "-"], "tmux load-buffer failed", {
+    const loaded = await cmd(tmuxScopedArgs(t.session, ["load-buffer", "-b", buf, "-"]), "tmux load-buffer failed", {
       input: text,
     });
     if (!loaded.ok) return loaded;
@@ -353,12 +393,12 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     // means nothing reached the pane - the one thing a caller most needs to be true.
     // -d: drop the buffer after, so a pane's buffer never outlives the write.
     const pasted = await cmd(
-      ["paste-buffer", ...pasteFlags, "-d", "-b", buf, "-t", paneTarget(t)],
+      tmuxScopedArgs(t.session, ["paste-buffer", ...pasteFlags, "-d", "-b", buf, "-t", paneTarget(t)]),
       fail,
     );
     if (!pasted.ok) {
       // A failed paste never reached -d, so the buffer would otherwise outlive the write.
-      await cmd(["delete-buffer", "-b", buf], "tmux delete-buffer failed");
+      await cmd(tmuxScopedArgs(t.session, ["delete-buffer", "-b", buf]), "tmux delete-buffer failed");
     }
     return pasted;
   };
@@ -416,7 +456,7 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       // reached here, and routing them through a paste buffer would send the NAMES as text.
       keys: (t, keys) =>
         cmd(
-          ["send-keys", "-t", paneTarget(t), "--", ...keys.map((k) => KEY_NAMES[k])],
+          tmuxScopedArgs(t.session, ["send-keys", "-t", paneTarget(t), "--", ...keys.map((k) => KEY_NAMES[k])]),
           "tmux send-keys failed",
         ),
       // -p: bracketed paste, so embedded newlines do not submit. That flag and `text`'s `-r`
@@ -427,24 +467,38 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     },
 
     capture: async (t) => {
-      const r = await tmux(["capture-pane", "-p", "-t", paneTarget(t)], {
+      const r = await tmux(tmuxScopedArgs(t.session, ["capture-pane", "-p", "-t", paneTarget(t)]), {
         timeoutMs: CAPTURE_TIMEOUT_MS,
       });
       return r.code === 0 ? r.stdout : null;
     },
 
-    paneMode: (t) => readTmuxPaneMode(t.paneId, exec),
+    paneMode: (t) => readTmuxPaneMode(t.paneId, exec, t.session),
 
     select: async (t) => {
-      const selected = await cmd(["select-pane", "-t", paneTarget(t)], "tmux select-pane failed");
+      const selected = await cmd(tmuxScopedArgs(t.session, ["select-pane", "-t", paneTarget(t)]), "tmux select-pane failed");
       if (!selected.ok) return selected;
       // Best-effort: the pane is already selected, and a window index that no longer
       // resolves is not worth failing a focus over.
-      await cmd(["select-window", "-t", `${t.session}:${t.windowIndex}`], "tmux select-window failed");
+      await cmd(tmuxScopedArgs(t.session, ["select-window", "-t", `${tmuxSessionTarget(t.session)}:${t.windowIndex}`]), "tmux select-window failed");
       return selected;
     },
 
     sessions: {
+      async alive(session) {
+        const address = readTmuxAddress(session);
+        if (!address) return null;
+        const result = await tmux([
+          "-S", address.socket, "list-sessions", "-F", TMUX_ADDRESS_FORMAT.join(SEP),
+        ]);
+        if (serverAbsent(result, address.socket)) return false;
+        if (!result.outcomeUnknown && result.code === 1 && result.stderr.trim() === "no sessions") return false;
+        if (result.code !== 0 || result.outcomeUnknown) return null;
+        const lines = result.stdout.trim();
+        const observed = lines ? lines.split("\n").map((line) => tmuxAddress(line.split(SEP))) : [];
+        if (observed.some((value) => value === null)) return null;
+        return observed.includes(tmuxAddress([address.socket, address.pid, address.started, address.id]));
+      },
       async spawnDetached(spec: DetachedSessionSpec) {
         // `select` intentionally changes no tmux argv. A detached session has no attached
         // client whose current selection could move; the later attach opens on its agent
@@ -453,22 +507,23 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         // join them into shell text. Encode one command for both paths so a prompt remains
         // one literal argument everywhere. `--` keeps a binary or flag-first command out of
         // `new-session`'s own parser.
-        const created = await cmd(
-          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", shellCommand(spec.argv)],
-          "tmux new-session failed",
+        const result = await tmux(
+          ["new-session", "-d", "-P", "-F", TMUX_ADDRESS_FORMAT.join(SEP), "-s", spec.name, "-c", spec.cwd, "--", shellCommand(spec.argv)],
           { timeoutMs: SESSION_TIMEOUT_MS },
         );
-        if (!created.ok || !spec.sidePane) return created;
-        const agentPane = `${spec.name}:0.0`;
+        const address = tmuxAddress(result.stdout.trim().split(SEP));
+        const created = { ...toResult(result, "tmux new-session failed"), ...(address ? { session: address } : {}) };
+        if (!created.ok || !address || !spec.sidePane) return created;
+        const agentPane = `${tmuxSessionTarget(address)}:0.0`;
         // A shell pane beside the agent, sized to a third so the agent TUI keeps most of
         // the width. Best-effort by contract - the session is what was asked for.
         await cmd(
-          ["split-window", "-h", "-l", "33%", "-t", agentPane, "-c", spec.cwd],
+          tmuxScopedArgs(address, ["split-window", "-h", "-l", "33%", "-t", agentPane, "-c", spec.cwd]),
           "tmux split-window failed",
           { timeoutMs: SESSION_TIMEOUT_MS },
         );
         // Leave the agent pane focused so attaching lands on it, not the shell.
-        await cmd(["select-pane", "-t", agentPane], "tmux select-pane failed", { timeoutMs: SESSION_TIMEOUT_MS });
+        await cmd(tmuxScopedArgs(address, ["select-pane", "-t", agentPane]), "tmux select-pane failed", { timeoutMs: SESSION_TIMEOUT_MS });
         return created;
       },
       // Resolved through `bin`, not the bare name: this argv is handed to an emulator to
@@ -476,14 +531,14 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       // literal would silently ignore whatever the executable catalog resolves. The
       // catalog has only PATH lookup today, so this is identical now and stays right when
       // the catalog gains a candidate or override.
-      attachArgv: (session) => [bin(), "attach", "-t", session],
+      attachArgv: (session) => {
+        return [bin(), ...tmuxScopedArgs(session, ["attach", "-t", tmuxSessionTarget(session)])];
+      },
       // `--` ends flag parsing so a name like "-wip" is read as the new name rather than as
       // a flag bundle (which surfaces an arg-parser dump behind a 500).
-      rename: (from, to) => cmd(["rename-session", "-t", from, "--", to], "tmux rename-session failed"),
-      // A tmux session IS a killable group - every window and pane in it goes at once,
-      // which is what stops a dispatched agent's shell pane outliving the agent.
-      kill: (session) =>
-        cmd(["kill-session", "-t", session], "tmux kill-session failed", { timeoutMs: SESSION_TIMEOUT_MS }),
+      rename: (from, to) => cmd(tmuxScopedArgs(from, ["rename-session", "-t", tmuxSessionTarget(from), "--", to]), "tmux rename-session failed"),
+      kill: (session) => closeSession(session),
+      closeIfOnlyPane: (target) => closeSession(target.session, target.paneId),
       names: TMUX_NAMES,
     },
   };

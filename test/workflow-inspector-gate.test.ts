@@ -123,6 +123,9 @@ interface SeedOptions {
   skillAvailable?: boolean;
   agent?: AgentType;
   startBeforeGate?: boolean;
+  resolveCommit?: (root: string, head: string) => Promise<string>;
+  bindingRepoRoot?: string | null;
+  inspectorRepoRoot?: string | null;
 }
 
 async function seed(over: SeedOptions = {}) {
@@ -222,7 +225,10 @@ async function seed(over: SeedOptions = {}) {
     });
   }
   const now = Date.now() - 1_000;
-  if (over.adopted ?? true) adoptInspectorPr(inspectorPr(key, url, ids.session, now));
+  if (over.adopted ?? true) adoptInspectorPr({
+    ...inspectorPr(key, url, ids.session, now),
+    repoRoot: over.inspectorRepoRoot === undefined ? "/repo" : over.inspectorRepoRoot,
+  });
 
   const store = new WorkflowStore(db);
   const binding = store.insertBinding({
@@ -233,7 +239,7 @@ async function seed(over: SeedOptions = {}) {
     sessionAgent: agent,
     sessionName: "work",
     sessionCwd: "/repo",
-    sessionRepoRoot: "/repo",
+    sessionRepoRoot: over.bindingRepoRoot === undefined ? "/repo" : over.bindingRepoRoot,
     triggerMode: "manual",
     deliveryMode: over.deliveryMode ?? "preview",
     maxRepairRounds: 3,
@@ -270,6 +276,7 @@ async function seed(over: SeedOptions = {}) {
     setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
   }
   const manager = new WorkflowManager(registry, store, {
+    resolveCommit: over.resolveCommit ?? (async (_root, head) => head),
     inject: async (_session, payload) => {
       injected.push(payload);
       return { ok: true, pasted: true, submitVerified: true };
@@ -308,6 +315,86 @@ function signal(
 ): void {
   seeded.registry.inspectionUpdated(seeded.key, observedHead, "OPEN", at);
 }
+
+for (const rootSource of ["binding", "empty-binding", "null-binding"] as const) {
+  test(`an abbreviated captured commit recovers after restart and waits for clean publication: ${rootSource}`, async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { resolveCapturedCommit } = await import("../src/server/workflows/commit-id.ts");
+    const repo = mkdtempSync(join(tmpdir(), "mission-inspector-head-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "test commit");
+    const full = git("rev-parse", "HEAD");
+    const abbreviated = git("rev-parse", "--short", "HEAD");
+    const seeded = await seed({ head: abbreviated, resolveCommit: resolveCapturedCommit,
+      bindingRepoRoot: rootSource === "binding" ? repo : rootSource === "empty-binding" ? "" : null,
+      inspectorRepoRoot: repo });
+    try {
+      updateInspectorPr(seeded.key, { headSha: full, reviewPosture: "live", round: 1,
+        lastAttemptSha: full, reviewComplete: true, cleanReviewHeadSha: null }, Date.now());
+      signal(seeded, full);
+      await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_clean_review",
+        "an equivalent full head did not reach the publication wait");
+      assert.equal((seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState).targetHeadSha, full);
+      assert.equal(seeded.store.latestSubmission(seeded.ids.run)?.prHeadSha, abbreviated,
+        "normalization must not rewrite immutable submission evidence");
+      await seeded.manager.stop();
+      seeded.manager.start();
+      updateInspectorPr(seeded.key, { cleanReviewHeadSha: full }, Date.now());
+      signal(seeded, full);
+      await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+        "publication confirmation did not release the recovered gate");
+    } finally {
+      await seeded.manager.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+}
+
+test("commit recovery still fails closed when neither binding nor adopted PR has a repository root", async () => {
+  const seeded = await seed({ head: "1234abcd", bindingRepoRoot: null, inspectorRepoRoot: null,
+    resolveCommit: async () => { assert.fail("resolution without repository provenance"); } });
+  try {
+    signal(seeded, "1234abcd" + "0".repeat(32));
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "blocked", "missing provenance was accepted");
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "inspector_gate_context_invalid");
+  } finally { await seeded.manager.stop(); }
+});
+
+test("an unresolvable captured commit fails closed instead of accepting its prefix", async () => {
+  const seeded = await seed({ head: "1234abcd", resolveCommit: async () => { throw new Error("ambiguous commit"); } });
+  try {
+    signal(seeded, "1234abcd" + "0".repeat(32));
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "blocked", "ambiguous commit was accepted");
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "inspector_gate_context_invalid");
+    assert.deepEqual(seeded.store.listDeliveries(seeded.ids.run), []);
+  } finally { await seeded.manager.stop(); }
+});
+
+test("Inspector withdrawing its last finding completes an Inspector-only repair without another commit", async () => {
+  const seeded = await seed({ policy: "inspector_only", deliveryMode: "live" });
+  const now = Date.now();
+  const finding: InspectorComment = {
+    id: "withdrawn-finding", prKey: seeded.key, fingerprint: "withdrawn", path: "src/file.ts",
+    line: 1, title: "Questioned finding", body: "The author explains why this is already handled.",
+    severity: "minor", round: 1, status: "open", replies: 0, answeredCommentId: null,
+    createdAt: now, updatedAt: now,
+  };
+  try {
+    updateInspectorPr(seeded.key, { headSha: seeded.head, lastAttemptSha: seeded.head,
+      reviewPosture: "live", reviewComplete: true, round: 1 }, now);
+    upsertInspectorComment(finding);
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_new_head", "repair was not delivered");
+    const count = seeded.store.listSubmissions(seeded.ids.run).length;
+    upsertInspectorComment({ ...finding, status: "resolved" });
+    updateInspectorPr(seeded.key, { cleanReviewHeadSha: seeded.head }, Date.now());
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "withdrawn finding required an empty commit");
+    assert.equal(seeded.store.listSubmissions(seeded.ids.run).length, count);
+    assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 1);
+  } finally { await seeded.manager.stop(); }
+});
 
 test("no final-gate policy keeps the Phase 4 completion path unclaimed", async () => {
   const seeded = await seed({ policy: "none" });
@@ -522,6 +609,7 @@ test("durable PR adoption advances a clean handoff without another workflow roun
 
     updateInspectorPr(seeded.key, {
       headSha: seeded.head,
+    cleanReviewHeadSha: seeded.head,
       lastAttemptSha: seeded.head,
       reviewPosture: "live",
       round: 1,
@@ -840,7 +928,7 @@ test("dirty work, head mismatch, pending review, and error/backoff never read as
     () => (mismatch.store.getRun(mismatch.ids.run)?.gateState as { waitReason?: string })?.waitReason === "head_mismatch",
     "mismatched head did not remain waiting",
   );
-  assert.equal(mismatch.store.getRun(mismatch.ids.run)?.status, "waiting_for_inspector");
+  assert.equal(mismatch.store.getRun(mismatch.ids.run)?.status, "waiting_for_session");
   await mismatch.manager.stop();
 
   const pending = await seed();
@@ -876,6 +964,7 @@ test("current-head findings prepare one frozen packet and zero findings complete
   const findings = await seed();
   updateInspectorPr(findings.key, {
     headSha: findings.head,
+    cleanReviewHeadSha: findings.head,
     lastAttemptSha: findings.head,
     reviewPosture: "live",
     round: 1,
@@ -910,6 +999,7 @@ test("current-head findings prepare one frozen packet and zero findings complete
   const clean = await seed();
   updateInspectorPr(clean.key, {
     headSha: clean.head,
+    cleanReviewHeadSha: clean.head,
     lastAttemptSha: clean.head,
     reviewPosture: "live",
     round: 1,
@@ -927,10 +1017,57 @@ test("current-head findings prepare one frozen packet and zero findings complete
   await clean.manager.stop();
 });
 
+test("every unresolved Inspector ledger status blocks completion, including older findings", async () => {
+  for (const status of ["drafted", "posting", "open", "resolved"] as const) {
+    const seeded = await seed();
+    try {
+      updateInspectorPr(seeded.key, {
+        headSha: seeded.head,
+    cleanReviewHeadSha: seeded.head,
+        lastAttemptSha: seeded.head,
+        reviewPosture: "live",
+        round: 2,
+        lastReviewedAt: Date.now(),
+      }, Date.now());
+      for (const [index, findingStatus] of (["resolved", status] as const).entries()) {
+        upsertInspectorComment({
+          id: `all-findings-${serial}-${index}`,
+          prKey: seeded.key,
+          fingerprint: `all-findings-${serial}-${index}`,
+          path: "src/file.ts",
+          line: index + 1,
+          title: `Finding ${index + 1}`,
+          body: "A prior review's finding still needs resolution.",
+          severity: "nit",
+          round: 1,
+          status: findingStatus,
+          replies: 0,
+          answeredCommentId: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+      signal(seeded, seeded.head);
+      await waitFor(
+        () => seeded.store.getRun(seeded.ids.run)?.status === (
+          status === "resolved" ? "completed" : "waiting_for_session"
+        ),
+        `${status}: the gate did not account for every finding on the PR`,
+      );
+      const gate = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+      assert.equal(gate.waitReason, status === "resolved" ? null : "findings");
+      assert.equal(gate.findingFingerprints.length, status === "resolved" ? 0 : 1);
+    } finally {
+      await seeded.manager.stop();
+    }
+  }
+});
+
 test("sessionless Inspector-only findings still wait for a new head", async () => {
   const seeded = await seed({ policy: "inspector_only" });
   updateInspectorPr(seeded.key, {
     headSha: seeded.head,
+    cleanReviewHeadSha: seeded.head,
     lastAttemptSha: seeded.head,
     reviewPosture: "live",
     round: 1,
@@ -1201,6 +1338,7 @@ test("a spent repair budget vetoes under its own reason, survives new heads, and
   updateInspectorPr(seeded.key, {
     state: "open",
     headSha: currentHead,
+    cleanReviewHeadSha: currentHead,
     lastAttemptSha: currentHead,
     observedHeadSha: currentHead,
     observedState: "OPEN",
@@ -1262,6 +1400,7 @@ test("sessionless full-workflow findings remain visible and blocked", async () =
   const seeded = await seed();
   updateInspectorPr(seeded.key, {
     headSha: seeded.head,
+    cleanReviewHeadSha: seeded.head,
     lastAttemptSha: seeded.head,
     reviewPosture: "live",
     round: 1,
@@ -1305,6 +1444,7 @@ test("atomic repair-packet failure leaves the manager's prior gate untouched", a
   const seeded = await seed();
   updateInspectorPr(seeded.key, {
     headSha: seeded.head,
+    cleanReviewHeadSha: seeded.head,
     lastAttemptSha: seeded.head,
     reviewPosture: "live",
     round: 1,

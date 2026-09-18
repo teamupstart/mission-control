@@ -23,6 +23,7 @@ import type {
   DetachedSessionSpec,
   Multiplexer,
   MuxSessions,
+  MuxSpawnResult,
   TerminalEmulator,
   TerminalResult,
 } from "./types.ts";
@@ -233,6 +234,8 @@ export interface TerminalLaunchOutcome {
    * restart. Null maps to "could not tell", which reclaims nothing.
    */
   homeName?: string | null;
+  /** Captured creation identity, when the backend returned one, for task teardown. */
+  terminalResourceId?: string | null;
   error?: string;
   status: number;
 }
@@ -282,7 +285,7 @@ async function spawnDetachedUniquely(
   spec: Omit<DetachedSessionSpec, "name">,
   baseName: string,
   launchId: () => string,
-): Promise<{ name: string; result: TerminalResult }> {
+): Promise<{ name: string; result: MuxSpawnResult }> {
   let name = uniqueSessionName(sessions, baseName, launchId());
   let result = await sessions.spawnDetached({ name, ...spec });
   if (!result.ok && !result.outcomeUnknown) {
@@ -329,6 +332,7 @@ export async function launchTerminal(
 
   let result: TerminalResult;
   let homeName: string | null;
+  let terminalResourceId: string | null = null;
   const mux = deps.multiplexers[backend];
   if (mux?.sessions) {
     const sessions = mux.sessions;
@@ -343,6 +347,9 @@ export async function launchTerminal(
     const name = spawned.name;
     homeName = name;
     result = spawned.result;
+    if (spawned.result.session) {
+      terminalResourceId = `multiplexer:${mux.id}:${spawned.result.session}`;
+    }
     if (result.ok && sessions.attachArgv) {
       // Detached is not open. A backend whose sessions can exist without a window has only
       // half-finished at this point, and reporting success here would be the exact failure
@@ -352,7 +359,7 @@ export async function launchTerminal(
       // one can", and a terminal that can still fails: taking the first refusal as final would
       // tear down a session another installed terminal could have shown, and the preference
       // makes that reachable by putting the operator's choice at the head of the order.
-      const argv = sessions.attachArgv(name);
+      const argv = sessions.attachArgv(spawned.result.session ?? name);
       let refusal: string | null = null;
       let raised = false;
       for (const id of emulatorAttemptOrder(mux.id, deps)) {
@@ -371,6 +378,7 @@ export async function launchTerminal(
             ok: false,
             label: view.label,
             homeName: name,
+            terminalResourceId,
             error: `${view.label} did not report back - the window may still be opening`,
             status: 504,
           };
@@ -380,7 +388,7 @@ export async function launchTerminal(
       if (!raised) {
         const error = await cleanupDetachedFailure(
           sessions,
-          name,
+          spawned.result.session ?? name,
           view.label,
           refusal ?? `${view.label} session started but no terminal could show it`,
         );
@@ -410,7 +418,7 @@ export async function launchTerminal(
     result = await emulator.spawn.tab({ argv: spec.argv, title, cwd: spec.cwd });
   }
 
-  if (result.ok) return { ok: true, label: view.label, homeName, status: 200 };
+  if (result.ok) return { ok: true, label: view.label, homeName, terminalResourceId, status: 200 };
   // `outcomeUnknown` is not a failure: the spawn may well have landed and saying "it did not
   // work" would send the operator to press it a second time. `openFile` draws this line in
   // the same place.
@@ -419,6 +427,7 @@ export async function launchTerminal(
       ok: false,
       label: view.label,
       homeName,
+      terminalResourceId,
       error: `${view.label} did not report back - the window may still be opening`,
       status: 504,
     };

@@ -166,17 +166,17 @@ test("released gh 2.99 partial output identifies the created issue for its targe
   assert.deepEqual(
     githubIssueCreateOutcome(
       stubRun({
-        stdout: "https://github.com/mancej-cyc/mission-control-issues/issues/5\n",
+        stdout: "https://github.com/teamupstart/mission-control/issues/5\n",
         stderr:
           "failed to upload /private/tmp/second.png: open /private/tmp/second.png: " +
           "no such file or directory\n",
         code: 1,
       }),
-      "mancej-cyc/mission-control-issues",
+      "teamupstart/mission-control",
     ),
     {
       kind: "created",
-      url: "https://github.com/mancej-cyc/mission-control-issues/issues/5",
+      url: "https://github.com/teamupstart/mission-control/issues/5",
       partialFailure: true,
     },
   );

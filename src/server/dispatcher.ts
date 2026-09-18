@@ -50,7 +50,7 @@ import {
 } from "./telemetry/index.ts";
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
-import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
+import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type SpawnedHome } from "./terminal/home.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -833,9 +833,9 @@ export class Dispatcher {
       const piMarker = piLaunch.sessionId && piText !== null
         ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
         : null;
-      let homeName: string;
+      let home: SpawnedHome;
       try {
-        homeName = await (this.deps.spawn ?? spawnUniquely)(
+        home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
           wt.path,
@@ -853,14 +853,16 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      this.patch(taskId, { homeName, homeBackend: terminalBackend });
+      this.patch(taskId, home);
       if (await this.abortIfSettled(taskId)) return;
 
       const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
-      this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
+      if (!this.registry.getTask(taskId)?.terminalResourceId) {
+        this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
+      }
       // Mission Control launched this session, so Foreman is invited by construction -
       // recorded the moment discovery confirms the spawn through the registry, which owns
       // session-key rotation. The row lands under whatever key the
@@ -893,7 +895,9 @@ export class Dispatcher {
       this.registry.recordStandingInstructions(session.id, standing);
       const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
-      if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
+      if (readyResourceId && !this.registry.getTask(taskId)?.terminalResourceId) {
+        this.patch(taskId, { terminalResourceId: readyResourceId });
+      }
       if (await this.abortIfSettled(taskId)) return;
 
       // The permission mode is already set: it rode in on the launch argv (`modeArgs`),
@@ -1523,14 +1527,14 @@ export class Dispatcher {
     const terminalLaunch = launch;
     const [command, ...args] = terminalLaunch.argv;
     if (!command) throw new Error("the pipeline provider returned no launch command");
-    const homeName = await (this.deps.spawn ?? spawnUniquely)(
+    const home = await (this.deps.spawn ?? spawnUniquely)(
       label,
       shortId,
       terminalLaunch.cwd,
       command,
       args,
     );
-    this.patch(taskId, { homeName, homeBackend: null });
+    this.patch(taskId, home);
     if (await this.abortIfSettled(taskId)) return;
 
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
@@ -2468,8 +2472,8 @@ async function headCommit(dir: string): Promise<string | null> {
  * provider-owned lease is returned through its recorded provider rather than leaked or
  * bypassed with a bare `git worktree remove`.
  *
- * `homeName` names the home vendor-neutrally: which backend holds that name is resolved
- * through the registry (`killHome`) rather than assumed here.
+ * `terminalResourceId` addresses the recorded home through its backend. A name alone
+ * cannot authorize closing a multiplexer resource.
  */
 export async function teardownWorktree(
   task: {
@@ -2484,8 +2488,9 @@ export async function teardownWorktree(
     /** Position when this shape names one tree during provisioning unwind. */
     position?: number;
     homeName: string | null;
-    /** Exact creator for an explicitly selected home; null/absent keeps legacy Automatic. */
+    /** Actual creator, including Automatic launches; null/absent keeps legacy Automatic. */
     homeBackend?: string | null;
+    terminalResourceId?: string | null;
     /**
      * The task's secondary repos, when it has any. Optional so the handful of callers that
      * build this shape by hand for a single tree - provisioning's own unwind paths - stay
@@ -2506,18 +2511,14 @@ export async function teardownWorktree(
   manager?: WorktreeManager,
 ): Promise<void> {
   if (task.homeName) {
-    const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null);
-    // An adapter lookup that found nothing must not read as "there was nothing to kill".
-    // This is the one path where the difference is destructive: we are about to hand the
-    // worktree back to the pool, so an agent still running in it loses its checkout with no
-    // trace of why. `asked` is false only when no installed backend can kill a home at all -
-    // an emulator tab is not a group - and then the honest thing is to say so out loud and
-    // name what the operator has to do by hand.
-    if (!killed.asked) {
-      console.warn(
-        `[mission-control] no terminal backend can close the session '${task.homeName}' - ` +
-          "if an agent is still running there, stop it yourself; its worktree is being reclaimed now",
-      );
+    const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+    if (!killed.ok) {
+      // A refused close is harmless only when the recorded resource is proved absent.
+      // Keep the checkout when the terminal is live or its identity cannot be checked.
+      const alive = await homeAlive(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
+      if (alive !== false) {
+        throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
+      }
     }
   }
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
@@ -2849,7 +2850,7 @@ export function deriveTitle(intent: string): string {
 /**
  * Spawn the agent under a session name, closing the check-then-spawn race: if a concurrent
  * dispatch claimed the bare name between our listing and our spawn, retry once under the
- * always-unique `name-shortId`. Returns the name actually used.
+ * always-unique `name-shortId`. Returns the complete home record for the caller to persist.
  *
  * A backend that cannot be enumerated (`heldHomeNames` answering null) goes straight to the
  * unique name. "We could not ask" is not "the name is free" - taking the bare label on that
@@ -2867,7 +2868,7 @@ export async function spawnUniquely(
   agentArgs: readonly string[] = [],
   stateHome?: string,
   terminalBackend: string | null = null,
-): Promise<string> {
+): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   const argv = isolatedAgentArgv(
     [agentBin, ...agentArgs],
@@ -2879,14 +2880,18 @@ export async function spawnUniquely(
 
   try {
     const first = await launchHome({ name, cwd, argv, sidePane: true }, undefined, terminalBackend);
-    if (first.ok) return name;
+    if (first.ok) {
+      return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId };
+    }
     if (name === unique) throw new Error(first.error);
     const retry = await launchHome(
       { name: unique, cwd, argv, sidePane: true },
       undefined,
       terminalBackend,
     );
-    if (retry.ok) return unique;
+    if (retry.ok) {
+      return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId };
+    }
     throw new Error(retry.error);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);

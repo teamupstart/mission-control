@@ -177,7 +177,7 @@ for (const [tier, taskModel, launchModel, kindModel, defaultModel, expectedModel
           transcriptPath: null,
           env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
         });
-        return "home-terminal";
+        return { homeName: "home-terminal", homeBackend: "tmux", terminalResourceId: null };
       },
       inject: async (_session, text) => {
         registry.applyHook({
@@ -242,7 +242,7 @@ test("a pipeline launch is recorded, and claims no resolution it never made", as
     }),
     spawn: async (...args) => {
       launches.push(args);
-      return "Pipeline attribution";
+      return { homeName: "Pipeline attribution", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 

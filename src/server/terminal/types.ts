@@ -134,16 +134,8 @@ export interface MuxPane extends MuxTarget {
   /**
    * The session's HUMAN name - what a card is titled, as opposed to what `session` addresses.
    *
-   * These are one string in tmux, where a session name is also its target spec, and that
-   * coincidence is why this field did not exist until a second multiplexer needed it. cmux
-   * separates them and cannot be made not to: a workspace has a UUID that is stable for its
-   * lifetime and a title that defaults to whatever the shell reports, so the title changes
-   * as someone cds and two workspaces sitting at `~` share one. Naming cards by the id is
-   * unreadable; addressing by the title makes `kill` a coin flip between two sessions.
-   *
-   * `EmulatorPane` had this split from the start (`tabId` addresses, `tabTitle` displays);
-   * this is the multiplexer side catching up. A backend where the two genuinely are one
-   * string sets both to it, which is what tmux does.
+   * tmux uses a server-scoped native ID as its address; cmux uses a workspace UUID.
+   * The mutable display label is never authority to close a resource.
    */
   sessionName: string;
   windowName: string;
@@ -342,12 +334,14 @@ export interface DetachedSessionSpec {
   sidePane: boolean;
 }
 
-/**
- * The named-session lifecycle - the half of a multiplexer an emulator has no answer for.
- * Null for a multiplexer that only ever attaches to what is already running.
- */
+/** Capture a backend address at creation, before discovery or a mutable name lookup. */
+export type MuxSpawnResult = TerminalResult & { session?: string };
+
+/** The session lifecycle; absent on a multiplexer that only attaches to existing homes. */
 export interface MuxSessions {
-  spawnDetached(spec: DetachedSessionSpec): Promise<TerminalResult>;
+  /** Override list-based liveness when a captured address needs a server-scoped probe. */
+  alive: ((session: string) => Promise<boolean | null>) | null;
+  spawnDetached(spec: DetachedSessionSpec): Promise<MuxSpawnResult>;
   /**
    * The argv that attaches a terminal to `session`. Not a command we run: it is handed to
    * an emulator's `spawn` so a session with no window gets one. Pure, so the focus walk
@@ -369,17 +363,16 @@ export interface MuxSessions {
   attachArgv: ((session: string) => readonly string[]) | null;
   rename(from: string, to: string): Promise<TerminalResult>;
   /**
-   * Kill the whole named session - every window and pane in it - or null when this
-   * backend's sessions are not a group anything can kill at once.
-   *
-   * Explicit rather than the implicit `else` it used to be. `kill` (`actions.ts`) signals
-   * the leaf agent and then tore down "the tmux session, if there is one"; a multiplexer
-   * that cannot do that would have silently inherited the emulator path and left the
-   * session's other panes running with nothing saying why. A null here is the same claim
-   * an emulator makes by having no `sessions` at all: the signal stands alone, which is a
-   * complete answer rather than half of a missing one.
+   * Explicitly close an entire recorded resource, including its windows and panes.
+   * Used by task cleanup and failed-launch rollback, never by interactive agent Kill.
+   * Null when the backend cannot close a group.
    */
   kill: ((session: string) => Promise<TerminalResult>) | null;
+  /**
+   * Close only when the target is still the session's sole pane. The backend must check
+   * identity and topology together with the close. Null preserves the terminal container.
+   */
+  closeIfOnlyPane: ((target: MuxTarget) => Promise<TerminalResult>) | null;
   /**
    * How a session name is spelled on this backend - see `NameRules`. Required, because a
    * backend with named sessions necessarily has an answer, even if that answer is "any

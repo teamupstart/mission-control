@@ -2599,6 +2599,10 @@ export interface InspectorPr {
   headSha: string | null;
   /** The consent posture that produced `headSha`; null for rows from older builds. */
   reviewPosture: InspectorPosture | null;
+  /** Whether every finding from the last review was retained. Null/absent on legacy rows. */
+  reviewComplete?: boolean | null;
+  /** Exact head whose final clean review was confirmed on GitHub. */
+  cleanReviewHeadSha?: string | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;
@@ -2718,6 +2722,8 @@ export interface InspectorComment {
   replies: number;
   /** The newest foreign comment we have answered, so we never answer one twice. */
   answeredCommentId: number | null;
+  /** Inspector agreed to resolve the finding; its GitHub thread mutation is still pending. */
+  resolutionPending?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -2740,6 +2746,9 @@ export interface InspectorSummary {
   lastReviewedAt: number | null;
   /** True when the last attempt errored, so the chip can say so instead of "clean". */
   failed: boolean;
+  reviewedHeadSha?: string | null;
+  observedHeadSha?: string | null;
+  cleanReviewHeadSha?: string | null;
 }
 
 /**

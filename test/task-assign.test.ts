@@ -1253,6 +1253,8 @@ test("assigned scout and ship prompts keep intent first and receive the shared a
       assert.deepEqual(credentialScope, { taskId: "t1", cwd: clone });
       assert.match(typed!, /docs\/reports\/<slug>\/report\.html/);
       assert.match(typed!, /submit_scout_artifacts/);
+      assert.match(typed!, /Do NOT commit the report or other scout output/);
+      assert.match(typed!, /unless the operator's task explicitly requests\s+a commit/);
       assert.match(typed!, /repoSlot: "repo-01"/, "the slot is issued for the session's own checkout");
     } else {
       assert.equal(credentialScope, null);

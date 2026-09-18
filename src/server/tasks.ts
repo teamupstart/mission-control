@@ -1,3 +1,4 @@
+import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
@@ -1013,9 +1014,8 @@ export class TaskManager {
         // that does not.
         this.reconcileMergedTasks();
         this.reconcileTasksBoundTo(e.id);
-        // The one signal that can CONFIRM an owed closure. `session_remove` is the durable
-        // answer to "that agent is gone" (see `Registry.beginEviction`), so a run concluded
-        // seconds ago settles here rather than waiting out a retry interval.
+        // Recheck promptly after registry removal. Forced retirement still owes runtime
+        // cleanup until discovery or the SDK supervisor confirms that it stopped.
         this.scheduleMissionSessionClosureSweep(0);
       }
       if (e.type === "task_remove") this.autoCompleted.delete(e.id);
@@ -1589,8 +1589,7 @@ export class TaskManager {
       // committed the durable consumption behind it.
       console.warn(`[mission] could not begin closing session ${sessionId}:`, error);
     }
-    // Arm the cadence for whatever is still owed - this row if it was not confirmed, and any
-    // other. `finishCompletion` deliberately schedules nothing, so this is where it starts.
+    // Keep the cadence armed for whatever remains owed, including asynchronous completion.
     //
     // Inside the same guard as the settle above: reading the ledger is the very thing that
     // fails when the ledger is what is broken, and this must not be the throw that escapes a
@@ -1668,9 +1667,15 @@ export class TaskManager {
     }
     this.sweepingClosures = true;
     try {
-      for (const row of listTaskSessionClosures()) {
-        await this.settleMissionSessionClosure(row);
-      }
+      // Every row has its own deadline. Serial stops multiply the 20s budget by fleet
+      // size and can leave later runs waiting past four minutes after a restart.
+      await Promise.all(listTaskSessionClosures().map(async (row) => {
+        try {
+          await this.settleMissionSessionClosure(row);
+        } catch (error) {
+          console.warn(`[mission] could not close session ${row.sessionId}:`, error);
+        }
+      }));
     } finally {
       this.sweepingClosures = false;
       const urgent = this.sweepUrgentlyRequested;
@@ -1689,14 +1694,14 @@ export class TaskManager {
    *  - **Is it still ours?** A task that was removed, rescheduled, or handed to another session
    *    is not a closure this ledger can act on, and holding the row would let a later sweep
    *    kill an agent that is legitimately working. Dropped without a stop.
-   *  - **Is the session already gone?** This is the ONLY thing that closes a row. `stopSession`
+   *  - **Are the session and runtime gone?** Only observed absence closes a row. `stopSession`
    *    answering ok is a request that was serviced, not an agent that has left - the registry
    *    lingers an exited session before removing it, a terminal kill can be refused by the
    *    multiplexer after the write, and a driver can throw on the way down. So absence is
    *    observed rather than inferred, which is what "if closure cannot be confirmed, retry"
    *    actually requires.
-   *  - **Otherwise, stop it again** - and, past `MISSION_SESSION_CLOSURE_ESCALATE_MS`, retire it
-   *    rather than keep asking. Asking is not a guarantee: a multiplexer can refuse a kill, and
+   *  - **Otherwise, stop it again** - and, past `MISSION_SESSION_CLOSURE_ESCALATE_MS`, also retire
+   *    its registry entry. Asking is not a guarantee: a multiplexer can refuse a kill, and
    *    a driver can accept a stop and then not go. Retrying a refused request until the heat
    *    death of the fleet is not "the session is removed within four minutes", it is a promise
    *    the daemon never keeps, so the last resort goes through `Registry.beginEviction` - the
@@ -1724,7 +1729,12 @@ export class TaskManager {
       return;
     }
     const session = this.registry.getSession(row.sessionId);
-    if (!session) {
+    let target = this.registry.missionSessionClosureTarget(row.sessionId);
+    if (target?.runtime === "sdk" && !this.supervisor?.handleFor(row.sessionId)) {
+      this.registry.forgetMissionSessionClosureTarget(row.sessionId);
+      target = session;
+    }
+    if (!target) {
       this.dropMissionSessionClosure(row.taskId);
       return;
     }
@@ -1732,8 +1742,10 @@ export class TaskManager {
     // it removes it. Asking again would be answered "this session has no live embedded driver"
     // and recorded as a refusal, which is a sentence about our own timing rather than about
     // anything the operator could act on. Wait for `session_remove`, which is due in seconds.
-    if (session.state === "exited") return;
-    const stopped = await this.stopWithinBudget(session);
+    if (target.state === "exited" && row.retiredAt === null &&
+        Date.now() < row.requestedAt + MISSION_SESSION_CLOSURE_ESCALATE_MS) return;
+    if (target.runtime === "sdk" && !this.supervisor?.handleFor(row.sessionId)) return;
+    const stopped = await this.stopWithinBudget(target);
     const now = Date.now();
     const overdue = now >= row.requestedAt + MISSION_SESSION_CLOSURE_ESCALATE_MS;
     // A stop this pass ACCEPTED, on a session that is still here well past the point one should
@@ -1751,11 +1763,12 @@ export class TaskManager {
     // `stopSession` may have awaited a driver all the way down, so ask the registry again
     // rather than escalating against the session as it looked before the stop.
     if (!this.registry.retireConcludedMissionSession(row.taskId, row.sessionId)) return;
+    this.registry.refreshTaskAutomaticCleanup(row.taskId);
     console.warn(
       `[mission] task ${row.taskId}: session ${row.sessionId} would not close after ` +
         `${row.attempts + 1} attempts (${refusal ?? "no reason recorded"}) - retiring it to keep ` +
-        "the mission's completion boundary. If its agent survived, it is no longer Mission " +
-        "Control's, and the task stays done.",
+        "the mission's completion boundary. Runtime cleanup remains owed until confirmed, " +
+        "and the task stays done.",
     );
   }
 
@@ -1821,6 +1834,8 @@ export class TaskManager {
 
   /** Close the ledger on a task that no longer owes a session, and refresh what a browser reads. */
   private dropMissionSessionClosure(taskId: string): void {
+    const row = getTaskSessionClosure(taskId);
+    if (row) this.registry.forgetMissionSessionClosureTarget(row.sessionId);
     clearTaskSessionClosure(taskId);
     this.registry.refreshTaskAutomaticCleanup(taskId);
   }
@@ -2757,6 +2772,7 @@ export class TaskManager {
       completedAt: null,
     };
     this.registry.upsertTask(task);
+    observeTaskCreated(task.id, internal?.schedule !== undefined);
     if (explicitTitle) {
       if (task.status === "dispatching") void this.dispatcher.dispatch(task.id);
     } else {
@@ -3200,6 +3216,7 @@ export class TaskManager {
               task.homeName,
               undefined,
               task.homeBackend ?? null,
+              task.terminalResourceId,
             );
             if (!stopped.asked || !stopped.ok) {
               throw new Error(stopped.error ?? `no terminal backend could stop ${task.homeName}`);
@@ -4277,7 +4294,7 @@ export class TaskManager {
     }
     const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (alive === false) return;
-    const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null);
+    const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (!stopped.asked || !stopped.ok) {
       throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
     }

@@ -11,6 +11,7 @@ import {
 } from "../src/server/workflows/verdict.ts";
 import { buildPersonaPrompt } from "../src/server/workflows/prompt.ts";
 import { WorkflowRequestedChangeSchema } from "../src/shared/protocol.ts";
+import { WORKFLOW_FINDING_REASONS } from "../src/shared/workflow-reasons.ts";
 
 test("persisted findings accept every runtime basis and preserve legacy omissions", () => {
   for (const basis of [...PERSONA_FINDING_BASES, undefined]) {
@@ -154,6 +155,12 @@ test("the evidence-availability contract scopes coverage declarations out of Per
   assert.match(contract, /Legacy attempt has no frozen readiness input/);
   assert.match(contract, /Do not request coverage registration repairs/);
   assert.equal(prompt.includes("proofClass"), false);
+  const requiredOutput = prompt.slice(prompt.indexOf("# Required output"));
+  const changeShape = requiredOutput.match(/"requestedChanges":\[\{([^}]+)\}/)?.[1];
+  assert.ok(changeShape, "the required JSON contract includes the requested-change shape");
+  assert.ok(changeShape.includes('"category"?:FindingCategory'), "category is optional inside that shape");
+  assert.match(requiredOutput, /FindingCategory is one of the advisory categories listed above/);
+  assert.ok(requiredOutput.includes(WORKFLOW_FINDING_REASONS.join(", ")));
 });
 
 test("Persona prompts put immutable human intent before exact Persona Markdown and fence evidence", () => {

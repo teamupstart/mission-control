@@ -9,6 +9,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
+const { registerWorkflowMutationObserver } = await import("../src/server/workflows/mutations.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 
 const db = openDb();
@@ -33,6 +34,103 @@ function seed(guidance = "# Exact\r\n\r\nKeep this.  \r\n") {
   store.insertPersona({ id: "p1", name: "Judge", normalizedName: normalizePersonaName("Judge"), description: "Quality", guidanceMarkdown: guidance, runner: null, model: null, createdAt: 1, updatedAt: 1 });
   return store.insertWorkflow({ id: "w1", name: "Review", normalizedName: normalizeWorkflowName("Review"), description: "", draft, completionPolicy: { kind: "none" }, resumptionPolicy: "manual", bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 2, updatedAt: 2 });
 }
+
+test("store mutation observers read uncommitted state, register once, and detach without changing writes", () => {
+  const notices: { kind: string; revision: number | undefined; now: number }[] = [];
+  const observer: import("../src/server/workflows/mutations.ts").WorkflowMutationObserver = {
+    observe(connection, view, mutation) {
+      assert.equal(connection, db);
+      assert.equal(connection.isTransaction, true);
+      notices.push({ kind: mutation.kind, revision: view.getWorkflow("w1")?.draftRevision, now: mutation.now });
+    },
+  };
+  const detach = registerWorkflowMutationObserver(observer);
+  registerWorkflowMutationObserver(observer);
+  try {
+    assert.equal(seed().ok, true);
+    assert.equal(store.updateWorkflowCas("w1", 1, { description: "Changed" }, 3).ok, true);
+    assert.equal(store.updateWorkflowCas("w1", 1, { description: "Stale" }, 4).ok, false);
+    assert.deepEqual(notices, [
+      { kind: "definition", revision: 1, now: 2 },
+      { kind: "definition", revision: 2, now: 3 },
+    ]);
+    assert.equal(db.isTransaction, false);
+  } finally { detach(); }
+  assert.equal(store.updateWorkflowCas("w1", 2, { description: "No observer" }, 5).ok, true);
+  assert.equal(store.getWorkflow("w1")?.description, "No observer");
+  assert.equal(notices.length, 2);
+});
+
+test("failed store observers roll back only their own writes and cannot block other observers", () => {
+  db.exec("CREATE TEMP TABLE observer_probe (value TEXT)");
+  let failures = 0;
+  const detachFailed = registerWorkflowMutationObserver({
+    observe(connection) {
+      connection.prepare("INSERT INTO observer_probe VALUES (?)").run("discarded");
+      throw new Error("observer unavailable");
+    },
+    failed() { failures++; throw new Error("diagnostic unavailable"); },
+  });
+  const detachHealthy = registerWorkflowMutationObserver({
+    observe(connection, view) {
+      assert.equal(view.getWorkflow("w1")?.draftRevision, 1);
+      connection.prepare("INSERT INTO observer_probe VALUES (?)").run("kept");
+    },
+  });
+  try {
+    assert.equal(seed().ok, true);
+    assert.equal(store.getWorkflow("w1")?.draftRevision, 1);
+    assert.equal(failures, 1);
+    assert.deepEqual(db.prepare("SELECT value FROM observer_probe").all().map((row) => row.value), ["kept"]);
+    assert.equal(db.isTransaction, false);
+  } finally {
+    detachFailed(); detachHealthy();
+    db.exec("DROP TABLE observer_probe");
+  }
+});
+
+test("outer workflow rollback removes nested business and observer writes together", () => {
+  db.exec("CREATE TEMP TABLE observer_probe (value TEXT)");
+  const detach = registerWorkflowMutationObserver({
+    observe(connection) { connection.prepare("INSERT INTO observer_probe VALUES (?)").run("nested"); },
+  });
+  try {
+    assert.throws(() => store.transact(() => {
+      assert.equal(seed().ok, true);
+      assert.equal(db.isTransaction, true);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM observer_probe").get()?.n, 1);
+      throw new Error("business rollback");
+    }), /business rollback/);
+    assert.equal(store.getWorkflow("w1"), null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM observer_probe").get()?.n, 0);
+    assert.equal(db.isTransaction, false);
+  } finally { detach(); db.exec("DROP TABLE observer_probe"); }
+});
+
+test("an observer that releases its savepoint cannot roll back the owner or block later observers", () => {
+  let failures = 0;
+  let observed = 0;
+  const detachFailed = registerWorkflowMutationObserver({
+    observe(connection) {
+      connection.exec("RELEASE workflow_observer");
+      throw new Error("observer already released its savepoint");
+    },
+    failed() { failures++; },
+  });
+  const detachHealthy = registerWorkflowMutationObserver({
+    observe(_connection, view) {
+      assert.equal(view.getWorkflow("w1")?.draftRevision, 1);
+      observed++;
+    },
+  });
+  try {
+    assert.equal(seed().ok, true);
+    assert.equal(store.getWorkflow("w1")?.draftRevision, 1);
+    assert.equal(failures, 1);
+    assert.equal(observed, 1);
+    assert.equal(db.isTransaction, false);
+  } finally { detachFailed(); detachHealthy(); }
+});
 
 test("definitions use revision CAS, normalized-name uniqueness, summaries, and soft archive", () => {
   const created = seed();

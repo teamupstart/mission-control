@@ -28,7 +28,7 @@ import {
   releaseInjection,
   reserveInjection,
 } from "../injections.ts";
-import { getStandingInstructions } from "../db.ts";
+import { getStandingInstructions, getTask as getDurableTask, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { noteSessionRestoring, observeSessionRestore } from "../telemetry/index.ts";
 import {
@@ -187,7 +187,8 @@ export class SdkSupervisor {
   /**
    * Read and classify persisted SDK rows once, before the first HTTP snapshot can answer.
    *
-   * The resulting Registry entries are inert display projections only. Calling this twice
+   * Resumable entries are inert display projections. Concluded mission runs enter ordinary
+   * eviction without a driver, so no unrelated restore can postpone their removal. Calling this twice
    * returns the same prepared count and never re-reads SQLite or republishes a row, which is
    * what prevents one daemon from launching the same conversation twice.
    */
@@ -204,6 +205,15 @@ export class SdkSupervisor {
         continue;
       }
       if (!sdkSessionIsLive(row)) continue;
+      const closure = taskSessionClosureForSession(row.id);
+      const completedTask = closure ? getDurableTask(closure.taskId) : null;
+      if (completedTask?.status === "done" && completedTask.sessionId === row.id) {
+        // Completion survived the interruption. Do this before serial restore can wait on
+        // an unrelated driver: a concluded run needs eviction, never a continuation prompt.
+        setSdkSessionTurnInProgress(row.id, false);
+        this.registerAndEvict(row, "recurring mission run already concluded", "exited");
+        continue;
+      }
       prepared.push(row);
       this.registry.upsertRestoringSession(this.restoringView(row));
     }
@@ -1013,7 +1023,7 @@ export class SdkSupervisor {
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
-    if (!handle || this.stopping.has(id)) return Promise.reject(noLiveDriver());
+    if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
     // the next one from being attempted, and must still reject for the caller that made it.
@@ -1021,7 +1031,7 @@ export class SdkSupervisor {
       // Exit deletes the ownership maps but cannot cancel a chain that is already built, and
       // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
-      if (this.handles.get(id) !== handle || this.stopping.has(id)) throw noLiveDriver();
+      if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });
     this.sends.set(
@@ -1274,9 +1284,9 @@ export class SdkSupervisor {
    * its task `running` and its workflow binding held, with no card anywhere to explain it.
    * Registering a card for a few seconds is how the ordinary teardown gets to run.
    */
-  private registerAndEvict(row: SdkSessionRow, why: string): void {
+  private registerAndEvict(row: SdkSessionRow, why: string, status: "failed" | "exited" = "failed"): void {
     try {
-      setSdkSessionStatus(row.id, "failed");
+      setSdkSessionStatus(row.id, status);
       if (!row.agent) return;
       const task = row.taskId ? this.registry.getTask(row.taskId) : null;
       if (this.registry.sdkRegistrationRefusal(row.id)) return;

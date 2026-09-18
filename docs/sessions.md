@@ -1723,7 +1723,7 @@ is exactly when the record starts being interesting.
 
 Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
 to a parent by cwd or timing because that relationship is not proven. The standard-price
-snapshot includes `gpt-6-astra`, all shipped Codex choices, and older OpenAI text/code
+snapshot includes all shipped Codex choices, including `gpt-6-astra`, and older OpenAI text/code
 models (GPT-5, GPT-4.1, GPT-4o, and o-series). The exact supported ids and rates live in
 `src/server/harness/codex/pricing.ts`, verified against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and the linked model reference pages on September 11, 2026. Astra includes cached input,

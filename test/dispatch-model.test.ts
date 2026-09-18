@@ -167,6 +167,18 @@ test("every id the picker can offer passes the schema that guards the command li
   }
 });
 
+test("the shipped Codex fallback offers Astra first", () => {
+  assert.deepEqual(MODEL_CATALOG.codex[0], {
+    id: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    hint: "most capable, hardest end-to-end work",
+    provider: null,
+    contextWindow: null,
+    reasoning: null,
+    inputModes: [],
+  });
+});
+
 test("an interior slash is allowed but a leading one, or a traversal, is not", () => {
   // Pi's `provider/id` form must pass; a path or a flag must not - the leading-char class is
   // what keeps `/` from opening a hole, so both halves are asserted together.

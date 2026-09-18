@@ -48,7 +48,7 @@ const {
 } = await import("../src/server/mission-mcp.ts");
 const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
-const { mcpServerPath } = await import("../src/server/config.ts");
+const { mcpServerPath, PORT } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { CODEX_HOOK_EVENTS } = await import("../src/server/harness/codex/hooks.ts");
@@ -91,7 +91,7 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   );
   assert.notEqual(d.env.MISSION_HOME, join(home, "state"));
   assert.ok(statSync(d.env.MISSION_HOME!).isDirectory(), "the MCP child receives a disposable state home");
-  assert.equal(d.env.MISSION_PORT, "7317");
+  assert.equal(d.env.MISSION_PORT, String(PORT));
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);

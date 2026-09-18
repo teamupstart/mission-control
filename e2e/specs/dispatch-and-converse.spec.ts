@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
+import { CONVERSATION_TEXT_MAX_LENGTH } from "../../src/shared/protocol.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
@@ -163,6 +164,35 @@ async function dispatch(
   await expect(dialog).toBeHidden();
 }
 
+async function waitForDriverIdle(daemon: DaemonHandle, sessionId: string): Promise<void> {
+  await expect.poll(async () => {
+    const turnInProgress = withDaemonDb(daemon, (db) => {
+      const row = db.prepare(
+        "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",
+      ).get(sessionId) as { turn_in_progress: number } | undefined;
+      return row?.turn_in_progress ?? null;
+    });
+    const current = (await api<Array<{ id: string; pendingTurns: unknown[] }>>(
+      daemon,
+      "/api/sessions",
+    )).find((session) => session.id === sessionId);
+    return {
+      pendingTurns: current?.pendingTurns.length ?? null,
+      turnInProgress,
+    };
+  }).toEqual({ pendingTurns: 0, turnInProgress: 0 });
+  await expect.poll(async () => {
+    const current = (await api<Array<{
+      id: string;
+      lastActivity: number | null;
+      state: string;
+    }>>(daemon, "/api/sessions")).find((session) => session.id === sessionId);
+    return current?.state === "idle" && current.lastActivity !== null
+      ? Date.now() - current.lastActivity
+      : 0;
+  }).toBeGreaterThanOrEqual(1_500);
+}
+
 test("dispatching an agent puts a live session on the fleet", async ({ dashboard, daemon }) => {
   await expect(dashboard.getByText("No agent sessions detected")).toBeVisible();
 
@@ -286,34 +316,6 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   // consumed, so use the driver's durable turn boundary from the isolated fixture database.
   // This is a read-only synchronization point; the daemon remains the only writer.
   const [{ id: sessionId }] = await api<Array<{ id: string }>>(daemon, "/api/sessions");
-  const waitForDriverIdle = async (): Promise<void> => {
-    await expect.poll(async () => {
-      const turnInProgress = withDaemonDb(daemon, (db) => {
-        const row = db.prepare(
-          "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",
-        ).get(sessionId) as { turn_in_progress: number } | undefined;
-        return row?.turn_in_progress ?? null;
-      });
-      const current = (await api<Array<{ id: string; pendingTurns: unknown[] }>>(
-        daemon,
-        "/api/sessions",
-      )).find((session) => session.id === sessionId);
-      return {
-        pendingTurns: current?.pendingTurns.length ?? null,
-        turnInProgress,
-      };
-    }).toEqual({ pendingTurns: 0, turnInProgress: 0 });
-    await expect.poll(async () => {
-      const current = (await api<Array<{
-        id: string;
-        lastActivity: number | null;
-        state: string;
-      }>>(daemon, "/api/sessions")).find((session) => session.id === sessionId);
-      return current?.state === "idle" && current.lastActivity !== null
-        ? Date.now() - current.lastActivity
-        : 0;
-    }).toBeGreaterThanOrEqual(1_500);
-  };
   /**
    * A RECORDED turn carrying this text - never the live activity line above it.
    *
@@ -326,7 +328,7 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   const turn = (text: string): Locator => card.locator(".turn").getByText(text, { exact: true });
 
   await expect(turn(`Mock reply to: ${TASK}`)).toBeVisible();
-  await waitForDriverIdle();
+  await waitForDriverIdle(daemon, sessionId);
 
   // Three messages, each with a distinct reply. A single message would pass even if only
   // the first turn ever rendered - the failure mode where a transcript binds once and then
@@ -336,7 +338,7 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
     await reply.fill(message);
     await reply.press("Enter");
     await expect(turn(`Mock reply to: ${message}`)).toBeVisible();
-    await waitForDriverIdle();
+    await waitForDriverIdle(daemon, sessionId);
   }
 
   // All three are still on screen together - the conversation accumulated rather than
@@ -373,6 +375,50 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
     await card.screenshot({
       path: `${EVIDENCE}conversation.png`,
     });
+  }
+});
+
+test("a 100,000-character conversation paste reaches the agent intact", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  await expect(reply).toBeEnabled();
+
+  const [{ id: sessionId }] = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+  await waitForDriverIdle(daemon, sessionId);
+
+  const start = "PASTE_LIMIT_START:";
+  const end = ":PASTE_LIMIT_END";
+  const message = `${start}${"x".repeat(CONVERSATION_TEXT_MAX_LENGTH - start.length - end.length)}${end}`;
+  expect(message).toHaveLength(CONVERSATION_TEXT_MAX_LENGTH);
+
+  const requestPromise = dashboard.waitForRequest((request) =>
+    request.method() === "POST"
+    && request.url().endsWith(`/api/sessions/${encodeURIComponent(sessionId)}/inject`)
+  );
+  await reply.fill(message);
+  await reply.press("Enter");
+
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toMatchObject({ text: message });
+
+  const humanText = card.locator("article.turn-user .turn-text").filter({ hasText: start }).last();
+  const agentText = card.locator("article.turn-assistant .turn-text").filter({ hasText: start }).last();
+  await expect(humanText).toBeVisible();
+  await expect(agentText).toBeVisible();
+  expect(await humanText.textContent()).toBe(message);
+  expect(await agentText.textContent()).toBe(`Mock reply to: ${message}`);
+
+  console.log("OBSERVED browser submitted and rendered an intact 100000-character conversation paste");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await card.screenshot({ path: `${EVIDENCE}100000-character-paste.png` });
+    console.log("CAPTURED e2e/.artifacts/dispatch-and-converse/100000-character-paste.png");
   }
 });
 

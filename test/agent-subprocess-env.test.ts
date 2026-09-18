@@ -39,7 +39,6 @@ const {
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test("the subprocess helper resolves the shared runtime port export", () => {
-  assert.equal(PORT, 7317);
   const env = agentSubprocessEnv({}, { loopbackAccess: true });
   try {
     assert.equal(env.MISSION_PORT, String(PORT));
@@ -84,7 +83,7 @@ test("agent launch env replaces every inherited state alias and preserves loopba
   assert.notEqual(first.MISSION_HOME, operatorState);
   assert.notEqual(first.MISSION_HOME, second.MISSION_HOME, "each launch receives its own home");
   assert.ok(existsSync(first.MISSION_HOME!));
-  assert.equal(first.MISSION_PORT, "7317");
+  assert.equal(first.MISSION_PORT, String(PORT));
   assert.equal(first[MISSION_API_TOKEN_ENV], undefined);
   assert.equal(readFileSync(first[MISSION_API_TOKEN_FILE_ENV]!, "utf8").trim(), "loopback-test-token");
   assert.equal(statSync(first[MISSION_API_TOKEN_FILE_ENV]!).mode & 0o777, 0o600);

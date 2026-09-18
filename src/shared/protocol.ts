@@ -4399,6 +4399,9 @@ export const PromptedWrapupSchema = z.object({
 );
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 
+/** Maximum text one conversation submission may carry through bracketed paste. */
+export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
+
 /**
  * Deliver a whole (possibly multi-line) prompt into a session's input as ONE
  * submission, via bracketed paste. Distinct from SendTextSchema because `/send`
@@ -4406,7 +4409,7 @@ export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
-  text: z.string().min(1).max(INTENT_MAX),
+  text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
   /**

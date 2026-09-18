@@ -1,5 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -35,6 +36,7 @@ const {
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { ComposerEditorModal } = await import("../src/web/components/ComposerEditorModal.tsx");
+type ComposerActivityHandlers = Parameters<typeof ComposerEditorModal>[0]["activity"];
 const { TranscriptPanel } = await import("../src/web/components/TranscriptPanel.tsx");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { withOverlayHost } = await import("./helpers/overlay-host.ts");
@@ -211,11 +213,28 @@ test("both conversation composers follow a rebound expand action", () => {
 
 // ---- the dialog ----------------------------------------------------------------
 
-function renderModal(props: { text: string; reopenHint: string }): string {
+/** The activity handlers the dialog must wire, recorded so a test can see which fired. */
+function recordingActivity(): { calls: string[]; handlers: ComposerActivityHandlers } {
+  const calls: string[] = [];
+  return {
+    calls,
+    handlers: {
+      onFocus: () => calls.push("focus"),
+      onBlur: () => calls.push("blur"),
+      onInput: () => calls.push("input"),
+    },
+  };
+}
+
+function renderModal(
+  props: { text: string; reopenHint: string },
+  activity: ComposerActivityHandlers = recordingActivity().handlers,
+): string {
   return renderToStaticMarkup(
     withOverlayHost(
       createElement(ComposerEditorModal, {
         ...props,
+        activity,
         onStage: () => {},
         onClose: () => {},
       }),
@@ -227,6 +246,24 @@ test("the editor opens on exactly what the send box holds", () => {
   const html = renderModal({ text: "first line\nsecond line", reopenHint: "⌃G" });
   assert.match(html, /first line\nsecond line<\/textarea>/);
   assert.match(html, /aria-label="Message"/);
+});
+
+test("the editor's textarea wires the composer's activity reporter", () => {
+  // Read from source, because `renderToStaticMarkup` drops handlers and this is precisely a
+  // handler bug: opening the dialog blurs the reply box, so the panel releases the composer
+  // lease and stops its heartbeat. Without all three of these the operator reads as idle
+  // while they write, and Foreman enters the conversation mid-message.
+  const src = readFileSync(
+    new URL("../src/web/components/ComposerEditorModal.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const wiring of [
+    "onFocus={activity.onFocus}",
+    "onBlur={activity.onBlur}",
+    "onChange={activity.onInput}",
+  ]) {
+    assert.ok(src.includes(wiring), `the editor's textarea must wire ${wiring}`);
+  }
 });
 
 test("the editor never offers to send, only to stage", () => {

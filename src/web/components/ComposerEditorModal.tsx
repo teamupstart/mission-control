@@ -13,6 +13,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export function ComposerEditorModal({
   text,
   reopenHint,
+  activity,
   onStage,
   onClose,
 }: {
@@ -20,6 +21,21 @@ export function ComposerEditorModal({
   text: string;
   /** The resolved expand chord, named in the body. Empty when the action has no chord. */
   reopenHint: string;
+  /**
+   * The composer's activity reporter, wired here exactly as the reply box wires it.
+   *
+   * Not optional, and not something this dialog can skip. Opening it moves focus off the
+   * reply box, which BLURS that box - so the panel's own `onBlur` releases the lease and
+   * stops the heartbeat before a word is typed here. Without these three handlers a person
+   * spending five minutes writing in this editor reads as an idle composer, and Foreman
+   * takes the conversation out from under them. The reply box has prevented exactly that
+   * since composer activity shipped; a bigger box for the same message must not lose it.
+   *
+   * The panel passes its OWN `useComposerActivity` handle, so both boxes share one client
+   * id and one heartbeat: focus moving between them renews a single lease rather than
+   * opening a second.
+   */
+  activity: { onFocus: () => void; onBlur: () => void; onInput: () => void };
   /** Put this text in the send box, unsent, and close. */
   onStage: (next: string) => void;
   /** Close and leave the send box holding what it had. */
@@ -71,6 +87,13 @@ export function ComposerEditorModal({
           aria-label="Message"
           placeholder="Write the message…"
           defaultValue={text}
+          // The same three the reply box wires, in the same order. `onFocus` re-takes the
+          // lease the reply box released when this dialog stole its focus, and restarts the
+          // heartbeat that renews it; `onChange` is what makes a long silence in here read
+          // as composing rather than as idle.
+          onFocus={activity.onFocus}
+          onBlur={activity.onBlur}
+          onChange={activity.onInput}
           onKeyDown={(e) => {
             if (!composerEditorStages(e.nativeEvent)) return;
             e.preventDefault();

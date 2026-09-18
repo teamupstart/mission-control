@@ -1261,6 +1261,9 @@ export function TranscriptPanel({
         <ComposerEditorModal
           text={composerEditorText}
           reopenHint={formatChord(expandChord)}
+          // This panel's own handle, not a second one: one client id, one lease, one
+          // heartbeat across both boxes. See the prop's note.
+          activity={composerActivity}
           onStage={stageComposerText}
           onClose={() => {
             setComposerEditorText(null);

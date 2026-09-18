@@ -193,3 +193,45 @@ test("the terminal rendering names the chord in its `enter sends` legend", async
   await expect(editor).toBeVisible();
   await expect(editor.getByRole("textbox", { name: "Message" })).toHaveValue(DRAFT);
 });
+
+test("time spent writing in the editor still reads as a composing operator", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The regression this exists for is silent and expensive: opening the dialog moves focus
+  // off the reply box, so that box BLURS and the panel releases the composer lease. If the
+  // dialog reported nothing, a person spending minutes writing here would read as idle and
+  // Foreman would enter the conversation mid-message - the exact thing composer activity
+  // was built to prevent for the ordinary box.
+  const { composer } = await openTheOnlySession(dashboard, daemon);
+
+  // Every report this tab sends, captured from the wire rather than inferred from focus.
+  const reports: Array<{ focused?: boolean; typed?: boolean }> = [];
+  dashboard.on("request", (request) => {
+    if (!request.url().includes("/composer-activity")) return;
+    reports.push(request.postDataJSON() as { focused?: boolean; typed?: boolean });
+  });
+
+  await composer.fill(DRAFT);
+  await composer.press("Control+g");
+  const editor = dashboard.getByRole("dialog", { name: "Edit the message" });
+  const big = editor.getByRole("textbox", { name: "Message" });
+  await expect(big).toBeFocused();
+
+  // Focus landing in the dialog re-takes the lease the reply box just gave up.
+  await expect
+    .poll(() => reports.some((r) => r.focused === true), {
+      message: "the dialog should report a focused composer once it takes focus",
+    })
+    .toBe(true);
+
+  reports.length = 0;
+  await big.pressSequentially("a further thought", { delay: 10 });
+
+  // And typing in here is typing, which is what buys the minute of protection after blur.
+  await expect
+    .poll(() => reports.some((r) => r.focused === true && r.typed === true), {
+      message: "typing in the editor should report a typed, focused composer",
+    })
+    .toBe(true);
+});

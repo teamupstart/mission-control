@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.22.0](https://github.com/teamupstart/mission-control/compare/v1.21.1...v1.22.0) (2026-09-18)
+
+
+### Features
+
+* **observability:** deliver six local Grafana dashboards ([#1084](https://github.com/teamupstart/mission-control/issues/1084)) ([754fb51](https://github.com/teamupstart/mission-control/commit/754fb5178660bb6b4c79379504fb0091619ac4ce))
+
+
+### Bug Fixes
+
+* **tmux:** preserve unrelated sessions when killing an agent ([#1085](https://github.com/teamupstart/mission-control/issues/1085)) ([bb0dcf9](https://github.com/teamupstart/mission-control/commit/bb0dcf913e941b47f85a78e4b28fbb5a24c7863d))
+
 ## [1.21.1](https://github.com/teamupstart/mission-control/compare/v1.21.0...v1.21.1) (2026-09-17)
 
 

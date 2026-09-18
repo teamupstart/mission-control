@@ -148,6 +148,14 @@ close a live agent.
 A pane whose process details cannot be read is listed with an unknown process id rather than
 removing every other Herdr pane from the dashboard for that refresh.
 
+For tty-less multiplexer panes, discovery matches the reported root PID to the representative
+agent itself or its observed parent chain in the same process snapshot. This includes a shell
+replaced with `exec`: the agent then is the pane root, at distance zero. A direct tty match still
+takes precedence; otherwise only the unique closest PID match is accepted. Equal-distance
+matches are ambiguous, missing process metadata stays unpaired, and parent cycles terminate
+without revisiting the root. Matching a directory or display name cannot authorize this join.
+The shared correlator supplies this contract to every multiplexer, independently of its host.
+
 Stable Herdr does not expose attached-client tty identities. Mission Control can still select the
 correct agent inside Herdr, but if no already-correlated terminal host can be raised, Focus opens a
 normal full Herdr client through the existing terminal fallback. Repeated Focus may therefore open

@@ -90,6 +90,94 @@ test("binds a tty-less multiplexer pane through its exact shell ancestry", () =>
   assert.equal(muxHandle(session!)?.paneId, "pane-id");
 });
 
+test("binds an exec-replaced pane root and retains the outer emulator handle", () => {
+  for (const backend of ["herdr", "cmux", "tmux"] as const) {
+    const [session] = correlate({
+      procs: [proc({ pid: 100, ppid: 1, tty: "ttys1" })],
+      terminals: [
+        {
+          kind: "multiplexer", backend,
+          panes: [muxPane({ session: "workspace", tty: null, paneId: "root", panePid: 100 })],
+        },
+        {
+          kind: "emulator", backend: "wezterm", hostProcess: null,
+          panes: [emuPane({ tty: "ttys1", tabTitle: "outer" })],
+        },
+      ],
+    });
+    assert.equal(session?.nameSource, backend);
+    assert.equal(muxHandle(session!)?.paneId, "root");
+    assert.equal(emulatorHandle(session!)?.paneId, "5");
+  }
+});
+
+test("an exact root is closer than any ancestor, including a cycle back to that root", () => {
+  for (const parent of [100, 90]) {
+    const [session] = correlate({
+      procs: [
+        proc({ pid: 90, ppid: 100, tty: null, agent: null, agentNative: false }),
+        proc({ pid: 100, ppid: parent, tty: "ttys1" }),
+      ],
+      terminals: [{
+        kind: "multiplexer", backend: "herdr",
+        panes: [
+          muxPane({ session: "outer", tty: null, paneId: "outer", panePid: 90 }),
+          muxPane({ session: "root", tty: null, paneId: "root", panePid: 100 }),
+        ],
+      }],
+    });
+    assert.equal(muxHandle(session!)?.paneId, "root");
+  }
+});
+
+test("ambiguous exact roots are declined without falling back to a farther ancestor", () => {
+  const [session] = correlate({
+    procs: [
+      proc({ pid: 90, ppid: 1, tty: null, agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+    ],
+    terminals: [{
+      kind: "multiplexer", backend: "herdr",
+      panes: [
+        muxPane({ session: "outer", tty: null, paneId: "outer", panePid: 90 }),
+        muxPane({ session: "one", tty: null, paneId: "one", panePid: 100 }),
+        muxPane({ session: "two", tty: null, paneId: "two", panePid: 100 }),
+      ],
+    }],
+  });
+  assert.equal(muxHandle(session!), null);
+});
+
+test("a direct tty match still outranks an exact root fallback", () => {
+  const [session] = correlate({
+    procs: [proc({ pid: 100, tty: "ttys1" })],
+    terminals: [{
+      kind: "multiplexer", backend: "herdr",
+      panes: [
+        muxPane({ session: "root", tty: null, paneId: "root", panePid: 100 }),
+        muxPane({ session: "tty", tty: "ttys1", paneId: "tty", panePid: null }),
+      ],
+    }],
+  });
+  assert.equal(muxHandle(session!)?.paneId, "tty");
+});
+
+test("absent or unrelated root metadata cannot be replaced by matching cwd or title", () => {
+  for (const panePid of [null, 0, -1, 999, 200]) {
+    const [session] = correlate({
+      procs: [
+        proc({ pid: 100, tty: "ttys1" }),
+        proc({ pid: 200, tty: null, agent: null, agentNative: false }),
+      ],
+      terminals: [{
+        kind: "multiplexer", backend: "herdr",
+        panes: [muxPane({ session: "claude 100", tty: null, paneId: "unproven", panePid })],
+      }],
+    }, new Map([[100, "/repo"]]));
+    assert.equal(muxHandle(session!), null, String(panePid));
+  }
+});
+
 test("declines unrelated, missing, and recycled pane pids", () => {
   for (const [label, procs] of [
     [

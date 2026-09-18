@@ -442,10 +442,11 @@ test("the Console rail prints the same keys beside its state words, and they ope
   expect(hovered.background, "and deepens the tint behind it").toBe(activeTint);
 
   await dashboard.mouse.move(0, 0);
-  expect(
-    (await keycapPaint(idleRow)).color,
-    "and the row returns to its rest paint once the pointer leaves",
-  ).toBe(rest.color);
+  const restored = await keycapPaint(idleRow);
+  expect(restored.color, "the row returns to its rest colour once the pointer leaves").toBe(
+    rest.color,
+  );
+  expect(restored.background, "and to its rest tint, not the hovered one").toBe(rest.background);
   await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
 
   // The chord is announced on the control it drives - the row itself here, since the rail's

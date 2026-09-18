@@ -130,6 +130,22 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // The PORT, and ONLY for a worker that inherited a live state home as well.
+  //
+  // `harness-runtime.mjs` freezes `PORT` from `envVar("PORT")` the instant it is evaluated,
+  // exactly as `config.ts` freezes `STATE_DIR`, so a suite run from inside a Mission Control
+  // session resolves that session's daemon port and the cases pinning the documented 7317
+  // fail on it. A session launch hands down both values together, which is why the home is
+  // the signal rather than the port itself: a fixture or a runner that supplies a port on
+  // purpose, without also pointing at somebody's live state dir, keeps the one it set. That
+  // is the difference from the home above, which has no safe literal default and so is
+  // always replaced; a port has one, so this only takes back a port nobody chose.
+  if (inherited) {
+    delete process.env.MISSION_PORT;
+    delete process.env.FLEET_PORT;
+    delete process.env.HARNESS_PORT;
+  }
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.

@@ -22,6 +22,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type {
+  SessionActionWaitReason,
   WorkflowBindingState,
   WorkflowGateWaitReason,
   WorkflowInspectorGateDetail,
@@ -40,7 +41,7 @@ import {
   runNextMove,
   runNoMoveReason,
 } from "../src/web/workflows/run-actions.ts";
-import { runRefusedSentence } from "../src/web/workflows/run-model.ts";
+import { runPosture, runRefusedSentence } from "../src/web/workflows/run-model.ts";
 
 interface Shape {
   status: WorkflowRunStatus;
@@ -73,6 +74,10 @@ interface Shape {
   gateState?: unknown;
   policy?: "none" | "inspector";
   missingPrAction?: "offer_prepare_pr" | "wait";
+  /** The resumption observer's last word on a parked round, as run detail carries it. */
+  resumption?: { reason: string; round: number | null; resumesItself: boolean } | null;
+  /** Why the run's session action is waiting, for the `waiting_for_action` posture split. */
+  actionWait?: SessionActionWaitReason | null;
 }
 
 function detailFor(shape: Shape): WorkflowRunDetail {
@@ -95,6 +100,8 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     boundVersionId = "version",
     gatePrNumber = null,
     gateState = null,
+    resumption = null,
+    actionWait = null,
   } = shape;
   const inspectorGate: WorkflowInspectorGateDetail | null = gate
     ? {
@@ -125,6 +132,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
       workflowName: "Release review",
       workflowVersion: 2,
       gatePrNumber,
+      actionWait,
     },
     binding: {
       id: "binding",
@@ -157,6 +165,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     events: [],
     externalSource: externalSource ? { kind: "ensemble", id: "ens" } : null,
     inspectorGate,
+    resumption,
   } as unknown as WorkflowRunDetail;
 }
 
@@ -965,4 +974,130 @@ test("a capture-blocked run gets the resubmit move AND the sentence, not one or 
   assert.match(sentence, /steering-context\.png/);
   assert.match(sentence, /no repair round was spent/);
   assert.match(sentence, /resuming replays the same frozen reservation/);
+});
+
+/*
+ * `runPosture`: whose move an open run is on, as the banner and the action row both read it.
+ *
+ * The claim under test is the repaired confusion: a parked repair round whose session is
+ * still addressing feedback must read as the observer's move, not the operator's - while
+ * every state that genuinely waits on a person must say "your move" even when it offers no
+ * button at all. The classification leans on the shared operator/machine vocabulary
+ * (`sessionActionWaitsOnOperator`, `workflowRunResumesItself`), so these rows pin the
+ * derivation and not a re-statement of those predicates.
+ */
+test("posture: a run the workflow itself is advancing needs nobody", () => {
+  for (const status of ["capturing", "running", "waiting_for_evidence_readiness"] as const) {
+    const posture = runPosture(detailFor({ status }));
+    assert.equal(posture?.tone, "auto", status);
+    assert.equal(posture?.headline, "No action needed");
+  }
+});
+
+test("posture: a parked round with a busy session belongs to the observer", () => {
+  const posture = runPosture(detailFor({
+    status: "waiting_for_session",
+    live: true,
+    resumption: { reason: "session_busy", round: 2, resumesItself: true },
+  }));
+  assert.equal(posture?.tone, "auto");
+  // The banner absorbs the parked sentence verbatim - one fact, one wording, one place.
+  assert.match(posture?.sentence ?? "", /The session is still working/);
+});
+
+test("posture: an in-flight repair packet is not your move either", () => {
+  const posture = runPosture(detailFor({
+    status: "waiting_for_session",
+    live: true,
+    resumption: { reason: "packet_undelivered", round: 2, resumesItself: true },
+  }));
+  assert.equal(posture?.tone, "auto");
+});
+
+test("posture: a self-resuming park with no ledger entry yet reads as the observer's", () => {
+  const posture = runPosture(detailFor({ status: "waiting_for_session", live: true }));
+  assert.equal(posture?.tone, "auto");
+  assert.match(posture?.sentence ?? "", /opens on its own/);
+});
+
+test("posture: a round that will not resume itself is yours to start", () => {
+  // A Preview binding never delivers, so nothing is coming: the fixture's default binding.
+  const preview = runPosture(detailFor({ status: "waiting_for_session" }));
+  assert.equal(preview?.tone, "yours");
+  assert.equal(preview?.headline, "Your move");
+  // And a manual-resumption version says so in the observer's own sentence.
+  const manual = runPosture(detailFor({
+    status: "waiting_for_session",
+    live: true,
+    resumption: { reason: "policy_manual", round: 2, resumesItself: false },
+  }));
+  assert.equal(manual?.tone, "yours");
+  assert.match(manual?.sentence ?? "", /the next round is yours to start/);
+});
+
+test("posture: a session stuck on a prompt, or settled without moving the work, is yours", () => {
+  const stuck = runPosture(detailFor({
+    status: "waiting_for_session",
+    live: true,
+    resumption: { reason: "session_needs_you", round: 2, resumesItself: true },
+  }));
+  assert.equal(stuck?.tone, "yours");
+  assert.match(stuck?.sentence ?? "", /waiting on you/);
+  const unmoved = runPosture(detailFor({
+    status: "waiting_for_session",
+    live: true,
+    resumption: { reason: "repository_unchanged", round: 2, resumesItself: true },
+  }));
+  assert.equal(unmoved?.tone, "yours");
+});
+
+test("posture: a standing refusal is yours, unless the session has gone back to work", () => {
+  // The refusal parked the run and no ledger entry followed: an absent reason must not read
+  // as "the loop is closing itself" over a session that already settled.
+  const refused = runPosture(detailFor({
+    status: "waiting_for_session",
+    phase: "unchanged_repository",
+    live: true,
+  }));
+  assert.equal(refused?.tone, "yours");
+  // But the observer's `session_busy` outlives the refusal phase when the session picks the
+  // work back up, and a loop in motion is not "your move".
+  const busyAgain = runPosture(detailFor({
+    status: "waiting_for_session",
+    phase: "unchanged_repository",
+    live: true,
+    resumption: { reason: "session_busy", round: 2, resumesItself: true },
+  }));
+  assert.equal(busyAgain?.tone, "auto");
+});
+
+test("posture: action waits split on the shared operator predicate", () => {
+  const working = runPosture(detailFor({ status: "waiting_for_action", actionWait: "working" }));
+  assert.equal(working?.tone, "auto");
+  assert.match(working?.sentence ?? "", /working on the instruction/);
+  const parked = runPosture(detailFor({
+    status: "waiting_for_action",
+    actionWait: "needs_operator",
+  }));
+  assert.equal(parked?.tone, "yours");
+});
+
+test("posture: gate waits follow who actually moves them", () => {
+  assert.equal(runPosture(detailFor({ status: "waiting_for_inspector" }))?.tone, "auto");
+  // `waiting_for_new_head` waits on a PUSHED head - the bound session's job, per
+  // `workflowRunWaitsOnOperator`'s own exclusion - so no person is told to act.
+  assert.equal(runPosture(detailFor({ status: "waiting_for_new_head" }))?.tone, "auto");
+  assert.equal(runPosture(detailFor({ status: "waiting_for_pr" }))?.tone, "yours");
+});
+
+test("posture: blocked is yours, and a terminal run has no posture at all", () => {
+  assert.equal(runPosture(detailFor({ status: "blocked" }))?.tone, "yours");
+  for (const status of WORKFLOW_RUN_STATUSES) {
+    const posture = runPosture(detailFor({ status }));
+    if (["completed", "cancelled", "failed"].includes(status)) {
+      assert.equal(posture, null, `${status} must render no banner`);
+    } else {
+      assert.ok(posture, `${status} must classify`);
+    }
+  }
 });

@@ -1762,16 +1762,16 @@ button.wf-run-version:focus-visible {
   font-weight: 600;
 }
 
-/* Why a parked round is standing still, and what the grant just did.
-   Both share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
+/* What the grant just did, what was refused, and what was turned away.
+   All share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
    block, one under the other, and three paragraphs at three sizes would read as three
    unrelated warnings rather than as one account of the run's state. The grant's line takes
-   the working colour because it reports something that HAPPENED; the parked line stays muted
-   because it reports something that is not happening. */
+   the working colour because it reports something that HAPPENED. The parked sentence is no
+   longer one of them: it lives in the posture banner above the identity block, which is the
+   one place "who moves next" is stated. */
 .wf-run-granted,
 .wf-run-refused,
-.wf-run-refused-claim,
-.wf-run-parked {
+.wf-run-refused-claim {
   font-size: 12px;
   line-height: 1.5;
   max-width: 66ch;
@@ -1798,8 +1798,94 @@ button.wf-run-version:focus-visible {
   color: var(--muted);
 }
 
-.wf-run-parked {
-  color: var(--muted);
+/* Whose move it is, stated before anything else in the header.
+
+   One full-width strip the action row agrees with by construction: both read `runPosture`,
+   so a calm banner can never sit above a filled primary. Blue is the run's own working
+   colour; the `yours` variant takes the same attention tone every card and rail mark
+   already uses for "this needs you". */
+.wf-run-posture {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--working) 30%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--working) 7%, var(--panel));
+  padding: 10px 14px;
+}
+
+.wf-run-posture p {
+  margin: 0;
+}
+
+.wf-run-posture-eyebrow {
+  color: var(--working);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wf-run-posture-text {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+
+/* Pulsing while the run moves itself - the dot is the "something is happening" signal the
+   old header never had. The `yours` dot holds still: the pulse means motion, and that run
+   is waiting on the reader. */
+.wf-run-posture-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: wf-posture-pulse 2s infinite;
+}
+
+@keyframes wf-posture-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 45%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.wf-run-posture-yours {
+  border-color: color-mix(in srgb, var(--attention) 40%, var(--border));
+  background: color-mix(in srgb, var(--attention) 8%, var(--panel));
+}
+
+.wf-run-posture-yours .wf-run-posture-eyebrow {
+  color: var(--attention);
+}
+
+.wf-run-posture-yours .wf-run-posture-dot {
+  background: var(--attention);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-run-posture-dot {
+    animation: none;
+  }
+}
+
+/* The demoted next move's tag. The move is still offered - overriding is legitimate - but
+   under an `auto` posture the button carries the word so a reader who never hovers still
+   learns the click is optional. */
+.wf-run-override-tag {
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 4px;
+  color: var(--attention);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,

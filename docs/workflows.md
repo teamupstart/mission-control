@@ -1671,6 +1671,26 @@ opens; a GitHub Inspector gate waiting on a pull request offers **Ask the sessio
 PR**, or **Check again** when its immutable policy declines the handoff; a run blocked on an
 exhausted provider call offers **Retry the failed call**.
 
+**Whose move it is comes first.** A posture banner at the top of the header classifies every
+open run into one of two postures with one sentence. **No action needed**, with a pulsing dot,
+while the run is advancing itself: reviewers and commands running, a session action executing,
+or a parked round whose session is still working on the feedback and whose resumption observer
+opens the next round on its own. **Your move** when the session is idle, nothing is running,
+and an operator decision is the only way forward. The banner and the action row read the same
+derivation (`runPosture`), so they cannot argue: when a run under **No action needed** still
+carries a derived move - a parked round's **Start repair round N**, a gate's **Check again** -
+that move demotes from the filled primary to a ghost button carrying an **override** tag,
+with a tooltip that opens "Not required". For a resubmission the tooltip goes on to say what
+the click costs - it interrupts the session's repair and spends a round; every other demoted
+move keeps its own tooltip after that prefix, because a gate recheck spends nothing and
+saying otherwise would be untrue. A run that is actively moving - evidence capturing, reviewers and
+commands running, a session action executing - has no derived move at all, so it shows no
+resubmission control at any weight; Cancel run remains offered. Where a move exists it stays
+clickable - the posture only decides how loudly the page offers it. For a parked round the
+banner's sentence is the resumption observer's own withheld reason, verbatim, so the fact is
+stated once, in the place that says who moves next. A finished run renders no banner: done is
+not a posture, and the run-again primary explains itself.
+
 That primary used to read **Resume review**, over a tooltip promising to "resume this run
 where it stalled". It does no such thing: the daemon computes `latest.round + 1`, re-runs the
 graph from the Session node with an empty attempt slate, and every reviewer that passed last

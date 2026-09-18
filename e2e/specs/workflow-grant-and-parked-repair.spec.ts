@@ -359,9 +359,11 @@ test("the grant says what it bought and hands a self-resuming run back to its ob
    * the sentence that turns "nothing happens" into a state: the observer looked, found the
    * repository exactly as round 2 left it, and declined to spend a round on it.
    */
-  await expect(header.locator("p.wf-run-parked"))
+  await expect(header.locator(".wf-run-posture"))
     .toContainText("the repository has not changed since round 2", { timeout: 60_000 });
-  await expect(header.locator("p.wf-run-parked")).toContainText("no round has been spent");
+  await expect(header.locator(".wf-run-posture")).toContainText("no round has been spent");
+  // A settled session with unmoved work is the operator's decision, and the banner says so.
+  await expect(header.locator(".wf-run-posture")).toContainText("Your move");
   await shoot(dashboard, "02-grant-restores-the-watch");
 
   // The dead end is gone rather than merely annotated: the grant retires itself, and the run

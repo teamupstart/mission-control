@@ -114,6 +114,7 @@ import {
   runEvidenceCriterionRows,
   runGrantNotice,
   runParkedSentence,
+  runPosture,
   evidenceChipLabel,
   openEvidenceTray,
   roundEvidenceCountLabel,
@@ -162,6 +163,7 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
+  overriddenNextMoveTooltip,
   refusedUnchangedRequestId,
   runActionTooltip,
   runNextMove,
@@ -3578,6 +3580,18 @@ export function WorkflowRunView({
    */
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
+  /**
+   * Whose move this run is on, and how loudly the action row may offer its one move.
+   *
+   * The banner and the demotion read the SAME derivation, which is what keeps the header from
+   * arguing with itself - a "No action needed" strip over a filled primary was exactly the
+   * confusion being repaired. Under an `auto` posture the derived move stays clickable as an
+   * override, in ghost weight with the override tag, and its tooltip says why clicking is not
+   * required. The parked sentence is not rendered separately any more: for a parked round the
+   * posture sentence IS `runParkedSentence`'s, so the banner is where that sentence now lives.
+   */
+  const posture = runPosture(detail);
+  const nextMoveOverride = posture?.tone === "auto" && nextMove !== null;
   const refusedSentence = runRefusedSentence(detail);
   const refusedClaimSentence = runRefusedCompletionSentence(detail);
   /*
@@ -3623,6 +3637,22 @@ export function WorkflowRunView({
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
       <header className="wf-run-head">
+        {/* Whose move it is, stated before anything else on the page. `role="status"` so a
+            posture flip - the session settles, the observer opens the next round - is read
+            aloud without stealing focus. Terminal runs render no banner: "done" is not a
+            posture, and the run-again primary explains itself. */}
+        {posture && (
+          <div
+            className={`wf-run-posture${posture.tone === "yours" ? " wf-run-posture-yours" : ""}`}
+            role="status"
+          >
+            <span className="wf-run-posture-dot" aria-hidden="true" />
+            <div>
+              <p className="wf-run-posture-eyebrow">{posture.headline}</p>
+              <p className="wf-run-posture-text">{posture.sentence}</p>
+            </div>
+          </div>
+        )}
         <div className="wf-run-identity">
           <p className="workflow-eyebrow">
             {preview ? "Preview" : "Live"} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}
@@ -3697,7 +3727,6 @@ export function WorkflowRunView({
           {/* Under the refusal: that one says what to fix, this one says the session has
               already done its half. */}
           {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
-          {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
         </div>
@@ -3710,9 +3739,17 @@ export function WorkflowRunView({
               because it returns at most one descriptor there is no arrangement of state in which
               two primaries can appear. */}
           {nextMove && (
-            <Tooltip label={runActionTooltip(nextMove, isActionPending(nextMove.id))}>
+            <Tooltip label={nextMoveOverride
+              ? runActionTooltip(
+                  { tooltip: overriddenNextMoveTooltip(nextMove) },
+                  isActionPending(nextMove.id),
+                )
+              : runActionTooltip(nextMove, isActionPending(nextMove.id))}>
+              {/* Ghost weight under an `auto` posture, primary otherwise. The move itself is
+                  identical either way - the posture only decides whether the page is
+                  recommending the click or merely permitting it. */}
               <button
-                className="btn btn-primary"
+                className={nextMoveOverride ? "btn btn-ghost wf-run-override" : "btn btn-primary"}
                 disabled={isActionPending(nextMove.id)}
                 onClick={() => {
                   if (!nextMove.confirm) {
@@ -3726,6 +3763,7 @@ export function WorkflowRunView({
                 }}
               >
                 {nextMove.label}
+                {nextMoveOverride && <span className="wf-run-override-tag">override</span>}
               </button>
             </Tooltip>
           )}

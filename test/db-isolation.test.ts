@@ -693,6 +693,37 @@ test("the bootstrap clears the two aliases that would outrank it", () => {
   }
 });
 
+test("the bootstrap takes back a port inherited with a state home, and keeps one without", () => {
+  // Both sides, because the condition is what makes this narrow: a port arriving alongside a
+  // live state home came from a Mission Control session launch, and a port arriving alone was
+  // chosen. `PORT` freezes at import like `STATE_DIR`, so only a child can report it.
+  const portOf = (env: Record<string, string>): number => {
+    const res = runChild(
+      `
+        const { PORT } = await import("./src/server/config.ts");
+        console.log(JSON.stringify({ port: PORT }));
+      `,
+      env,
+      { bootstrap: true },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    const line = res.stdout.trim().split("\n").filter(Boolean).at(-1);
+    assert.ok(line, `the child reported nothing\n${res.stdout}\n${res.stderr}`);
+    return (JSON.parse(line) as { port: number }).port;
+  };
+
+  assert.equal(
+    portOf({ MISSION_HOME: join(home, "inherited-session"), MISSION_PORT: "7318" }),
+    7317,
+    "a session's daemon port outranked the documented default",
+  );
+  assert.equal(
+    portOf({ MISSION_PORT: "7318" }),
+    7318,
+    "a deliberately supplied port was discarded",
+  );
+});
+
 // ---- precedence: a file's own home still wins -------------------------------
 
 for (const alias of ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const) {

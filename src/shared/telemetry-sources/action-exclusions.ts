@@ -22,6 +22,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/sessions/:id/reset", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/foreman/planner/control/claim", "Worker lease acquisition; not a completed plan or feature use."],
   ["POST", "/api/foreman/planner/health", "Heartbeat/health refresh; no adoption count."],
+  ["POST", "/api/foreman/health", "Worker diagnostics refresh; no adoption count."],
   ["POST", "/api/foreman/heartbeat", "Worker liveness lease; no adoption count."],
   ["POST", "/api/foreman/heartbeat/release", "Worker liveness lease release; no adoption count."],
   ["POST", "/api/usage/automation", "Phase 3 owns deduplicated automation spend, not another automation action."],

@@ -295,7 +295,7 @@ test("a pipeline task launches the provider in its repository without an agent b
       assert.deepEqual(getDurableTask("pipeline-task")?.pipelineRun, link);
       assert.equal(registry.getTask("pipeline-task")?.homeName, null);
       launches.push(args);
-      return "Run conductor";
+      return { homeName: "Run conductor", homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:captured-pipeline-home" };
     },
   });
 
@@ -311,6 +311,9 @@ test("a pipeline task launches the provider in its repository without an agent b
   const task = registry.getTask("pipeline-task");
   assert.equal(task?.status, "running");
   assert.equal(task?.homeName, "Run conductor");
+  assert.equal(task?.homeBackend, "tmux");
+  assert.equal(task?.terminalResourceId, "multiplexer:tmux:captured-pipeline-home");
+  assert.equal(getDurableTask("pipeline-task")?.terminalResourceId, task?.terminalResourceId);
   assert.equal(task?.sessionId, null);
   assert.deepEqual(task?.pipelineRun, link);
 });
@@ -343,7 +346,7 @@ test("a Codex pipeline task refuses the Claude-only Terminal runtime before spaw
     }),
     spawn: async () => {
       spawned = true;
-      return "unreachable terminal";
+      return { homeName: "unreachable terminal", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 
@@ -413,7 +416,7 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     }),
     spawn: async () => {
       spawned = true;
-      return "unreachable";
+      return { homeName: "unreachable", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 
@@ -634,7 +637,7 @@ test("SDK preflight and start failures never fall back to Terminal", async () =>
       }),
       spawn: async () => {
         spawned = true;
-        return "unreachable";
+        return { homeName: "unreachable", homeBackend: "tmux", terminalResourceId: null };
       },
     });
 
@@ -2241,7 +2244,7 @@ test("an unreadable provider capability refuses before the terminal host starts"
     }),
     spawn: async () => {
       spawned = true;
-      return "unreachable";
+      return { homeName: "unreachable", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 
@@ -2286,7 +2289,7 @@ test("an authoring worktree cannot bypass the Engineer capability gate", async (
     }),
     spawn: async () => {
       spawned = true;
-      return "unreachable";
+      return { homeName: "unreachable", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 
@@ -2334,7 +2337,7 @@ test("running and dispatching tasks refuse a second active owner before terminal
       }),
       spawn: async () => {
         spawned = true;
-        return "unreachable";
+        return { homeName: "unreachable", homeBackend: "tmux", terminalResourceId: null };
       },
     });
 
@@ -2390,7 +2393,7 @@ test("different repository and slug identities may launch beside active pipeline
     }),
     spawn: async () => {
       spawned += 1;
-      return "Target run";
+      return { homeName: "Target run", homeBackend: "tmux", terminalResourceId: null };
     },
   });
 

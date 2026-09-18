@@ -3202,6 +3202,7 @@ export class TaskManager {
               task.homeName,
               undefined,
               task.homeBackend ?? null,
+              task.terminalResourceId,
             );
             if (!stopped.asked || !stopped.ok) {
               throw new Error(stopped.error ?? `no terminal backend could stop ${task.homeName}`);
@@ -4279,7 +4280,7 @@ export class TaskManager {
     }
     const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (alive === false) return;
-    const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null);
+    const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (!stopped.asked || !stopped.ok) {
       throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
     }

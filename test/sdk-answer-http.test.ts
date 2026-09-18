@@ -423,9 +423,12 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   const app = mkApp(registry, supervisor, {
     spawn: async (name) => {
       order.push(`spawn:${name}`);
-      return `${name}-abc123`;
+      return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:captured-handoff-home" };
     },
-    waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
+    waitForSessionAtCwd: async () => {
+      assert.equal(registry.getTask("task-h")?.terminalResourceId, "multiplexer:tmux:captured-handoff-home");
+      return { ...session, id: "proc:tty:1:2" } as Session;
+    },
     settleTask: () => assert.fail("a handoff that succeeded must not settle its task"),
   });
   const res = await app.request("/api/sessions/sdk:hand/handoff", { method: "POST", headers: HEADERS });
@@ -441,6 +444,8 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   assert.equal(task.status, "running");
   assert.equal(task.sessionId, "proc:tty:1:2");
   assert.equal(task.homeName, body.homeName);
+  assert.equal(task.homeBackend, "tmux");
+  assert.equal(task.terminalResourceId, "multiplexer:tmux:captured-handoff-home");
   assert.equal(getSdkSession("sdk:hand")?.taskId, null);
   assert.deepEqual(reasonsDuringStop, ["handoff"], "handoff is recorded before stop resolves");
   assert.deepEqual(sessionEndingReasons("sdk:hand"), ["handoff"]);
@@ -492,6 +497,37 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.match(launchedCommand(launched[0]?.argv ?? []), /'--permission-mode' 'auto'/);
   assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
 });
+
+for (const status of [200, 504]) {
+  test(`selected-terminal handoff persists captured identity before discovery after a ${status} launch`, async () => {
+    const registry = new Registry();
+    const id = `sdk:captured-${status}`;
+    const taskId = `captured-${status}`;
+    seed(registry, null, id);
+    registry.upsertTask(mkTask({ id: taskId, status: "running", sessionId: id }));
+    const resourceId = `multiplexer:tmux:captured-${status}`;
+    const app = mkApp(registry, fakeSupervisor(), {
+      spawn: async () => assert.fail("the selected backend must own the launch"),
+      waitForSessionAtCwd: async () => {
+        const task = registry.getTask(taskId)!;
+        assert.equal(task.homeName, "launched-home");
+        assert.equal(task.homeBackend, "tmux");
+        assert.equal(task.terminalResourceId, resourceId);
+        return null;
+      },
+      settleTask: () => assert.fail("an opened or uncertain terminal must retain its task"),
+    }, async () => ({
+      ok: status === 200, label: "tmux", homeName: "launched-home",
+      terminalResourceId: resourceId, status,
+    }));
+    const response = await app.request(`/api/sessions/${id}/launch`, {
+      method: "POST", headers: HEADERS,
+      body: JSON.stringify({ backend: "tmux", payload: "agent" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(registry.getTask(taskId)?.terminalResourceId, resourceId);
+  });
+}
 
 test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
   const previous = process.env.MISSION_CODEX_BIN;
@@ -1411,7 +1447,7 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
     spawn: async (name) => {
       spawned.push(name);
       await held;
-      return `${name}-abc123`;
+      return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: null };
     },
     waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
     settleTask: () => assert.fail("a successful handoff settles nothing"),
@@ -1442,7 +1478,7 @@ test("a repeat handoff after a successful one is refused too", async () => {
   const app = mkApp(registry, supervisor, {
     spawn: async (name) => {
       spawned.push(name);
-      return `${name}-abc123`;
+      return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: null };
     },
     waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
     settleTask: () => {},

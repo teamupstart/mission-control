@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
+import { TMUX_ADDRESS_FORMAT } from "../src/server/terminal/tmux-target.ts";
 import { parseClients, parsePanes, SEP, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { shellCommand, shellWords } from "../src/server/terminal/shell.ts";
@@ -289,7 +290,7 @@ test("a write that died rather than answering says so", async () => {
 
 test("a detached session gets its shell pane, and the session survives a failed split", async () => {
   const { calls, exec } = recorder([
-    stubRun({ stdout: "", stderr: "", code: 0 }),
+    stubRun({ stdout: ["/tmp/test-tmux.sock", "123", "456", "$7"].join(SEP), stderr: "", code: 0 }),
     stubRun({ stdout: "", stderr: "no room", code: 1 }),
   ]);
   const argv = ["pi", "--session-id", "pi-id", "it's $HOME; $(printf injected)\nnext"];
@@ -307,6 +308,9 @@ test("a detached session gets its shell pane, and the session survives a failed 
   assert.deepEqual(calls[0]!.args, [
     "new-session",
     "-d",
+    "-P",
+    "-F",
+    TMUX_ADDRESS_FORMAT.join(SEP),
     "-s",
     "api",
     "-c",
@@ -314,7 +318,7 @@ test("a detached session gets its shell pane, and the session survives a failed 
     "--",
     shellCommand(argv),
   ]);
-  assert.equal(calls[1]!.args[0], "split-window");
+  assert.equal(calls[1]!.args[2], "split-window");
 });
 
 test("tmux accepts either selection intent without changing detached creation argv", async () => {
@@ -342,7 +346,7 @@ test("the argv that attaches a terminal honours the resolved binary", () => {
     resolveBin(TMUX_BIN),
     "attach",
     "-t",
-    "api",
+    "=api",
   ]);
 });
 

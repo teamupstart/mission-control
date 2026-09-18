@@ -1,3 +1,4 @@
+import { isTerminalBackendId } from "../src/shared/terminal.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -181,7 +182,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return `home-${options.taskId}`;
+      return { homeName: `home-${options.taskId}`, homeBackend: isTerminalBackendId(selectedBackend) ? selectedBackend : "tmux", terminalResourceId: null };
     },
     inject: async (session, text) => {
       pasted = text;

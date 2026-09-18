@@ -171,6 +171,7 @@ export interface TerminalTargetView {
  * those two fields became one list. Still pure data - a target is where to write, never how.
  */
 export interface MuxTarget {
+  /** Opaque backend address. Display sessionName instead. */
   session: string;
   windowIndex: number;
   /** Normalized to a string; tmux's own form is already one (`"%3"`). */

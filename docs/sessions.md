@@ -157,12 +157,22 @@ Rename and Kill split the same way *on the terminal runtime*. Renaming a multipl
 session moves the session name *and* retitles every tab attached to it; renaming an
 emulator-hosted one sets a tab title. An Agent SDK session sits outside this split entirely -
 it has no home to move, so its name is a durable field of its own and no backend is consulted,
-which is also why the characters tmux reserves are ordinary text in its title. Kill always
-signals the agent, and additionally tears down the whole group
-when the backend says it has one - a multiplexer session is a group, a terminal tab is
-not, and that is declared rather than inferred from which vendor answered. If a Mission
+which is also why the characters tmux reserves are ordinary text in its title. Kill signals the selected agent. For tmux, it also closes the session when that agent's
+pane is still the only pane in its only window. Other panes and windows are preserved,
+including a convenience shell in a Mission Control-created session. The check runs inside
+tmux immediately before closing, against a captured session ID and server identity. Renaming
+a session, reusing its name, or restarting the server cannot redirect this close. If the
+backend cannot verify the sole-pane condition, Kill only signals the agent. If a Mission
 Control task was running in that session, killing it also settles the task - see
 [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
+
+Explicit task cleanup is a separate operation: it can close the task's recorded terminal
+home, including its convenience shell. New tmux launches record the server and session
+identity before discovery. Cleanup never resolves a saved name to a replacement session.
+If closing fails, cleanup releases the checkout only after verifying that the recorded
+resource is absent. A live resource or an unknown result keeps the checkout.
+If an older task has only a name and that terminal is still open, close it manually before
+retrying cleanup; Mission Control preserves its checkout when it cannot safely close the home.
 
 **Dispatch follows whichever backend you actually have.** With a multiplexer installed you
 get what you always got: a detached session with a shell pane split beside the agent. With

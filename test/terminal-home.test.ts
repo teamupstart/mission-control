@@ -47,6 +47,8 @@ function sessions(over: Partial<MuxSessions> = {}): MuxSessions {
     attachArgv: (name) => ["fake", "attach", name],
     rename: async () => OK,
     kill: async () => OK,
+    alive: null,
+    closeIfOnlyPane: null,
     names: PLAIN_NAMES,
     ...over,
   };
@@ -305,15 +307,11 @@ test("held names come from the pane list, matched exactly", async () => {
   assert.equal(held!.has("api"), false);
 });
 
-test("a home is killed by its ADDRESS, resolved from the name a task recorded", async () => {
-  // The distinction cmux forced: a tmux session's name IS its target spec, so nothing needed
-  // to tell them apart until a backend arrived whose workspaces carry a UUID and a separate,
-  // renameable title. A teardown that passed the recorded NAME to `close-workspace` would
-  // resolve nothing, tear down nothing, and hand a live agent's worktree back to the pool.
+test("cleanup uses the recorded address even when a replacement has the old name", async () => {
   const killed: string[] = [];
   const byUuid = deps(
     fakeMultiplexer({
-      list: async () => [muxPane({ session: "9f3c-uuid", sessionName: "Fix the login bug" })],
+      list: async () => [muxPane({ session: "replacement-uuid", sessionName: "Fix the login bug" })],
       sessions: sessions({
         kill: async (address) => {
           killed.push(address);
@@ -324,33 +322,23 @@ test("a home is killed by its ADDRESS, resolved from the name a task recorded", 
     fakeEmulator(),
   );
 
-  assert.deepEqual(await killHome("Fix the login bug", byUuid), { ok: true, asked: true });
+  assert.deepEqual(await killHome("Fix the login bug", byUuid, null, "multiplexer:tmux:9f3c-uuid"), { ok: true, asked: true });
   assert.deepEqual(killed, ["9f3c-uuid"], "the address, never the title");
 });
 
-test("a name no backend holds is passed through, so the backend's own refusal is the error", async () => {
-  // Not our lookup miss wearing the backend's clothes: on tmux the two strings are one, and
-  // a name that resolves to nothing has to reach `kill-session` to produce the "can't find
-  // session" a human acts on.
-  const tried: string[] = [];
-  const r = await killHome(
-    "never-existed",
-    deps(
-      fakeMultiplexer({
-        list: async () => [muxPane({ session: "api", sessionName: "api" })],
-        sessions: sessions({
-          kill: async (address) => {
-            tried.push(address);
-            return FAIL("can't find session: never-existed");
-          },
-        }),
-      }),
-      fakeEmulator(),
-    ),
-  );
-
-  assert.deepEqual(tried, ["never-existed"]);
-  assert.deepEqual(r, { ok: false, asked: true, error: "can't find session: never-existed" });
+test("cleanup without a captured identity never resolves a legacy name to a new owner", async () => {
+  let enumerated = false;
+  let killed = false;
+  const machine = deps(fakeMultiplexer({
+    list: async () => { enumerated = true; return [muxPane({ session: "replacement", sessionName: "api" })]; },
+    sessions: sessions({ kill: async () => { killed = true; return OK; } }),
+  }), fakeEmulator());
+  const result = await killHome("api", machine);
+  assert.equal(result.ok, false);
+  assert.equal(result.asked, false);
+  assert.match(result.error ?? "", /identity.*unknown/);
+  assert.equal(enumerated, false);
+  assert.equal(killed, false);
 });
 
 test("an emulator home is named by its TAB TITLE, which is what discovery reads back", async () => {
@@ -425,7 +413,7 @@ test("a killed home reports that it was asked; an unkillable one reports that it
     }),
     fakeEmulator(),
   );
-  assert.deepEqual(await killHome("api", killable), { ok: true, asked: true });
+  assert.deepEqual(await killHome("api", killable, null, "multiplexer:tmux:api"), { ok: true, asked: true });
   assert.deepEqual(killed, ["api"]);
 
   // An emulator tab is not a group: closing the window is the human's to do, and the agent
@@ -435,7 +423,7 @@ test("a killed home reports that it was asked; an unkillable one reports that it
     fakeEmulator({ spawn: { tab: async () => ({ ...OK, target: null }) } }),
     emulatorOnly,
   );
-  assert.deepEqual(await killHome("api", emuOnly), { ok: false, asked: false });
+  assert.equal((await killHome("api", emuOnly)).asked, false);
 });
 
 test("a kill that was attempted and refused is asked-but-failed, and carries the reason", async () => {
@@ -445,6 +433,8 @@ test("a kill that was attempted and refused is asked-but-failed, and carries the
       fakeMultiplexer({ sessions: sessions({ kill: async () => FAIL("can't find session: api") }) }),
       fakeEmulator(),
     ),
+    null,
+    "multiplexer:tmux:api",
   );
 
   assert.deepEqual(r, { ok: false, asked: true, error: "can't find session: api" });

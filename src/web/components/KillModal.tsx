@@ -39,9 +39,7 @@ export function KillModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // What Kill tears down beyond the process: a multiplexer's named session, which an
-  // emulator has no equivalent of. The backend names itself, so the sentence is true for
-  // whichever one is holding this pane rather than borrowing tmux's wording.
+  // Only a verified sole-pane home can be closed along with the agent.
   const killsMux = muxHandle(session);
   const task = session.task;
 
@@ -100,7 +98,8 @@ export function KillModal({
             {killsMux ? (
               <>
                 {" "}
-                and kills its {killsMux.backend} session <code>{killsMux.session}</code>
+                and closes its terminal session only if this is its sole pane and that can
+                be verified. Other panes and windows are preserved
               </>
             ) : null}
             . Its checkout is kept - free it later with Clean up, or leave it and Mission

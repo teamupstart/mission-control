@@ -480,6 +480,9 @@ dispatched or queued, or when you hit **Clear** to start a fresh one - either wa
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
 
+A backdrop click closes the form only when both the press and release happen outside it.
+Selecting text inside the form and releasing the mouse outside keeps the form open.
+
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
 dispatched agent's problem - and an unattended one has nobody to ask. Where Mission Control can

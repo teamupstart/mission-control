@@ -68,6 +68,8 @@ export interface SessionActivityRead {
   state: "idle" | "working";
   /** Epoch ms of that newest datable main-chain record. */
   lastActivity: number;
+  /** Start of the newest observed turn, retained even when it finished between reads. */
+  turnStartedAt?: number;
 }
 
 /**

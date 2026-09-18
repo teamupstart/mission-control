@@ -4071,12 +4071,33 @@ export interface WorkflowRunCriteria {
   compactedAt: number;
 }
 
+/** Recovery operations offered by the daemon. Phase strings are display data for clients. */
+export type WorkflowRecoveryOperation =
+  | "resubmit" | "resubmit-unchanged" | "retry" | "grant-rounds"
+  | "prepare-pr" | "recheck-inspector" | "restart-full" | "cancel" | "run-again";
+
+export interface WorkflowRunRecovery {
+  operations: WorkflowRecoveryOperation[];
+  primary: Exclude<WorkflowRecoveryOperation, "cancel" | "restart-full"> | null;
+  triage: "resubmit" | "retry" | "restart-full" | "cancel" | null;
+  phaseKnown: boolean;
+  resubmit: {
+    resuming: boolean;
+    refusal: string | null;
+    unchanged: "repository" | "snapshot" | null;
+    requestId: string | null;
+  } | null;
+  grantRounds: number;
+}
+
 export interface WorkflowRun {
   id: WorkflowRunId;
   bindingId: WorkflowBindingId;
   workflowVersionId: WorkflowVersionId;
   status: WorkflowRunStatus;
   currentPhase: string;
+  /** Response projection only. Older payloads omit it; clients offer no recovery then. */
+  recovery?: WorkflowRunRecovery;
   maxRepairRounds: number;
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
@@ -4658,6 +4679,8 @@ export interface WorkflowRunSummary {
   repoRoot?: string | null;
   status: WorkflowRunStatus;
   phase: string;
+  /** Computed alongside every summary, including pages and SSE updates. Never persisted. */
+  recovery?: WorkflowRunRecovery;
   round: number;
   /**
    * The latest evidence segment inside `round`. Optional so a summary written by an older

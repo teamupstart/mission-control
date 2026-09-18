@@ -3,6 +3,7 @@ import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
@@ -54,6 +55,7 @@ import {
 import {
   JSON_UTF8_MAX_BYTES_PER_CHAR,
   WORKFLOW_BINDING_STATES,
+  WORKFLOW_EXTERNAL_SOURCE_KINDS,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_DELIVERY_KINDS,
   WORKFLOW_DELIVERY_MODES,
@@ -257,6 +259,13 @@ function workflowAssetReferenceSet(
 // in one follow-up query instead of three reads per run.
 const WORKFLOW_RUN_SUMMARY_SELECT = `
   SELECT r.*, b.note_key, b.session_id, b.session_name,
+         b.state AS binding_state,
+         v.completion_policy_json AS recovery_completion_policy,
+         ls.mode AS latest_submission_mode, ls.status AS latest_submission_status,
+         ls.trigger_source AS latest_trigger_source, ls.trigger_key AS latest_trigger_key,
+         EXISTS (SELECT 1 FROM workflow_runs other WHERE other.binding_id = r.binding_id
+           AND other.id != r.id AND other.status NOT IN ('completed', 'cancelled', 'failed'))
+           AS binding_has_other_run,
          -- The run's repository, RESOLVED: a secondary repository's own root, or the
          -- session's root for the binding that follows its cwd. Resolved in SQL so no
          -- reader has to know that '' means "ask the session", and so a run whose session
@@ -5052,6 +5061,17 @@ export class WorkflowStore {
       const shippedName = shipped
         ? this.builtinWorkflowById(shipped.workflowId)?.definition.name ?? null
         : null;
+      let recoveryPolicy: WorkflowVersion["completionPolicy"] | null = shipped?.completionPolicy ?? null;
+      if (typeof row.recovery_completion_policy === "string") {
+        try {
+          recoveryPolicy = parseJson("workflow_versions", run.workflowVersionId,
+            "completion_policy_json", row.recovery_completion_policy, WorkflowCompletionPolicySchema);
+        } catch (error) {
+          // Keep the run inspectable even when its pinned policy cannot authorize recovery.
+          recoveryPolicy = null;
+          diagnose(error);
+        }
+      }
       return {
         id: run.id,
         bindingId: run.bindingId,
@@ -5080,6 +5100,26 @@ export class WorkflowStore {
           : {}),
         status: run.status,
         phase: run.currentPhase,
+        recovery: projectWorkflowRecovery({
+          status: run.status,
+          phase: run.currentPhase,
+          bindingId: run.bindingId,
+          bindingState: z.enum(WORKFLOW_BINDING_STATES).parse(row.binding_state),
+          sessionId: typeof row.session_id === "string" ? row.session_id : null,
+          external: (WORKFLOW_EXTERNAL_SOURCE_KINDS as readonly string[]).includes(run.triggerSource),
+          round: Number(row.current_round),
+          maxRepairRounds: run.maxRepairRounds,
+          latest: typeof row.latest_submission_id === "string" ? {
+            mode: WorkflowSubmissionModeSchema.parse(row.latest_submission_mode),
+            status: WorkflowSubmissionStatusSchema.parse(row.latest_submission_status),
+            triggerSource: WorkflowTriggerSourceSchema.parse(row.latest_trigger_source),
+            triggerKey: String(row.latest_trigger_key),
+          } : null,
+          attempts,
+          gate: gateState,
+          completionPolicy: recoveryPolicy,
+          bindingHasOtherRun: Boolean(row.binding_has_other_run),
+        }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
         // budget is compared against.
@@ -10244,7 +10284,7 @@ export class WorkflowStore {
       summary,
       binding,
       version,
-      run,
+      run: { ...run, recovery: summary.recovery },
       contextState: runContextState(submissions),
       submissions,
       evidenceImages: this.runSubmissionImageGroups(id, submissions),

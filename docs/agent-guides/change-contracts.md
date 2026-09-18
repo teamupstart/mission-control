@@ -519,6 +519,32 @@ reached only two of them.
   the twenty-seven blocked-capable phases printed their own identifier at operators, and nothing
   about a rendered `preflight refinement exhausted` said a clause was missing.
 
+## Workflow recovery capabilities
+
+`src/server/workflows/recovery.ts` owns the run-level recovery projection. Its phase policy is
+an exhaustive record over `WorkflowRunPhase`: declaring a daemon phase without choosing its
+recovery policy fails typecheck. The store supplies current binding state, the latest submission
+and latest attempts per node, repair budget, external ownership, and the pinned completion policy.
+This uses the summary query and its batched attempt read, without loading a detail per run.
+
+Every summary path, including pages and SSE, carries `recovery`. Run detail and exports carry
+the same projection in `summary.recovery` and `run.recovery`; mutation responses refresh the run
+projection before serialization. The projection is response data and is never persisted.
+
+The dashboard renders the declared `operations`, `primary`, and `triage` choices. It does not
+interpret phase strings to select Retry, Resubmit, Restart, Grant, Cancel, PR preparation, or
+Inspector recheck. Phase text may still explain a run. Snapshot replay keys and grant amounts
+also come from the daemon. Adding a primary operation must update the exhaustive browser renderer.
+
+An unknown open phase permits cancellation only. Missing capability data from an older daemon
+permits no recovery controls. An explicit capability from a newer daemon remains usable even if
+the browser does not know its explanatory phase. Routes revalidate state and retain their existing
+confirmation and idempotency checks; a projection is a snapshot, not an authorization token.
+
+The recovery contract tests exercise every declared phase/status pair across daemon projection
+and both browser models. HTTP and SSE tests pin response coverage, and Playwright verifies that
+withdrawing capabilities removes controls without changing the phase.
+
 ## A run reviews the intent it froze
 
 A workflow run copies the human's ask - raw goal, refined goal, and human decisions - onto

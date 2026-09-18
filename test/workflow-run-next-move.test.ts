@@ -1,3 +1,4 @@
+import { withWorkflowRecovery } from "./helpers/workflow-recovery.ts";
 /**
  * What is at stake: the run page must offer the ONE thing a run needs, and never a disabled
  * button standing in for an explanation.
@@ -94,7 +95,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     gate = null,
     policy = "none",
     missingPrAction = "offer_prepare_pr",
-    submissionStatus = "running",
+    submissionStatus = erroredAttempt ? "failed" : "running",
     triggerSource = "manual",
     triggerKey = manualWorkflowTriggerKey("binding", "request-1"),
     boundVersionId = "version",
@@ -122,7 +123,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
         findings: [],
       }
     : null;
-  return {
+  return withWorkflowRecovery({
     summary: {
       id: "run",
       status,
@@ -166,7 +167,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     externalSource: externalSource ? { kind: "ensemble", id: "ens" } : null,
     inspectorGate,
     resumption,
-  } as unknown as WorkflowRunDetail;
+  } as unknown as WorkflowRunDetail);
 }
 
 function spentInspectorDetail(
@@ -576,14 +577,6 @@ test("the provider retry needs a failed attempt, and falls through when there is
   );
 });
 
-/**
- * A blocked phase nobody enumerated keeps its recovery.
- *
- * The no-move phases are a DENYLIST on purpose. `currentPhase` is a free string that new
- * `setRunState` callers add to without this module hearing about it, so an unrecognised block has
- * to degrade to the resubmission the daemon already accepts. Degrading the other way is how a
- * recoverable run becomes the dead end this whole derivation exists to remove.
- */
 test("a blocked fault that a fresh capture can clear still offers the resubmission", () => {
   for (const phase of [
     "check_cleanup_unresolved",
@@ -594,7 +587,6 @@ test("a blocked fault that a fresh capture can clear still offers the resubmissi
     "session_action_blocked",
     "inspector_gate_context_invalid",
     "external_artifact_mismatch",
-    "a_phase_this_build_has_never_heard_of",
   ]) {
     assert.deepEqual(
       moveOf({ status: "blocked", phase, live: true }),
@@ -804,6 +796,8 @@ test("an Inspector-only repair names the restart instead of offering a round", (
     status: "blocked",
     phase: "capture_error",
     inspectorOnly: true,
+    gate: { waitReason: "findings" },
+    policy: "inspector",
   });
   assert.equal(runNextMove(detail), null);
   assert.match(runNoMoveReason(detail)?.cause ?? "", /Inspector-only repair/);

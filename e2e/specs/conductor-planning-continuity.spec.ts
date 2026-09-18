@@ -509,6 +509,18 @@ test("commission disclosures reset to their feature defaults when rail selection
       )
       .toBe(previousRunCount + 1);
 
+    // Reservation precedes readiness. Wait for the host before publishing its work events.
+    await expect.poll(async () => {
+      const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
+        title: string;
+        status: string;
+        sessionId: string | null;
+      }>;
+      const task = tasks.find((candidate) => candidate.title === title);
+      return task ? { status: task.status, sessionId: task.sessionId } : null;
+    }, { message: "the Engineer host must finish readiness before emitting its work events" })
+      .toMatchObject({ status: "running", sessionId: expect.any(String) });
+
     appendConductorEngineerEvent(daemon.home, "engineer_run_started");
     appendConductorEngineerEvent(daemon.home, "engineer_land_reconciled", {
       planSlug,

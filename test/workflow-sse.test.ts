@@ -205,6 +205,9 @@ test("compact workflow run summaries converge through snapshot, incremental SSE,
   manager.cancel("run", "cancel-request", 3);
   unsubscribe();
   assert.equal(events.at(-1)?.type, "workflow_run_upsert");
+  const update = events.at(-1);
+  assert.ok(update?.type === "workflow_run_upsert");
+  assert.deepEqual(update.run.recovery, store.runSummary("run")?.recovery);
   assert.equal(registry.snapshot().workflowRunSummaries[0]?.status, "cancelled");
   store.listRunSummaries = listRunSummaries;
 

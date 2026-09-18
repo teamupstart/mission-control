@@ -1,3 +1,4 @@
+import { withWorkflowRecovery } from "./helpers/workflow-recovery.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -9,6 +10,7 @@ function render(
   detail = ladderDetail("gate"),
   props: Record<string, unknown> = {},
 ): string {
+  detail = withWorkflowRecovery(detail);
   return renderToStaticMarkup(createElement(WorkflowLadder, {
     summary: detail.summary,
     detail,

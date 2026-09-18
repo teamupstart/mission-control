@@ -643,6 +643,7 @@ test("a run whose frozen basis cannot be read is blocked, not reverted to the li
   const blocked = h.store.getRun(runId);
   assert.equal(blocked?.status, "blocked");
   assert.equal(blocked?.currentPhase, "capture_error");
+  assert.deepEqual(repaired.current, h.manager.presentRun(blocked));
   assert.equal(
     h.store.listEvents(runId).some((event) => event.kind === "run_intent_unreadable"),
     true,

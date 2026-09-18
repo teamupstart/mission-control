@@ -251,7 +251,7 @@ test("a Jira source survives a repository rename and remains repairable", async 
     .toBe(daemon.repo);
 
   await directory.getByRole("button").filter({ hasText: "Renamed Jira 2" }).click();
-  await editor.getByRole("button", { name: "Remove Renamed Jira 2" }).click();
+  await editor.getByRole("button", { name: "Delete source: Renamed Jira 2" }).click();
   await expect
     .poll(async () => {
       const response = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);

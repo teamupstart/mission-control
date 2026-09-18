@@ -38,6 +38,15 @@ async function expectGuide(page: Page): Promise<void> {
   await page.keyboard.press("Tab");
   await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeFocused();
   await expectContentClearsBorder(dialog);
+  await expect(dialog.getByRole("button", { name: "Close", exact: true }))
+    .toHaveAccessibleDescription("Close the Foreman guide (Escape)");
+  await expect(profileLink(dialog)).toHaveAccessibleDescription("Open Foreman's standing prompt in Library");
+  await dialog.getByRole("button", { name: "Close", exact: true }).hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Close the Foreman guide (Escape)" })).toBeVisible();
+  await profileLink(dialog).hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Open Foreman's standing prompt in Library" })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".tooltip")).toHaveCount(0);
 }
 
 for (const surface of ["dropdown", "settings"] as const) {

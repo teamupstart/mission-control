@@ -60,9 +60,11 @@ export function ForemanGuide({
     >
       <header className="modal-head">
         <h2>About Foreman</h2>
-        <button ref={closeRef} type="button" className="btn btn-ghost" onClick={onClose}>
-          Close
-        </button>
+        <Tooltip label="Close the Foreman guide (Escape)">
+          <button ref={closeRef} type="button" className="btn btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </Tooltip>
       </header>
       <div className="modal-body foreman-guide-body">
         <p className="foreman-guide-intro">
@@ -126,14 +128,16 @@ export function ForemanGuide({
         </section>
       </div>
       <footer className="modal-foot">
-        <a
-          ref={linkRef}
-          className="btn"
-          href={missionRouteHash({ page: "library", shelf: "personas", assetId: "foreman" })}
-          onClick={onOpenProfile}
-        >
-          Edit Foreman prompt in Library
-        </a>
+        <Tooltip label="Open Foreman's standing prompt in Library">
+          <a
+            ref={linkRef}
+            className="btn"
+            href={missionRouteHash({ page: "library", shelf: "personas", assetId: "foreman" })}
+            onClick={onOpenProfile}
+          >
+            Edit Foreman prompt in Library
+          </a>
+        </Tooltip>
       </footer>
     </Overlay>,
     document.body,

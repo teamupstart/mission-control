@@ -1906,7 +1906,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             if (!launched.ok && launched.status !== 504) {
               throw new Error(launched.error ?? `${launched.label} could not open a window`);
             }
-            return launched.homeName ?? name;
+            return {
+              homeName: launched.homeName ?? name,
+              homeBackend: backend,
+              terminalResourceId: launched.terminalResourceId ?? null,
+            };
           },
         }
       : defaultHandoffDeps;

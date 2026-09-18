@@ -738,7 +738,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return `home-${options.taskId}`;
+      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: null };
     },
     inject: async (_session, text) => {
       delivered = text;

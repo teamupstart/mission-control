@@ -1,6 +1,7 @@
 import type { Session } from "@shared/types.ts";
 import { resumeArgvFor, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
+import type { SpawnedHome } from "../terminal/home.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 import { clearSdkSessionTask, restoreSdkSessionTask } from "./store.ts";
@@ -181,9 +182,9 @@ async function transfer(
   }
 
   const name = sessionLabel(task?.title?.trim() || session.name || session.agent);
-  let homeName: string;
+  let home: SpawnedHome;
   try {
-    homeName = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
+    home = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     // The agent is gone and nothing is going to replace it, so the task has to be SETTLED
@@ -207,7 +208,7 @@ async function transfer(
         `${cwd} to continue the conversation yourself`,
     };
   }
-  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, homeName, updatedAt: Date.now() });
+  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, ...home, updatedAt: Date.now() });
 
   // Rebind the task to whatever discovery finds in that checkout. Absence is not an error -
   // the home is open and the sweep will keep looking - so this reports what it got rather
@@ -221,5 +222,5 @@ async function transfer(
     });
     registry.bindTaskToWorkEpisode(task.id, adopted.id);
   }
-  return { ok: true, homeName, sessionId: adopted?.id ?? null };
+  return { ok: true, homeName: home.homeName, sessionId: adopted?.id ?? null };
 }

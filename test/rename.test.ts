@@ -278,6 +278,8 @@ function spyDeps(
               return opts.renameResult ?? OK;
             },
             kill: async () => OK,
+            alive: null,
+            closeIfOnlyPane: null,
             names: { validate: () => null, sanitize: (t) => t },
           },
   });
@@ -346,6 +348,8 @@ test("rename: host tabs are resolved by the OLD name, before the rename lands", 
         return OK;
       },
       kill: async () => OK,
+      alive: null,
+      closeIfOnlyPane: null,
       names: { validate: () => null, sanitize: (t) => t },
     },
   });
@@ -664,7 +668,7 @@ for (const backend of ["tmux", "herdr", "cmux"] as const) {
     const panes: MuxPane[] = [];
     const terminal = fakeMultiplexer({ id: backend, list: async () => panes, sessions: {
       names: MULTIPLEXERS[backend].sessions!.names,
-      attachArgv: null, rename: async () => OK, kill: null,
+      attachArgv: null, rename: async () => OK, kill: null, closeIfOnlyPane: null, alive: null,
       spawnDetached: async (spec) => {
         assert.equal(spec.name, task.title);
         panes.push(muxPane({

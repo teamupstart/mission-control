@@ -20089,7 +20089,7 @@ button.wf-carried.is-link:focus-visible {
   align-items: center;
   gap: 10px;
 }
-/* The source's own name. Flexes so the badge and the remove button stay put while the
+/* The source's own name. Flexes so the badge stays put while the
    field takes whatever is left - capped, because at page width "whatever is left" is 700px
    of empty box for a two-word label. */
 .ts-name {
@@ -20097,9 +20097,6 @@ button.wf-carried.is-link:focus-visible {
   min-width: 0;
   max-width: 420px;
   font-size: 12.5px;
-}
-.ts-head .foreman-repo-remove {
-  margin-left: 0;
 }
 .ts-status {
   margin: 9px 0 0;

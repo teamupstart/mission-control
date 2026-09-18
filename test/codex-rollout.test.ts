@@ -305,3 +305,24 @@ test("findRolloutForSession returns null when no rollout matches the cwd", () =>
   assert.equal(findRolloutForSession(codexSession({ cwd: "/nowhere", startedAt: 0 }), root), null);
   assert.equal(findRolloutForSession(codexSession({ cwd: null }), root), null);
 });
+
+test("passive lifecycle retains precise starts only for the matching turn", async () => {
+  const { parseRolloutActivity } = await import("../src/server/harness/codex/rollout.ts");
+  const second = 1789760904000;
+  const line = (type: string, turnId: string, at: number) => JSON.stringify({
+    type: "event_msg", timestamp: new Date(at).toISOString(),
+    payload: { type, turn_id: turnId, started_at: second / 1000,
+      ...(type === "task_complete" ? { completed_at: second / 1000 } : {}) },
+  });
+  const start = line("task_started", "one", second + 500);
+  const end = line("task_complete", "one", second + 800);
+  assert.deepEqual(parseRolloutActivity([start, end]), {
+    state: "idle", lastActivity: second + 800, turnStartedAt: second + 500,
+  });
+  assert.deepEqual(parseRolloutActivity([end]), {
+    state: "idle", lastActivity: second + 800,
+  }, "a completion-only tail does not invent a start");
+  assert.deepEqual(parseRolloutActivity([start, line("task_complete", "other", second + 900)]), {
+    state: "idle", lastActivity: second + 900,
+  }, "an unrelated completion cannot inherit another turn's start");
+});

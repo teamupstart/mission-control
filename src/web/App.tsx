@@ -3558,6 +3558,7 @@ export function App(): React.JSX.Element {
               <ForemanBar
                 state={foreman}
                 openRequest={foremanOpenRequest}
+                onOpenModels={() => navigate({ page: "settings", category: "models" })}
                 onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
               />
               <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>

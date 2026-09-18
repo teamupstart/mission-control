@@ -627,6 +627,39 @@ forces an immediate probe, even when the stored plan still covers the backlog. A
 probe returns to the same serial safety fallback; recovery is reported only after a fresh
 plan is successfully stored.
 
+### Errors in Foreman itself
+
+When Foreman reports a failure, its top-bar control turns amber and shows an issue count.
+Open it to read the error received, the activity and provider/model involved, occurrence
+count, first/last occurrence, and the names of sessions where it was seen. **Copy error**
+copies the displayed diagnostic; **Open model settings** takes you to Foreman's model
+choices. Error text is plain text, bounded to 600 characters, with common credential forms
+redacted. An unknown error stays an unknown error: a rate-limit response is not relabeled
+as exhausted account usage.
+
+The count represents grouped errors, not individual attempts. Repeated errors for the same
+activity, provider, model, and diagnostic update one group; changing request identifiers and
+timestamps do not create new groups. The popover keeps the 12 most recent groups and at most
+20 session names per group, and says when either limit is reached. Further groups are closed
+until opened. Errors do not create repeated toasts, sounds, or session questions.
+
+This covers Foreman's review, verification, cheap-tier, dependency-planning, and recovery
+model calls, including invalid model responses, plus failures caught in its main worker
+activities. A successful call for the same activity and provider/model clears that activity's
+reported failures. Selecting another provider/model retires the replaced choice's diagnostics;
+it does not test the new choice. A backlog with zero or one task is planned locally without
+calling a provider, so its success does not clear an earlier dependency-planning model error.
+Failures are observed regardless of task count. Existing retry, escalation, and planner fallback rules still
+decide what work runs next. Session names describe where a failure was observed, not a promise
+that every such session remains blocked.
+
+**Worker running** means the process holds its lease, not that its model calls succeed.
+Errors remain visible when Foreman is disabled or its worker stops, labeled as the last report
+when reporting is stale. Reports are process-local, not a durable incident history: a replacement
+worker starts a new record, and a surviving worker republishes on its next heartbeat after a
+daemon restart. The worker sends this bounded projection over HTTP; the daemon projects it in
+the existing Foreman status response, and the worker never opens the database.
+
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the
 panel is the durable posture.

@@ -23,6 +23,7 @@ import {
 } from "@shared/llm.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
+import type { ForemanHealthSnapshot } from "@shared/foreman-health.ts";
 import type {
   BacklogPlanInput,
   ForemanConfig,
@@ -1004,6 +1005,11 @@ export class ForemanClient implements ForemanActions {
   async reportPlannerHealth(workerId: string, health: ForemanPlannerHealth): Promise<void> {
     const res = await send("POST", "/api/foreman/planner/health", { workerId, ...health });
     if (!res.ok) throw new Error(`reportPlannerHealth -> ${res.status}`);
+  }
+
+  async reportHealth(workerId: string, health: ForemanHealthSnapshot): Promise<void> {
+    const res = await send("POST", "/api/foreman/health", { workerId, health });
+    if (!res.ok) throw new Error(`reportHealth -> ${res.status}`);
   }
 
   /** Hand the lease back on a clean shutdown, so a standby takes over at once. */

@@ -23,6 +23,7 @@ Object.defineProperty(globalThis, "fetch", {
 });
 
 const {
+  COMPOSER_EDITOR_KEYS_HINT,
   composerEditorRequested,
   composerEditorStages,
   composerExpandHint,
@@ -31,6 +32,7 @@ const {
 const {
   ACTIONS,
   bindingValidationError,
+  chordMayBeAltGraph,
   chordSurvivesTyping,
   resetAll,
   resolveKeybindings,
@@ -132,6 +134,47 @@ test("excluding editing chords does not disturb Interrupt, which App dispatches 
   assert.equal(interrupt?.firesWhileTyping, undefined);
   assert.equal(bindingValidationError(resolveKeybindings({}), "interrupt", "ctrl+c"), null);
   assert.equal(resolveKeybindings({}).interrupt, "ctrl+c");
+});
+
+test("an AltGr chord is refused, because Ctrl+Alt types a character on many layouts", () => {
+  const bindings = resolveKeybindings({});
+  // Windows and Linux report AltGr as Ctrl+Alt, and AltGr+Q is `@` on a German keyboard,
+  // AltGr+E is `€` on several more. Such a chord carries a command modifier, so the older
+  // rule called it safe - and the composer would then have eaten that character.
+  for (const chord of ["ctrl+alt+q", "ctrl+alt+e", "ctrl+alt+2", "ctrl+alt+shift+q"]) {
+    assert.equal(chordMayBeAltGraph(chord), true, `${chord} should read as possible AltGr`);
+    assert.equal(chordSurvivesTyping(chord), false, `${chord} must not survive typing`);
+    assert.match(
+      bindingValidationError(bindings, "composerEditor", chord) ?? "",
+      /AltGr/,
+      `${chord} should be refused by name`,
+    );
+  }
+  // Either modifier alone is fine, and Cmd rules AltGr out entirely.
+  for (const chord of ["ctrl+q", "cmd+q", "cmd+ctrl+alt+q"]) {
+    assert.equal(chordMayBeAltGraph(chord), false, `${chord} is not AltGr`);
+  }
+  assert.equal(bindingValidationError(bindings, "composerEditor", "ctrl+q"), null);
+});
+
+test("a real AltGr keypress opens nothing, even against a stored Ctrl+Alt binding", () => {
+  // The recording rule cannot see a keystroke, so it refuses the whole Ctrl+Alt shape. The
+  // dispatch boundary CAN see one, and this is that half: a binding that reached the store
+  // from an older build still must not swallow the character being typed.
+  assert.equal(composerEditorRequested("ctrl+alt+q", "ctrl+alt+q", { altGraph: true }), false);
+  assert.equal(composerEditorRequested("ctrl+alt+q", "ctrl+alt+q", { altGraph: false }), false);
+  // And a legitimate chord is unaffected by the new argument being absent or false.
+  assert.equal(composerEditorRequested("ctrl+g", "ctrl+g"), true);
+  assert.equal(composerEditorRequested("ctrl+g", "ctrl+g", { altGraph: false }), true);
+  // A stray AltGr held during an unrelated chord never opens it either.
+  assert.equal(composerEditorRequested("ctrl+g", "ctrl+g", { altGraph: true }), false);
+});
+
+test("the staging legend names both modifiers, not just the macOS one", () => {
+  // `composerEditorStages` accepts ⌃Enter for keyboards with no Command key, so a legend
+  // naming only ⌘ told Windows and Linux readers about a key they do not have.
+  assert.match(COMPOSER_EDITOR_KEYS_HINT, /⌘\/⌃enter/);
+  assert.match(renderModal({ text: "draft", reopenHint: "⌃G" }), /⌘\/⌃enter stages it/);
 });
 
 test("the editor refuses to store a chord that would type itself", () => {

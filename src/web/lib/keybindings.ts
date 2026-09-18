@@ -273,7 +273,7 @@ export const ACTIONS: readonly ActionDef[] = [
     id: "composerEditor",
     label: "Expand the message box",
     description:
-      "Open what you are writing in a full-size editor. ⌘Enter puts the result back in the send box without sending it.",
+      "Open what you are writing in a full-size editor. ⌘Enter or ⌃Enter puts the result back in the send box without sending it.",
     defaultBinding: "ctrl+g",
     group: "selection",
     firesWhileTyping: true,
@@ -596,6 +596,29 @@ export function chordEditsText(chord: string): boolean {
 }
 
 /**
+ * True when a chord could actually be AltGr rather than the modifiers it appears to name.
+ *
+ * Windows and Linux report AltGr as Ctrl+Alt, and on a great many layouts that combination
+ * TYPES: AltGr+Q is `@` on German and Polish keyboards, AltGr+2 is `@` on French, AltGr+E is
+ * `€` on several more. Such a chord carries a command modifier, so the rule above would call
+ * it safe, and an action dispatched by the field would then swallow a character somebody was
+ * simply typing - in the exact layouts where they type it most.
+ *
+ * The browser cannot tell us which it was at the moment a chord is RECORDED, because a
+ * chord is a string rather than an event by then. So the whole Ctrl+Alt shape is refused for
+ * a `firesWhileTyping` action, at the cost of a combination macOS users could have had (⌃⌥ is
+ * not AltGr there). At DISPATCH the question is answerable exactly, and
+ * `composerEditorRequested` asks it through `getModifierState("AltGraph")`.
+ *
+ * Cmd present means it is not AltGr: no layout produces a character from ⌘ plus Ctrl+Alt.
+ */
+export function chordMayBeAltGraph(chord: string): boolean {
+  const { mods } = parseChord(chord);
+  if (mods.includes("cmd")) return false;
+  return mods.includes("ctrl") && mods.includes("alt");
+}
+
+/**
  * True when a chord can be dispatched from inside a text field without eating typed text.
  *
  * The two shapes App's own typing guard already allows, named once so the registry's
@@ -614,6 +637,7 @@ export function chordEditsText(chord: string): boolean {
  */
 export function chordSurvivesTyping(chord: string): boolean {
   if (chordEditsText(chord)) return false;
+  if (chordMayBeAltGraph(chord)) return false;
   return chordHasCommandModifier(chord) || chordUsesFunctionKey(chord);
 }
 
@@ -630,6 +654,11 @@ export function typingUnsafeChordReason(id: ActionId, chord: string): string | n
   // never mentioned.
   if (chordEditsText(chord)) {
     return `${formatChord(chord)} is a text-editing command. This shortcut fires from inside the send box, so binding it here would take copy, paste, cut, select all, undo or redo away from that box.`;
+  }
+  // Ahead of the generic sentence for the same reason: "would be typed into the message" is
+  // true of ⌃⌥Q and says nothing about why ⌃Q and ⌥Q are both fine on their own.
+  if (chordMayBeAltGraph(chord)) {
+    return `${formatChord(chord)} is how Windows and Linux report AltGr, which types a character on many layouts. This shortcut fires from inside the send box, so that character would open the editor instead of being typed.`;
   }
   return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.`;
 }

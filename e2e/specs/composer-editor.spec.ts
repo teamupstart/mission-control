@@ -129,6 +129,15 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
   // Still recording after a refusal, rather than silently back on an unchanged row.
   await expect(row.getByRole("button", { name: /^Recording/ })).toBeVisible();
 
+  // ⌘V would swallow Paste in the box people paste into most, and ⌃⌥Q is how Windows and
+  // Linux report AltGr, which types `@` on a German layout. Both carry a command modifier,
+  // so both looked valid to the older rule.
+  await dashboard.keyboard.press("Meta+v");
+  await expect(dashboard.locator(".settings-error")).toContainText("text-editing command");
+  await dashboard.keyboard.press("Control+Alt+q");
+  await expect(dashboard.locator(".settings-error")).toContainText("AltGr");
+  await expect(row.getByRole("button", { name: /^Recording/ })).toBeVisible();
+
   await dashboard.keyboard.press("Meta+e");
   await expect(
     row.getByRole("button", { name: /^Change shortcut for Expand the message box \(currently ⌘E\)/ }),

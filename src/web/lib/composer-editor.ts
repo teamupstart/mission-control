@@ -13,8 +13,18 @@ import { chordSurvivesTyping, formatChord } from "./keybindings.ts";
  *
  * `chord` is `chordFromEvent`'s answer, so a lone modifier press (null) never matches.
  */
-export function composerEditorRequested(chord: string | null, binding: string): boolean {
+export function composerEditorRequested(
+  chord: string | null,
+  binding: string,
+  event?: { altGraph?: boolean },
+): boolean {
   if (!chord || !binding) return false;
+  // AltGr, answered exactly. Windows and Linux report it as Ctrl+Alt, and on many layouts it
+  // TYPES - AltGr+Q is `@` on a German keyboard. `chordMayBeAltGraph` refuses the whole
+  // Ctrl+Alt shape when a binding is recorded, because a chord is a string by then and the
+  // question cannot be answered; here the keystroke is still in hand, so ask it. Without
+  // this, a stored Ctrl+Alt binding from an older build would still swallow that character.
+  if (event?.altGraph) return false;
   return chord === binding && chordSurvivesTyping(binding);
 }
 
@@ -64,7 +74,11 @@ export function composerKeysHint(expandChord: string): string {
 }
 
 /**
- * The editor's footer legend. Spelled ⌘ like every other keycap here, though
- * `composerEditorStages` takes ⌃Enter too - naming both doubles the legend for one gesture.
+ * The editor's footer legend.
+ *
+ * Names BOTH staging modifiers rather than only ⌘. `composerEditorStages` accepts either,
+ * and a legend that said ⌘ alone told every Windows and Linux reader about a key their
+ * keyboard does not have while withholding the one that works for them.
  */
-export const COMPOSER_EDITOR_KEYS_HINT = "⌘enter stages it in the send box · esc discards";
+export const COMPOSER_EDITOR_KEYS_HINT =
+  "⌘/⌃enter stages it in the send box · esc discards";

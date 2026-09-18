@@ -114,7 +114,7 @@ export function ComposerEditorModal({
             Cancel
           </button>
         </Tooltip>
-        <Tooltip label="Put this text in the send box, unsent (⌘Enter)">
+        <Tooltip label="Put this text in the send box, unsent (⌘Enter or ⌃Enter)">
           <button type="button" className="btn btn-send" onClick={stage}>
             Stage in the send box
           </button>

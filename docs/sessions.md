@@ -1053,9 +1053,10 @@ a correction with three numbered points, a spec, or a pasted stack trace with a 
 around it. <kbd>⌃</kbd><kbd>G</kbd>, from inside the box, opens what you have written in a
 full-size editor with room to read it.
 
-**It never sends.** <kbd>⌘</kbd><kbd>Enter</kbd> puts the text back in the reply box,
-unsent, with the cursor at the end - so the message you spent time on is still a draft you
-read over and deliver yourself, with the ordinary <kbd>Enter</kbd>, when you mean to.
+**It never sends.** <kbd>⌘</kbd><kbd>Enter</kbd> - or <kbd>⌃</kbd><kbd>Enter</kbd>, on a
+keyboard with no Command key - puts the text back in the reply box, unsent, with the cursor
+at the end, so the message you spent time on is still a draft you read over and deliver
+yourself, with the ordinary <kbd>Enter</kbd>, when you mean to.
 <kbd>Enter</kbd> inside the editor is a newline, which is the whole reason it commits on a
 chord. <kbd>Esc</kbd> or **Cancel** closes it and leaves the reply box holding exactly what
 it had. Press <kbd>⌃</kbd><kbd>G</kbd> again to keep working on the staged text.
@@ -1067,7 +1068,10 @@ The chord is rebindable in **Settings → Keyboard**, with one constraint no oth
 has. This is the only action that fires while the cursor is already in a text field, so its
 key has to be one a message could never contain: a <kbd>⌘</kbd> or <kbd>⌃</kbd>
 combination, or a function key. The editor refuses a bare letter and says why, rather than
-accepting a binding that would open a dialog every time you typed that letter.
+accepting a binding that would open a dialog every time you typed that letter. It also
+refuses the text-editing commands (copy, paste, cut, select all, undo, redo), and
+<kbd>⌃</kbd><kbd>⌥</kbd> combinations, which are how Windows and Linux report
+<kbd>AltGr</kbd> and type a character on many layouts.
 
 ### Reading a session's whole conversation
 

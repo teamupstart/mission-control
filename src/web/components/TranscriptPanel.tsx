@@ -1198,7 +1198,11 @@ export function TranscriptPanel({
               // table whenever the cursor is in a text box - which is the premise of this
               // gesture. `composerEditorRequested` re-checks the chord is typing-safe; the
               // registry refuses to store any other, so this is a second lock, not a policy.
-              if (composerEditorRequested(chordFromEvent(e.nativeEvent), expandChord)) {
+              if (
+                composerEditorRequested(chordFromEvent(e.nativeEvent), expandChord, {
+                  altGraph: e.nativeEvent.getModifierState("AltGraph"),
+                })
+              ) {
                 e.preventDefault();
                 setComposerEditorText(e.currentTarget.value);
                 return;

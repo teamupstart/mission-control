@@ -20583,6 +20583,69 @@ button.wf-carried.is-link:focus-visible {
 .foreman-pop {
   width: 288px;
 }
+.foreman-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.foreman-enable-row {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.foreman-info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.foreman-info-btn:hover {
+  color: var(--fg);
+  border-color: var(--foreman);
+}
+.foreman-info-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.foreman-guide {
+  width: min(720px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.foreman-guide .modal-head,
+.foreman-guide .modal-foot {
+  flex: none;
+}
+.foreman-guide-body {
+  min-height: 0;
+  line-height: 1.6;
+  font-size: 14px;
+}
+.foreman-guide-body h3 {
+  margin: 22px 0 8px;
+  font-size: 15px;
+}
+.foreman-guide-body p {
+  margin: 10px 0;
+}
+.foreman-guide-body ul {
+  padding-left: 22px;
+}
+.foreman-guide-body li + li {
+  margin-top: 6px;
+}
+.foreman-guide-intro {
+  color: var(--muted);
+}
 .foreman-btn.has-errors,
 .foreman-btn.has-errors .foreman-chip {
   color: var(--attention);

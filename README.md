@@ -176,8 +176,12 @@ short decision brief. Draft-only, one-click, and Live modes make the level of de
 with repository trust and hard safety boundaries beneath all three.
 
 Foreman can also keep accepted work moving: verify completion, deliver focused repair gaps, follow
-pull request feedback and red CI, and schedule backlog work. It remains off until you enable it and
+pull request feedback and red CI, and schedule backlog work. It starts in draft-only mode and
 never treats destructive choices as routine.
+
+Use the **About Foreman** info button in its dropdown, settings panel, or session pane for a
+plain-language guide to its role, context, and responsibilities. The guide links directly to
+**Library → Personas → Foreman**, where you can edit its standing prompt.
 
 ![Mission Control Foreman settings](docs/images/foreman.png)
 

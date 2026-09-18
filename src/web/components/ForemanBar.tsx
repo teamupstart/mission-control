@@ -4,6 +4,7 @@ import type { WrapupTrigger } from "@shared/queue.ts";
 import type { ForemanState } from "../useForeman.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
@@ -233,6 +234,7 @@ export function ForemanBar({
 }): React.JSX.Element {
   const { config, status } = state;
   const [open, setOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const handledOpenRequest = useRef(openRequest);
 
@@ -244,6 +246,7 @@ export function ForemanBar({
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {
+      if (guideOpen) return;
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     // Escape closes the popover the same way a click outside does. It stops there rather
@@ -251,6 +254,7 @@ export function ForemanBar({
     // drop the fleet selection behind it - this popover is not a registered overlay, so
     // nothing else knows to swallow the key on its behalf.
     function onKey(e: KeyboardEvent): void {
+      if (guideOpen) return;
       if (open && e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);
@@ -262,7 +266,7 @@ export function ForemanBar({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, guideOpen]);
 
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
@@ -291,9 +295,19 @@ export function ForemanBar({
       {open && (
         <ForemanPopover
           state={state}
+          onOpenGuide={() => setGuideOpen(true)}
           onOpenSettings={() => {
             setOpen(false);
             onOpenSettings();
+          }}
+        />
+      )}
+      {guideOpen && (
+        <ForemanGuide
+          onClose={() => setGuideOpen(false)}
+          onOpenProfile={() => {
+            setGuideOpen(false);
+            setOpen(false);
           }}
         />
       )}
@@ -310,9 +324,11 @@ export function ForemanBar({
 export function ForemanPopover({
   state,
   onOpenSettings,
+  onOpenGuide,
 }: {
   state: ForemanState;
   onOpenSettings: () => void;
+  onOpenGuide: () => void;
 }): React.JSX.Element | null {
   const { config, status, update, error } = state;
   const planner = status?.planner;
@@ -347,6 +363,10 @@ export function ForemanPopover({
 
   return (
     <div className="alert-pop foreman-pop" role="dialog" aria-label="Foreman settings">
+      <div className="foreman-info-row">
+        <strong>Foreman</strong>
+        <ForemanInfoButton onClick={onOpenGuide} />
+      </div>
       <Tooltip label="Let Foreman watch sessions and answer them for you">
         <label className="alert-row">
           <input

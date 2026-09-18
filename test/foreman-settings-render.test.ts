@@ -334,7 +334,7 @@ test("candidateRepos offers known repos that aren't trusted yet, and omits ones 
 
 function renderPopover(state: ForemanState): string {
   return renderToStaticMarkup(
-    createElement(ForemanPopover, { state, onOpenSettings: () => {} }),
+    createElement(ForemanPopover, { state, onOpenSettings: () => {}, onOpenGuide: () => {} }),
   );
 }
 

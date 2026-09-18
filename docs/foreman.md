@@ -1,5 +1,12 @@
 # Foreman (auto-responder)
 
+For an in-app introduction, click the **About Foreman** info button in the top-bar Foreman
+dropdown, **Settings → Foreman**, or the session's Foreman pane. The guide explains what
+Foreman does, the context it receives, its modes, and which decisions remain yours. Its
+**Edit Foreman prompt in Library** link opens **Library → Personas → Foreman** directly.
+That System profile edits standing guidance for future evaluations; permissions and
+safety checks stay under their existing controls.
+
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
 Claude Code, Codex, or managed Pi session it has both [been invited

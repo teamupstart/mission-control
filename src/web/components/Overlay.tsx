@@ -63,6 +63,7 @@ export const OVERLAY_IDS = {
   tourPicker: "tour-picker",
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
+  foremanGuide: "foreman-guide",
   restoreSettings: "restore-settings",
   taskSourceWritebackDiscard: "task-source-writeback-discard",
   attachmentPreview: "attachment-preview",

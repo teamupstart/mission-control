@@ -1,5 +1,8 @@
 # Observability and telemetry
 
+The [six Grafana dashboards and isolated demo](observability-dashboards.md) are the local
+operator experience. That guide covers setup, query semantics, trace drill-down and Phase 7 verification.
+
 Mission Control can capture what it does as OpenTelemetry signals, keep them on disk until a
 backend is reachable, and export them over OTLP/HTTP. This page covers what it collects, how to
 turn it on, the local Grafana stack that ships with the repository, and the measured costs.
@@ -14,18 +17,22 @@ points back at its own address.
 
 ## What state it is in
 
-Phases 1, 2 and 3 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) are
-implemented: the durable path, the export protocol, the consent model, the local reference stack,
-one working diagnostic dashboard, the **Settings > Telemetry** panel that drives all of it, and
+Phases 1, 2 and 3 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) established
+the durable path, the export protocol, the consent model, the local reference stack,
+a compatibility diagnostic, the **Settings > Telemetry** panel that drives all of it, and
 session attribution - how sessions start, the model and effort known for each turn with explicit
 attribution quality, what they spend, how they end, and which pull requests verifiably landed.
 When execution metadata is unavailable, attribution can be launch-resolved or unknown.
 
-Sixteen events are captured today: the daemon's own start, the synthetic connection probe,
+Phase 7 adds the [six product dashboards and isolated demo](observability-dashboards.md),
+including cohort views and trace drill-down. They consume the workflow, action and error sources
+from Phases 4 and 5 and the analytical projections from Phase 6.
+
+The initial Phases 1-3 scope captured sixteen events: the daemon's own start, the synthetic connection probe,
 telemetry control actions, the one browser-originated fact the daemon cannot observe for itself,
 and [the twelve session, model, task and pull request facts below](#session-model-and-outcome-sources).
-Workflow, action and error coverage arrive in later phases through the registration seams described
-below.
+The following sections describe that foundation; additional sources use the registration seams
+described below.
 
 ## Turning it on
 
@@ -363,7 +370,8 @@ npm run observability:reset    # stop AND destroy every data volume
 | Grafana | `12.4.10` | `http://127.0.0.1:13000` |
 
 Point Mission Control at `http://127.0.0.1:14318` and open
-`http://127.0.0.1:13000/d/mission-telemetry-diagnostics`. Both data sources and the dashboard are
+`http://127.0.0.1:13000/d/mission-adoption`. The compatibility diagnostic remains available at
+`/d/mission-telemetry-diagnostics`. Both data sources and all dashboards are
 provisioned from files; nothing is imported by hand, and dashboards are not editable in place so a
 browser edit cannot silently diverge from the repository.
 
@@ -379,8 +387,9 @@ From the app, that is four steps in **Settings > Telemetry**:
    Tempo will store, so it is searchable once the next export lands.
 
 The probe is synthetic, and the panel says so where it reports the result: it is a connection
-check, not a record of anything the app did. The daemon does not capture telemetry about its own
-export attempts either, so a failing backend does not fill the queue it cannot drain.
+check, not a record of anything the app did. The daemon does not create an event per export
+attempt. Bounded destination-health gauges are captured at most once per 30-second bucket,
+under the same consent and storage limits as other telemetry.
 
 Container-to-container traffic uses service names (`http://collector:4318`); the host uses the
 published ports above. Mixing the two up is the most common way this stack appears broken.
@@ -397,19 +406,19 @@ published ports above. Mixing the two up is the most common way this stack appea
 - **`out_of_order_time_window: 8d`** is one day longer than the app's queue. Without it a laptop
   that was offline for a week drains successfully, gets 200s the whole way, and has every sample
   silently refused as too old.
-- **The Collector's queues are persistent**, backed by a volume. A default in-memory queue would
-  add a brand new loss window immediately downstream of a store that exists to have none.
-- **Tempo's `max_duration` and `block_retention`** reach past the app's queue window, or a replayed
-  old trace exists in storage and cannot be found by a time-bounded search.
+- **The Collector's queues are persistent**, backed by a volume, with no asynchronous batch
+  processor before persistence. An in-memory buffer would add a loss window after an ACK.
+- **Tempo's `max_duration`, `block_retention` and WAL `ingestion_time_range_slack`** reach past
+  the app's queue window, or an old trace can be missed by time-bounded search after block flush.
 
 ### Verifying it end to end
 
 ```sh
-npm run observability:up
-npm run test:telemetry-stack        # queries the real Prometheus and Tempo, not just HTTP status
+MC_OBSERVABILITY_MODE=test npm run observability:up
+MC_OBSERVABILITY_MODE=test npm run test:telemetry-stack # actual backends in the isolated test project
 
 npm run build
-MC_E2E_OBSERVABILITY=1 npm run test:e2e -- \
+MC_OBSERVABILITY_MODE=test MC_E2E_OBSERVABILITY=1 npm run test:e2e -- \
   e2e/specs/telemetry-diagnostics-dashboard.spec.ts --workers=1
 ```
 
@@ -463,13 +472,16 @@ rather than claiming a precise number.
 That invariant reaches exactly as far as the daemon can see, and where it ends is worth saying
 plainly. A batch is accepted, and its copy released, the moment the Collector returns 200 - the
 Collector owns it from there, and nothing it does afterwards can reach the health view. So the
-reference stack is configured never to drop: both exporters retry with **no elapsed-time ceiling**
+reference stack retries transient backend failures with **no elapsed-time ceiling**
 (`max_elapsed_time: 0`). A ceiling would expire queued items during a long Prometheus or Tempo
 outage - a Docker Desktop restart, a sleeping host, a maintenance window - and that loss would
 appear only in the Collector's own logs while the health view still read zero gaps. Retrying
 indefinitely turns the same outage into backpressure instead: the persistent queue fills, enqueue
 begins failing, the OTLP receiver answers the daemon with an error, and the daemon keeps its own
-copy. Loss then happens only where it can be counted, against the daemon's own bounded retention.
+copy. Permanent downstream rejection and storage failure can still lose data after an ACK;
+those failures are visible in Collector logs, not retrospectively in the daemon's accepted count.
+The [dashboard acceptance guide](observability-dashboards.md#storage-and-delivery-limits) describes
+the tested boundaries.
 
 A different backend, configured by an operator, keeps its own promises. The daemon's guarantee is
 about what it accepted and has not yet handed over.

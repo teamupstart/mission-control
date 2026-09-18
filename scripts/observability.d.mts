@@ -21,7 +21,7 @@ export declare function waitUntilReady(
 
 /** Stop or start one component, leaving the rest running. */
 export declare function composeService(
-  action: "stop" | "start",
+  action: "stop" | "start" | "kill",
   service: "collector" | "prometheus" | "tempo" | "grafana",
 ): { ok: boolean; output: string };
 
@@ -36,3 +36,5 @@ export declare function requireDocker(result: {
   error?: Error | null;
   status?: number | null;
 }): void;
+
+export declare const MODE: "real" | "demo" | "test";

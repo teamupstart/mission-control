@@ -11,6 +11,7 @@ import { registerAnalyticalTelemetry } from "./projections/index.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { getTelemetryConfig } from "./config.ts";
+import { captureTelemetryHealth } from "./health.ts";
 import { runDeliveryPass, type DeliveryDeps } from "./delivery.ts";
 import { registerDaemonTelemetrySource } from "./diagnostics.ts";
 import { CATALOG_PROJECTION, runProjectionPass } from "./projection.ts";
@@ -89,6 +90,7 @@ export async function runTelemetryCycle(
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryCycleResult> {
   const now = deps.now?.() ?? Date.now();
+  captureTelemetryHealth(now);
   const result: TelemetryCycleResult = {
     consumed: 0,
     batches: 0,

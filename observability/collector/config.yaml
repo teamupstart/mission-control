@@ -31,6 +31,8 @@ extensions:
   health_check:
     endpoint: 0.0.0.0:13133
 
+# No asynchronous batch processor before the persistent queues: its early ACK would
+# lose accepted requests if the Collector crashed before the batch timer fired.
 processors:
   # Bounded, and low: this Collector runs beside a developer's actual work, and an OTLP ingress
   # that can take 2 GiB during a backlog drain is a Collector that gets uninstalled.
@@ -38,10 +40,6 @@ processors:
     check_interval: 1s
     limit_mib: 256
     spike_limit_mib: 64
-  batch:
-    timeout: 5s
-    send_batch_size: 512
-    send_batch_max_size: 1024
 
 exporters:
   # Prometheus's own OTLP receiver, rather than a scrape endpoint.
@@ -96,11 +94,11 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter]
       exporters: [otlphttp/prometheus]
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter]
       exporters: [otlp/tempo]
   telemetry:
     logs:

@@ -79,7 +79,12 @@
     "install-hooks": "tsx hooks/install.mjs",
     "install-statusline": "tsx hooks/install.mjs --statusline",
     "install-telemetry": "tsx hooks/install.mjs --telemetry",
-    "install-service": "node scripts/install-service.mjs"
+    "install-service": "node scripts/install-service.mjs",
+    "observability:generate": "node --import tsx scripts/observability/generate.ts",
+    "observability:demo": "MC_OBSERVABILITY_MODE=demo node scripts/observability.mjs up && MC_OBSERVABILITY_MODE=demo node --import tsx scripts/observability/demo.ts",
+    "observability:restart": "node scripts/observability.mjs restart",
+    "observability:integration": "node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/telemetry-dashboards-stack.integration.ts test/telemetry-analytics-stack.integration.ts",
+    "observability:benchmark": "node --expose-gc --import tsx scripts/observability/benchmark.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",

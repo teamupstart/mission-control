@@ -217,6 +217,26 @@ function railKeycap(row: Locator): Locator {
   return row.locator(".rail-state-line .kb-hint");
 }
 
+/** A rail keycap's laid-out paint, which is where the rail's own rule becomes observable. */
+function keycapPaint(row: Locator): Promise<{ color: string; background: string }> {
+  return railKeycap(row).evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { color: style.color, background: style.backgroundColor };
+  });
+}
+
+/** A colour expression as this browser resolves it, so assertions name tokens, not hexes. */
+function resolvedColour(page: Page, expression: string): Promise<string> {
+  return page.evaluate((value) => {
+    const probe = document.createElement("span");
+    probe.style.color = value;
+    document.body.append(probe);
+    const resolved = getComputedStyle(probe).color;
+    probe.remove();
+    return resolved;
+  }, expression);
+}
+
 async function shoot(page: Page, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -390,25 +410,42 @@ test("the Console rail prints the same keys beside its state words, and they ope
     "the state cell reserves room past its word, so short states share one key column",
   ).toBeGreaterThan(8);
 
-  // Against the `--jump-key` token rather than a literal colour, so re-tuning the hue moves
-  // one place and this still fails if the rail falls back to the shared `.kb-hint` dim.
-  const paint = await railKeycap(idleRow).evaluate((el) => {
-    const probe = document.createElement("span");
-    probe.style.color = "var(--jump-key)";
-    document.body.append(probe);
-    const expected = getComputedStyle(probe).color;
-    probe.remove();
-    const style = getComputedStyle(el);
-    return { color: style.color, expected, background: style.backgroundColor };
-  });
-  expect(paint.expected, "the palette declares a jump-key colour").not.toBe("");
-  expect(paint.color, "the rail keycap is painted in the jump-key yellow at rest").toBe(
-    paint.expected,
+  // The paint, in each of the three states the rail draws, against the `--jump-key` token
+  // rather than literal colours: re-tuning the hue moves one place, and every branch still
+  // fails if the rail falls back to the shared `.kb-hint` dim or to `--fg`.
+  const restColour = await resolvedColour(dashboard, "var(--jump-key)");
+  const activeColour = await resolvedColour(
+    dashboard,
+    "color-mix(in oklab, var(--jump-key) 82%, var(--fg))",
   );
+  const activeTint = await resolvedColour(
+    dashboard,
+    "color-mix(in oklab, var(--jump-key) 20%, transparent)",
+  );
+  expect(restColour, "the palette declares a jump-key colour").not.toBe("");
+  expect(activeColour, "the brightened colour differs from the rest one").not.toBe(restColour);
+
+  await dashboard.mouse.move(0, 0);
+  const rest = await keycapPaint(idleRow);
+  expect(rest.color, "the rail keycap is painted in the jump-key yellow at rest").toBe(restColour);
   expect(
-    paint.background,
+    rest.background,
     "and carries a tint behind it rather than sitting bare on the row",
   ).not.toBe("rgba(0, 0, 0, 0)");
+
+  // The row under the cursor is the row the key is about to open, so its keycap brightens
+  // within the same hue and deepens its tint. Measured with the pointer actually on the row,
+  // because a rule behind `:hover` is invisible to every other layer in this repository.
+  await idleRow.hover();
+  const hovered = await keycapPaint(idleRow);
+  expect(hovered.color, "hover brightens the keycap within the jump-key hue").toBe(activeColour);
+  expect(hovered.background, "and deepens the tint behind it").toBe(activeTint);
+
+  await dashboard.mouse.move(0, 0);
+  expect(
+    (await keycapPaint(idleRow)).color,
+    "and the row returns to its rest paint once the pointer leaves",
+  ).toBe(rest.color);
   await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
 
   // The chord is announced on the control it drives - the row itself here, since the rail's
@@ -421,6 +458,14 @@ test("the Console rail prints the same keys beside its state words, and they ope
   const detail = dashboard.locator(".console-detail .cdetail");
   await expect(detail.getByRole("heading", { name: IDLE_CARD.title })).toBeVisible();
   await expect(idleRow).toHaveAttribute("aria-current", "true");
+
+  // The selection draws the same brightened keycap as hover, with the pointer parked off the
+  // rail so only the selection rule can be doing it.
+  await dashboard.mouse.move(0, 0);
+  const selected = await keycapPaint(idleRow);
+  expect(selected.color, "the selected row's keycap carries the brightened jump-key colour")
+    .toBe(activeColour);
+  expect(selected.background, "and its deeper tint").toBe(activeTint);
   await shoot(dashboard, "08-rail-jumped-to-the-idle-row");
 
   // ⌘1 re-points the open detail at the other row, the same way it does inside the Board's

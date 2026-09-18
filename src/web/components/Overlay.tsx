@@ -278,6 +278,9 @@ export function Overlay({
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") {
         if (!closable) return;
+        // Closing can unregister this overlay before another window listener runs.
+        // Mark the press as handled before App can act on the newly exposed session.
+        e.preventDefault();
         if (onEscape?.(e) !== true) onClose();
         return;
       }

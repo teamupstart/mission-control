@@ -44,6 +44,11 @@ test("Foreman groups repeated model errors in its warning popover and reports re
     .toHaveAccessibleDescription("Expand or collapse the sessions where this error was seen");
   await errors.getByText(/^First seen /).hover();
   await expect(dashboard.locator(".tooltip")).toContainText("First seen at ");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("foreman-errors");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.screenshot({ path: `${dir}timestamp-tooltip.png` });
+  }
   await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: daemon.baseURL });
   await errors.getByRole("button", { name: "Copy error" }).click();
   await expect(errors.getByRole("status")).toHaveText("Error copied");

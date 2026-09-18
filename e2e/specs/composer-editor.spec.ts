@@ -235,3 +235,34 @@ test("time spent writing in the editor still reads as a composing operator", asy
     })
     .toBe(true);
 });
+
+test("⌃G opens on an empty send box, and what is written there stages too", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The boundary `TranscriptPanel` draws is `composerEditorText !== null`, where null means
+  // closed and "" means open on an empty box. A refactor to a truthiness check would compile,
+  // pass every other test here, and silently refuse to open the editor from an empty
+  // composer - which is the state the box spends most of its life in, and a reasonable place
+  // to start a long message rather than to continue one.
+  const { composer } = await openTheOnlySession(dashboard, daemon);
+  await expect(composer).toHaveValue("");
+
+  await composer.focus();
+  await composer.press("Control+g");
+
+  const editor = dashboard.getByRole("dialog", { name: "Edit the message" });
+  await expect(editor).toBeVisible();
+
+  const big = editor.getByRole("textbox", { name: "Message" });
+  await expect(big).toHaveValue("");
+  await expect(big).toBeEditable();
+  await expect(big).toBeFocused();
+
+  // And it is a working editor, not merely an open one: what gets written from empty stages
+  // back the same way a continued draft does.
+  await big.fill(REFINED);
+  await big.press("Meta+Enter");
+  await expect(editor).toBeHidden();
+  await expect(composer).toHaveValue(REFINED);
+});

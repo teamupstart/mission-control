@@ -185,7 +185,12 @@ export function seedWorkflowsTourDemoRun(store: WorkflowStore, now = Date.now())
     const passEdges = (nodeId: string, port: string) =>
       graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
 
-    const binding = store.insertBinding({
+    // Retention eventually DELETES the completed demo run while its orphaned binding stays
+    // durable, so a reseed after that deletion must reuse the surviving binding rather than
+    // insert its fixed id again and refuse on uniqueness. Run deletion cascades every other
+    // fabricated row - submissions, attempts, receipts, deliveries, events - so the binding
+    // is the one record this reconcile has to cover.
+    const binding = store.getBinding(BINDING_ID) ?? store.insertBinding({
       id: BINDING_ID,
       workflowVersionId: version!.id,
       noteKey: KEY,

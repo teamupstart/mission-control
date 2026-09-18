@@ -36,6 +36,14 @@ test("Foreman groups repeated model errors in its warning popover and reports re
   await expect(errors).toContainText("gpt-5.6-terra");
   await expect(errors).toContainText("Worker running");
   await expectContentClearsBorder(popover);
+  await expect(errors.getByRole("button", { name: "Copy error" }))
+    .toHaveAccessibleDescription("Copy this error and its provider and model to the clipboard");
+  await expect(errors.getByRole("button", { name: "Open model settings" }))
+    .toHaveAccessibleDescription("Choose the provider and model for each Foreman activity");
+  await expect(errors.getByText("Show affected sessions", { exact: true }))
+    .toHaveAccessibleDescription("Expand or collapse the sessions where this error was seen");
+  await errors.getByText(/^First seen /).hover();
+  await expect(dashboard.locator(".tooltip")).toContainText("First seen at ");
   await dashboard.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: daemon.baseURL });
   await errors.getByRole("button", { name: "Copy error" }).click();
   await expect(errors.getByRole("status")).toHaveText("Error copied");

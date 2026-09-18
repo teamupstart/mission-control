@@ -1,5 +1,9 @@
 # Workflows and Personas
 
+The **Follow the review** guided tour is the fastest orientation to the run side of
+everything below: it walks one real No-Mistakes Review run stage by stage, from the Settings
+rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#guided-tours).
+
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
 database. Their name, description, optional provider and model overrides, and guidance are

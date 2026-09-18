@@ -1,6 +1,7 @@
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
   SEE_WORK_TOUR_PREVIEW_INTENT,
+  WORKFLOWS_TOUR_PREVIEW_INTENT,
 } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import type { MissionMcpRequirement } from "./mission-mcp.ts";
@@ -83,6 +84,33 @@ const SEE_WORK_PREVIEW: TourTaskRecipe = {
 };
 
 /**
+ * The workflows tour's temporary conversation: one fixed Chat session whose only job is to
+ * exist, so the tour's binding-chip and Bind-workflow-dialog stops have a real session desk
+ * to point at. It is deliberately NOT the session behind the tour's seeded demonstration
+ * run - that run is fabricated with no session at all - and the tour closes it on exit
+ * through the same complete route every tour task uses.
+ */
+const WORKFLOWS_PREVIEW: TourTaskRecipe = {
+  create: {
+    title: "Tour conversation",
+    intent: WORKFLOWS_TOUR_PREVIEW_INTENT,
+    kind: "chat",
+    agent: "codex",
+    workflowId: null,
+    backlog: false,
+    dependencies: [],
+    priority: null,
+    labels: ["tour-demo", "tour-preview"],
+  },
+  outcome: "Tour conversation",
+  identifies: (task) =>
+    task.title === "Tour conversation" &&
+    task.kind === "chat" &&
+    task.labels.includes("tour-preview") &&
+    task.intent.startsWith("[Mission Control workflows tour conversation]"),
+};
+
+/**
  * Every tour the daemon will act for.
  *
  * The browser names a tour by id; this table decides what that name may do. An unknown id,
@@ -93,6 +121,10 @@ export const SERVER_TOURS: Readonly<Record<string, ServerTourDefinition>> = {
   "see-work": {
     id: "see-work",
     operations: { dispatch: SEE_WORK_DEMO, preview: SEE_WORK_PREVIEW },
+  },
+  "workflows": {
+    id: "workflows",
+    operations: { preview: WORKFLOWS_PREVIEW },
   },
 };
 

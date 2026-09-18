@@ -14,6 +14,7 @@ import {
 } from "@shared/workflow.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import {
   WorkflowEvidenceComposer,
@@ -149,6 +150,8 @@ export function WorkflowBindingDialog({
   onSessionIdChange: (sessionId: string) => void;
   evidenceDraft: WorkflowEvidenceDraftController;
 }): React.JSX.Element {
+  /** The guided workflows tour's handle on this dialog. Inert unless a tour runs. */
+  const tourDialogRef = useTourTargetRef<HTMLElement>("workflows:bind-dialog");
   const live = useMemo(
     () =>
       sessions.filter(
@@ -489,6 +492,7 @@ export function WorkflowBindingDialog({
       className="modal workflow-binding-dialog"
       role="dialog"
       ariaLabel="Bind workflow"
+      surfaceRef={tourDialogRef}
       closable={!busy}
     >
       <header className="modal-head">

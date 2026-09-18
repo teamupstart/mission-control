@@ -150,6 +150,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/worktrees/:slotId/open", "worktree.open", "settings"],
   ["POST", "/api/tours/:tourId/dispatch", "help.tour_dispatch", "help"],
   ["POST", "/api/tours/:tourId/preview", "help.tour_preview", "help"],
+  ["POST", "/api/tours/:tourId/seed-run", "help.tour_seed_run", "help"],
   ["POST", "/api/tours/:tourId/tasks/:id/complete", "help.tour_complete", "help"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];

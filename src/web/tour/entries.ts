@@ -65,6 +65,7 @@ export interface TourEntry {
 
 const SEE_WORK_TITLE = tourContent("see-work").title;
 const LIBRARY_TITLE = tourContent("library").title;
+const WORKFLOWS_TITLE = tourContent("workflows").title;
 const SETUP_TITLE = tourContent("setup").title;
 
 const SEE_WORK_ENTRY: TourEntry = {
@@ -135,6 +136,52 @@ const LIBRARY_ENTRY: TourEntry = {
   entryRoute: { page: "library" },
 };
 
+const WORKFLOWS_ENTRY: TourEntry = {
+  id: "workflows",
+  title: WORKFLOWS_TITLE,
+  preview: {
+    summary: "Follow one No-Mistakes Review run from frozen evidence to a shipped pull request.",
+    outcomes: [
+      "Know what each stage of a review is doing",
+      "Bind or trigger a review yourself",
+      "Read evidence, rounds, and the GitHub Inspector gate",
+    ],
+    illustration: "work",
+  },
+  settings: {
+    tooltip: "Tour one No-Mistakes Review run: stages, evidence, rounds, and its final gates",
+    ariaLabel: `Start ${WORKFLOWS_TITLE} tour`,
+    heading: WORKFLOWS_TITLE,
+    hint: "Walk one real review run",
+  },
+  palette: {
+    rowId: "command:workflows-tour",
+    title: `Start ${WORKFLOWS_TITLE} tour`,
+    detail: "Follow one No-Mistakes Review run - stages, evidence, rounds, and its final gates.",
+    keywords: [
+      "tour",
+      "product tour",
+      "onboarding",
+      "workflow",
+      "review",
+      "run",
+      "evidence",
+      "readiness",
+      "inspector",
+      "no-mistakes",
+      "binding",
+    ],
+    hint: "Start the guided workflow run tour.",
+  },
+  // The Runs page, which is the tour's whole subject: its first stop is a centered card over
+  // the surface every later stop returns to.
+  entryRoute: { page: "runs" },
+  // The tour's last stop hands the Runs page over - "Finish leaves you here" is its own
+  // copy - so the exit declares it rather than replaying the snapshot's route. The landing
+  // control is the All filter chip, the first control of the rail the close stop spotlights.
+  exit: { route: { page: "runs" }, focus: "workflows:run-filter-all" },
+};
+
 const SETUP_ENTRY: TourEntry = {
   id: "setup",
   title: SETUP_TITLE,
@@ -190,7 +237,7 @@ const SETUP_ENTRY: TourEntry = {
 
 /** Every tour Mission Control offers, in the order its entry points list them. */
 export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
-  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, SETUP_ENTRY];
+  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, WORKFLOWS_ENTRY, SETUP_ENTRY];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (seen.has(entry.id)) throw new Error(`duplicate tour entry ${entry.id}`);

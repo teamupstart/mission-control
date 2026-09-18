@@ -1788,6 +1788,14 @@ export const api = {
       `/api/tours/${encodeURIComponent(tourId)}/preview`,
       { repoRoot },
     ),
+  /**
+   * Ask the daemon for the workflows tour's run to read. With any No-Mistakes run already
+   * in history the newest answers; only an empty machine receives the seeded demo record.
+   */
+  seedTourRun: (tourId: TourId) =>
+    post<ActionResult & { runId?: string; seeded?: boolean }>(
+      `/api/tours/${encodeURIComponent(tourId)}/seed-run`,
+    ),
   /** Record the tour's fixed outcome and close any session it launched. */
   completeTourTask: (tourId: TourId, taskId: string) =>
     post<ActionResult & { task?: Task }>(

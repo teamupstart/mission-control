@@ -2,6 +2,7 @@ import type { TourDefinition, TourId } from "./contracts.ts";
 import { LIBRARY_TOUR } from "./tours/library.ts";
 import { SEE_WORK_TOUR } from "./tours/see-work.ts";
 import { SETUP_TOUR } from "./tours/setup.ts";
+import { WORKFLOWS_TOUR } from "./tours/workflows.ts";
 
 /**
  * Every runnable tour, by id.
@@ -14,6 +15,7 @@ import { SETUP_TOUR } from "./tours/setup.ts";
 export const TOUR_DEFINITIONS = {
   "see-work": SEE_WORK_TOUR,
   "library": LIBRARY_TOUR,
+  "workflows": WORKFLOWS_TOUR,
   "setup": SETUP_TOUR,
 } as const satisfies Record<TourId, TourDefinition<never, never>>;
 

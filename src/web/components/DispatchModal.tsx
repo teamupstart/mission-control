@@ -948,6 +948,18 @@ function DispatchModal({
   const tourInputRef = useTourTargetRef<HTMLLabelElement>("see-work:dispatch-input");
   const tourWorkflowRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-workflow");
   const tourSubmitRef = useTourTargetRef<HTMLButtonElement>("see-work:dispatch-submit");
+  // The workflows tour reads the same two surfaces under its own namespace, so each element
+  // carries one merged callback rather than choosing which tour may spotlight it.
+  const workflowsTourModalRef = useTourTargetRef<HTMLElement>("workflows:dispatch-modal");
+  const workflowsTourAfterWorkRef = useTourTargetRef<HTMLDivElement>("workflows:dispatch-after-work");
+  const tourSurfaceRef = useCallback((element: HTMLElement | null) => {
+    tourModalRef(element);
+    workflowsTourModalRef(element);
+  }, [tourModalRef, workflowsTourModalRef]);
+  const tourAfterWorkRef = useCallback((element: HTMLDivElement | null) => {
+    tourWorkflowRef(element);
+    workflowsTourAfterWorkRef(element);
+  }, [tourWorkflowRef, workflowsTourAfterWorkRef]);
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
   const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const availableTaskKinds =
@@ -2470,7 +2482,7 @@ function DispatchModal({
       }`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
-      surfaceRef={tourModalRef}
+      surfaceRef={tourSurfaceRef}
       onEscape={onOverlayEscape}
       onKeyDown={onOverlayKeyDown}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
@@ -2809,7 +2821,7 @@ function DispatchModal({
             off it rather than off the `<label>` inside it, for the reason the crew cells
             above exist. An absolutely-positioned child takes no grid track. */}
         <div
-          ref={tourWorkflowRef}
+          ref={tourAfterWorkRef}
           className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}${guidedDimUnless(
             "afterWork",
           )}${guidedAnchor("afterWork")}`}

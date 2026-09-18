@@ -32,11 +32,6 @@
      two weights - every hit is a tint of it, the current hit is the solid. */
   --find: #e3b341;
 
-  /* The ⌘1 … ⌘= keycap on a Console rail row. Its own token for the same reason
-     `--find` is not `--attention`: it draws on every row, so a state colour here would
-     read as a fleet full of blocked sessions. */
-  --jump-key: #e6c65c;
-
   /* There is deliberately NO per-agent token here. A harness's brand colour is declared
      on the harness (`AGENT_IDENTITY`, `@shared/agent.ts`) and arrives as an inline
      `--agent-accent`, so adding a harness needs no edit to this file. `--claude` and
@@ -25504,15 +25499,17 @@ span.line-run-prov {
 .rail-state-line .kb-hint {
   font-size: 10px;
   font-weight: 700;
-  color: var(--jump-key);
-  background: color-mix(in oklab, var(--jump-key) 12%, transparent);
-  border-color: color-mix(in oklab, var(--jump-key) 42%, var(--border));
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
 }
+/* The row under the cursor or on the selection is the row this key is about to open, so it
+   gains a tint and a stronger edge. The COLOUR is already at full strength above, which is
+   the difference from the Board card: a card's keycap has a corner of its own to sit in, a
+   rail row's sits in a gap at the app's smallest type and has to be read at rest. */
 .rail-row:hover .rail-state-line .kb-hint,
 .rail-row.selected .rail-state-line .kb-hint {
-  color: color-mix(in oklab, var(--jump-key) 82%, var(--fg));
-  background: color-mix(in oklab, var(--jump-key) 20%, transparent);
-  border-color: color-mix(in oklab, var(--jump-key) 64%, var(--border));
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+  border-color: color-mix(in oklab, var(--fg) 58%, var(--border));
 }
 /* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
    recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */

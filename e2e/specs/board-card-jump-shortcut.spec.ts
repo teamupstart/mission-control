@@ -412,45 +412,42 @@ test("the Console rail prints the same keys beside its state words, and they ope
     "the state cell reserves room past its word, so short states share one key column",
   ).toBeGreaterThan(8);
 
-  // The paint, in each of the three states the rail draws, against the `--jump-key` token
-  // rather than literal colours: re-tuning the hue moves one place, and every branch still
-  // fails if the rail falls back to the shared `.kb-hint` dim or to `--fg`.
-  const restColour = await resolvedColour(dashboard, "var(--jump-key)");
-  const activeColour = await resolvedColour(
+  // The paint, in each state the rail draws, resolved through `--fg` and the mixes the rule
+  // itself uses rather than literal colours. The rest colour is the SAME white the Board
+  // card's keycap takes when you point at it, which is the shared treatment this asserts.
+  const restColour = await resolvedColour(dashboard, "var(--fg)");
+  const restBorder = await resolvedColour(
     dashboard,
-    "color-mix(in oklab, var(--jump-key) 82%, var(--fg))",
+    "color-mix(in oklab, var(--fg) 38%, var(--border))",
   );
   const activeTint = await resolvedColour(
     dashboard,
-    "color-mix(in oklab, var(--jump-key) 20%, transparent)",
-  );
-  const restBorder = await resolvedColour(
-    dashboard,
-    "color-mix(in oklab, var(--jump-key) 42%, var(--border))",
+    "color-mix(in oklab, var(--fg) 12%, transparent)",
   );
   const activeBorder = await resolvedColour(
     dashboard,
-    "color-mix(in oklab, var(--jump-key) 64%, var(--border))",
+    "color-mix(in oklab, var(--fg) 58%, var(--border))",
   );
-  expect(restColour, "the palette declares a jump-key colour").not.toBe("");
-  expect(activeColour, "the brightened colour differs from the rest one").not.toBe(restColour);
+  expect(restColour, "the palette declares a foreground colour").not.toBe("");
+  expect(activeBorder, "the hovered border differs from the rest one").not.toBe(restBorder);
 
   await dashboard.mouse.move(0, 0);
   const rest = await keycapPaint(idleRow);
-  expect(rest.color, "the rail keycap is painted in the jump-key yellow at rest").toBe(restColour);
-  expect(
-    rest.background,
-    "and carries a tint behind it rather than sitting bare on the row",
-  ).not.toBe("rgba(0, 0, 0, 0)");
-  expect(rest.border, "with the rest border drawn from the same token").toBe(restBorder);
+  expect(rest.color, "the rail keycap is readable at rest in the foreground white").toBe(
+    restColour,
+  );
+  expect(rest.background, "and sits bare on the row until it is pointed at").toBe(
+    "rgba(0, 0, 0, 0)",
+  );
+  expect(rest.border, "with its rest border drawn from the same token").toBe(restBorder);
 
-  // The row under the cursor is the row the key is about to open, so its keycap brightens
-  // within the same hue and deepens its tint. Measured with the pointer actually on the row,
-  // because a rule behind `:hover` is invisible to every other layer in this repository.
+  // The row under the cursor is the row the key is about to open, so it gains a tint and a
+  // stronger edge. Measured with the pointer actually on the row, because a rule behind
+  // `:hover` is invisible to every other layer in this repository.
   await idleRow.hover();
   const hovered = await keycapPaint(idleRow);
-  expect(hovered.color, "hover brightens the keycap within the jump-key hue").toBe(activeColour);
-  expect(hovered.background, "and deepens the tint behind it").toBe(activeTint);
+  expect(hovered.color, "hover keeps the keycap at full foreground strength").toBe(restColour);
+  expect(hovered.background, "and lays a tint behind it").toBe(activeTint);
   expect(hovered.border, "and strengthens its border").toBe(activeBorder);
 
   await dashboard.mouse.move(0, 0);
@@ -458,7 +455,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   expect(restored.color, "the row returns to its rest colour once the pointer leaves").toBe(
     rest.color,
   );
-  expect(restored.background, "and to its rest tint, not the hovered one").toBe(rest.background);
+  expect(restored.background, "and to no tint, not the hovered one").toBe(rest.background);
   expect(restored.border, "and to its rest border").toBe(rest.border);
   await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
 
@@ -477,9 +474,9 @@ test("the Console rail prints the same keys beside its state words, and they ope
   // rail so only the selection rule can be doing it.
   await dashboard.mouse.move(0, 0);
   const selected = await keycapPaint(idleRow);
-  expect(selected.color, "the selected row's keycap carries the brightened jump-key colour")
-    .toBe(activeColour);
-  expect(selected.background, "and its deeper tint").toBe(activeTint);
+  expect(selected.color, "the selected row's keycap stays at full foreground strength")
+    .toBe(restColour);
+  expect(selected.background, "and carries the same tint hover lays down").toBe(activeTint);
   expect(selected.border, "and its stronger border").toBe(activeBorder);
   await shoot(dashboard, "08-rail-jumped-to-the-idle-row");
 

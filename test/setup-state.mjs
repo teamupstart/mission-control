@@ -130,6 +130,14 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
+  // The same three aliases for the PORT, so a worker resolves the documented 7317 rather than
+  // the daemon port an operator's shell exported. Nothing is seeded in its place: a home has
+  // no safe literal default and a port does. A file or a spawned child that needs its own
+  // still sets one, in a body or a spawn `env` that runs after this.
+  delete process.env.MISSION_PORT;
+  delete process.env.FLEET_PORT;
+  delete process.env.HARNESS_PORT;
+
   // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
   // free to replace that value, and cleanup that resolved the variable here would delete a
   // fixture directory the test built instead of the one this file made.

@@ -326,23 +326,35 @@ export function readRolloutMeta(path: string): RuntimeMetaRead | null {
 }
 
 function recordTime(o: Record<string, unknown>, payload: Record<string, unknown>): number {
+  // Lifecycle payloads round to whole seconds. The JSONL timestamp preserves the
+  // ordering against a terminal write made earlier in that same second.
+  const raw = typeof o.timestamp === "string" ? Date.parse(o.timestamp) : NaN;
+  if (!Number.isNaN(raw)) return raw;
   for (const value of [payload.completed_at, payload.started_at]) {
     if (typeof value === "number" && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
   }
-  const raw = typeof o.timestamp === "string" ? Date.parse(o.timestamp) : NaN;
-  return Number.isNaN(raw) ? 0 : raw;
+  return 0;
 }
 
 /** Newest Codex lifecycle marker in a rollout tail. */
 export function parseRolloutActivity(lines: string[]): import("../types.ts").SessionActivityRead | null {
   let latest: import("../types.ts").SessionActivityRead | null = null;
+  let started: { id: unknown; at: number } | null = null;
   for (const line of lines) {
     let o: Record<string, unknown>;
     try { o = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
     if (o.type !== "event_msg") continue;
     const p = (o.payload ?? {}) as Record<string, unknown>;
     if (p.type !== "task_started" && p.type !== "task_complete" && p.type !== "turn_aborted") continue;
-    latest = { state: p.type === "task_started" ? "working" : "idle", lastActivity: recordTime(o, p) };
+    const at = recordTime(o, p);
+    if (p.type === "task_started") started = { id: p.turn_id, at };
+    // Only retain a start belonging to this lifecycle marker. A tail containing
+    // just a completion cannot prove when its turn began.
+    const turnStartedAt = started && started.id === p.turn_id ? started.at : undefined;
+    latest = {
+      state: p.type === "task_started" ? "working" : "idle", lastActivity: at,
+      ...(turnStartedAt === undefined ? {} : { turnStartedAt }),
+    };
   }
   return latest;
 }

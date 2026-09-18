@@ -306,7 +306,7 @@ if (process.env.MC_E2E_CMUX_MODE === "unknown") {
  * agent binary is reachable from this process.
  */
 const FAKE_HERDR = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { join } = require("node:path");
 const { execFileSync, spawn } = require("node:child_process");
@@ -369,13 +369,14 @@ const ensureAgent = (pane) => {
   const agentBin = join(fakeDir, "claude");
   const script = join(fakeDir, "agent.mjs");
   if (!existsSync(agentBin)) symlinkSync(process.execPath, agentBin);
-  writeFileSync(script, "setInterval(() => {}, 1000);\\n");
-  const command = JSON.stringify(agentBin) + " " + JSON.stringify(script);
+  const pidPath = join(fakeDir, pane.pane_id + ".pid");
+  writeFileSync(script, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);\\n");
+  const command = [agentBin, script, pidPath].map((arg) => JSON.stringify(arg)).join(" ");
   // Discovery deliberately ignores headless agents. The script utility gives this fake the same real
   // controlling tty an agent has inside a Herdr pane, while remaining portable across the
   // two supported hosts. Cleanup kills its detached process group.
   const args = process.platform === "darwin"
-    ? ["-q", "/dev/null", agentBin, script]
+    ? ["-q", "/dev/null", agentBin, script, pidPath]
     : ["-q", "-c", command, "/dev/null"];
   const child = spawn("/usr/bin/script", args, {
     cwd: pane.cwd,
@@ -438,7 +439,15 @@ const server = createServer((socket) => {
         });
       } else if (request.method === "pane.process_info") {
         const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
-        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: foregroundProcesses(pane) } });
+        const foreground = foregroundProcesses(pane);
+        // After launch, model an exec-replaced shell using the real fake agent PID.
+        // Only the OS boundary changes; production correlation must retain its handle.
+        const execPane = join(home, "herdr-exec-pane");
+        const pidPath = join(home, "fake-herdr-agent", p.pane_id + ".pid");
+        const rootPid = existsSync(execPane) && readFileSync(execPane, "utf8") === p.pane_id
+          ? (existsSync(pidPath) ? Number(readFileSync(pidPath, "utf8")) : null)
+          : pane?.shell_pid || null;
+        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: rootPid, tty: null, foreground_processes: foreground } });
       } else if (request.method === "workspace.create") {
         serial += 1;
         const workspaceId = "fake-workspace-" + serial;

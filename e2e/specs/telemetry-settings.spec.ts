@@ -518,6 +518,8 @@ test("the panel records nothing while collection is off, because consent gates t
   // Turning collection on and reopening the panel records exactly one, so the zero above is a
   // refusal rather than a spec that could never observe anything.
   await dashboard.getByLabel("Collect Mission Control telemetry on this machine").check();
+  // The checkbox is optimistic; the local profile appears only after the live summary confirms consent.
+  await expect(dashboard.getByText("On this machine", { exact: true })).toBeVisible();
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
   await expect.poll(() => settingsOpenedRows(daemon).length, { timeout: 15_000 }).toBe(1);

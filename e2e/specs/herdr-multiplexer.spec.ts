@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -20,6 +20,8 @@ interface FleetSession {
   id: string;
   name: string;
   runtime: string;
+  lastSeen: number;
+  pid: number;
   cwd: string | null;
   terminals: Array<{
     backend: string;
@@ -89,7 +91,7 @@ async function shoot(page: Page, name: string): Promise<void> {
 test.describe("compatible stable Herdr", () => {
   test.use({ daemonEnv: { MC_E2E_HERDR: "1", MISSION_POLL_MS: "100" } });
 
-  test("launches, discovers, and focuses a default-server Herdr session", async ({
+  test("launches, discovers, and focuses a default-server Herdr session including after shell exec", async ({
     dashboard,
     daemon,
   }) => {
@@ -217,6 +219,42 @@ test.describe("compatible stable Herdr", () => {
       expect(argv).not.toContain("--takeover");
     }
     await shoot(dashboard, "herdr-session-focused");
+    const paneId = terminalSession!.terminals.find((handle) => handle.backend === "herdr")!.paneId;
+    const terminalId = terminalSession!.id;
+    const agentPid = Number(readFileSync(join(daemon.home, "fake-herdr-agent", `${paneId}.pid`), "utf8"));
+    expect(terminalSession!.pid).toBe(agentPid);
+    writeFileSync(join(daemon.home, "herdr-exec-pane"), paneId);
+    // Observe two subsequent discovery passes so the assertions cannot see the old
+    // ancestor-based handle while the scripted OS boundary changes to root equality.
+    let lastSeen = terminalSession!.lastSeen;
+    for (let pass = 0; pass < 2; pass++) {
+      await expect.poll(async () => {
+        terminalSession = (await sessions(daemon)).find((s) => s.id === terminalId)!;
+        return terminalSession.lastSeen;
+      }).toBeGreaterThan(lastSeen);
+      lastSeen = terminalSession!.lastSeen;
+    }
+    expect(terminalSession!.terminals).toContainEqual(expect.objectContaining({ backend: "herdr", paneId }));
+    await focus.click();
+    await expect.poll(() => herdrRequests(daemon).filter((request) => request.method === "agent.focus").length).toBe(3);
+
+    const reply = terminalCard.getByPlaceholder(/^Reply to this session/);
+    await expect(reply).toBeEnabled();
+    const nonce = "direct-exec-composer-regression";
+    await reply.fill(nonce);
+    await expect(reply).toHaveValue(nonce);
+    // This passive fake has no idle hook, so submitted conversation turns remain queued.
+    // Exercise immediate pane input without depending on the separate turn lifecycle.
+    const sent = await dashboard.request.post(
+      `${daemon.baseURL}/api/sessions/${encodeURIComponent(terminalId)}/send`,
+      { data: { text: nonce, submit: false } },
+    );
+    expect(sent.ok()).toBe(true);
+    await expect.poll(() => herdrRequests(daemon).some((request) =>
+      request.method === "pane.send_text" && request.params?.text === nonce &&
+      request.params?.pane_id === paneId,
+    )).toBe(true);
+    await shoot(dashboard, "herdr-direct-exec-focused");
   });
 });
 

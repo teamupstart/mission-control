@@ -277,6 +277,26 @@ export function runActionTooltip(
 }
 
 /**
+ * The tooltip a next move carries while the run's posture is `auto` (`runPosture`).
+ *
+ * The move stays clickable - overriding is legitimate - but its ordinary tooltip describes a
+ * click the page is recommending, and under an `auto` posture that is exactly the reading
+ * being corrected. The resubmission family gets the cost spelled out because that is the
+ * click the confusion produced: it interrupts a session mid-repair and spends the round the
+ * observer was about to open for free.
+ */
+export function overriddenNextMoveTooltip(move: RunNextMove): string {
+  switch (move.kind) {
+    case "resubmit":
+    case "resubmit-unchanged":
+      return "Not required - this review resumes on its own. Starting a round now interrupts"
+        + " the session's repair and spends one.";
+    default:
+      return `Not required - this run advances on its own. ${move.tooltip}`;
+  }
+}
+
+/**
  * The request id an unchanged resubmission must replay, read off the run itself.
  *
  * DERIVED, not remembered. The id belongs to the submission the daemon refused, and that

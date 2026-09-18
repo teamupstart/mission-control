@@ -266,3 +266,79 @@ test("⌃G opens on an empty send box, and what is written there stages too", as
   await expect(editor).toBeHidden();
   await expect(composer).toHaveValue(REFINED);
 });
+
+/** The laid-out rectangles the two size assertions below read. */
+async function editorBoxes(editor: import("@playwright/test").Locator) {
+  return await editor.evaluate((root: HTMLElement) => {
+    const box = (el: Element | null) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height) };
+    };
+    return {
+      panel: box(root),
+      body: box(root.querySelector(".composer-editor-body")),
+      input: box(root.querySelector(".composer-editor-input")),
+      foot: box(root.querySelector(".modal-foot")),
+    };
+  });
+}
+
+test("the editor fills a tall window rather than the shared five-line cap", async ({
+  dashboard,
+  daemon,
+}) => {
+  // `:where(textarea)` caps every field in the app at five lines and sizes it to its content.
+  // That is right for a composer sitting inline and wrong for the dialog whose whole purpose
+  // is to be bigger, so this one opts out. The opt-out is two easily-tidied declarations
+  // (`field-sizing: auto`, `max-height: none`), and without them the editor collapses to
+  // about 116px on every screen - a full-size editor that is smaller than the box it
+  // replaced. Asserted in used height, which is the only place that shows.
+  const { composer } = await openTheOnlySession(dashboard, daemon);
+  await composer.fill(DRAFT);
+  await dashboard.setViewportSize({ width: 1280, height: 900 });
+
+  await composer.press("Control+g");
+  const editor = dashboard.getByRole("dialog", { name: "Edit the message" });
+  await expect(editor).toBeVisible();
+
+  const { input } = await editorBoxes(editor);
+  expect(
+    input.height,
+    "the editor must be far taller than the five-line cap it opts out of",
+  ).toBeGreaterThan(320);
+});
+
+test("the editor stays usable on a short viewport, footer and all", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The defect this guards is a clipped editing area: the textarea used to hold a 46vh floor
+  // inside a body that hid its overflow, so under roughly a 400px-tall window its bottom was
+  // cut off and the caret could sit where nobody could see it. Measured rather than asserted
+  // from markup, because clipping is entirely a question of used geometry.
+  const { composer } = await openTheOnlySession(dashboard, daemon);
+  await composer.fill(DRAFT);
+  await dashboard.setViewportSize({ width: 1280, height: 360 });
+
+  await composer.press("Control+g");
+  const editor = dashboard.getByRole("dialog", { name: "Edit the message" });
+  await expect(editor).toBeVisible();
+
+  const { panel, body, input, foot } = await editorBoxes(editor);
+  expect(
+    input.bottom - body.bottom,
+    "the textarea must fit inside the scrollport rather than being clipped by it",
+  ).toBeLessThanOrEqual(0);
+  expect(
+    foot.bottom - panel.bottom,
+    "the staging footer must sit inside the panel",
+  ).toBeLessThanOrEqual(1);
+  expect(panel.bottom, "the panel must fit the viewport").toBeLessThanOrEqual(360);
+
+  // And the pointer route completes the flow, which is what the footer is for.
+  const big = editor.getByRole("textbox", { name: "Message" });
+  await big.fill(REFINED);
+  await editor.getByRole("button", { name: "Stage in the send box" }).click();
+  await expect(editor).toBeHidden();
+  await expect(composer).toHaveValue(REFINED);
+});

@@ -34262,12 +34262,23 @@ body.foreman-sidecar-open .modal-backdrop {
    existing `.pty-sendkey`, which already supplies the type and the narrow-width hide, so
    they can never disagree about either.
 
-   The dialog is the answer to a cramped box, so its whole job is height. `flex` + `min-height:
-   0` on the body rather than a fixed textarea size, so the box takes whatever the viewport
-   allows and shrinks honestly on a short screen instead of pushing the footer off it. */
+   The dialog is the answer to a cramped box, so its whole job is height - but the footer is
+   the half that must survive, because "Stage in the send box" is how a pointer user finishes
+   the flow at all. So the textarea PREFERS 46vh and may shrink below it, rather than holding
+   a floor the head and foot then have to fit around: `height` sets the preference, `flex`
+   lets it give way, and the body scrolls if a viewport is short enough that even the small
+   floor does not fit. An earlier revision used `min-height: 46vh` with `overflow: hidden`,
+   which clipped the footer out of reach somewhere under a 430px-tall window. */
 .composer-editor {
   display: flex;
   flex-direction: column;
+  /* The PANEL carries the size, not the textarea inside it. Sizing the textarea was the
+     obvious move and it does not work: as a flex item inside a scroll container its `height`
+     stops driving the panel, so the dialog collapsed to whatever the content happened to
+     want - about 116px of writing area on every screen, which is the opposite of the point.
+     Given a height here, the body fills the panel and the textarea fills the body, and every
+     one of them shrinks together when the viewport is short. */
+  height: min(calc(100dvh - 96px), 760px);
   max-height: calc(100dvh - 96px);
 }
 .composer-editor .modal-head,
@@ -34281,11 +34292,24 @@ body.foreman-sidecar-open .modal-backdrop {
   gap: 8px;
   min-height: 0;
   max-height: none;
-  overflow: hidden;
+  /* Scrolls rather than clips: the last resort on a viewport too short for even the floor
+     below, and the reason the footer cannot be pushed out of the panel. */
+  overflow: auto;
 }
 .composer-editor-input {
   flex: 1 1 auto;
-  min-height: 46vh;
+  /* Out of the shared multiline contract, deliberately. `:where(textarea)` starts every
+     field at its rows, grows it with content, and caps it at five lines - right for a
+     composer sitting inline, wrong for the dialog whose entire purpose is to be bigger than
+     that. `field-sizing: content` would size this to the text rather than to the panel, and
+     the 5lh cap held it to about 116px. The previous `min-height: 46vh` was overriding that
+     cap by accident, which is why removing it collapsed the editor on every screen. */
+  field-sizing: auto;
+  max-height: none;
+  /* Fills the body and gives way with it. The floor is deliberately small: the footer
+     carries "Stage in the send box", which is the only pointer route out of this dialog, so
+     the textarea yields first and the body scrolls before anything reaches the footer. */
+  min-height: 72px;
   resize: none;
   font: 13px/1.5 var(--sans);
   color: var(--fg);

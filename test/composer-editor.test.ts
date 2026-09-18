@@ -31,6 +31,7 @@ const {
 const {
   ACTIONS,
   bindingValidationError,
+  chordSurvivesTyping,
   resetAll,
   resolveKeybindings,
   setBinding,
@@ -104,6 +105,33 @@ test("⌘, ⌃ and function-key chords remain bindable to it", () => {
   }
   // Shift alone is not enough - Shift+Z still types a character.
   assert.match(bindingValidationError(bindings, "composerEditor", "shift+z") ?? "", /typed into the message/);
+});
+
+test("a text-editing command is refused, so the send box keeps copy, paste and undo", () => {
+  const bindings = resolveKeybindings({});
+  // ⌘V is the one that matters: it carries a command modifier, so the old rule accepted it,
+  // and the composer would then have matched it, called preventDefault, and eaten the paste.
+  for (const chord of ["cmd+v", "ctrl+v", "cmd+c", "ctrl+c", "cmd+x", "cmd+a", "cmd+z", "ctrl+y", "cmd+shift+z"]) {
+    const refusal = bindingValidationError(bindings, "composerEditor", chord);
+    assert.match(refusal ?? "", /text-editing command/, `${chord} should be refused`);
+    assert.equal(chordSurvivesTyping(chord), false, `${chord} must not survive typing`);
+    // And the runtime agrees, so a stored one from an older build opens nothing either.
+    assert.equal(composerEditorRequested(chord, chord), false, `${chord} must not open the editor`);
+  }
+  // The neighbours that are NOT editing commands stay bindable.
+  for (const chord of ["ctrl+g", "cmd+e", "cmd+b", "F9"]) {
+    assert.equal(bindingValidationError(bindings, "composerEditor", chord), null, `${chord} should bind`);
+  }
+});
+
+test("excluding editing chords does not disturb Interrupt, which App dispatches itself", () => {
+  // ⌃C is the shipped interrupt binding. It is not a `firesWhileTyping` action - App runs it
+  // behind its own typing guard - so the composer's rule must not reach it.
+  const interrupt = ACTIONS.find((a) => a.id === "interrupt");
+  assert.equal(interrupt?.defaultBinding, "ctrl+c");
+  assert.equal(interrupt?.firesWhileTyping, undefined);
+  assert.equal(bindingValidationError(resolveKeybindings({}), "interrupt", "ctrl+c"), null);
+  assert.equal(resolveKeybindings({}).interrupt, "ctrl+c");
 });
 
 test("the editor refuses to store a chord that would type itself", () => {

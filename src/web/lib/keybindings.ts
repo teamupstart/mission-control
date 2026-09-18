@@ -580,13 +580,40 @@ export function chordUsesFunctionKey(chord: string): boolean {
 }
 
 /**
+ * The letters that are a text-editing command when ⌘ or ⌃ is held: copy, paste, cut,
+ * select-all, undo, and redo (⌘⇧Z on macOS, ⌃Y on Windows and Linux).
+ *
+ * These are the chords a person uses ON a draft rather than instead of one, which makes
+ * them the opposite of safe inside a text field even though they carry a command modifier.
+ */
+const EDITING_KEYS = new Set(["c", "v", "x", "a", "z", "y"]);
+
+/** True when a chord is a standard editing command rather than a shortcut a field can take. */
+export function chordEditsText(chord: string): boolean {
+  const { mods, key } = parseChord(chord);
+  if (!mods.includes("cmd") && !mods.includes("ctrl")) return false;
+  return EDITING_KEYS.has(key.toLowerCase());
+}
+
+/**
  * True when a chord can be dispatched from inside a text field without eating typed text.
  *
  * The two shapes App's own typing guard already allows, named once so the registry's
  * `firesWhileTyping` rule and its readers cannot drift apart: ⌘/⌃ is unambiguous
  * mid-sentence, a function key produces no character. Anything else may just be typing.
+ *
+ * A command modifier is necessary and NOT sufficient, which is the part worth stating: ⌘V
+ * carries one and is Paste. An action dispatched by the field would match it, call
+ * `preventDefault`, and the paste would simply never happen - a broken clipboard in the one
+ * box people paste into most, with a shortcut list that looked perfectly valid. So the
+ * editing commands are excluded here rather than in the component, because every reader of
+ * this predicate wants the same answer.
+ *
+ * Scoped to `firesWhileTyping` actions through `typingUnsafeChordReason`, so this does not
+ * touch ⌃C for Interrupt: App dispatches that one itself, behind its own typing guard.
  */
 export function chordSurvivesTyping(chord: string): boolean {
+  if (chordEditsText(chord)) return false;
   return chordHasCommandModifier(chord) || chordUsesFunctionKey(chord);
 }
 
@@ -598,6 +625,12 @@ export function chordSurvivesTyping(chord: string): boolean {
 export function typingUnsafeChordReason(id: ActionId, chord: string): string | null {
   if (!ACTION_BY_ID.get(id)?.firesWhileTyping) return null;
   if (chordSurvivesTyping(chord)) return null;
+  // Named apart from the generic refusal: told that ⌘V "would be typed into the message",
+  // an operator would reasonably try ⌘C next and be refused again for a reason the sentence
+  // never mentioned.
+  if (chordEditsText(chord)) {
+    return `${formatChord(chord)} is a text-editing command. This shortcut fires from inside the send box, so binding it here would take copy, paste, cut, select all, undo or redo away from that box.`;
+  }
   return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.`;
 }
 

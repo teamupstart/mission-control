@@ -32,6 +32,11 @@
      two weights - every hit is a tint of it, the current hit is the solid. */
   --find: #e3b341;
 
+  /* The ⌘1 … ⌘= keycap on a Console rail row. Its own token for the same reason
+     `--find` is not `--attention`: it draws on every row, so a state colour here would
+     read as a fleet full of blocked sessions. */
+  --jump-key: #e6c65c;
+
   /* There is deliberately NO per-agent token here. A harness's brand colour is declared
      on the harness (`AGENT_IDENTITY`, `@shared/agent.ts`) and arrives as an inline
      `--agent-accent`, so adding a harness needs no edit to this file. `--claude` and
@@ -25493,15 +25498,21 @@ span.line-run-prov {
   min-width: 4.2em;
   text-align: right;
 }
-/* The jump keycap, first on the state line and so left of the state word.
-   Deliberately NOT restyled from the shared `.kb-hint` at rest: the whole gesture is "read the
-   row, press the number", and a key that had to be hovered to be read would be one you would
-   rather have clicked past. Brighter on the row under the cursor or on the selection, which is
-   the row the key is about to open - the same pairing the Board card draws. */
+/* Readable at rest, since the gesture is "read the row, press the number". A fixed hue and
+   never the row's `--tone-color`: the key belongs to the POSITION, so it must not change
+   colour when its row changes state. */
+.rail-state-line .kb-hint {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--jump-key);
+  background: color-mix(in oklab, var(--jump-key) 12%, transparent);
+  border-color: color-mix(in oklab, var(--jump-key) 42%, var(--border));
+}
 .rail-row:hover .rail-state-line .kb-hint,
 .rail-row.selected .rail-state-line .kb-hint {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
+  color: color-mix(in oklab, var(--jump-key) 82%, var(--fg));
+  background: color-mix(in oklab, var(--jump-key) 20%, transparent);
+  border-color: color-mix(in oklab, var(--jump-key) 64%, var(--border));
 }
 /* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
    recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */

@@ -389,6 +389,26 @@ test("the Console rail prints the same keys beside its state words, and they ope
     stateBox.width - idleWordWidth,
     "the state cell reserves room past its word, so short states share one key column",
   ).toBeGreaterThan(8);
+
+  // Against the `--jump-key` token rather than a literal colour, so re-tuning the hue moves
+  // one place and this still fails if the rail falls back to the shared `.kb-hint` dim.
+  const paint = await railKeycap(idleRow).evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--jump-key)";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    const style = getComputedStyle(el);
+    return { color: style.color, expected, background: style.backgroundColor };
+  });
+  expect(paint.expected, "the palette declares a jump-key colour").not.toBe("");
+  expect(paint.color, "the rail keycap is painted in the jump-key yellow at rest").toBe(
+    paint.expected,
+  );
+  expect(
+    paint.background,
+    "and carries a tint behind it rather than sitting bare on the row",
+  ).not.toBe("rgba(0, 0, 0, 0)");
   await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
 
   // The chord is announced on the control it drives - the row itself here, since the rail's

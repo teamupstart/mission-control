@@ -232,6 +232,7 @@ export function Overlay({
   ariaLabel,
   ariaModal,
   closable = true,
+  ignoreBackdropDrag = false,
   onEscape,
   onKeyDown,
   surfaceRef,
@@ -255,6 +256,8 @@ export function Overlay({
    * one guard rather than two is what keeps them from drifting apart.
    */
   closable?: boolean;
+  /** Opt in to ignoring backdrop clicks from a drag across the panel boundary. */
+  ignoreBackdropDrag?: boolean;
   /**
    * Keys the overlay wants beyond Escape (the diff viewer walks its file list). Only
    * fires while this overlay is topmost. Memoise it, or the listener re-subscribes on
@@ -272,6 +275,7 @@ export function Overlay({
   children: React.ReactNode;
 }): React.JSX.Element {
   const isTop = useOverlayRegistration(id);
+  const backdropPress = useRef(false);
 
   useEffect(() => {
     if (!isTop) return;
@@ -294,7 +298,22 @@ export function Overlay({
     <div
       className="modal-backdrop"
       data-overlay-top={isTop ? "true" : undefined}
-      onClick={() => closable && onClose()}
+      // A drag across the panel boundary can produce a click targeted at the backdrop.
+      // Capture both endpoints, even when a child stops propagation, before dismissing.
+      onPointerDownCapture={(e) => {
+        backdropPress.current = e.button === 0 && e.target === e.currentTarget;
+      }}
+      onPointerUpCapture={(e) => {
+        backdropPress.current = backdropPress.current && e.target === e.currentTarget;
+      }}
+      onPointerCancelCapture={() => {
+        backdropPress.current = false;
+      }}
+      onClick={(e) => {
+        const dismiss = !ignoreBackdropDrag || (backdropPress.current && e.target === e.currentTarget);
+        backdropPress.current = false;
+        if (closable && dismiss) onClose();
+      }}
     >
       <Tag
         ref={surfaceRef}

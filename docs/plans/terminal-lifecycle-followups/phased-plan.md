@@ -67,7 +67,20 @@ Before creating tasks, commit and push every plan pointer and verify it in the p
 
 ## Scheduled task map
 
-Not created yet. Populate this section only with returned and verified task IDs. Preserve every planning dependency and immediate-predecessor edge.
+All eight tasks were created after artifact commit `8671cb83d0179a4c6f5d0a80d24360e28a333ad3` was pushed and all twelve artifact paths were verified in that remote branch. Each task was read back from the daemon after configuration. Every task is a disabled ship task using Codex `gpt-6-astra`, `xhigh`, and `builtin-workflow:no-mistakes-review` in Mission Control only. No phase has been dispatched.
+
+Every row also depends directly on planning task `52df02cc-50da-4fc0-a32f-2f20c745e458`; all dependency edges were unsatisfied at creation.
+
+| Phase | Task ID | Direct preceding phase task |
+| --- | --- | --- |
+| 1 | `0e168404-0216-43a5-9466-7d046c301528` | None |
+| 2 | `b9cb6fa0-a10c-46a0-b957-6061e2daa3f5` | `0e168404-0216-43a5-9466-7d046c301528` |
+| 3 | `357130a1-8ff6-40ab-b198-1204d6725ec2` | `b9cb6fa0-a10c-46a0-b957-6061e2daa3f5` |
+| 4 | `e0857704-a887-47d8-ac66-be0df89e6474` | `357130a1-8ff6-40ab-b198-1204d6725ec2` |
+| 5 | `e21ceb15-2328-4ad0-abb1-f6ab290c15f4` | `e0857704-a887-47d8-ac66-be0df89e6474` |
+| 6 | `c6b7a972-3c46-4b1d-887c-07f7c38fc44f` | `e21ceb15-2328-4ad0-abb1-f6ab290c15f4` |
+| 7 | `98cdfba1-b042-463e-a045-b35ab15c0e61` | `c6b7a972-3c46-4b1d-887c-07f7c38fc44f` |
+| 8 | `d016f75e-6fe8-412d-b4dc-517b38f87773` | `98cdfba1-b042-463e-a045-b35ab15c0e61` |
 
 ## Cross-phase audit record
 
@@ -95,3 +108,5 @@ Not created yet. Populate this section only with returned and verified task IDs.
 - Final audit: all eight scout IDs map to exactly one phase; every phase carries latest-main manual reproduction, conditional regression/fix, requested execution settings, publication gate and disabled-state instructions. Direct edges form one acyclic chain. Shared API consumers land with their earliest owner; no dangling source/test/phase pointers or deferred compatibility repair were found. Probe/design steps now explicitly precede regression and implementation. Blocked reproduction cannot be treated as no-change acceptance.
 
 - Publication base refresh: the planning branch was fast-forwarded to `e76d21ac` before artifact publication. The intervening changes concern Foreman error display and task-source deletion; the inspected terminal lifecycle paths and phase ownership remain unchanged.
+
+- Scheduling audit: eight returned task IDs, eight disabled-state/model/effort/workflow readbacks, eight planning edges and seven predecessor edges verified. Canonical repository is Mission Control with no additional repositories. All tasks remain in backlog.

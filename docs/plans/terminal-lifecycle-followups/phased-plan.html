@@ -39,7 +39,9 @@
 <p>Reports, screenshots and transcripts stay uncommitted. Attach proof to a resulting PR and provide live artifacts to workflow reviewers. No global terminal preferences, operator SQLite, shared application restart or unrelated session cleanup is authorized. The cmux missing-baseline-window limitation is not a diagnosed product defect.</p>
 <p>Before creating tasks, commit and push every plan pointer and verify it in the pushed commit. Create each task with the planning dependency, set and verify its model/effort/workflow/disabled fields, then create its successor. Refresh publication ownership after scheduling and immediately before any direct PR action. Only the operator may merge the planning PR under this task&#x27;s authorization.</p>
 <h2>Scheduled task map</h2>
-<p>Not created yet. Populate this section only with returned and verified task IDs. Preserve every planning dependency and immediate-predecessor edge.</p>
+<p>All eight tasks were created after artifact commit <code>8671cb83d0179a4c6f5d0a80d24360e28a333ad3</code> was pushed and all twelve artifact paths were verified in that remote branch. Each task was read back from the daemon after configuration. Every task is a disabled ship task using Codex <code>gpt-6-astra</code>, <code>xhigh</code>, and <code>builtin-workflow:no-mistakes-review</code> in Mission Control only. No phase has been dispatched.</p>
+<p>Every row also depends directly on planning task <code>52df02cc-50da-4fc0-a32f-2f20c745e458</code>; all dependency edges were unsatisfied at creation.</p>
+<div class="table-scroll"><table><thead><tr><th>Phase</th><th>Task ID</th><th>Direct preceding phase task</th></tr></thead><tbody><tr><td>1</td><td><code>0e168404-0216-43a5-9466-7d046c301528</code></td><td>None</td></tr><tr><td>2</td><td><code>b9cb6fa0-a10c-46a0-b957-6061e2daa3f5</code></td><td><code>0e168404-0216-43a5-9466-7d046c301528</code></td></tr><tr><td>3</td><td><code>357130a1-8ff6-40ab-b198-1204d6725ec2</code></td><td><code>b9cb6fa0-a10c-46a0-b957-6061e2daa3f5</code></td></tr><tr><td>4</td><td><code>e0857704-a887-47d8-ac66-be0df89e6474</code></td><td><code>357130a1-8ff6-40ab-b198-1204d6725ec2</code></td></tr><tr><td>5</td><td><code>e21ceb15-2328-4ad0-abb1-f6ab290c15f4</code></td><td><code>e0857704-a887-47d8-ac66-be0df89e6474</code></td></tr><tr><td>6</td><td><code>c6b7a972-3c46-4b1d-887c-07f7c38fc44f</code></td><td><code>e21ceb15-2328-4ad0-abb1-f6ab290c15f4</code></td></tr><tr><td>7</td><td><code>98cdfba1-b042-463e-a045-b35ab15c0e61</code></td><td><code>c6b7a972-3c46-4b1d-887c-07f7c38fc44f</code></td></tr><tr><td>8</td><td><code>d016f75e-6fe8-412d-b4dc-517b38f87773</code></td><td><code>98cdfba1-b042-463e-a045-b35ab15c0e61</code></td></tr></tbody></table></div>
 <h2>Cross-phase audit record</h2>
 <ul>
 <li>
@@ -83,5 +85,8 @@
 </li>
 <li>
 <p>Publication base refresh: the planning branch was fast-forwarded to <code>e76d21ac</code> before artifact publication. The intervening changes concern Foreman error display and task-source deletion; the inspected terminal lifecycle paths and phase ownership remain unchanged.</p>
+</li>
+<li>
+<p>Scheduling audit: eight returned task IDs, eight disabled-state/model/effort/workflow readbacks, eight planning edges and seven predecessor edges verified. Canonical repository is Mission Control with no additional repositories. All tasks remain in backlog.</p>
 </li>
 </ul></main></body></html>

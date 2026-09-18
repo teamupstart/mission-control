@@ -6672,13 +6672,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/task-sources/config", async (c) => {
     const parsed = await parseBody(c, TaskSourcesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const before = getTaskSourcesConfig();
+    const beforeById = new Map(before.sources.map((source) => [source.id, source]));
     const sources = [];
     for (const s of parsed.data.sources) {
       const repoRoot = await resolveRepoRoot(s.repoRoot);
-      if (!repoRoot) return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
+      if (!repoRoot) {
+        // A repository can disappear after this source was configured - most commonly when
+        // its checkout is renamed. The whole-list PUT must still let an operator add another
+        // source, repair one stale source while a sibling remains stale, or remove either one.
+        // Carry only the exact stored (id, path) pair through unchanged. A new source or a
+        // changed path still has to resolve, so this does not let a typo enter the config.
+        const stored = beforeById.get(s.id);
+        if (!stored || stored.repoRoot !== s.repoRoot) {
+          return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
+        }
+        sources.push(s);
+        continue;
+      }
       sources.push({ ...s, repoRoot });
     }
-    const before = getTaskSourcesConfig();
     setTaskSourcesConfig({ sources });
     noteTaskSourceConfigChange(before.sources, sources);
     // Removing a failing source, or pausing one, changes the failing count the red dot
@@ -7319,7 +7332,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Computed per request rather than at boot; see `environmentCheckViews` for why an operator
   // who fixes what a warning names must not have to restart the daemon to stop seeing it.
   app.get("/api/environment/checks", async (c) =>
-    c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
+    c.json({
+      checks: await (setupDeps
+        ? setupDeps.environmentChecks(setupDeps.environment)
+        : environmentCheckViews()),
+    } satisfies EnvironmentChecksView));
 
   // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
   // remedy remains inert data for the browser to link or copy. The one write during this read

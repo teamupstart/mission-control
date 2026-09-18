@@ -200,6 +200,46 @@ test("the config route refuses auto-resolve with no completion trigger", async (
   assert.equal(res.status, 400);
 });
 
+test("an unchanged missing repository cannot block task-source repairs", async () => {
+  const { app } = daemon();
+  const missing = `${repo}-before-rename`;
+  setTaskSourcesConfig(
+    TaskSourcesConfigSchema.parse({
+      sources: [{ id: "stale", kind: "jira", label: "renamed repo", repoRoot: missing }],
+    }),
+  );
+
+  const add = await app.request("/api/task-sources/config", {
+    method: "PUT",
+    headers: HEADERS,
+    body: JSON.stringify({
+      sources: [
+        { id: "stale", kind: "jira", label: "renamed repo", repoRoot: missing },
+        { id: "new", kind: "jira", label: "new source", repoRoot: repo },
+      ],
+    }),
+  });
+  assert.equal(add.status, 200, await add.text());
+  assert.deepEqual(
+    getTaskSourcesConfig().sources.map((source) => [source.id, source.repoRoot]),
+    [["stale", missing], ["new", repo]],
+  );
+
+  const typo = `${repo}-still-missing`;
+  const invalidChange = await app.request("/api/task-sources/config", {
+    method: "PUT",
+    headers: HEADERS,
+    body: JSON.stringify({
+      sources: [
+        { id: "stale", kind: "jira", label: "renamed repo", repoRoot: typo },
+        { id: "new", kind: "jira", label: "new source", repoRoot: repo },
+      ],
+    }),
+  });
+  assert.equal(invalidChange.status, 400);
+  assert.match(await invalidChange.text(), /not a git repository/);
+});
+
 // ---- 2. a completion, delivered ----
 
 async function configure(writeback: Record<string, boolean>): Promise<void> {

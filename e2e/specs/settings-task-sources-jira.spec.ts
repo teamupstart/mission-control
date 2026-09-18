@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Adding a Jira task source, in the panel an operator actually uses.
@@ -197,6 +198,69 @@ test("a Jira source is addable, files parked tasks, and keeps the defaults it is
     page.getByRole("checkbox", { name: "Allow backlog autopilot to schedule swept tasks" }),
   ).toBeChecked();
   await shoot(page, "jira-source-configured");
+});
+
+test("a Jira source survives a repository rename and remains repairable", async ({
+  page,
+  daemon,
+}) => {
+  const oldRepos = ["a", "b", "c"].map((suffix) => `${daemon.repo}-before-rename-${suffix}`);
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run(
+      "taskSources",
+      JSON.stringify({
+        sources: oldRepos.map((repoRoot, index) => ({
+          id: `jira-renamed-repo-${index}`,
+          kind: "jira",
+          label: `Renamed Jira ${index + 1}`,
+          repoRoot,
+        })),
+      }),
+    );
+  });
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(
+    page.getByRole("list", { name: "Configured task sources" }).getByRole("button"),
+  ).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Add source" }).click();
+  await page.getByRole("combobox", { name: "What kind of source to add" }).selectOption("jira");
+  const addForm = page.locator(".ts-add");
+  await addForm.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await addForm.getByRole("button", { name: "Add", exact: true }).click();
+
+  await expect(page.getByText(/That change didn't stick: not a git repository:/)).toHaveCount(0);
+  await expect(page.locator(".ts-metric").first().locator("strong")).toHaveText("4");
+
+  const directory = page.getByRole("list", { name: "Configured task sources" });
+  await directory.getByRole("button").filter({ hasText: "Renamed Jira 1" }).click();
+  const editor = page.locator(".ts-editor");
+  await editor.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await editor.getByRole("button", { name: "Set repo" }).click();
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+      const body = (await response.json()) as { sources?: { id?: string; repoRoot?: string }[] };
+      return body.sources?.find((source) => source.id === "jira-renamed-repo-0")?.repoRoot;
+    })
+    .toBe(daemon.repo);
+
+  await directory.getByRole("button").filter({ hasText: "Renamed Jira 2" }).click();
+  await editor.getByRole("button", { name: "Delete source: Renamed Jira 2" }).click();
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+      const body = (await response.json()) as { sources?: { id?: string }[] };
+      return body.sources?.map((source) => source.id);
+    })
+    .not.toContain("jira-renamed-repo-1");
+  await expect(page.locator(".ts-metric").first().locator("strong")).toHaveText("3");
+  await shoot(page, "renamed-repository-repaired");
 });
 
 test("a config read that left before an edit cannot revert the field, or be saved over it", async ({

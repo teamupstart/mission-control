@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_BACKLOG_MODEL,
   backlogModel,
+  planBacklog,
   sanitizePlan,
 } from "../src/server/foreman/backlog-plan.ts";
+import { llmRunner } from "../src/server/llm/index.ts";
 import type { BacklogReport } from "../src/server/foreman/backlog-plan.ts";
 import {
   PLANNABLE_LIMIT,
@@ -41,6 +43,22 @@ function mkTask(over: Partial<Task> = {}): Task {
 }
 
 const report = (tasks: BacklogReport["tasks"], note?: string): BacklogReport => ({ tasks, note });
+
+test("zero/one-task plans bypass an exhausted provider; two tasks surface its usage-limit failure", async (t) => {
+  const run = t.mock.method(llmRunner("claude"), "run", async () => { throw new Error("Usage limit reached"); });
+  const task = mkTask();
+  for (const tasks of [[], [task]]) {
+    assert.deepEqual(await planBacklog(tasks, "test-model", "claude"), {
+      kind: "ok",
+      plan: { entries: tasks.map(({ id }) => ({ taskId: id, dependsOn: [], reason: null })), note: null },
+    });
+    assert.equal(run.mock.callCount(), 0, "a local dependency-free plan must not spend model tokens");
+  }
+  const result = await planBacklog([task, mkTask()], "test-model", "claude");
+  assert.equal(run.mock.callCount(), 1);
+  assert.equal(result.kind, "failed");
+  if (result.kind === "failed") assert.match(result.reason, /Usage limit reached/);
+});
 
 /** An unmet operator-declared dependency on `taskId`, in the shape the task row carries. */
 const dep = (taskId: string): Task["dependencies"][number] => ({

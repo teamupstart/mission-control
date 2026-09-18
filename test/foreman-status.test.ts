@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { SessionNote } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { ForemanHealthTracker } from "../src/server/foreman/health.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-fstatus-"));
@@ -13,10 +14,40 @@ process.env.HARNESS_HOME = home;
 const { openDb, upsertSessionNote } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { foremanStatus } = await import("../src/server/foreman/config.ts");
+const { claimForemanLease, recordForemanHealth, releaseForemanLease, LEASE_TTL_MS } =
+  await import("../src/server/foreman/config.ts");
 const { foremanInstructionsView, updateForemanInstructions } =
   await import("../src/server/foreman/instructions.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
+
+test("Foreman health is leader-owned, ordered, and separate from liveness", () => {
+  openDb();
+  const registry = new Registry();
+  const tracker = new ForemanHealthTracker();
+  const context = { operation: "review" as const, runner: "codex" as const, model: "test-model" };
+  claimForemanLease("health-leader", 1000);
+  tracker.failure(context, "Usage limit reached", 1001);
+  const failed = { workerId: "health-leader", health: tracker.snapshot() };
+  assert.equal(recordForemanHealth({ ...failed, workerId: "standby" }, 1002), false);
+  assert.equal(recordForemanHealth(failed, 1003), true);
+  assert.equal(foremanStatus(registry, 1004).running, true);
+  assert.equal(foremanStatus(registry, 1004).health?.issues[0]?.error, "Usage limit reached");
+  claimForemanLease("health-leader", 1005);
+  assert.equal(foremanStatus(registry, 1006).health?.issues.length, 1, "heartbeats are not recovery");
+  assert.equal(foremanStatus(registry, 1006 + LEASE_TTL_MS).health?.current, false);
+  tracker.success(context);
+  assert.equal(recordForemanHealth({ ...failed, health: tracker.snapshot() }, 1007), true);
+  assert.equal(recordForemanHealth(failed, 1008), true, "stale reports are harmless no-ops");
+  assert.equal(foremanStatus(registry, 1009).health?.issues.length, 0);
+  releaseForemanLease("health-leader");
+  assert.equal(recordForemanHealth(failed, 1010), false);
+  assert.equal(foremanStatus(registry, 1011).health?.current, false);
+  claimForemanLease("successor", 1012);
+  assert.equal(recordForemanHealth({ workerId: "successor", health: new ForemanHealthTracker().snapshot() }, 1013), true);
+  assert.equal(foremanStatus(registry, 1014).health?.current, true);
+  releaseForemanLease("successor");
+});
 
 function mkNote(over: Partial<SessionNote> = {}): SessionNote {
   return {

@@ -1045,6 +1045,7 @@ turning it on is consent. Per source:
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
+| **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
 | **Retry / Discard queue** | repair or drop what this source still owes its items. See [Writing back to the source](#writing-back-to-the-source) for what each queue state means and why an unknown outcome is retried separately |
 

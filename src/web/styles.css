@@ -20089,7 +20089,7 @@ button.wf-carried.is-link:focus-visible {
   align-items: center;
   gap: 10px;
 }
-/* The source's own name. Flexes so the badge and the remove button stay put while the
+/* The source's own name. Flexes so the badge stays put while the
    field takes whatever is left - capped, because at page width "whatever is left" is 700px
    of empty box for a two-word label. */
 .ts-name {
@@ -20097,9 +20097,6 @@ button.wf-carried.is-link:focus-visible {
   min-width: 0;
   max-width: 420px;
   font-size: 12.5px;
-}
-.ts-head .foreman-repo-remove {
-  margin-left: 0;
 }
 .ts-status {
   margin: 9px 0 0;
@@ -20500,6 +20497,69 @@ button.wf-carried.is-link:focus-visible {
 .foreman-pop {
   width: 288px;
 }
+.foreman-btn.has-errors,
+.foreman-btn.has-errors .foreman-chip {
+  color: var(--attention);
+  border-color: color-mix(in srgb, var(--attention) 50%, var(--border));
+}
+.foreman-warning { color: var(--attention); }
+/* Issue counts remain visible when the title bar's ordinary mode chips collapse. */
+.topbar .foreman-btn.has-errors .foreman-chip { display: inline; }
+.foreman-pop.has-errors { width: min(440px, calc(100vw - 32px)); }
+.foreman-errors { min-width: 0; }
+.foreman-errors-head,
+.foreman-error-counts,
+.foreman-error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.foreman-errors-head { color: var(--attention); }
+.foreman-errors-head > span { font-size: 11px; }
+.foreman-errors-state { font-size: 12px; line-height: 1.5; margin: 10px 0 6px; }
+.foreman-errors-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 8px 0; }
+.foreman-error-issue {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 35%, var(--border));
+  background: color-mix(in srgb, var(--attention) 4%, var(--panel));
+  border-radius: 9px;
+  padding: 14px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.foreman-error-model { color: var(--muted); overflow-wrap: anywhere; margin: 8px 0; }
+.foreman-error-received {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 12px 0;
+}
+.foreman-error-received > span {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.foreman-error-received pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--fg);
+  font: 11.5px/1.6 var(--mono);
+  margin: 8px 0 0;
+  user-select: text;
+}
+.foreman-error-counts { color: var(--attention); font-size: 11px; }
+.foreman-error-sessions summary,
+.foreman-error-group > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.foreman-error-sessions ul { padding-left: 18px; overflow-wrap: anywhere; }
+.foreman-error-sessions li { margin: 5px 0; }
+.foreman-error-actions { justify-content: flex-start; margin-top: 12px; }
+.foreman-error-actions .btn { font-size: 11px; white-space: normal; }
+.foreman-error-group { margin-top: 12px; }
 .foreman-modes {
   border: 1px solid var(--border-soft);
   border-radius: 8px;

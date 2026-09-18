@@ -912,15 +912,6 @@ export function SourceCard({
           onBlur={() => commit("label", (v) => onChange({ ...src, label: v.trim().slice(0, 80) }))}
         />
         <span className="skill-badge">{kindLabel}</span>
-        <Tooltip label="Remove this source">
-          <button
-            className="foreman-repo-remove"
-            onClick={onRemove}
-            aria-label={`Remove ${nameOf(src, kindLabel)}`}
-          >
-            ✕
-          </button>
-        </Tooltip>
       </div>
 
       <p className={`ts-status${status?.lastError ? " ts-status-failed" : ""}`}>
@@ -1201,8 +1192,18 @@ export function SourceCard({
             {busy === "forget" ? "Forgetting…" : "Forget seen items"}
           </button>
         </Tooltip>
+        <Tooltip label="Delete this task source">
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={onRemove}
+            aria-label={`Delete source: ${nameOf(src, kindLabel)}`}
+          >
+            Delete source
+          </button>
+        </Tooltip>
       </div>
-      {/* What one of those three buttons just answered, BELOW them - because the card is
+      {/* What a source action just answered, BELOW them - because the card is
           taller than the pane and the buttons are at the bottom of it, so a note at the top
           put the answer off screen above the question. That is worst for the one sentence
           that has to be read: preflight naming the credential to go and fix. `lastError`

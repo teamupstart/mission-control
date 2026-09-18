@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ForemanPlannerHealth, ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
+import type { ForemanHealthReport } from "@shared/foreman-health.ts";
 import type {
   ForemanConfig,
   ForemanConfigPatch,
@@ -68,6 +69,7 @@ interface ForemanLease {
 
 /** Latest leader-owned projection of the worker's process-local planner circuit. */
 let plannerHealthReport: ForemanPlannerHealthReport | null = null;
+let workerHealthReport: { report: ForemanHealthReport; reportedAt: number } | null = null;
 /** Operator retry signal. Process-local by design: it is control, not durable schedule state. */
 let plannerRetryGeneration = 0;
 /** The one worker allowed to spend the current retry generation. */
@@ -337,7 +339,16 @@ export function foremanPlannerControl(): ForemanPlannerControl {
   };
 }
 
-/** Live status: config + whether the worker heartbeated + derived queue/counts. */
+/** Only the current leader can publish, and delayed requests cannot restore an old error. */
+export function recordForemanHealth(report: ForemanHealthReport, now = Date.now()): boolean {
+  if (liveLease(now)?.workerId !== report.workerId) return false;
+  if (workerHealthReport?.report.workerId === report.workerId
+    && workerHealthReport.report.health.revision > report.health.revision) return true;
+  workerHealthReport = { report: structuredClone(report), reportedAt: now };
+  return true;
+}
+
+/** Live status: config, lease liveness, and bounded worker diagnostics. */
 export function foremanStatus(registry: Registry, now = Date.now()): ForemanStatus {
   const cfg = getForemanConfig();
   const { sessions, tasks } = registry.snapshot();
@@ -418,6 +429,12 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     // "A leader heartbeated recently", not "someone beat recently": a standby
     // worker never acquires the lease, so it can't make this true on its own.
     running: leaderAlive(now),
+    health: workerHealthReport ? {
+      ...workerHealthReport.report.health,
+      reportedAt: workerHealthReport.reportedAt,
+      current: leader?.workerId === workerHealthReport.report.workerId
+        && now - workerHealthReport.reportedAt < LEASE_TTL_MS,
+    } : null,
     queueDepth,
     counts,
     lastActionAt,

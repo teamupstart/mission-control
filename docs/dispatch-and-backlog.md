@@ -1048,6 +1048,10 @@ turning it on is consent. Per source:
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
 | **Retry / Discard queue** | repair or drop what this source still owes its items. See [Writing back to the source](#writing-back-to-the-source) for what each queue state means and why an unknown outcome is retried separately |
 
+If a configured checkout is renamed or removed, its stored source stays editable. An unchanged
+missing path does not block adding, repairing, or removing sources; every new or changed path still
+has to resolve to a Git repository before Mission Control stores it.
+
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
 healthy result. It remains pending until the next sweep; a manual sweep run while paused
 already counts as that fresh result.

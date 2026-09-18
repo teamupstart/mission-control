@@ -231,7 +231,28 @@ const SETUP_PROBES = {
     throw new Error("not probed in the oracle");
   },
   terminalTargets: () => [],
-  environmentChecks: async () => [],
+  environmentChecks: async () => [
+    {
+      id: "upstartclaw-core-setup",
+      label: "UpstartClaw core setup",
+      warning: null,
+      detail: null,
+      ready: false,
+    },
+    {
+      id: "mission-hook-script",
+      label: "Claude Code hooks",
+      warning: null,
+      detail: null,
+    },
+    {
+      id: "pi-extension",
+      label: "Pi extension",
+      warning: null,
+      detail: null,
+      ready: false,
+    },
+  ],
   readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
   writeBannerDismissal: () => undefined,
 } as never;

@@ -383,6 +383,10 @@ if (process.argv.includes("--setting-sources=")) {
       process.exit(0);
     }
     const finish = () => {
+      if (foremanUsageFailure(prompt)) {
+        process.stderr.write("Usage limit reached for this account. Check your plan and usage limits.");
+        process.exit(1);
+      }
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
       process.exit(0);
     };
@@ -426,6 +430,11 @@ function untrustedJsonInput(prompt, name) {
   const fence = prompt.slice(fenceAt, markerAt);
   const closingAt = prompt.indexOf(`\n${fence}`, bodyAt);
   return JSON.parse(prompt.slice(bodyAt, closingAt).trim());
+}
+
+// A marked planner call fails at the real transport boundary, never at a route/UI stub.
+function foremanUsageFailure(prompt) {
+  return prompt.includes('You are the BACKLOG PLANNER') && prompt.includes('E2E_FOREMAN_USAGE_LIMIT');
 }
 
 function headlessAnswer(prompt) {
@@ -614,6 +623,11 @@ function runHeadlessSdk() {
       if ((failThenHoldCount(prompt) ?? 1) <= 3) process.exit(1);
       setTimeout(() => process.exit(1), HELD_REVIEW_MS);
       return;
+    }
+    if (foremanUsageFailure(prompt)) {
+      emit({ type: "result", subtype: "error_during_execution", is_error: true,
+        session_id: SESSION_ID, errors: ["Usage limit reached for this account. Check your plan and usage limits."] });
+      process.exit(0);
     }
     const answer = headlessAnswer(prompt);
     let structuredOutput;

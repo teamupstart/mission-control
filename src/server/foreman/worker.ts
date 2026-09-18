@@ -40,8 +40,10 @@ import {
   sweepSpendOutbox,
 } from "./client.ts";
 import { setLlmSpendSink } from "../llm/spend.ts";
+import { ForemanHealthTracker, ForemanHealthPublisher } from "./health.ts";
+import type { ForemanHealthOperation } from "@shared/foreman-health.ts";
 import { reviewModel, reviewSession } from "./review.ts";
-import { FOREMAN_MODEL_ROLES, resolveForemanRunner } from "@shared/foreman-models.ts";
+import { FOREMAN_MODEL_ROLES, resolveForemanRunner, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
@@ -226,6 +228,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Consecutive review-failure strikes, so a transient blip retries instead of a permanent skip. */
 const reviewFailures = new ReviewFailureTracker();
+const workerHealth = new ForemanHealthTracker();
+let healthPublisher: ForemanHealthPublisher | null = null;
+
+function observeModel<T>(
+  role: ForemanModelRole, cfg: ForemanConfig, session: Session | undefined,
+  run: () => Promise<T>, operation: ForemanHealthOperation = role,
+): Promise<T> {
+  const runner = roleRunnerIds[role];
+  return workerHealth.observe({
+    operation, runner, model: resolveForemanModel(role, cfg, process.env, runner).id, session,
+  }, run);
+}
 /** Per-session cooldown so a flapping marker can't trigger back-to-back reviews. */
 const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
@@ -320,6 +334,8 @@ function startLeaseRenewal(client: ForemanClient): void {
     isLeader = r?.leader ?? false;
     if (was && !isLeader) log("lost the lease - standing by");
     if (!was && isLeader) log("acquired the lease - this worker is the leader");
+    // A heartbeat republishes even unchanged diagnostics after a daemon restart.
+    if (isLeader) await healthPublisher?.flush(true);
   };
   void beat();
   setInterval(() => void beat(), LEASE_RENEW_MS).unref?.();
@@ -330,6 +346,11 @@ async function main(): Promise<void> {
   // same contract before any model runner can resolve or launch an agent CLI.
   await initializeExecutableEnvironment();
   const client = new ForemanClient();
+  healthPublisher = new ForemanHealthPublisher(workerHealth, async (snapshot) => {
+    if (!isLeader) throw new Error("not the Foreman leader");
+    await client.reportHealth(WORKER_ID, snapshot);
+  });
+  workerHealth.onChange = () => { void healthPublisher?.flush(); };
   // The daemon installs the same runner with a DB-backed resolver. This separate process
   // must not import that config module, so its resolver closes over the HTTP-refreshed
   // value below instead. It is installed before any path can spend.
@@ -375,7 +396,7 @@ async function main(): Promise<void> {
     }
     let cfg: ForemanConfig;
     try {
-      cfg = await client.getConfig();
+      cfg = await workerHealth.observe({ operation: "daemon" }, () => client.getConfig());
     } catch (err) {
       log(`daemon unreachable (${String(err)}); retrying…`);
       await sleep(IDLE_MS);
@@ -410,6 +431,12 @@ async function main(): Promise<void> {
         }).id,
       ]),
     ) as Record<ForemanModelRole, LlmRunnerId>;
+    for (const role of FOREMAN_MODEL_ROLES) {
+      const runner = roleRunnerIds[role];
+      const model = resolveForemanModel(role, cfg, process.env, runner).id;
+      workerHealth.useModel(role, runner, model);
+      if (role === "review") workerHealth.useModel("ship-recovery", runner, model);
+    }
     if (llmSelection) {
       claudeTransport = llmSelection.claudeTransport;
       codexTransport = llmSelection.codexTransport;
@@ -443,7 +470,9 @@ async function main(): Promise<void> {
       reviews = await client.reviews();
       targets = tickTargets(sessions, cfg.wrapupTriggers);
       await sweepOrphanedQueues(client);
+      workerHealth.success({ operation: "snapshot" });
     } catch (err) {
+      workerHealth.failure({ operation: "snapshot" }, err);
       log(`snapshot failed (${String(err)})`);
       await sleep(IDLE_MS);
       continue;
@@ -468,7 +497,7 @@ async function main(): Promise<void> {
     // exactly backwards: the pass where the whole fleet is quiet is the pass most likely
     // to have capacity to launch into.
     try {
-      if (await runBacklogAutopilot(client, cfg)) advanced = true;
+      if (await workerHealth.observe({ operation: "autopilot" }, () => runBacklogAutopilot(client, cfg))) advanced = true;
     } catch (err) {
       log(`backlog autopilot failed (${String(err)})`);
     } finally {
@@ -478,7 +507,7 @@ async function main(): Promise<void> {
     // A fleet-level loop over external engine halts. The Conductor switch is independent of
     // backlog autopilot, but the worker lease and Foreman's own master switch still gate it.
     try {
-      if (await runPipelineTriage(client)) advanced = true;
+      if (await workerHealth.observe({ operation: "pipeline" }, () => runPipelineTriage(client))) advanced = true;
     } catch (err) {
       log(`pipeline triage failed (${String(err)})`);
     }
@@ -496,7 +525,7 @@ async function main(): Promise<void> {
     // stands down on its own.
     let nudgedThisPass = new Set<string>();
     try {
-      nudgedThisPass = await runReviewFollowup(client, cfg);
+      nudgedThisPass = await workerHealth.observe({ operation: "followup" }, () => runReviewFollowup(client, cfg));
       if (nudgedThisPass.size > 0) advanced = true;
     } catch (err) {
       log(`review follow-through failed (${String(err)})`);
@@ -508,7 +537,7 @@ async function main(): Promise<void> {
     // ownership/current-state check immediately before delivery and remains unknown on a
     // lost response, so a worker restart cannot turn uncertainty into a double-send.
     try {
-      const recovered = await runShipShepherd(client, cfg, nudgedThisPass);
+      const recovered = await workerHealth.observe({ operation: "ship-recovery" }, () => runShipShepherd(client, cfg, nudgedThisPass));
       for (const id of recovered) nudgedThisPass.add(id);
       if (recovered.size > 0) advanced = true;
     } catch (err) {
@@ -527,14 +556,14 @@ async function main(): Promise<void> {
       if (nudgedThisPass.has(session.id)) continue;
       // Honour a mid-drain disable/mode change without finishing the whole list.
       try {
-        cfg = await client.getConfig();
+        cfg = await workerHealth.observe({ operation: "daemon" }, () => client.getConfig());
       } catch {
         break;
       }
       if (!cfg.enabled || !isLeader) break;
 
       try {
-        if (await processTarget(client, cfg, session, reviews, nudgedThisPass)) advanced = true;
+        if (await workerHealth.observe({ operation: "session", session }, () => processTarget(client, cfg, session, reviews, nudgedThisPass))) advanced = true;
       } catch (err) {
         log(`error processing ${session.name} (${session.id}): ${String(err)}`);
       }
@@ -790,7 +819,13 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     }
     const identity = backlogPlanner.health(now);
     if (!identity) return false;
-    const result = await planBacklog(action.tasks, identity.model, identity.runner);
+    const result = await workerHealth.observe(
+      { operation: "backlog", runner: identity.runner, model: identity.model },
+      () => planBacklog(action.tasks, identity.model, identity.runner),
+      // planBacklog builds zero/one-task plans locally. Observe every failure, but only
+      // a real provider call can establish recovery from a previous model error.
+      { recoverOnSuccess: action.tasks.length >= 2 },
+    );
     if (result.kind === "failed") {
       backlogPlanner.onPlanningFailure(result.reason, Date.now());
       const health = backlogPlanner.health(Date.now())!;
@@ -801,7 +836,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       return false;
     }
     try {
-      await client.putBacklogPlan(result.plan);
+      await workerHealth.observe({ operation: "backlog" }, () => client.putBacklogPlan(result.plan));
     } catch (err) {
       // NOT a planning failure - the model answered fine, the daemon refused the write.
       // Counted and backed off separately so a broken route does not spend the
@@ -1202,8 +1237,9 @@ async function runShipShepherd(
           if (!window || !standards) {
             reviewFailure = "the bounded task evidence could not be read safely";
           } else {
-            const reviewed = await reviewShipRecovery({
-              objective: goal.objective,
+            const objective = goal.objective;
+            const reviewed = await observeModel("review", cfg, session, () => reviewShipRecovery({
+              objective,
               focus: goal.focus,
               diff: diff.patch,
               diffTruncated: diff.truncated,
@@ -1215,7 +1251,7 @@ async function runShipShepherd(
               workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
-            }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review);
+            }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review), "ship-recovery");
             if (reviewed.kind === "failed") {
               reviewFailure = reviewed.reason;
             } else if (reviewed.verdict.action === "escalate") {
@@ -2166,7 +2202,7 @@ export async function processPromptedWrapup(
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
   // objective, in light of the latest focus?" is one question, and a second prompt for it
   // would be a second thing to keep true.
-  const result = await withPlanPublicationGuard(planPublication, () => verifyItem({
+  const result = await withPlanPublicationGuard(planPublication, () => observeModel("verify", cfg, session, () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
     focus: candidate.focus,
@@ -2197,7 +2233,7 @@ export async function processPromptedWrapup(
     // handoff only under current workflow ownership; personal sessions carry neither.
     completionContract,
     registeredEvidence,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify), () => client.planPublicationContext(session.id));
+  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify)), () => client.planPublicationContext(session.id));
   if (!result) {
     log(`${session.name}: prompted wrap-up held - plan publication ownership changed during verification`);
     return false;
@@ -2634,7 +2670,7 @@ async function runVerify(
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
-  const result = await verifyItem({
+  const result = await observeModel("verify", cfg, session, () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: item.intent,
     round: item.round,
@@ -2649,7 +2685,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify);
+  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify));
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -3058,7 +3094,7 @@ async function shadowBoth(
     // The same `prefs` object to both, which is the point of reading it once: these two
     // verdicts are COMPARED below, so a tier reading different instructions than its
     // counterpart would surface as a divergence in the log rather than as what it is.
-    triageSession(triageDeps(client), pending, session, cfg, captured),
+    triageSession(triageDeps(client, cfg, session), pending, session, cfg, captured),
     fullReview(client, cfg, session, pending, ctx, captured),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
@@ -3095,7 +3131,7 @@ async function cheapTierDecides(
   /** What the caller captured once for this evaluation - see `processSession`. */
   captured: CapturedInputs,
 ): Promise<Decision> {
-  const cheap = await triageSession(triageDeps(client), pending, session, cfg, captured);
+  const cheap = await triageSession(triageDeps(client, cfg, session), pending, session, cfg, captured);
   if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier, reason: cheap.reason };
@@ -3164,7 +3200,8 @@ async function fullReview(
     ...captured,
   };
 
-  const result = await reviewSession(input, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review);
+  const result = await observeModel("review", cfg, session,
+    () => reviewSession(input, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review));
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a
@@ -3201,7 +3238,7 @@ async function fullReview(
 let instructionsUnreadable = false;
 async function readInstructions(client: ForemanClient): Promise<string> {
   try {
-    const text = await client.instructions();
+    const text = await workerHealth.observe({ operation: "instructions" }, () => client.instructions());
     if (instructionsUnreadable) {
       instructionsUnreadable = false;
       log("Foreman instructions readable again");
@@ -3258,8 +3295,15 @@ let codexTransport: CodexTransport = foremanCodexTransportFallback();
  * `LlmRunner.run` guarantees and what `parseModelJson` on the other side tolerates either
  * way. It used to hand over `claude -p`'s raw `{result: …}` JSON.
  */
-function triageDeps(client: ForemanClient): TriageDeps {
+function triageDeps(client: ForemanClient, cfg: ForemanConfig, session: Session): TriageDeps {
+  const runner = roleRunnerIds.triage;
+  const context = { operation: "triage" as const, runner,
+    model: resolveForemanModel("triage", cfg, process.env, runner).id, session };
   return {
+    onModelResult: (error) => {
+      if (error) workerHealth.failure(context, error);
+      else workerHealth.success(context);
+    },
     transcript: (id, turns) => client.transcript(id, turns),
     runner: roleRunnerIds.triage,
     runModel: (prompt, model, schema) =>

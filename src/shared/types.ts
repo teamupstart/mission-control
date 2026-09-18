@@ -9,6 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
+import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { FileCommentSurface } from "./file-comment-anchor.ts";
 import type {
@@ -1659,6 +1660,8 @@ export interface SessionNoteSummary {
 
 /** Foreman's live status for the dashboard (config + derived counts). */
 export interface ForemanStatus {
+  /** Bounded worker diagnostics; absent/null until a compatible worker reports. */
+  health?: ForemanHealthStatus | null;
   enabled: boolean;
   mode: "dry-run" | "live" | "semi-auto";
   /**

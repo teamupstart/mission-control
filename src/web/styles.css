@@ -20506,6 +20506,10 @@ button.wf-carried.is-link:focus-visible {
   justify-content: space-between;
   gap: 12px;
 }
+.foreman-enable-row {
+  justify-content: flex-start;
+  gap: 8px;
+}
 .foreman-info-btn {
   display: inline-flex;
   align-items: center;

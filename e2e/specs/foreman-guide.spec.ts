@@ -49,6 +49,36 @@ async function expectGuide(page: Page): Promise<void> {
   await expect(page.locator(".tooltip")).toHaveCount(0);
 }
 
+async function expectWheelScrolling(page: Page, restoreTop: boolean): Promise<void> {
+  const dialog = guide(page);
+  const body = dialog.locator(".foreman-guide-body");
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  const link = profileLink(dialog);
+  const closeBefore = await close.boundingBox();
+  const linkBefore = await link.boundingBox();
+  const initial = await body.evaluate((element) => ({
+    top: element.scrollTop, height: element.clientHeight, content: element.scrollHeight,
+  }));
+  expect(initial.top).toBe(0);
+  expect(initial.content).toBeGreaterThan(initial.height);
+  await body.hover();
+  await page.mouse.wheel(0, 10_000);
+  await expect.poll(() => body.evaluate((element) =>
+    element.scrollTop > 0 && element.scrollTop + element.clientHeight >= element.scrollHeight - 1,
+  )).toBe(true);
+  await expect(dialog.getByRole("heading", { name: "Make its judgment fit your priorities" })).toBeInViewport();
+  await expect(close).toBeInViewport();
+  await expect(link).toBeInViewport();
+  expect(await close.boundingBox(), "Close remains fixed while the guide body scrolls").toEqual(closeBefore);
+  expect(await link.boundingBox(), "the Library link remains fixed while the guide body scrolls").toEqual(linkBefore);
+  console.log(`Foreman guide wheel scroll ${JSON.stringify(page.viewportSize())}: ${JSON.stringify(initial)} -> scrollTop=${await body.evaluate((element) => element.scrollTop)}; Close and Library link stayed visible and stationary.`);
+  if (restoreTop) {
+    await page.mouse.wheel(0, -10_000);
+    await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(dialog.locator(".foreman-guide-intro")).toBeInViewport();
+  }
+}
+
 for (const surface of ["dropdown", "settings"] as const) {
   test(`Foreman guide opens from ${surface}, dismisses accessibly, and links to the editable prompt`, async ({ dashboard, daemon }) => {
     await dashboard.setViewportSize({ width: 1440, height: 1000 });
@@ -70,9 +100,22 @@ for (const surface of ["dropdown", "settings"] as const) {
       : dashboard.locator(".sc-section");
     const info = source.getByRole("button", { name: "About Foreman", exact: true });
     await expect(info).toBeEnabled();
+    if (surface === "dropdown") {
+      const enable = source.getByRole("checkbox", { name: "Enable Foreman", exact: true });
+      const checkboxBounds = await enable.boundingBox();
+      const infoBounds = await info.boundingBox();
+      expect(checkboxBounds).not.toBeNull();
+      expect(infoBounds).not.toBeNull();
+      expect(Math.abs(checkboxBounds!.y + checkboxBounds!.height / 2 - infoBounds!.y - infoBounds!.height / 2),
+        "the info icon sits on the Enable Foreman checkbox row").toBeLessThan(2);
+      expect(infoBounds!.x).toBeGreaterThan(checkboxBounds!.x + checkboxBounds!.width);
+      await expect(info.locator("svg")).toBeVisible();
+      await expect(enable).not.toBeChecked();
+    }
     await capture(dashboard, `${surface}-info-button`);
     await info.click();
     await expectGuide(dashboard);
+    await expectWheelScrolling(dashboard, true);
     await capture(dashboard, `${surface}-guide-desktop`);
     await dashboard.keyboard.press("Escape");
     await expect(guide(dashboard)).toHaveCount(0);
@@ -91,7 +134,7 @@ for (const surface of ["dropdown", "settings"] as const) {
     await dashboard.setViewportSize({ width: 720, height: 640 });
     const dialog = guide(dashboard);
     await expectContentClearsBorder(dialog);
-    await dialog.getByRole("heading", { name: "Make its judgment fit your priorities" }).scrollIntoViewIfNeeded();
+    await expectWheelScrolling(dashboard, false);
     const bounds = await dialog.boundingBox();
     expect(bounds).not.toBeNull();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);

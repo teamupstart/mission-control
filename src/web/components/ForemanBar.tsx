@@ -373,23 +373,22 @@ export function ForemanPopover({
 
   return (
     <div className={`alert-pop foreman-pop${status?.health?.issues.length ? " has-errors" : ""}`} role="dialog" aria-label="Foreman settings">
-      <div className="foreman-info-row">
-        <strong>Foreman</strong>
-        <ForemanInfoButton onClick={onOpenGuide} />
-      </div>
       {status?.health && status.health.issues.length > 0 && (
         <ForemanErrors health={status.health} running={running} enabled={enabled} onOpenModels={onOpenModels} />
       )}
-      <Tooltip label="Let Foreman watch sessions and answer them for you">
-        <label className="alert-row">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => void update({ enabled: e.target.checked })}
-          />
-          Enable Foreman
-        </label>
-      </Tooltip>
+      <div className="foreman-info-row foreman-enable-row">
+        <Tooltip label="Let Foreman watch sessions and answer them for you">
+          <label className="alert-row">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => void update({ enabled: e.target.checked })}
+            />
+            Enable Foreman
+          </label>
+        </Tooltip>
+        <ForemanInfoButton onClick={onOpenGuide} />
+      </div>
 
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Mode</legend>

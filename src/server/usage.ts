@@ -3,6 +3,7 @@ import { commitUsageRead, priceUnpricedUsage, touchUsageSource, usageCursorFor }
 import { allHarnesses, transcriptFor, usageFor } from "./harness/index.ts";
 import type { Session } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
+import { observeUsageRecorded } from "./telemetry/index.ts";
 import { unref } from "./util/timers.ts";
 
 const USAGE_POLL_MS = Number(envVar("USAGE_POLL_MS") ?? 4000);
@@ -129,6 +130,33 @@ export function startUsagePoller(registry: Registry): () => void {
             events,
             updatedAt: now,
           });
+          // AFTER the ledger commit, and from the ledger's OWN identity. This is the
+          // canonical projection of authoring usage: the rollout read is the one path that
+          // deduplicates these requests, so observing here - rather than off a transcript or
+          // an inbound OTLP report - is what stops the same tokens being counted twice for a
+          // harness that exports its own cost as well as writing rows.
+          for (const event of events) {
+            observeUsageRecorded({
+              identity: `${source.session.agentSessionId}|${event.modelId ?? ""}|${event.querySource}|${event.identity}`,
+              usageOrigin: "authoring",
+              // The harness did its own arithmetic when it reported nothing for us to price;
+              // otherwise this repository's versioned rate snapshot produced the figure. Both
+              // are API-EQUIVALENT estimates and neither is subscription billing.
+              costBasis: event.costUsd === null ? "unpriced" : "api-equivalent",
+              modelId: event.modelId ?? "",
+              input: event.input,
+              output: event.output,
+              reasoningOutput: event.reasoningOutput,
+              cacheRead: event.cacheRead,
+              cacheWrite: event.cacheWrite,
+              costUsd: event.costUsd,
+              agent: source.session.agent,
+              sessionId: source.session.id,
+              conversationId: source.session.agentSessionId,
+              occurredAt: event.ts,
+              now,
+            });
+          }
           lastTouched.set(sourceKey, now);
           if (events.length > 0) registry.applyDurableUsage(source.session.agentSessionId);
         }

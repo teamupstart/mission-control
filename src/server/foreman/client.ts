@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PlanPublicationContextSchema, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import {
   existsSync,
   mkdirSync,
@@ -22,6 +23,7 @@ import {
 } from "@shared/llm.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
+import type { ForemanHealthSnapshot } from "@shared/foreman-health.ts";
 import type {
   BacklogPlanInput,
   ForemanConfig,
@@ -121,7 +123,9 @@ async function get<T>(path: string): Promise<T> {
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
   return fetch(BASE_URL + path, {
     method,
-    headers: body ? { "content-type": "application/json" } : {},
+    headers: { ...(body ? { "content-type": "application/json" } : {}),
+      "x-mission-operation-id": randomUUID().replaceAll("-", ""),
+      "x-mission-operation-surface": "automation", "x-mission-operation-actor": "foreman" },
     body: body ? JSON.stringify(body) : undefined,
   });
 }
@@ -1005,6 +1009,11 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`reportPlannerHealth -> ${res.status}`);
   }
 
+  async reportHealth(workerId: string, health: ForemanHealthSnapshot): Promise<void> {
+    const res = await send("POST", "/api/foreman/health", { workerId, health });
+    if (!res.ok) throw new Error(`reportHealth -> ${res.status}`);
+  }
+
   /** Hand the lease back on a clean shutdown, so a standby takes over at once. */
   async releaseLease(workerId: string): Promise<void> {
     await send("POST", "/api/foreman/heartbeat/release", { workerId }).catch(() => {});
@@ -1176,6 +1185,11 @@ export class ForemanClient implements ForemanActions {
   diff(id: string, base?: string | null): Promise<SessionDiff> {
     const q = base ? `?base=${enc(base)}` : "";
     return get<SessionDiff>(`/api/sessions/${enc(id)}/diff${q}`);
+  }
+
+  /** Current planning PR owner; malformed or unavailable daemon responses never mean unbound. */
+  async planPublicationContext(id: string): Promise<PlanPublicationContext> {
+    return PlanPublicationContextSchema.parse(await get(`/api/sessions/${enc(id)}/plan-publication`));
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
@@ -1407,7 +1421,7 @@ export class ForemanClient implements ForemanActions {
      * beside it, and an optional parameter is a reason that gets forgotten.
      */
     decision: PromptedCompletionDisposition,
-    opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
+    opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind; expectedPlanPublication?: PlanPublicationContext },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       logicalKey,
@@ -1416,6 +1430,7 @@ export class ForemanClient implements ForemanActions {
       decision,
       ...(opts?.ask ? { ask: true } : {}),
       ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
+      ...(opts?.expectedPlanPublication ? { expectedPlanPublication: opts.expectedPlanPublication } : {}),
     });
     if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
   }

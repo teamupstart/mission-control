@@ -229,6 +229,8 @@ export function herdrMultiplexer(
     select: async (target) => unsupported() ?? client.focusAgent(target.paneId),
 
     sessions: {
+      alive: null,
+      closeIfOnlyPane: null,
       async spawnDetached(spec) {
         const host = unsupported();
         if (host) return host;

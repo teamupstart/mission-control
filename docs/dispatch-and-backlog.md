@@ -317,10 +317,14 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
-A plan finishes on Foreman's ordinary boundary and is offered the ordinary wrap-up a ship task
-gets, so the plan lands as a pull request. That is deliberate rather than incidental: the
-scheduled phase tasks carry paths rather than content, and those paths have to resolve on the
-default branch before any phase can start.
+A plan with a bound workflow finishes its approved artifacts and requested scheduling, then
+ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
+the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
+creates the PR directly. The skill refreshes ownership with `get_plan_publication_context`;
+manual bindings keep their manual submission boundary, and an unavailable read does not permit
+direct publication. Artifacts still must be committed and pushed before phase tasks are
+scheduled. Those tasks depend on the planning session and remain blocked until the planning
+PR merges, when their referenced paths become available on the default branch.
 
 The plan also **outlives the checkout it was written in**. When anything is about to destroy
 that checkout - Reclaim, Remove, Cancel, Reschedule, or the startup pass after a restart the
@@ -475,6 +479,9 @@ form mid-thought without losing it. The draft is cleared only once the task is a
 dispatched or queued, or when you hit **Clear** to start a fresh one - either way the form
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
+
+A backdrop click closes the form only when both the press and release happen outside it.
+Selecting text inside the form and releasing the mouse outside keeps the form open.
 
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
@@ -1041,8 +1048,13 @@ turning it on is consent. Per source:
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
+| **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
 | **Retry / Discard queue** | repair or drop what this source still owes its items. See [Writing back to the source](#writing-back-to-the-source) for what each queue state means and why an unknown outcome is retried separately |
+
+If a configured checkout is renamed or removed, its stored source stays editable. An unchanged
+missing path does not block adding, repairing, or removing sources; every new or changed path still
+has to resolve to a Git repository before Mission Control stores it.
 
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
 healthy result. It remains pending until the next sweep; a manual sweep run while paused

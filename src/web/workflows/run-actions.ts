@@ -220,6 +220,26 @@ export function runActionTooltip(
   return pending ? "This action is already running" : descriptor.tooltip;
 }
 
+/**
+ * The tooltip a next move carries while the run's posture is `auto` (`runPosture`).
+ *
+ * The move stays clickable - overriding is legitimate - but its ordinary tooltip describes a
+ * click the page is recommending, and under an `auto` posture that is exactly the reading
+ * being corrected. The resubmission family gets the cost spelled out because that is the
+ * click the confusion produced: it interrupts a session mid-repair and spends the round the
+ * observer was about to open for free.
+ */
+export function overriddenNextMoveTooltip(move: RunNextMove): string {
+  switch (move.kind) {
+    case "resubmit":
+    case "resubmit-unchanged":
+      return "Not required - this review resumes on its own. Starting a round now interrupts"
+        + " the session's repair and spends one.";
+    default:
+      return `Not required - this run advances on its own. ${move.tooltip}`;
+  }
+}
+
 /** The daemon supplies the exact idempotency key for a refused snapshot replay. */
 export function refusedUnchangedRequestId(detail: WorkflowRunDetail): string | null {
   return detail.summary.recovery?.resubmit?.requestId ?? null;

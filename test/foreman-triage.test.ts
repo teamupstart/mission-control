@@ -460,6 +460,20 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   };
 }
 
+test("cheap-tier health reports actual model failures and success without mistaking Tier 0 for recovery", async () => {
+  const outcomes: (string | null)[] = [];
+  const onModelResult = (error: string | null) => outcomes.push(error);
+  const run = (model: TriageDeps["runModel"], pending = pend()) => triageSession(
+    deps({ runModel: model, onModelResult }), pending, mkSession(), cfg(), { pane: null, instructions: "" },
+  );
+  await run(async () => { throw new Error("Usage limit reached"); });
+  await run(async () => "not a structured reply");
+  await run(async () => JSON.stringify(report()), pend({ situation: "non-input-review", reviewKind: "diff" }));
+  assert.deepEqual(outcomes, ["Error: Usage limit reached", "Cheap tier could not parse a valid model response"]);
+  await run(async () => JSON.stringify(report({ bucket: "needs-judgment" })));
+  assert.equal(outcomes.at(-1), null, "a legitimate route-up is successful model execution");
+});
+
 test("triageSession: Tier 0 disposes without ever calling the model", async () => {
   let calls = 0;
   const out = await triageSession(

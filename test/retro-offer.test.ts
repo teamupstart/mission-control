@@ -34,6 +34,9 @@ function inspector(over: Partial<InspectorSummary> = {}): InspectorSummary {
     round: 1,
     lastReviewedAt: 1_700_000_000_000,
     failed: false,
+    reviewedHeadSha: "a".repeat(40),
+    observedHeadSha: "a".repeat(40),
+    cleanReviewHeadSha: "a".repeat(40),
     ...over,
   };
 }
@@ -90,7 +93,15 @@ test("a dry-run review still counts as clean", () => {
   // Dry run is the operator's own choice not to post, and the chip calls it clean by the
   // same rule. A retro conditioned on posted comments would silently never fire for anyone
   // running the Inspector in dry-run.
-  assert.ok(retroOffer(reviewed({ inspector: inspector({ mode: "dry-run" }) }), null));
+  assert.ok(retroOffer(reviewed({ inspector: inspector({ mode: "dry-run", cleanReviewHeadSha: null }) }), null));
+});
+
+test("a retro waits for current Inspector review and Live publication", () => {
+  assert.equal(retroOffer(reviewed({ inspector: inspector({ cleanReviewHeadSha: null }) }), null), null);
+  for (const mode of ["live", "dry-run"] as const) {
+    assert.equal(retroOffer(reviewed({ inspector: inspector({ mode, observedHeadSha: "b".repeat(40) }) }), null), null);
+    assert.equal(retroOffer(reviewed({ inspector: inspector({ mode, reviewedHeadSha: null }) }), null), null);
+  }
 });
 
 test("a pull request that merged before the gate cleared keeps the offer", () => {

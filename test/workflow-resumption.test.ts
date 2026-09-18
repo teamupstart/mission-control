@@ -303,6 +303,8 @@ function harness(
       };
     },
     boundaryChanged: async () => false,
+    // This harness supplies synthetic commit IDs instead of a real repository.
+    resolveCommit: async (_root, capturedHead) => capturedHead,
     compactContext: async (raw) => fallbackWorkflowContext(raw, null),
     engine: {
       runnerFor: () => failingRunner,

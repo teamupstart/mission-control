@@ -476,6 +476,8 @@ interface TriageWindow {
 
 /** The daemon reads the cheap tier needs: a trimmed transcript, the child's screen, and the router subprocess. */
 export interface TriageDeps {
+  /** Reports actual model outcomes, never Tier 0 decisions or ordinary route-ups. */
+  onModelResult?: (error: string | null) => void;
   transcript(id: string, turns: number): Promise<TriageWindow>;
   runModel(prompt: string, model: string, schema: Record<string, unknown>): Promise<string>;
   /**
@@ -639,10 +641,15 @@ export async function triageSession(
   try {
     raw = await deps.runModel(buildTriagePrompt(input), triageModel(cfg, deps.runner), TRIAGE_REPORT_JSON_SCHEMA);
   } catch (err) {
+    deps.onModelResult?.(String(err));
     return { kind: "route-up", reason: `tier1-failed: ${String(err)}` };
   }
   const report = parseModelJson(raw, TriageReportSchema);
-  if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
+  if (!report) {
+    deps.onModelResult?.("Cheap tier could not parse a valid model response");
+    return { kind: "route-up", reason: "tier1-unparseable" };
+  }
+  deps.onModelResult?.(null);
   return mapTriage(report, pending, {
     messages: recent.messages,
     pane,

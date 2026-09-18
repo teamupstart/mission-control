@@ -1,4 +1,6 @@
+import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
+import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -778,6 +780,13 @@ const mcpTaskDependencyRefinement = {
   message: "at most 50 task dependencies are allowed",
 };
 
+/** MCP supplies its own launch identity; the agent cannot choose a publication owner. */
+export const McpPlanPublicationSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+}).strict();
+
 /**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same
@@ -1114,6 +1123,12 @@ export const SEE_WORK_TOUR_PREVIEW_INTENT = [
   "[Mission Control See the work tour conversation]",
   "This is a temporary Chat session used only to show the session desk during a product tour. Do not edit files, run commands, use tools, change settings, or create any external side effect.",
   "Reply briefly with a welcome and explain that Conversation holds the exchange, Work queue holds follow-up turns, Workflows holds reusable checks, Diff holds changes, and Files holds the checkout. Do nothing else after that reply.",
+].join("\n\n");
+
+export const WORKFLOWS_TOUR_PREVIEW_INTENT = [
+  "[Mission Control workflows tour conversation]",
+  "This is a temporary Chat session used only so the Follow the review product tour can point at a session's workflow binding chip and Bind workflow dialog. Do not edit files, run commands, use tools, change settings, or create any external side effect.",
+  "Reply with one short sentence acknowledging the tour, and do nothing else after that reply.",
 ].join("\n\n");
 
 /**
@@ -3159,10 +3174,9 @@ export const UI_CONFIG_DEFAULTS = {
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
-  // A profile with no UI config begins with the product orientation. Existing configs missing
-  // this new key migrate it to false in `server/ui-config.ts`, and the dashboard clears a true
-  // value after it launches the tour, so this is onboarding rather than a recurring modal.
+  // Retained for clients that used the former one-time orientation.
   guidedTour: true,
+  showToursOnStartup: true,
   trustStaged: [],
   /**
    * NOT empty, and this is the one place the reason is written down.
@@ -3281,12 +3295,10 @@ export const UiConfigSchema = z.object({
    * instead of inheriting this product default.
    */
   guidedDispatch: z.boolean().default(UI_CONFIG_DEFAULTS.guidedDispatch),
-  /**
-   * Whether the dashboard should launch the See the work orientation on its next settled
-   * startup. It is consumed when the tour starts; manual tour entry points always remain
-   * available afterwards.
-   */
+  /** Legacy one-time orientation flag, no longer consumed by this dashboard. */
   guidedTour: z.boolean().default(UI_CONFIG_DEFAULTS.guidedTour),
+  /** Offer the tour catalog once per dashboard document, including upgraded profiles. */
+  showToursOnStartup: z.boolean().default(UI_CONFIG_DEFAULTS.showToursOnStartup),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *
@@ -4332,6 +4344,7 @@ export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),
   expectedIntent: SessionIntentGuardSchema,
+  expectedPlanPublication: PlanPublicationContextSchema.optional(),
   // The human-decision path must consume the generation and raise its Ship it?
   // card in one durable write. If that write fails, neither fact lands and the worker
   // can retry the whole verified boundary on its next unhurried tick.
@@ -5428,6 +5441,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
 });
 
 export const WorkflowRequestedChangeSchema = z.object({
+  category: z.unknown().transform(workflowFindingReason).optional(),
   basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
@@ -6149,9 +6163,8 @@ export const WorkflowCheckOutcomeSchema = z.object({
  * Foreman's proof that a completion episode is verified, offered to whatever workflow is
  * already bound to the conversation.
  *
- * The claim carries no workflow identity at all. A claim can only ever start a run on a
- * binding an operator or a dispatch already made, so it can never be the thing that puts a
- * second PR-producing path on a branch.
+ * The daemon selects the existing binding. A plan may supply its verified ownership as a
+ * comparison guard, never as a request to select or create a binding.
  */
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
@@ -6163,6 +6176,7 @@ export const WorkflowCompletionClaimSchema = z.object({
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+  expectedPlanPublication: PlanPublicationContextSchema.optional(),
 }).superRefine((claim, ctx) => {
   if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Prompted completion requires a work cycle" });

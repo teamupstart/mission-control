@@ -17,9 +17,10 @@ const EVIDENCE = artifactsDir("telemetry-diagnostics-dashboard");
  * run - which has no Docker - does not fail, and nobody can mistake a skipped run for a passing
  * proof. The phase's exit criteria require this to have been RUN, and its output attached.
  */
-const GRAFANA = "http://127.0.0.1:13000";
+import { ENDPOINTS } from "../../scripts/observability.mjs";
+const GRAFANA = ENDPOINTS.grafana;
 const DASHBOARD = `${GRAFANA}/d/mission-telemetry-diagnostics`;
-const OTLP = "http://127.0.0.1:14318";
+const OTLP = ENDPOINTS.otlp;
 
 test.skip(
   !process.env.MC_E2E_OBSERVABILITY,

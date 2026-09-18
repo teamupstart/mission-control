@@ -24,6 +24,7 @@ import {
   endStatus,
   gateSummaryStatus,
   inspectorGateSentence,
+  inspectorGateHeadLabel,
   inheritedPasses,
   latestAttemptsFor,
   newestInheritedSource,
@@ -241,9 +242,9 @@ export function workflowLadderPeekProjection(
     const spentStatus = spentInspectorGateStatus(detail);
     const facts = [
       summary.gatePrNumber ? `PR #${summary.gatePrNumber}` : null,
-      shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)
-        ? `head ${shortSha(spentStatus ? gate.inspection?.observedHeadSha : summary.gateHeadShort)}`
-        : null,
+      spentStatus && gate.inspection?.observedHeadSha
+        ? `head ${shortSha(gate.inspection.observedHeadSha)}`
+        : inspectorGateHeadLabel(detail),
     ].filter((fact): fact is string => fact !== null);
     return {
       view: {

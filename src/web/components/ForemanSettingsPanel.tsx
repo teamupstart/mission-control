@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { fetchForemanEpisode } from "../lib/api.ts";
 import { ModelField } from "./ModelField.tsx";
@@ -428,6 +429,7 @@ export function ForemanSettingsPanel({
   const shipRecoveryMinutes = config?.shipRecoveryMinutes ?? 20;
   const now = Date.now();
   const [tab, setTab] = useState<ForemanSettingsTabId>(FOREMAN_DEFAULT_TAB);
+  const [guideOpen, setGuideOpen] = useState(false);
   const tabRefs = useRef(new Map<ForemanSettingsTabId, HTMLButtonElement>());
   // Select a deep link's owning tab DURING render. SettingsPage owns the later effect that
   // scrolls and flashes the anchor; choosing here means React commits a visible target before
@@ -491,6 +493,11 @@ export function ForemanSettingsPanel({
 
   return (
     <section className="settings-section sc-section">
+      <div className="foreman-info-row">
+        <strong>How Foreman works</strong>
+        <ForemanInfoButton onClick={() => setGuideOpen(true)} />
+      </div>
+      {guideOpen && <ForemanGuide onClose={() => setGuideOpen(false)} />}
       <p className="settings-hint sc-lede">
         Foreman's set-once configuration, and the record of what it has decided. Turning it
         on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman

@@ -12,15 +12,8 @@ import type { MuxSessions, TerminalResult } from "../src/server/terminal/types.t
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { Session, SessionState } from "../src/shared/types.ts";
 
-// What is at stake: that "this terminal home is a killable group" is a capability a backend
-// DECLARES, and not the else-branch of a vendor check.
-//
-// Kill signals the leaf agent and then tears down the group its home is. That second half
-// used to be `if (session.tmux)`, which quietly gave every other backend the no-group path -
-// correct for wezterm, where a tab is not a group and closing the window is the human's to
-// do, and wrong the moment a second multiplexer appears: its windows would be left running
-// with nothing anywhere saying why. `MuxSessions.kill` is that question asked out loud, and
-// these tests drive both of its answers plus the race between the two steps.
+// Interactive Kill signals the selected process and asks only the guarded sole-pane
+// capability to close its home. An unchecked group-close must never be used here.
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -79,7 +72,9 @@ function sessions(kill: ((name: string) => Promise<TerminalResult>) | null): Mux
     spawnDetached: async () => OK,
     attachArgv: (name: string) => ["fake", "attach", name],
     rename: async () => OK,
-    kill,
+    kill: async () => { throw new Error("interactive Kill must not close an unchecked group"); },
+    alive: null,
+    closeIfOnlyPane: kill ? (target) => kill(target.session) : null,
     names: { validate: () => null, sanitize: (t: string) => t },
   };
 }
@@ -143,16 +138,16 @@ test("kill: a handleless session surfaces a failed signal", async () => {
   assert.deepEqual(r, { ok: false, error: "kill ESRCH" });
 });
 
-test("kill: a multiplexer-hosted session signals the pid AND kills the whole group", async () => {
+test("kill: a multiplexer-hosted session signals the pid and requests a verified sole-pane close", async () => {
   const { deps, signalled, killedGroups } = spyDeps();
   const r = await kill(mkSession({ pid: 99, ...onMux }), deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(signalled, [99]);
-  assert.deepEqual(killedGroups, ["work"], "kills the session, not just the pane");
+  assert.deepEqual(killedGroups, ["work"], "requests the guarded close");
 });
 
-test("kill: a multiplexer that declares no killable group leaves the signal to stand alone", async () => {
+test("kill: a multiplexer without guarded close support leaves the signal to stand alone", async () => {
   // The capability null this test exists for. Before it, "no group" was reachable only by
   // not being tmux, so a second multiplexer would have inherited the wezterm path - its
   // other panes still running, and nothing anywhere saying so. Now it is a declaration, and

@@ -1,3 +1,4 @@
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -117,6 +118,7 @@ import type {
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
+import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
 // Who typed a given user turn, reserved at delivery by every non-human sender. Read here so
@@ -223,6 +225,7 @@ import {
   taskAutomaticCleanupSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
+  retireTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -256,6 +259,12 @@ import {
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
+// The ONE telemetry call in this file, and deliberately so: everything else Phase 3 needs
+// from the Registry arrives through the event stream it already publishes. This is the
+// exception because the driver's per-turn usage never reaches that stream - it is written
+// straight to the ledger here - and observing it anywhere else would either miss it or
+// re-read it from a source that cannot deduplicate.
+import { observeUsageRecorded } from "./telemetry/index.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import {
   launchEchoFingerprint,
@@ -669,6 +678,7 @@ interface PassiveState {
   state: SessionState;
   /** Epoch ms of the newest transcript record (drives `settledIdle`'s settle gap). */
   lastActivity: number;
+  turnStartedAt?: number;
   /** When the poller last refreshed this read; bounds staleness if the poller stalls. */
   updatedAt: number;
 }
@@ -896,6 +906,8 @@ export class Registry extends EventEmitter {
    */
   private standingInstructions = new Map<string, StandingInstructionsSnapshot>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cleanup targets only, never published or eligible for work. Bounded by owed closures. */
+  private retiredMissionTargets = new Map<string, Session>();
   private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
   private overlays = new Map<string, HookOverlay>();
@@ -1022,9 +1034,8 @@ export class Registry extends EventEmitter {
    *
    * ONE value for the whole registry, not one per session, because that is what the fact
    * is: a five-hour window is a property of the ACCOUNT, and every session on the machine
-   * reports the same one. Held in memory and never persisted - it is a live gauge with a
-   * server-supplied reset time, and a stored percentage would be read as current long
-   * after it stopped being true.
+   * reports the same one. Persisted so a restart during quota exhaustion does not erase
+   * the only reading available. Expired windows travel separately as last-known readings.
    */
   private latestRateLimits: RateLimits | null = null;
   private latestRateLimitSources = new Map<AgentType, RateLimitSource>();
@@ -1079,6 +1090,7 @@ export class Registry extends EventEmitter {
 
   constructor() {
     super();
+    this.latestRateLimits = loadClaudeRateLimits();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
@@ -1325,20 +1337,27 @@ export class Registry extends EventEmitter {
    * DURABLE closure ledger says that exact task is owed that exact session's close. A caller
    * that has confused two sessions cannot get one retired through here.
    *
-   * What this cannot promise. Retiring the card is a statement about the registry, not about
-   * the operating system: if a pane's multiplexer genuinely refused to kill it, the process may
-   * still be alive, and passive discovery may re-adopt it as a new sighting later. The task it
-   * ran stays `done` either way - the completion is terminal - and the refusal is on the record
-   * in the daemon log. That residue is strictly better than the alternative it replaces, which
-   * was a live session bound to a finished mission for ever.
+   * Retirement is not proof of runtime shutdown. Persist it before eviction so discovery
+   * cannot readopt a surviving process, and retain its cleanup target until observation or
+   * the SDK supervisor confirms the runtime is gone.
    */
   retireConcludedMissionSession(taskId: string, sessionId: string): boolean {
     const owed = getTaskSessionClosure(taskId);
     if (!owed || owed.sessionId !== sessionId) return false;
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    retireTaskSessionClosure(taskId, sessionId, Date.now());
+    if (!this.retiredMissionTargets.has(sessionId)) this.retiredMissionTargets.set(sessionId, session);
     this.beginEviction(session);
-    return true;
+    return owed.retiredAt === null;
+  }
+
+  missionSessionClosureTarget(sessionId: string): Session | undefined {
+    return this.retiredMissionTargets.get(sessionId) ?? this.sessions.get(sessionId);
+  }
+
+  forgetMissionSessionClosureTarget(sessionId: string): void {
+    this.retiredMissionTargets.delete(sessionId);
   }
 
   beginManagedPipelineLaunch(taskId: string, sessionId: string, cwd: string): void {
@@ -2197,6 +2216,17 @@ export class Registry extends EventEmitter {
 
     for (const d of discovered) {
       seen.add(d.syntheticId);
+      const closing = taskSessionClosureForSession(d.syntheticId);
+      if (closing?.retiredAt != null) {
+        // Refresh only the teardown target. A sighting must neither cancel the eviction
+        // timer nor publish this retired process as a usable session, even after restart.
+        const previous = this.retiredMissionTargets.get(d.syntheticId) ?? this.sessions.get(d.syntheticId);
+        this.retiredMissionTargets.set(d.syntheticId, this.mergeDiscovered(previous, d, now));
+        const live = this.sessions.get(d.syntheticId);
+        if (live) this.beginEviction(live);
+        continue;
+      }
+      this.retiredMissionTargets.delete(d.syntheticId);
       const timer = this.exitTimers.get(d.syntheticId);
       if (timer) {
         clearTimeout(timer);
@@ -2205,7 +2235,17 @@ export class Registry extends EventEmitter {
       const prev = this.sessions.get(d.syntheticId);
       const next = this.mergeDiscovered(prev, d, now);
       this.sessions.set(d.syntheticId, next);
-      if (!prev || !sessionEqual(prev, next)) this.emitSession(next);
+      // Passive reads can observe a whole turn between sweeps: idle stays idle,
+      // but its lifecycle timestamp moved. Delivery subscribers need that edge
+      // just as they need applyHook's timestamp-only updates.
+      if (!prev || !sessionEqual(prev, next) || prev.lastActivity !== next.lastActivity) {
+        this.emitSession(next);
+      }
+    }
+
+    // Only a completed process observation can confirm a retired terminal is gone.
+    for (const [id, target] of this.retiredMissionTargets) {
+      if (target.runtime === "terminal" && !seen.has(id)) this.retiredMissionTargets.delete(id);
     }
 
     // Anything a COMPLETED sweep didn't see is gone, and gets an eviction timer -
@@ -2695,6 +2735,7 @@ export class Registry extends EventEmitter {
   ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
+    if (taskSessionClosureForSession(id)?.retiredAt != null && evt.kind !== "exited") return;
     const now = Date.now();
     switch (evt.kind) {
       case "bound":
@@ -3004,6 +3045,7 @@ export class Registry extends EventEmitter {
     const { state, activity } = spec.toState(evt);
     const workCycleSignal = spec.workCycleSignal(evt);
     const target = this.findSessionForHook(evt, key);
+    if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
@@ -3597,7 +3639,7 @@ export class Registry extends EventEmitter {
    */
   promptRefusalForHook(evt: HookIngest): string | null {
     if (evt.event !== "UserPromptSubmit") return null;
-    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env));
+    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env), { includeRetiredMissionTargets: true });
     if (!session) return null;
     const closing = taskSessionClosureForSession(session.id);
     if (!closing) return null;
@@ -3606,7 +3648,8 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * The live card this event speaks for, or undefined.
+   * The session this event speaks for, or undefined. Prompt refusal may include retired
+   * cleanup targets; ordinary hook ingest only resolves live cards.
    *
    * The agent check is the same property the overlay's is, arriving by the other door:
    * a pane is reused, and `findSessionByEnv` resolves by pane first. A Claude hook that
@@ -3616,40 +3659,55 @@ export class Registry extends EventEmitter {
    * cwd branch deliberately does NOT filter by agent (see the note there), and its other
    * caller is the MCP channel, which identifies itself differently.
    */
-  private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
-    const s = this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
+  private findSessionForHook(
+    evt: HookIngest,
+    key: string | null,
+    options: { includeRetiredMissionTargets?: boolean } = {},
+  ): Session | undefined {
+    const s = this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key, options);
     return s?.agent === evt.agent ? s : undefined;
   }
 
   /**
    * Resolve which live session a hook / MCP call belongs to, using the terminal
    * pane it captured (preferred), then its registered or linked agent session id,
-   * then a unique cwd match. Shared by hook ingest and the MCP review channel.
+   * then a unique cwd match. Shared by hook ingest and the MCP review channel. Only prompt
+   * refusal opts into retired cleanup targets, using these same identity rules.
    */
   findSessionByEnv(
     env: HookIngest["env"],
     agentSessionId?: string | null,
     cwd?: string | null,
     key: string | null = overlayKeyFromEnv(env),
+    options: { includeRetiredMissionTargets?: boolean } = {},
   ): Session | undefined {
+    let candidates = this.sessions;
+    if (options.includeRetiredMissionTargets) {
+      candidates = new Map(this.sessions);
+      // A live pane occupant wins over a retired snapshot. A card still lingering during
+      // retirement counts once, so its snapshot cannot make a unique cwd ambiguous.
+      for (const [id, target] of this.retiredMissionTargets) {
+        if (!candidates.has(id)) candidates.set(id, target);
+      }
+    }
     if (key) {
-      for (const s of this.sessions.values()) if (sessionKey(s) === key) return s;
+      for (const s of candidates.values()) if (sessionKey(s) === key) return s;
     }
     if (agentSessionId) {
-      const registered = this.sessions.get(agentSessionId);
+      const registered = candidates.get(agentSessionId);
       if (registered) return registered;
-      for (const s of this.sessions.values())
+      for (const s of candidates.values())
         if (s.agentSessionId === agentSessionId) return s;
     }
     if (cwd) {
-      // Every live session in that cwd, whatever it runs. The agent was pinned to
+      // Every candidate in that cwd, whatever it runs. The agent was pinned to
       // "claude" here, which was an accident rather than a capability: the caller is a
       // hook or an MCP call that has already identified itself, and the tie-break this
       // fallback needs is UNIQUENESS - exactly one session in the directory. Filtering by
       // agent doesn't make the match safer, it makes it wrong in the one case that
       // matters, a Claude and a Codex session sharing a worktree: the filter hides the
       // ambiguity and binds the caller to the Claude card with full confidence.
-      const matches = [...this.sessions.values()].filter((s) => s.cwd === cwd);
+      const matches = [...candidates.values()].filter((s) => s.cwd === cwd);
       if (matches.length === 1) return matches[0];
     }
     return undefined;
@@ -5502,7 +5560,15 @@ export class Registry extends EventEmitter {
     if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
       return;
     }
-    this.latestRateLimits = { fiveHour, sevenDay, updatedAt: Date.now() };
+    const now = Date.now();
+    const recorded = (window: RateLimitWindow | null, previous: RateLimitWindow | null | undefined) =>
+      window && (previous && rateWindowEqual(window, previous) ? previous : { ...window, recordedAt: now });
+    this.latestRateLimits = {
+      fiveHour: recorded(fiveHour, prev?.fiveHour),
+      sevenDay: recorded(sevenDay, prev?.sevenDay),
+      updatedAt: now,
+    };
+    saveClaudeRateLimits(this.latestRateLimits);
     this.recomputeFleetCost();
   }
 
@@ -5628,6 +5694,31 @@ export class Registry extends EventEmitter {
       ts: now,
       models: usage.models,
     });
+    // The third canonical writer, observed on the same terms as the other two: AFTER the
+    // ledger commit, keyed on the ledger's own conflict target. That key is the turn id, so a
+    // driver re-emitting a `result` it already reported - a resumed stream replaying its tail,
+    // a supervisor reconnecting - produces a duplicate here rather than a second set of
+    // tokens. The basis is `reported` because Claude Code priced this itself, from rates the
+    // account has and this repository does not.
+    for (const model of usage.models) {
+      observeUsageRecorded({
+        identity: `${noteKey}|${usage.turnId}|${model.modelId}`,
+        usageOrigin: "authoring",
+        costBasis: model.reportedCostUsd === null ? "unpriced" : "reported",
+        modelId: model.modelId,
+        input: model.input,
+        output: model.output,
+        reasoningOutput: model.reasoningOutput,
+        cacheRead: model.cacheRead,
+        cacheWrite: model.cacheWrite,
+        costUsd: model.reportedCostUsd,
+        agent: s.agent,
+        sessionId: s.id,
+        conversationId: s.agentSessionId,
+        occurredAt: now,
+        now,
+      });
+    }
     this.applyDurableUsage(noteKey);
   }
 
@@ -5686,6 +5777,7 @@ export class Registry extends EventEmitter {
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
       // and a snapshot served between recomputes is as honest as an emitted one.
       rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
+      lastKnownRateLimits: this.latestRateLimits,
       rateLimitSources: [...this.latestRateLimitSources.values()]
         .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
         .filter((source) => source.windows.length > 0),
@@ -5726,6 +5818,7 @@ export class Registry extends EventEmitter {
       // automation line whenever the loops spent but the fleet did not.
       JSON.stringify(this.lastFleetCost.automation) === JSON.stringify(fleet.automation) &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
+      rateLimitsDisplayEqual(this.lastFleetCost.lastKnownRateLimits ?? null, fleet.lastKnownRateLimits ?? null) &&
       rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;
     if (same) return;
@@ -5894,6 +5987,7 @@ export class Registry extends EventEmitter {
       transcriptPath: discovered?.transcriptPath ?? session.transcriptPath,
       state: read.state,
       lastActivity: read.lastActivity,
+      turnStartedAt: read.turnStartedAt,
       updatedAt: Date.now(),
     });
   }
@@ -5959,6 +6053,14 @@ export class Registry extends EventEmitter {
       return undefined;
     }
     return passive;
+  }
+
+  /** Pickup evidence from this process and conversation, including a turn missed between polls. */
+  passiveTurnStartedAt(session: Session): number | null {
+    if (session.runtime !== "terminal") return null;
+    const passive = this.passiveStateFor(session);
+    if (!passive || Date.now() - passive.updatedAt >= OVERLAY_TTL_MS) return null;
+    return passive.turnStartedAt ?? null;
   }
 
   private pruneOverlays(now: number): void {
@@ -8202,6 +8304,9 @@ export class Registry extends EventEmitter {
       round: row.round,
       lastReviewedAt: row.lastReviewedAt,
       failed: row.lastError !== null,
+      reviewedHeadSha: row.headSha,
+      observedHeadSha: row.observedHeadSha,
+      cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
   }
 
@@ -8587,6 +8692,7 @@ export class Registry extends EventEmitter {
       logicalKey: string;
       generation: number;
       expectedIntent: SessionIntentGuard;
+      expectedPlanPublication?: PlanPublicationContext;
       ask: boolean;
       /** Record a direct-shipping handoff in the same write, or null to consume only. */
       directHandoff: PromptedDirectHandoffKind | null;
@@ -8624,6 +8730,7 @@ export class Registry extends EventEmitter {
       sessionCwd: session.cwd,
       generation: input.generation,
       episodeKey: input.expectedIntent.episodeKey,
+      expectedPlanPublication: input.expectedPlanPublication,
       ask: input.ask,
       // The authorizing episode is the one this boundary just RE-VERIFIED against the
       // live goal, not the one the caller sent. `sessionIntentMatches` above already

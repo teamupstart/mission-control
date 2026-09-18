@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,6 +48,11 @@ const { substantivePrompt } = await import("../src/server/harness/claude/scaffol
 const { decidePromptedWrapup } = await import("../src/server/foreman/prompted-wrapup.ts");
 const { promptedCompletionClaim } = await import("../src/server/foreman/workflow-claim.ts");
 const { resolvedSessionIntent } = await import("../src/shared/goal.ts");
+const { taskCompletionContract } = await import("../src/shared/task-completion.ts");
+const { processPromptedWrapup } = await import("../src/server/foreman/worker.ts");
+const { ForemanClient } = await import("../src/server/foreman/client.ts");
+const { ForemanConfigSchema } = await import("../src/shared/protocol.ts");
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 
 /** The operator's own request. Everything else in the delivered prompt is the platform's. */
 const INTENT = "Look at the current sessions. None of them were submitted to their pipelines.";
@@ -142,7 +147,7 @@ function mkWorkflows(
     recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
       const raw = {
-        primaryGoal: { rawPrompt: INTENT, refined: null, sourceNoteKey: binding.noteKey },
+        primaryGoal: { rawPrompt: registry.getGoal(binding.sessionId!)?.objective ?? INTENT, refined: null, sourceNoteKey: binding.noteKey },
         humanDecisions: [],
         priorPersonaFeedback: [],
         session: { agent: "claude", name: "ship", cwd: "/repo", branch: "feature" },
@@ -200,7 +205,7 @@ interface Dispatched {
  * its native id (which moves the marker), and only then is the operator's own request
  * captured as prompt revision one under that native key.
  */
-function dispatch(slug: string): Dispatched {
+function dispatch(slug: string, taskOverrides: Partial<Task> = {}): Dispatched {
   const db = openDb();
   const registry = new Registry();
   const queues = new QueueManager(registry);
@@ -215,8 +220,10 @@ function dispatch(slug: string): Dispatched {
     workflows,
   });
 
-  const task = mkTask();
-  const delivered = withTaskKindContract(task, task.intent);
+  const task = { ...mkTask(), ...taskOverrides };
+  const delivered = withTaskKindContract(task, task.intent, {
+    planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+  });
   const registrationId = `sdk:${slug}`;
   const noteKey = `agent:${slug}`;
 
@@ -232,14 +239,15 @@ function dispatch(slug: string): Dispatched {
   });
   registry.bindLaunchedAgentSession(registrationId, "claude", noteKey);
   registry.captureAcceptedPrompt(registrationId, task.intent, noteKey, 2);
+  registry.upsertTask({ ...task, id: `task-${slug}`, sessionId: registrationId });
 
   // What the refiner writes for a first prompt it could classify. Tier 2 is a model call,
   // so its OUTPUT is seeded rather than its call - the reconciler's own behaviour is
   // goal-refiner.test.ts's subject, and faking the call would not make this test say more.
   registry.upsertGoal(registrationId, {
-    objective: INTENT,
-    text: INTENT,
-    focus: INTENT,
+    objective: task.intent,
+    text: task.intent,
+    focus: task.intent,
     relationship: "initial",
     rationale: "Initial objective",
     objectiveVersion: 1,
@@ -419,3 +427,293 @@ test("the regression: an unrecognized launch echo strands the same session short
     0,
   );
 });
+
+/**
+ * Drive the worker's actual orchestration, not a test-authored verify/claim sequence.
+ * File evidence is supplied; ownership, intent, queue, and completion requests use the real
+ * ForemanClient against the isolated daemon app. Only the SDK's model result is scripted.
+ */
+function planWrapupFixture(t: TestContext, slug: string, hooks: {
+  duringVerify?: (d: Dispatched) => void;
+  beforeRequest?: (path: string, d: Dispatched) => void;
+  afterRequest?: (path: string, d: Dispatched) => void;
+} = {}) {
+  const d = dispatch(slug, {
+    kind: "plan", workflowId: "w",
+    intent: "Write an approved phased plan, schedule its tasks, and open a pull request.",
+  });
+  const now = Date.now() - 30_000;
+  submitEcho(d.registry, d.noteKey, d.echoed, now);
+  workAndPark(d.registry, d.noteKey, now + 1);
+  const client = new ForemanClient();
+  const writes: string[] = [];
+  t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    if (request.method !== "GET") writes.push(path);
+    hooks.beforeRequest?.(path, d);
+    request.headers.set("host", "127.0.0.1:7317");
+    const response = await d.app.request(request);
+    hooks.afterRequest?.(path, d);
+    return response;
+  });
+  t.mock.method(client, "diff", async () => ({
+    ok: true, error: null, base: "main", baseSha: "base", headSha: "abc",
+    repoRoot: "/repo", branch: "feature", filesChanged: 1, insertions: 1, deletions: 0,
+    patch: "diff --git a/docs/plans/example/plan.md b/docs/plans/example/plan.md\n+++ b/docs/plans/example/plan.md\n+Approved plan\n",
+    truncated: false,
+  }));
+  t.mock.method(client, "transcriptSize", async () => 1);
+  t.mock.method(client, "transcript", async () => ({ messages: [], truncated: false }));
+  t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+  t.mock.method(client, "instructions", async () => "");
+  const prompts: string[] = [];
+  t.after(configureClaudeRunnerTransport(() => "sdk", {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      assert.ok(typeof prompt === "string", "verification uses a one-shot prompt");
+      prompts.push(prompt);
+      assert.deepEqual(options.tools, [], "the real verifier remains tool-less");
+      hooks.duringVerify?.(d);
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "result", subtype: "success", is_error: false, structured_output: {
+            complete: true, confidence: 1, gaps: [], resolved: [],
+            summary: "Approved plan, pushed artifacts, and dependent tasks are ready. PR deferred to the workflow.",
+          } };
+        },
+      };
+    },
+  }));
+  const cfg = ForemanConfigSchema.parse({
+    enabled: true, mode: "live", repoAllowlist: ["/repo"],
+    wrapup: "pr", wrapupTriggers: ["prompted"], skipScoutWrapup: false, skipReviewArtifactWrapup: false,
+  });
+  const tick = async () => {
+    const session = d.registry.getSession(d.sessionId)!;
+    assert.equal(session.prUrl, null, "the planning session has no PR");
+    return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(d.sessionId), new Set());
+  };
+  return { d, tick, writes, prompts, client };
+}
+
+for (const boundary of ["claim response", "consumption request", "SQL consumption"] as const) {
+  for (const owner of ["skill", "automatic workflow", "Manual workflow", "unavailable"] as const) {
+    test(`an unbound plan guards ${owner} ownership at the ${boundary}`, async (t) => {
+      let claimReturned = false;
+      const attach = (d: Dispatched) => {
+        if (owner === "skill") return;
+        const previous = d.workflows.store.getBinding(d.bindingId)!;
+        const replacement = d.workflows.store.insertBinding({
+          ...previous, id: `${previous.id}-replacement`, sessionId: d.sessionId,
+          triggerMode: owner === "Manual workflow" ? "manual" : "foreman_complete", now: Date.now(),
+        });
+        if (owner === "unavailable") d.workflows.store.updateBinding(replacement.id, { state: "paused" });
+      };
+      const { d, tick, writes, prompts, client } = planWrapupFixture(t, `plan-direct-${boundary}-${owner}`, {
+        beforeRequest: (path, d) => {
+          if (boundary === "consumption request" && path.endsWith("/queue/wrapup/prompted")) attach(d);
+        },
+        afterRequest: (path, d) => {
+          if (!path.endsWith("/workflow-completion")) return;
+          claimReturned = true;
+          if (boundary === "claim response") attach(d);
+        },
+      });
+      d.workflows.archiveBinding(d.bindingId);
+      if (boundary === "SQL consumption") {
+        const db = openDb();
+        const prepare = db.prepare.bind(db);
+        t.mock.method(db, "prepare", (sql: string) => {
+          const statement = prepare(sql);
+          // All Registry checks and earlier reads have finished; ownership changes just
+          // before the SQL statement that records the direct handoff executes.
+          if (sql.includes("INSERT INTO foreman_queues (") && sql.includes("FROM session_work_cycles")) attach(d);
+          return statement;
+        });
+      }
+      const injections: string[] = [];
+      t.mock.method(client, "inject", async (_id: string, payload: string) => { injections.push(payload); });
+      const advanced = await tick();
+      assert.equal(claimReturned, true, "the real daemon already returned its unbound answer");
+      assert.equal(prompts.length, 1);
+      assert.equal(advanced, owner === "skill");
+      const queue = d.registry.getQueue(d.sessionId)!;
+      if (owner === "skill") {
+        assert.equal(injections.length, 1, "stable skill ownership retains direct PR shipping");
+        assert.equal(queue.promptedDecision?.outcome, "direct_handoff");
+        assert.ok(queue.promptedDirectHandoff);
+      } else {
+        assert.deepEqual(injections, [], "a stale no-binding answer never authorizes direct publication");
+        const sessionPath = `/api/sessions/${encodeURIComponent(d.sessionId)}`;
+        assert.deepEqual(writes, [
+          `${sessionPath}/workflow-completion`,
+          ...(boundary === "claim response" ? [] : [`${sessionPath}/queue/wrapup/prompted`]),
+        ]);
+        assert.equal(queue.promptedConsumedGeneration, null);
+        assert.equal(queue.promptedDecision, null);
+        assert.equal(queue.promptedDirectHandoff, null);
+      }
+      const runs = openDb().prepare(`SELECT r.id FROM workflow_runs r
+        JOIN workflow_bindings b ON b.id = r.binding_id WHERE b.note_key = ?`).all(d.noteKey);
+      assert.equal(runs.length, 0);
+    });
+  }
+}
+
+test("Foreman's prompted plan handoff supplies the PR deferral and claims its workflow exactly once", async (t) => {
+  const { d, tick, writes, prompts } = planWrapupFixture(t, "plan-ready");
+  assert.equal(await tick(), true);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /Write an approved phased plan, schedule its tasks, and open a pull request/);
+  const contract = taskCompletionContract("plan", true)!;
+  for (const action of contract.deferred) assert.ok(prompts[0]!.includes(action.noun), `missing verifier deferral: ${action.id}`);
+  for (const requirement of contract.complete) assert.ok(prompts[0]!.includes(requirement), `missing planning requirement: ${requirement}`);
+  assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
+  const runs = openDb().prepare("SELECT id FROM workflow_runs WHERE binding_id = ?").all(d.bindingId);
+  assert.equal(runs.length, 1, "the actual worker claim created one durable workflow run");
+  assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "workflow_claimed");
+  assert.equal(await tick(), false, "the consumed generation cannot claim or verify again");
+  assert.equal(prompts.length, 1);
+  assert.equal(writes.length, 1, "no direct PR injection or duplicate claim");
+});
+
+for (const change of ["binding", "version", "trigger", "state"] as const) {
+  test(`a Manual plan does not consume its ask after a ${change} change at the SQL write`, async (t) => {
+    const { d, tick, writes } = planWrapupFixture(t, `manual-consume-${change}`);
+    const binding = d.workflows.store.updateBinding(d.bindingId, { triggerMode: "manual" })!;
+    const db = openDb();
+    const prepare = db.prepare.bind(db);
+    t.mock.method(db, "prepare", (sql: string) => {
+      const statement = prepare(sql);
+      if (sql.includes("INSERT INTO foreman_queues (") && sql.includes("FROM session_work_cycles")) {
+        if (change === "binding") {
+          d.workflows.archiveBinding(binding.id);
+          d.workflows.store.insertBinding({ ...binding, id: `${binding.id}-replacement`, sessionId: d.sessionId, now: Date.now() });
+        } else if (change === "version") {
+          prepare("UPDATE workflow_bindings SET workflow_version_id = 'unavailable-version' WHERE id = ?").run(binding.id);
+        } else {
+          d.workflows.store.updateBinding(binding.id, change === "trigger" ? { triggerMode: "foreman_complete" } : { state: "paused" });
+        }
+      }
+      return statement;
+    });
+    assert.equal(await tick(), false);
+    const sessionPath = `/api/sessions/${encodeURIComponent(d.sessionId)}`;
+    assert.deepEqual(writes, [`${sessionPath}/workflow-completion`, `${sessionPath}/queue/wrapup/prompted`]);
+    const queue = d.registry.getQueue(d.sessionId)!;
+    assert.equal(queue.promptedConsumedGeneration, null);
+    assert.equal(queue.promptedDecision, null);
+    assert.equal(queue.wrapupAskedAt, null);
+    assert.equal(queue.promptedDirectHandoff, null);
+  });
+}
+
+test("Foreman's prompted plan handoff preserves a stable Manual binding and asks without publishing", async (t) => {
+  // Manual from the first ownership read through completion, unlike the stale-binding case.
+  const { d, tick, writes, prompts } = planWrapupFixture(t, "plan-manual");
+  const binding = d.workflows.store.updateBinding(d.bindingId, { triggerMode: "manual" });
+  assert.equal(await tick(), true);
+  assert.equal(prompts.length, 1, "the Manual plan still reaches verification");
+  for (const action of taskCompletionContract("plan", true)!.deferred) {
+    assert.ok(prompts[0]!.includes(action.noun), `missing Manual-plan verifier deferral: ${action.id}`);
+  }
+  const sessionPath = `/api/sessions/${encodeURIComponent(d.sessionId)}`;
+  assert.deepEqual(writes, [
+    `${sessionPath}/workflow-completion`,
+    `${sessionPath}/queue/wrapup/prompted`,
+  ], "the worker records an ask without injecting direct PR work");
+  assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null, "Manual submission has not started a workflow run");
+  assert.deepEqual(d.workflows.store.getBinding(d.bindingId), binding, "the active Manual binding is preserved");
+  const queue = d.registry.getQueue(d.sessionId)!;
+  assert.equal(queue.promptedDecision?.outcome, "asked");
+  assert.equal(typeof queue.wrapupAskedAt, "number", "the verified completion is surfaced for manual submission");
+  assert.equal(queue.wrapupAnswer, null);
+  assert.equal(queue.promptedDirectHandoff, null, "no direct-shipping handoff is recorded");
+  assert.equal(await tick(), false, "the same completed generation cannot verify or ask again");
+  assert.equal(prompts.length, 1);
+  assert.equal(writes.length, 2);
+});
+
+for (const scenario of ["unavailable", "during verification", "before completion", "vanished at claim"] as const) {
+  test(`Foreman's prompted plan handoff holds ownership ${scenario}`, async (t) => {
+    let contextReads = 0;
+    const { d, tick, writes, prompts } = planWrapupFixture(t, `plan-${scenario.replaceAll(" ", "-")}`, {
+      duringVerify: (d) => {
+        if (scenario === "during verification") d.workflows.store.updateBinding(d.bindingId, { triggerMode: "manual" });
+      },
+      beforeRequest: (path, d) => {
+        if (path.endsWith("/plan-publication")) {
+          contextReads++;
+          if (scenario === "unavailable" || (scenario === "before completion" && contextReads === 3)) {
+            d.workflows.store.updateBinding(d.bindingId, { state: "paused" });
+          }
+        }
+        if (scenario === "vanished at claim" && path.endsWith("/workflow-completion")) d.workflows.archiveBinding(d.bindingId);
+      },
+    });
+    assert.equal(await tick(), false);
+    assert.equal(prompts.length, scenario === "unavailable" ? 0 : 1);
+    assert.equal(contextReads, scenario === "unavailable" ? 1 : scenario === "during verification" ? 2 : 3);
+    assert.deepEqual(writes, scenario === "vanished at claim"
+      ? [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`] : []);
+    assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+    assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision, null, "no consumed generation or direct PR fallback");
+  });
+}
+
+for (const boundary of ["HTTP claim", "store transaction"] as const) {
+  for (const change of ["binding", "version", "trigger mode"] as const) {
+    test(`Foreman's plan verdict cannot cross a changed ${change} at the ${boundary}`, async (t) => {
+      const replaceOwnership = (d: Dispatched) => {
+        const binding = d.workflows.store.getBinding(d.bindingId)!;
+        if (change === "binding") {
+          d.workflows.archiveBinding(binding.id);
+          d.workflows.store.insertBinding({
+            ...binding, id: `${binding.id}-replacement`, sessionId: d.sessionId, now: Date.now(),
+          });
+        } else if (change === "version") {
+          const db = openDb();
+          const versionId = `v-${d.bindingId}`;
+          const revision = boundary === "HTTP claim" ? 2 : 3;
+          db.prepare(`INSERT INTO workflow_versions (
+            id, workflow_id, version, source_draft_revision, graph_json,
+            completion_policy_json, binding_defaults_json, published_at
+          ) SELECT ?, workflow_id, ?, ?, graph_json,
+            completion_policy_json, binding_defaults_json, published_at
+            FROM workflow_versions WHERE id = 'v'`).run(versionId, revision, revision);
+          db.prepare("UPDATE workflow_bindings SET workflow_version_id = ? WHERE id = ?")
+            .run(versionId, binding.id);
+        } else {
+          d.workflows.store.updateBinding(binding.id, { triggerMode: "manual" });
+        }
+      };
+      const { d, tick, writes, prompts } = planWrapupFixture(t, `plan-race-${boundary}-${change}`, {
+        beforeRequest: (path, d) => {
+          if (boundary === "HTTP claim" && path.endsWith("/workflow-completion")) replaceOwnership(d);
+        },
+      });
+      if (boundary === "store transaction") {
+        // The manager has selected its binding. Change durable ownership immediately before
+        // the transaction starts, proving that a manager-only comparison is insufficient.
+        const store = d.workflows.store;
+        const claim = store.claimForemanCompletion.bind(store);
+        t.mock.method(store, "claimForemanCompletion", (input: Parameters<typeof claim>[0]) => {
+          replaceOwnership(d);
+          return claim(input);
+        });
+      }
+      assert.equal(await tick(), false, "stale ownership must hold instead of claiming or asking");
+      assert.equal(prompts.length, 1, "verification finished before the binding changed");
+      assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
+      const runs = openDb().prepare(`SELECT r.id FROM workflow_runs r
+        JOIN workflow_bindings b ON b.id = r.binding_id WHERE b.note_key = ?`).all(d.noteKey);
+      assert.equal(runs.length, 0, "neither the old nor the replacement binding received the stale verdict");
+      const queue = d.registry.getQueue(d.sessionId)!;
+      assert.equal(queue.promptedConsumedGeneration, null);
+      assert.equal(queue.promptedDecision, null);
+      assert.equal(queue.promptedDirectHandoff, null);
+    });
+  }
+}

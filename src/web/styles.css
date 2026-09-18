@@ -1762,16 +1762,16 @@ button.wf-run-version:focus-visible {
   font-weight: 600;
 }
 
-/* Why a parked round is standing still, and what the grant just did.
-   Both share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
+/* What the grant just did, what was refused, and what was turned away.
+   All share `.wf-run-why`'s measure and rhythm on purpose - they sit in the same identity
    block, one under the other, and three paragraphs at three sizes would read as three
    unrelated warnings rather than as one account of the run's state. The grant's line takes
-   the working colour because it reports something that HAPPENED; the parked line stays muted
-   because it reports something that is not happening. */
+   the working colour because it reports something that HAPPENED. The parked sentence is no
+   longer one of them: it lives in the posture banner above the identity block, which is the
+   one place "who moves next" is stated. */
 .wf-run-granted,
 .wf-run-refused,
-.wf-run-refused-claim,
-.wf-run-parked {
+.wf-run-refused-claim {
   font-size: 12px;
   line-height: 1.5;
   max-width: 66ch;
@@ -1798,8 +1798,94 @@ button.wf-run-version:focus-visible {
   color: var(--muted);
 }
 
-.wf-run-parked {
-  color: var(--muted);
+/* Whose move it is, stated before anything else in the header.
+
+   One full-width strip the action row agrees with by construction: both read `runPosture`,
+   so a calm banner can never sit above a filled primary. Blue is the run's own working
+   colour; the `yours` variant takes the same attention tone every card and rail mark
+   already uses for "this needs you". */
+.wf-run-posture {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--working) 30%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--working) 7%, var(--panel));
+  padding: 10px 14px;
+}
+
+.wf-run-posture p {
+  margin: 0;
+}
+
+.wf-run-posture-eyebrow {
+  color: var(--working);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wf-run-posture-text {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+
+/* Pulsing while the run moves itself - the dot is the "something is happening" signal the
+   old header never had. The `yours` dot holds still: the pulse means motion, and that run
+   is waiting on the reader. */
+.wf-run-posture-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: wf-posture-pulse 2s infinite;
+}
+
+@keyframes wf-posture-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 45%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.wf-run-posture-yours {
+  border-color: color-mix(in srgb, var(--attention) 40%, var(--border));
+  background: color-mix(in srgb, var(--attention) 8%, var(--panel));
+}
+
+.wf-run-posture-yours .wf-run-posture-eyebrow {
+  color: var(--attention);
+}
+
+.wf-run-posture-yours .wf-run-posture-dot {
+  background: var(--attention);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-run-posture-dot {
+    animation: none;
+  }
+}
+
+/* The demoted next move's tag. The move is still offered - overriding is legitimate - but
+   under an `auto` posture the button carries the word so a reader who never hovers still
+   learns the click is optional. */
+.wf-run-override-tag {
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 4px;
+  color: var(--attention);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* The bound session, as a link rather than a labelled button: the name IS the affordance,
@@ -4276,6 +4362,27 @@ body {
 }
 .spend-runway[data-tone="high"] .runway-head b {
   color: var(--danger);
+}
+.runway-note,
+.runway-unavailable {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.runway-note {
+  margin-top: 5px;
+}
+.runway-note span,
+.runway-unavailable small {
+  display: block;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+}
+.spend-runway[data-expired] .runway-head b {
+  color: var(--muted);
+}
+.spend-runway[data-expired] .runway-fill {
+  background: var(--dim);
 }
 .runway-meter {
   height: 6px;
@@ -11080,6 +11187,85 @@ select:not([multiple]) option:focus-visible {
   background: var(--panel-2);
 }
 
+/* ---- tour catalog ---- */
+/* The fixed picker owns scrolling while open, including over a wider dashboard at zoom. */
+.app:has(.tour-picker) { overflow-x: clip; }
+.tour-picker {
+  width: min(880px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.tour-picker .modal-head,
+.tour-picker-footer { flex: none; }
+.tour-picker .modal-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.tour-picker-content {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 0;
+  overflow: auto;
+}
+.tour-picker-list {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.tour-picker-row {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 14px 12px;
+  margin-bottom: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tour-picker-row:hover { background: var(--panel); }
+.tour-picker-row.is-selected {
+  background: color-mix(in srgb, var(--select) 10%, var(--panel));
+  border-color: var(--select);
+}
+.tour-picker-row:focus-within { outline: 2px solid var(--select); outline-offset: 2px; }
+.tour-picker input { accent-color: var(--select); flex: none; }
+.tour-picker-row input { margin-top: 3px; }
+.tour-picker-row strong { display: block; font-size: 14px; }
+.tour-picker-row small { display: block; margin-top: 6px; color: var(--muted); }
+.tour-picker-recommended { display: block; margin-top: 10px; color: var(--select); font-size: 11px; }
+.tour-picker-preview { min-width: 0; padding: 22px; }
+.tour-picker-preview h3 { margin: 18px 0 10px; font-size: 22px; }
+.tour-picker-preview p { color: var(--muted); line-height: 1.6; margin: 0; }
+.tour-picker-preview h4 { margin: 22px 0 12px; font-size: 13px; }
+.tour-picker-preview ul { padding-left: 20px; margin: 0 0 24px; }
+.tour-picker-preview li { padding-left: 3px; margin-bottom: 10px; line-height: 1.5; }
+.tour-picker-preview li::marker { color: var(--select); }
+.tour-picker-illustration { display: block; width: 100%; max-height: 148px; }
+.tour-art-panel { fill: var(--panel-2); stroke: var(--border); }
+.tour-art-card { fill: var(--panel); stroke: var(--border); }
+.tour-art-line { fill: none; stroke: var(--dim); stroke-width: 2; stroke-linecap: round; }
+.tour-art-accent { fill: var(--select); }
+.tour-art-check { fill: none; stroke: var(--panel); stroke-width: 2; }
+.tour-picker-footer { justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.tour-picker-preference { min-width: 0; flex: 1 1 260px; }
+.tour-picker-preference label { display: flex; gap: 9px; align-items: baseline; line-height: 1.5; }
+.tour-picker-preference [role="status"] { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
+.tour-picker-preference [role="alert"] { color: var(--attention); margin: 8px 0 0; line-height: 1.5; }
+.tour-picker-empty { padding: 24px; grid-column: 1 / -1; }
+@media (max-width: 640px) {
+  .tour-picker-content { grid-template-columns: minmax(0, 1fr); }
+  .tour-picker-list { border-right: 0; border-bottom: 1px solid var(--border-soft); padding-block: 12px; }
+  .tour-picker-row { padding-block: 10px; margin-bottom: 4px; }
+  .tour-picker-row small { display: inline; margin-right: 10px; }
+  .tour-picker-recommended { display: inline-block; margin-top: 5px; }
+  .tour-picker-preview { padding: 18px; }
+}
+
 /* ---- auto-update dialog ---- */
 /* The updater's seven questions, which the Electron shell used to ask through the platform's
    own message box. Same measure and rhythm as the per-session confirms above: it is the same
@@ -11479,6 +11665,17 @@ select:not([multiple]) option:focus-visible {
 }
 .report-row:last-child {
   border-bottom: none;
+}
+.report-row:has(.report-row-cleanup) {
+  flex-wrap: wrap;
+}
+.report-row-main.report-row-cleanup {
+  flex-basis: 100%;
+  order: 1;
+}
+.report-row-cleanup .report-sub {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 /* A backlog row whose autopilot switch is off. Recedes by the same amount the board's
    parked card does, so the two surfaces agree about how loud a hold is - and stops
@@ -19978,7 +20175,7 @@ button.wf-carried.is-link:focus-visible {
   align-items: center;
   gap: 10px;
 }
-/* The source's own name. Flexes so the badge and the remove button stay put while the
+/* The source's own name. Flexes so the badge stays put while the
    field takes whatever is left - capped, because at page width "whatever is left" is 700px
    of empty box for a two-word label. */
 .ts-name {
@@ -19986,9 +20183,6 @@ button.wf-carried.is-link:focus-visible {
   min-width: 0;
   max-width: 420px;
   font-size: 12.5px;
-}
-.ts-head .foreman-repo-remove {
-  margin-left: 0;
 }
 .ts-status {
   margin: 9px 0 0;
@@ -20389,6 +20583,132 @@ button.wf-carried.is-link:focus-visible {
 .foreman-pop {
   width: 288px;
 }
+.foreman-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.foreman-enable-row {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.foreman-info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.foreman-info-btn:hover {
+  color: var(--fg);
+  border-color: var(--foreman);
+}
+.foreman-info-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.foreman-guide {
+  width: min(720px, 100%);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.foreman-guide .modal-head,
+.foreman-guide .modal-foot {
+  flex: none;
+}
+.foreman-guide-body {
+  min-height: 0;
+  line-height: 1.6;
+  font-size: 14px;
+}
+.foreman-guide-body h3 {
+  margin: 22px 0 8px;
+  font-size: 15px;
+}
+.foreman-guide-body p {
+  margin: 10px 0;
+}
+.foreman-guide-body ul {
+  padding-left: 22px;
+}
+.foreman-guide-body li + li {
+  margin-top: 6px;
+}
+.foreman-guide-intro {
+  color: var(--muted);
+}
+.foreman-btn.has-errors,
+.foreman-btn.has-errors .foreman-chip {
+  color: var(--attention);
+  border-color: color-mix(in srgb, var(--attention) 50%, var(--border));
+}
+.foreman-warning { color: var(--attention); }
+/* Issue counts remain visible when the title bar's ordinary mode chips collapse. */
+.topbar .foreman-btn.has-errors .foreman-chip { display: inline; }
+.foreman-pop.has-errors { width: min(440px, calc(100vw - 32px)); }
+.foreman-errors { min-width: 0; }
+.foreman-errors-head,
+.foreman-error-counts,
+.foreman-error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.foreman-errors-head { color: var(--attention); }
+.foreman-errors-head > span { font-size: 11px; }
+.foreman-errors-state { font-size: 12px; line-height: 1.5; margin: 10px 0 6px; }
+.foreman-errors-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 8px 0; }
+.foreman-error-issue {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 35%, var(--border));
+  background: color-mix(in srgb, var(--attention) 4%, var(--panel));
+  border-radius: 9px;
+  padding: 14px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.foreman-error-model { color: var(--muted); overflow-wrap: anywhere; margin: 8px 0; }
+.foreman-error-received {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin: 12px 0;
+}
+.foreman-error-received > span {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.foreman-error-received pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--fg);
+  font: 11.5px/1.6 var(--mono);
+  margin: 8px 0 0;
+  user-select: text;
+}
+.foreman-error-counts { color: var(--attention); font-size: 11px; }
+.foreman-error-sessions summary,
+.foreman-error-group > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.foreman-error-sessions ul { padding-left: 18px; overflow-wrap: anywhere; }
+.foreman-error-sessions li { margin: 5px 0; }
+.foreman-error-actions { justify-content: flex-start; margin-top: 12px; }
+.foreman-error-actions .btn { font-size: 11px; white-space: normal; }
+.foreman-error-group { margin-top: 12px; }
 .foreman-modes {
   border: 1px solid var(--border-soft);
   border-radius: 8px;

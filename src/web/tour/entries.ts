@@ -16,6 +16,11 @@ export interface TourEntry {
   id: TourId;
   /** The tour's name, as the kicker, the progress label, and both entry points say it. */
   title: string;
+  preview: {
+    summary: string;
+    outcomes: readonly [string, string, string];
+    illustration?: "work" | "library" | "setup";
+  };
   /** The Settings rail's Help & tours row. */
   settings: {
     tooltip: string;
@@ -52,7 +57,7 @@ export interface TourEntry {
    * Line drawer - is still restored either way. This replaces the route alone.
    *
    * `focus` is the control to land on when the invoking one did not survive the move. The
-   * automatic first-run tour has no invoker at all, and a keyboard operator would otherwise
+   * startup picker may have no invoker, and a keyboard operator would otherwise
    * be left at the document root on a page they did not ask for.
    */
   exit?: { route: MissionRoute; focus: TourTargetId };
@@ -60,11 +65,21 @@ export interface TourEntry {
 
 const SEE_WORK_TITLE = tourContent("see-work").title;
 const LIBRARY_TITLE = tourContent("library").title;
+const WORKFLOWS_TITLE = tourContent("workflows").title;
 const SETUP_TITLE = tourContent("setup").title;
 
 const SEE_WORK_ENTRY: TourEntry = {
   id: "see-work",
   title: SEE_WORK_TITLE,
+  preview: {
+    summary: "Follow work from the fleet overview to one session's desk, then through review and completion.",
+    outcomes: [
+      "Read the Line and compare sessions on the Board",
+      "Explore a session's conversation and work desk",
+      "See how dispatch, review, and completion fit together",
+    ],
+    illustration: "work",
+  },
   settings: {
     tooltip: "Tour the fleet, Board, and one session's work desk",
     ariaLabel: `Start ${SEE_WORK_TITLE} tour`,
@@ -84,6 +99,15 @@ const SEE_WORK_ENTRY: TourEntry = {
 const LIBRARY_ENTRY: TourEntry = {
   id: "library",
   title: LIBRARY_TITLE,
+  preview: {
+    summary: "Explore the reusable instructions and checks that shape your agents' work.",
+    outcomes: [
+      "Find Personas, Actions, and Commands in the Library",
+      "Inspect the workflow that reviews finished work",
+      "Connect reusable definitions to their runs",
+    ],
+    illustration: "library",
+  },
   settings: {
     tooltip: "Tour the Library: Personas, Actions, Commands, and the workflow that reviews",
     ariaLabel: `Start ${LIBRARY_TITLE} tour`,
@@ -112,9 +136,64 @@ const LIBRARY_ENTRY: TourEntry = {
   entryRoute: { page: "library" },
 };
 
+const WORKFLOWS_ENTRY: TourEntry = {
+  id: "workflows",
+  title: WORKFLOWS_TITLE,
+  preview: {
+    summary: "Follow one No-Mistakes Review run from frozen evidence to a shipped pull request.",
+    outcomes: [
+      "Know what each stage of a review is doing",
+      "Bind or trigger a review yourself",
+      "Read evidence, rounds, and the GitHub Inspector gate",
+    ],
+    illustration: "work",
+  },
+  settings: {
+    tooltip: "Tour one No-Mistakes Review run: stages, evidence, rounds, and its final gates",
+    ariaLabel: `Start ${WORKFLOWS_TITLE} tour`,
+    heading: WORKFLOWS_TITLE,
+    hint: "Walk one real review run",
+  },
+  palette: {
+    rowId: "command:workflows-tour",
+    title: `Start ${WORKFLOWS_TITLE} tour`,
+    detail: "Follow one No-Mistakes Review run - stages, evidence, rounds, and its final gates.",
+    keywords: [
+      "tour",
+      "product tour",
+      "onboarding",
+      "workflow",
+      "review",
+      "run",
+      "evidence",
+      "readiness",
+      "inspector",
+      "no-mistakes",
+      "binding",
+    ],
+    hint: "Start the guided workflow run tour.",
+  },
+  // The Runs page, which is the tour's whole subject: its first stop is a centered card over
+  // the surface every later stop returns to.
+  entryRoute: { page: "runs" },
+  // The tour's last stop hands the Runs page over - "Finish leaves you here" is its own
+  // copy - so the exit declares it rather than replaying the snapshot's route. The landing
+  // control is the All filter chip, the first control of the rail the close stop spotlights.
+  exit: { route: { page: "runs" }, focus: "workflows:run-filter-all" },
+};
+
 const SETUP_ENTRY: TourEntry = {
   id: "setup",
   title: SETUP_TITLE,
+  preview: {
+    summary: "Find the tools this machine needs and choose which repositories your agents may use.",
+    outcomes: [
+      "Find Setup from Settings",
+      "Check dependencies and re-check installed tools",
+      "Understand repository grants in Trust",
+    ],
+    illustration: "setup",
+  },
   settings: {
     tooltip: "Find Setup from the gear, install what you will use, then grant repos in Trust",
     ariaLabel: `Start ${SETUP_TITLE} tour`,
@@ -158,7 +237,7 @@ const SETUP_ENTRY: TourEntry = {
 
 /** Every tour Mission Control offers, in the order its entry points list them. */
 export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
-  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, SETUP_ENTRY];
+  const entries = [SEE_WORK_ENTRY, LIBRARY_ENTRY, WORKFLOWS_ENTRY, SETUP_ENTRY];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (seen.has(entry.id)) throw new Error(`duplicate tour entry ${entry.id}`);
@@ -167,15 +246,8 @@ export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
   return entries;
 })();
 
-/**
- * The one tour a fresh profile receives automatically, before it has asked for anything.
- *
- * Setup, because nothing else in the product works until this machine has the tools the work
- * needs and the repositories that work may touch, and an operator who has never seen either
- * panel cannot be expected to find them. Named here rather than written into the effect that
- * starts it, so the automatic tour and the manual ones are drawn from the same registry.
- */
-export const FIRST_RUN_TOUR: TourId = "setup";
+/** Recommended first preview, without changing the discovery order in Settings or search. */
+export const RECOMMENDED_TOUR: TourId = "setup";
 
 export function tourEntry(id: TourId): TourEntry {
   const entry = TOUR_ENTRIES.find((candidate) => candidate.id === id);

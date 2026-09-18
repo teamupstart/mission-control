@@ -1,3 +1,4 @@
+import { actionFetch } from "./experience.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -238,7 +239,7 @@ export interface CompleteTaskResult extends ActionResult {
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(path);
+    const res = await actionFetch(path);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -306,7 +307,7 @@ export const fetchWorktrees = (signal?: AbortSignal) =>
 
 async function fetchJsonWithSignal<T>(path: string, signal?: AbortSignal): Promise<T | null> {
   try {
-    const res = await fetch(path, { signal });
+    const res = await actionFetch(path, { signal });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -323,7 +324,7 @@ export interface WorktreeApiFailure {
 
 async function worktreeRequest<T>(path: string, method: "POST" | "PUT", body: unknown): Promise<({ ok: true } & T) | WorktreeApiFailure> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method,
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -445,7 +446,7 @@ export async function setPipelinesConfig(
   config: PipelinesConfigPatch,
 ): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
   try {
-    const res = await fetch("/api/pipelines/config", {
+    const res = await actionFetch("/api/pipelines/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(config),
@@ -491,7 +492,7 @@ export async function saveStandingInstructions(
   | { ok: false; error: string }
 > {
   try {
-    const res = await fetch("/api/instructions", {
+    const res = await actionFetch("/api/instructions", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(update),
@@ -605,7 +606,7 @@ export async function runPipelineAction(req: PipelineActionRequest): Promise<Pip
     output: "",
   });
   try {
-    const res = await fetch("/api/pipelines/action", {
+    const res = await actionFetch("/api/pipelines/action", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(req),
@@ -631,7 +632,7 @@ export async function openPipelineConsole(
   req: PipelineConsoleRequest,
 ): Promise<PipelineConsoleResult> {
   try {
-    const res = await fetch("/api/pipelines/console", {
+    const res = await actionFetch("/api/pipelines/console", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(req),
@@ -688,7 +689,7 @@ async function settingsRestoreJson<T>(
   init?: RequestInit,
 ): Promise<SettingsRestoreApiResult<T>> {
   try {
-    const response = await fetch(path, init);
+    const response = await actionFetch(path, init);
     const body = await response.json().catch(() => null) as unknown;
     const parsed = schema.safeParse(body);
     if (response.ok && parsed.success) {
@@ -752,7 +753,7 @@ export async function fetchResetPreview(id: string): Promise<ResetPreview> {
     aheadCommits: 0, aheadSubjects: [], clean: false, canClear: false,
   });
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/reset/preview`);
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/reset/preview`);
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       return fail(data.error ?? `HTTP ${res.status}`);
@@ -774,7 +775,7 @@ export async function fetchSessionDiff(id: string, commit?: string): Promise<Ses
   });
   try {
     const q = commit ? `?commit=${encodeURIComponent(commit)}` : "";
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/diff${q}`);
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/diff${q}`);
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       return fail(data.error ?? `HTTP ${res.status}`);
@@ -804,7 +805,7 @@ async function ensembleJson<T>(
   body?: unknown,
 ): Promise<EnsembleFetch<T>> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method,
       headers: body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -923,7 +924,7 @@ export async function resolveRepo(
   path: string,
 ): Promise<{ ok: true; repoRoot: string; path: string } | { ok: false; error: string }> {
   try {
-    const res = await fetch("/api/repos/resolve", {
+    const res = await actionFetch("/api/repos/resolve", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path }),
@@ -948,7 +949,7 @@ export async function resolveRepo(
 /** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
 export async function fetchRepos(): Promise<string[]> {
   try {
-    const res = await fetch("/api/repos");
+    const res = await actionFetch("/api/repos");
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     return Array.isArray(data) ? (data as string[]) : [];
@@ -968,7 +969,7 @@ export async function fetchRepos(): Promise<string[]> {
  */
 export async function fetchWorkflowRepoAllowlist(): Promise<string[]> {
   try {
-    const res = await fetch("/api/workflows/config");
+    const res = await actionFetch("/api/workflows/config");
     if (!res.ok) return [];
     const data = (await res.json()) as { repoAllowlist?: unknown };
     return Array.isArray(data.repoAllowlist) ? (data.repoAllowlist as string[]) : [];
@@ -989,7 +990,7 @@ async function request<T extends ActionResult = ActionResult>(
   body?: unknown,
 ): Promise<T> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
@@ -1057,7 +1058,7 @@ export interface RunScheduleNowResult extends ActionResult {
 /** A create/update/enable/archive that returns the canonical schedule, field errors intact. */
 async function scheduleMutation(path: string, body?: unknown): Promise<ScheduleMutationResult> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method: "POST",
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
@@ -1078,7 +1079,7 @@ async function scheduleMutation(path: string, body?: unknown): Promise<ScheduleM
 /** Enumerate an unsaved cadence without writing anything. Returns the daemon's own result. */
 export async function previewSchedule(payload: SchedulePreviewPayload): Promise<SchedulePreviewResult> {
   try {
-    const res = await fetch("/api/schedules/preview", {
+    const res = await actionFetch("/api/schedules/preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -1112,7 +1113,7 @@ export const archiveSchedule = (id: string) =>
 /** File this mission's work now, paused or not, without touching the cron cursor. */
 export async function runScheduleNow(id: string): Promise<RunScheduleNowResult> {
   try {
-    const res = await fetch(`/api/schedules/${encodeURIComponent(id)}/run-now`, {
+    const res = await actionFetch(`/api/schedules/${encodeURIComponent(id)}/run-now`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -1160,7 +1161,7 @@ export async function fetchQueue(
   id: string,
 ): Promise<{ ok: true; queue: SessionQueue | null } | { ok: false }> {
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/queue`);
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/queue`);
     if (!res.ok) return { ok: false };
     return { ok: true, queue: (await res.json()) as SessionQueue | null };
   } catch {
@@ -1186,7 +1187,7 @@ export async function fetchTranscriptBefore(
   | { ok: false; error: string }
 > {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(id)}/transcript?before=${encodeURIComponent(String(before))}`,
       { signal },
     );
@@ -1218,7 +1219,7 @@ export async function fetchSessionFiles(
   id: string,
 ): Promise<{ ok: true; files: SessionFileEntry[] } | { ok: false; error: string }> {
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/files`);
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/files`);
     const data = (await res.json().catch(() => ({}))) as { files?: SessionFileEntry[]; error?: string };
     if (!res.ok || !data.files) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     return { ok: true, files: data.files };
@@ -1233,7 +1234,7 @@ export async function fetchSessionFile(
   signal?: AbortSignal,
 ): Promise<{ ok: true; file: SessionFileDocument } | { ok: false; error: string }> {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
       { signal },
     );
@@ -1279,7 +1280,7 @@ export async function uploadImage(
   try {
     const body = new FormData();
     body.append("file", file);
-    const res = await fetch("/api/uploads", { method: "POST", body });
+    const res = await actionFetch("/api/uploads", { method: "POST", body });
     const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & {
       uploadId?: string;
       bytes?: number;
@@ -1315,7 +1316,7 @@ export async function uploadImage(
  */
 export async function fetchProductIssuePreflight(): Promise<ProductIssuePreflight> {
   try {
-    const res = await fetch("/api/product-issues/preflight");
+    const res = await actionFetch("/api/product-issues/preflight");
     const data = (await res.json().catch(() => null)) as ProductIssuePreflight | null;
     if (!data || typeof data.ready !== "boolean") {
       return {
@@ -1345,7 +1346,7 @@ export async function previewProductIssue(
   request: ProductIssueRequest,
 ): Promise<ProductIssuePreviewResponse> {
   try {
-    const res = await fetch("/api/product-issues/preview", {
+    const res = await actionFetch("/api/product-issues/preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(request),
@@ -1381,7 +1382,7 @@ export async function confirmProductIssue(
   request: ProductIssueRequest,
 ): Promise<ProductIssueConfirmResponse> {
   try {
-    const res = await fetch("/api/product-issues/confirm", {
+    const res = await actionFetch("/api/product-issues/confirm", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(request),
@@ -1420,7 +1421,7 @@ export async function submitProductIssue(
   confirmationToken: string,
 ): Promise<ProductIssueSubmitResult> {
   try {
-    const res = await fetch("/api/product-issues", {
+    const res = await actionFetch("/api/product-issues", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...request, confirmationToken }),
@@ -1462,7 +1463,7 @@ export async function setKeepAwake(
   | { ok: false; error: string; status: KeepAwakeStatus | null }
 > {
   try {
-    const res = await fetch("/api/keep-awake", {
+    const res = await actionFetch("/api/keep-awake", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled }),
@@ -1548,7 +1549,7 @@ export type ArchiveRead<T> =
  */
 async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
-    const res = await fetch(path, { ...(signal ? { signal } : {}) });
+    const res = await actionFetch(path, { ...(signal ? { signal } : {}) });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
@@ -1786,6 +1787,14 @@ export const api = {
     post<ActionResult & { task?: Task }>(
       `/api/tours/${encodeURIComponent(tourId)}/preview`,
       { repoRoot },
+    ),
+  /**
+   * Ask the daemon for the workflows tour's run to read. With any No-Mistakes run already
+   * in history the newest answers; only an empty machine receives the seeded demo record.
+   */
+  seedTourRun: (tourId: TourId) =>
+    post<ActionResult & { runId?: string; seeded?: boolean }>(
+      `/api/tours/${encodeURIComponent(tourId)}/seed-run`,
     ),
   /** Record the tour's fixed outcome and close any session it launched. */
   completeTourTask: (tourId: TourId, taskId: string) =>
@@ -2086,7 +2095,7 @@ export const api = {
     signal?: AbortSignal,
   ): Promise<ArchiveRead<ArchiveArtifactBody>> => {
     try {
-      const res = await fetch(
+      const res = await actionFetch(
         `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
         { ...(signal ? { signal } : {}) },
       );
@@ -2154,7 +2163,7 @@ async function fileCommentWrite(
   init?: RequestInit,
 ): Promise<{ ok: true; thread: FileCommentThread } | { ok: false; error: string }> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method: "POST",
       headers: init?.body ? { "content-type": "application/json" } : undefined,
       ...init,
@@ -2201,7 +2210,7 @@ export async function resolveHtmlBlockAnchor(
   | { ok: false; error: string; status: number | null }
 > {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/html-block-anchor`,
       {
         method: "POST",
@@ -2254,7 +2263,7 @@ export async function resolveHtmlBlockTarget(
   | { ok: false; error: string }
 > {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/html-block-target`,
       {
         method: "POST",
@@ -2312,7 +2321,7 @@ export async function reorderFileComments(
   order: readonly string[],
 ): Promise<{ ok: true; threads: FileCommentThread[] } | { ok: false; error: string }> {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/file-comments/reorder`,
       {
         method: "POST",
@@ -2344,7 +2353,7 @@ export async function controlFileCommentReview(
   reason?: string,
 ): Promise<{ ok: true; review: FileCommentReview } | { ok: false; error: string }> {
   try {
-    const res = await fetch(
+    const res = await actionFetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/file-comment-review`,
       {
         method: "POST",
@@ -2367,7 +2376,7 @@ export async function deleteFileComment(
   threadId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const res = await fetch(`/api/file-comments/${encodeURIComponent(threadId)}`, {
+    const res = await actionFetch(`/api/file-comments/${encodeURIComponent(threadId)}`, {
       method: "DELETE",
     });
     if (!res.ok) {
@@ -2411,7 +2420,7 @@ async function telemetryWrite<T>(
   operation: AppOperation,
 ): Promise<{ ok: true; data: T } | { ok: false; error: string; conflict: boolean }> {
   try {
-    const res = await fetch(path, {
+    const res = await actionFetch(path, {
       method,
       headers: { "content-type": "application/json", ...operation.headers },
       body: JSON.stringify(body),
@@ -2469,7 +2478,7 @@ export async function submitBrowserTelemetry(
   operation: AppOperation,
 ): Promise<TelemetryIngressResult | null> {
   try {
-    const res = await fetch("/api/telemetry/ingress", {
+    const res = await actionFetch("/api/telemetry/ingress", {
       method: "POST",
       headers: { "content-type": "application/json", ...operation.headers },
       body: JSON.stringify({ records }),

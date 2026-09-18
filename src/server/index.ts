@@ -16,6 +16,7 @@ import { Registry } from "./registry.ts";
 import { observeInjections } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
+import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
   claudeTransportChoice,
   codexTransportChoice,
@@ -105,8 +106,12 @@ import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
+  attachSessionTelemetry,
+  noteDaemonShuttingDown,
   observeDaemonStart,
+  observeSessionOperation,
   registerBuiltinTelemetry,
+  retainPrObservation,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
@@ -523,6 +528,54 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // is one indexed query.
 const writebackEnqueuer = makeWritebackEnqueuer(registry);
 registry.onTaskPrLinked((e) => writebackEnqueuer.prLinked(e));
+// Phase 3's session attribution, attached as an OBSERVER of the stream the Registry already
+// publishes rather than as a second announcement inside it. Session existence, effective
+// model and effort, turn boundaries and durable departure are all reconciled there already,
+// and a competing lifecycle for facts that have one owner is exactly what the boundaries
+// forbid. Inert while collection is off, which is the shipped default.
+attachSessionTelemetry(registry);
+// A queued turn's bytes POSITIVELY reached the agent. The authoritative delivery seam for
+// everything the composer buffered while a session was busy: `submit()` only creates a row,
+// and `recallPendingTurn` / `dropQueuedPendingTurns` remove rows that never went anywhere, so
+// the route records `queued` and this records the `send`. Keyed on the durable row id, so a
+// resumed stream re-announcing a delivery deduplicates rather than counting a second send.
+registry.onTurnDelivered((e) => {
+  const session = registry.getSession(e.sessionId);
+  if (!session) return;
+  const operation = retainedTurnOperation(e.turnId);
+  observeSessionOperation({
+    session,
+    operation: "send",
+    outcome: "delivered",
+    // Phase 5 retains the submitting surface across the outbox; older/unobserved turns keep
+    // unknown provenance. The turn owner still contributes exactly one delivery fact.
+    actor: operation?.actor ?? { kind: "unknown", origin: "dashboard", basis: "unknown" },
+    operationId: operation?.operationId,
+    identity: e.turnId,
+    now: e.deliveredAt,
+  });
+});
+// And the one pull request fact that has to be retained while its source ownership still
+// exists. `onTaskPrLinked` fires only after the durable work-episode write succeeded, which
+// is what makes this a VERIFIED association rather than an agent's claim - and it is the last
+// moment at which the task's repository and kind can still be read, because
+// `invalidateTaskOwnershipInTransaction` may delete the binding at any point after it.
+registry.onTaskPrLinked((e) => {
+  const task = registry.getTask(e.taskId);
+  if (!task) return;
+  retainPrObservation({
+    taskId: e.taskId,
+    taskKind: task.kind,
+    repoRoot: e.repoRoot,
+    primaryRepoRoot: task.repoRoot,
+    prUrl: e.prUrl,
+    sessionId: task.sessionId,
+    // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
+    // carries no task. Here the honest claim is the weaker one.
+    creationVerified: false,
+    now: e.observedAt,
+  });
+});
 tasks.registerWritebackEnqueuer(writebackEnqueuer);
 const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has
@@ -745,6 +798,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  // Before anything tears a session down, so the departures that follow are attributed to the
+  // daemon stopping rather than reported as endings with no known reason.
+  //
+  // The observer is deliberately NOT detached here. Shutdown is when managed sessions actually
+  // leave, and unsubscribing first would drop precisely the `session_remove` events this
+  // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
+  // case where it is perfectly well known.
+  noteDaemonShuttingDown();
   await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();

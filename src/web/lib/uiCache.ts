@@ -118,6 +118,8 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     keybindingHints: raw?.keybindingHints ?? UI_CONFIG_DEFAULTS.keybindingHints,
     guidedDispatch: raw?.guidedDispatch ?? UI_CONFIG_DEFAULTS.guidedDispatch,
     guidedTour: raw?.guidedTour ?? UI_CONFIG_DEFAULTS.guidedTour,
+    showToursOnStartup: typeof raw?.showToursOnStartup === "boolean"
+      ? raw.showToursOnStartup : UI_CONFIG_DEFAULTS.showToursOnStartup,
     // A fresh array either way: the default is a shared frozen literal, and the cache must
     // hand back something the Trust panel can build its next patch from without mutating it.
     trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],

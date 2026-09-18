@@ -152,6 +152,11 @@ test("attachment support accepts stable gh 2.99.0 and newer, but not previews or
 });
 
 test("target configuration accepts only exact owner/name and defaults safely", () => {
+  assert.equal(DEFAULT_PRODUCT_ISSUES_REPO, "teamupstart/mission-control");
+  assert.deepEqual(productIssuesRepo(""), {
+    ok: true,
+    repo: "teamupstart/mission-control",
+  });
   assert.deepEqual(productIssuesRepo(undefined), {
     ok: true,
     repo: DEFAULT_PRODUCT_ISSUES_REPO,

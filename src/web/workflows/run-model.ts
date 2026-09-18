@@ -39,9 +39,12 @@ import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
+  sessionActionWaitsOnOperator,
   verdictAuthor,
   workflowResumptionWithheldSentence,
   workflowRunGaveUp,
+  workflowRunIsOpen,
+  workflowRunResumesItself,
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
@@ -1095,6 +1098,7 @@ const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   working_tree_not_pushed: "The captured working tree has changes that were never committed and pushed.",
   head_mismatch: "The pull request's head is not the commit this submission reviewed.",
   review_pending: "GitHub Inspector has the pull request and has not finished reviewing it.",
+  clean_review_pending: "Inspector has no open findings and is waiting to confirm its final clean review on GitHub.",
   review_backoff: "GitHub Inspector's review failed and is waiting out its retry backoff.",
   review_error: "GitHub Inspector's last review attempt errored.",
   findings: "GitHub Inspector left findings that have to be resolved.",
@@ -1229,10 +1233,29 @@ const SPENT_EVIDENCE_SENTENCES: Record<SpentInspectorEvidenceProblem, string> = 
   finding_ledger_inconsistent: "Current Inspector finding totals do not reconcile with this workflow's historical finding record.",
 };
 
+/** Show both sides of a mismatch instead of presenting the observed head as a gate pin. */
+export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null {
+  const state = detail.inspectorGate?.state;
+  if (!state) return null;
+  const submission = selectedSubmission(detail, null);
+  const context = submission?.context as { evidence?: { headSha?: string | null } } | undefined;
+  const expected = state.targetHeadSha ?? submission?.prHeadSha ?? context?.evidence?.headSha;
+  if (state.waitReason === "head_mismatch") {
+    return `expected ${shortSha(expected) ?? "unknown"}, PR at ${shortSha(state.observedHeadSha) ?? "unknown"}`;
+  }
+  const head = state.targetHeadSha ?? state.observedHeadSha;
+  return head ? `head ${shortSha(head)}` : null;
+}
+
 /** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
   const condition = spentInspectorGateCondition(detail);
-  if (!condition) return gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null);
+  if (!condition) {
+    if (detail.inspectorGate?.state.waitReason === "head_mismatch") {
+      return `Inspector gate is waiting: ${inspectorGateHeadLabel(detail)}. Submit the current work for review to continue.`;
+    }
+    return gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null);
+  }
   switch (condition.kind) {
     case "historical_findings_open":
       return `Current Inspector still has ${condition.currentOpenFindings} open finding${condition.currentOpenFindings === 1 ? "" : "s"}; ${condition.historicalOpenFindings} ${condition.historicalOpenFindings === 1 ? "was" : "were"} recorded when this workflow stopped.`;
@@ -2247,6 +2270,121 @@ export function runParkedSentence(detail: WorkflowRunDetail): string | null {
   return resumption.resumesItself
     ? sentence
     : `${sentence} This review does not resume on its own, so the next round is yours to start.`;
+}
+
+/** Whose move an open run is on. `auto` means the run advances without a person. */
+export type RunPostureTone = "auto" | "yours";
+
+export interface RunPosture {
+  tone: RunPostureTone;
+  /** The banner's eyebrow: "No action needed" or "Your move". */
+  headline: string;
+  /** One sentence of what is happening, or of what is being waited on from the operator. */
+  sentence: string;
+}
+
+const autoPosture = (sentence: string): RunPosture => ({
+  tone: "auto",
+  headline: "No action needed",
+  sentence,
+});
+
+const yoursPosture = (sentence: string): RunPosture => ({
+  tone: "yours",
+  headline: "Your move",
+  sentence,
+});
+
+/**
+ * Whose move this run is on, stated once, or `null` for a terminal run.
+ *
+ * The gap this closes is the header arguing with itself. A parked repair round showed a
+ * waiting chip, a muted parked sentence, and a filled primary reading "Start repair round 2" -
+ * the brightest control on the page, during exactly the state where clicking it interrupts
+ * the session's repair and spends a round. The posture is the one derivation both the banner
+ * and the action row read, so the sentence and the button's weight cannot disagree.
+ *
+ * `auto` never means "nothing can be clicked". Every control stays reachable as an override;
+ * the posture only decides how loudly the page offers it.
+ *
+ * The classification leans on the shared operator/machine vocabulary rather than restating
+ * it: `sessionActionWaitsOnOperator` for action waits, `workflowRunResumesItself` plus the
+ * resumption observer's own withheld ledger for parked rounds. `waiting_for_new_head` reads
+ * as `auto` for `workflowRunWaitsOnOperator`'s documented reason - it waits on a PUSHED head,
+ * which is the bound session's job, and nothing a person can click here moves it.
+ *
+ * For a parked round the sentence IS `runParkedSentence`'s, verbatim, so one fact keeps one
+ * wording - the banner is where that sentence now lives, not a second statement of it.
+ */
+export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
+  const { status } = detail.run;
+  if (!workflowRunIsOpen(status)) return null;
+  switch (status) {
+    case "capturing":
+      return autoPosture("Evidence is being captured from the session. Nothing is needed from you.");
+    case "running":
+      return autoPosture("Reviewers and commands are running. Nothing is needed from you.");
+    case "waiting_for_evidence_readiness":
+      // The preflight drives its own refinement turns with the session; a spent refinement
+      // cap blocks the run, which is the `yours` arm below.
+      return autoPosture("Evidence preflight is checking this round's captures and refines them"
+        + " with the session where they fall short. Nothing is needed from you.");
+    case "waiting_for_action": {
+      const reason = detail.summary.actionWait ?? null;
+      if (reason && sessionActionWaitsOnOperator(reason)) {
+        return yoursPosture(actionWaitSentence(reason));
+      }
+      return autoPosture(reason
+        ? actionWaitSentence(reason)
+        : "A session action is running. Nothing is needed from you.");
+    }
+    case "waiting_for_inspector":
+      return autoPosture("GitHub Inspector reviews the pushed head on its own sweep."
+        + " Nothing is needed from you.");
+    case "waiting_for_new_head":
+      return autoPosture("Waiting for the bound session to push a repaired head."
+        + " The gate re-evaluates on its own when one arrives.");
+    case "waiting_for_pr":
+      return yoursPosture("This review needs a pull request before it can complete.");
+    case "waiting_for_session": {
+      const parked = runParkedSentence(detail);
+      const reason = detail.resumption?.reason ?? null;
+      // The binding's delivery mode, not the summary's: the summary field is optional wire
+      // compatibility, while the binding always carries the mode - and a Preview binding is
+      // exactly the kind that must never read as self-resuming.
+      const resumesItself = detail.resumption?.resumesItself
+        ?? workflowRunResumesItself({
+          resumptionPolicy: detail.summary.resumptionPolicy,
+          deliveryMode: detail.binding.deliveryMode,
+        });
+      /*
+       * A standing refusal means the session already settled and the work did not move, so
+       * an absent ledger entry must not read as "the loop is closing itself" - but a session
+       * that has gone BACK to work after a refusal (the observer's `session_busy` outlives
+       * the refusal phase) is once again a loop in motion, and saying "your move" over it
+       * would recreate the exact confusion this derivation removes.
+       */
+      const refusalStanding = runRefusedSentence(detail) !== null;
+      const auto = resumesItself && (
+        reason === "session_busy"
+        || reason === "packet_undelivered"
+        || (reason === null && !refusalStanding)
+      );
+      if (auto) {
+        return autoPosture(parked
+          ?? "The next round opens on its own once the session settles. Nothing is needed from you.");
+      }
+      return yoursPosture(parked
+        ?? "This review is standing still. The path forward is yours to pick.");
+    }
+    case "blocked":
+      return yoursPosture("This review is stopped and will not restart on its own."
+        + " The path forward is yours to pick.");
+    default:
+      // A status this build does not recognise cannot promise the operator is not needed.
+      return yoursPosture("This review is waiting on something this page cannot classify."
+        + " The run record carries what happened.");
+  }
 }
 
 /**

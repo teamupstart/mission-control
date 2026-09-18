@@ -246,6 +246,8 @@ export interface McpSpec {
   envFlag: "-e" | "--env";
   /** The name we register under - also the name an uninstall removes. */
   serverName: string;
+  /** Read-back contract used to retarget an existing registration during an app move. */
+  migration: { kind: "jsonc"; homeFile: string; key: string } | { kind: "cli-json"; homeFile: string; homeVariable: string };
 }
 
 /**
@@ -594,7 +596,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
     },
     clearContext: { command: "/clear" },
-    mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control" },
+    mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control", migration: { kind: "jsonc", homeFile: ".claude.json", key: "mcpServers" } },
     missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
       levels: THINKING_LEVELS,
@@ -725,13 +727,15 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // file from Claude's, which is what `cli` and `envFlag` carry. `scope: null` is the
     // real difference - Codex writes one registration and has no `-s user|project` to
     // choose between.
-    mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
+    mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control", migration: { kind: "cli-json", homeFile: ".codex/config.toml", homeVariable: "CODEX_HOME" } },
     missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
       levels: CODEX_EFFORT_LEVELS,
       levelsFor: (modelId) => {
         const id = modelId?.toLowerCase() ?? "";
-        return id.startsWith("gpt-5.6-sol") || id.startsWith("gpt-5.6-terra")
+        return id.startsWith("gpt-6-astra") ||
+          id.startsWith("gpt-5.6-sol") ||
+          id.startsWith("gpt-5.6-terra")
           ? THINKING_LEVELS
           : CODEX_EFFORT_LEVELS;
       },

@@ -10,19 +10,23 @@
 // 2. `down` and `reset` have to be different commands. Stopping the stack and destroying an
 //    operator's stored metrics are not the same intention, and Compose spells the difference
 //    as one easily-mistyped flag.
-// 3. The integration test and the operator need the SAME stack, from the same project name and
-//    the same volumes. A test that quietly uses a different topology proves nothing about the
-//    thing anyone will actually run.
+// 3. Real, demo and acceptance projects use the same pinned topology with distinct ports and
+//    volumes. Integration outages must never stop an operator backend.
 //
 // Usage:
-//   node scripts/observability.mjs up|down|reset|ready|status|verify|endpoint
+//   node scripts/observability.mjs up|down|restart|reset|ready|status|verify|endpoint
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const COMPOSE_FILE = join(ROOT, "observability", "local", "compose.yaml");
-const PROJECT = "mission-observability";
+export const MODE = process.env.MC_OBSERVABILITY_MODE ?? "real";
+if (!["real", "demo", "test"].includes(MODE)) throw new Error("MC_OBSERVABILITY_MODE must be real, demo or test");
+const PROJECT = MODE === "real" ? "mission-observability" : `mission-observability-${MODE}`;
+const offset = MODE === "real" ? 0 : MODE === "demo" ? 10000 : 20000;
+const ports = { OTLP: 14318, HEALTH: 14133, PROMETHEUS: 19090, TEMPO: 13200, GRAFANA: 13000 };
+const host = (key) => `http://127.0.0.1:${ports[key] + offset}`;
 
 /**
  * The host-side addresses.
@@ -33,16 +37,17 @@ const PROJECT = "mission-observability";
  */
 export const ENDPOINTS = {
   /** What Mission Control's telemetry endpoint should be set to. */
-  otlp: "http://127.0.0.1:14318",
-  collectorHealth: "http://127.0.0.1:14133/",
-  prometheus: "http://127.0.0.1:19090",
-  tempo: "http://127.0.0.1:13200",
-  grafana: "http://127.0.0.1:13000",
-  /** The provisioned diagnostic dashboard. */
-  dashboard: "http://127.0.0.1:13000/d/mission-telemetry-diagnostics",
+  otlp: host("OTLP"),
+  collectorHealth: `${host("HEALTH")}/`,
+  prometheus: host("PROMETHEUS"),
+  tempo: host("TEMPO"),
+  grafana: host("GRAFANA"),
+  /** The adoption entry point; all six dashboards share navigation. */
+  dashboard: `${host("GRAFANA")}/d/mission-adoption`,
 };
 
 const READINESS = [
+  ...["adoption", "workflows", "personas", "models", "interventions", "reliability"].map((name) => [`dashboard ${name}`, `${ENDPOINTS.grafana}/api/dashboards/uid/mission-${name}`]),
   ["collector", `${ENDPOINTS.collectorHealth}`],
   ["prometheus", `${ENDPOINTS.prometheus}/-/ready`],
   ["tempo", `${ENDPOINTS.tempo}/ready`],
@@ -55,6 +60,7 @@ function compose(args, opts = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      ...Object.fromEntries(Object.entries(ports).map(([key, port]) => [`MC_OBS_${key}_PORT`, String(port + offset)])),
       // Docker Desktop's CLI hints and the interactive Compose menu both make network calls
       // before running the command. On a machine where those calls hang, `docker compose up`
       // hangs with no output at all and looks like a broken Compose file. Turning them off
@@ -116,6 +122,7 @@ function finish(result, successMessage) {
 async function probe(url) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
+    await response.body?.cancel();
     return response.ok;
   } catch {
     return false;
@@ -199,6 +206,7 @@ function verify() {
       "check",
       "rules",
       "/cfg/rules.yml",
+      "/cfg/cohorts.yml",
     ],
     { stdio: "inherit" },
   );
@@ -218,13 +226,17 @@ function verify() {
       `${join(ROOT, "observability", "prometheus")}:/cfg:ro`,
       "prom/prometheus:v3.14.0",
       "-c",
-      "mkdir -p /etc/prometheus && cp /cfg/rules.yml /etc/prometheus/rules.yml && /bin/promtool check config /cfg/prometheus.yml",
+      "mkdir -p /etc/prometheus && cp /cfg/rules.yml /cfg/cohorts.yml /etc/prometheus/ && /bin/promtool check config /cfg/prometheus.yml",
     ],
     { stdio: "inherit" },
   );
   requireDocker(promConfig);
   if (promConfig.status !== 0) process.exit(promConfig.status ?? 1);
-  process.stdout.write("[observability] prometheus configuration and rules are valid\n");
+  const ruleTests = spawnSync("docker", ["run", "--rm", "--entrypoint", "/bin/promtool", "-v",
+    `${join(ROOT, "observability", "prometheus")}:/cfg:ro`, "-w", "/cfg", "prom/prometheus:v3.14.0", "test", "rules", "rules.test.yml"], { stdio: "inherit" });
+  requireDocker(ruleTests);
+  if (ruleTests.status !== 0) process.exit(ruleTests.status ?? 1);
+  process.stdout.write("[observability] prometheus configuration, rules and fixtures are valid\n");
 }
 
 async function main() {
@@ -232,6 +244,15 @@ async function main() {
   switch (command) {
     case "up":
       await up();
+      return;
+    case "restart":
+      { const result = compose(["restart"]);
+        requireDocker(result);
+        if (result.status !== 0) process.exit(result.status ?? 1);
+        const ready = await waitUntilReady();
+        if (!ready.ok) throw new Error(`restart not ready: ${ready.waiting.join(", ")}`);
+        process.stdout.write("[observability] restarted; data preserved and all dashboards ready\n");
+      }
       return;
     case "down": {
       // Volumes survive. Stopping the stack and destroying stored metrics are different

@@ -1,5 +1,13 @@
 # Foreman (auto-responder)
 
+For an in-app introduction, click the **About Foreman** info icon beside **Enable Foreman**
+in the top-bar dropdown, or the info button in **Settings → Foreman** or the session's
+Foreman pane. The guide explains what Foreman does, the context it receives, its modes,
+and which decisions remain yours. Its
+**Edit Foreman prompt in Library** link opens **Library → Personas → Foreman** directly.
+That System profile edits standing guidance for future evaluations; permissions and
+safety checks stay under their existing controls.
+
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
 Claude Code, Codex, or managed Pi session it has both [been invited
@@ -182,9 +190,25 @@ evidence registration are what "complete" means on the first delivered turn, whi
 pull-request creation, review follow-through and CI are explicitly deferred to whoever owns
 completion next. So a Goal that also says "open a pull request" is satisfied when the
 implementation is, because that clause was deferred - and nothing else about the bar changes.
-The contract comes from the task's durable `Kind`, never from transcript prose, so personal
-sessions and every other kind are judged exactly as before. See
+The Ship/Bugfix contract comes from the task's durable `Kind`, never from transcript prose.
+Personal sessions retain their ordinary completion boundary. See
 [work queues](work-queues.md) for the whole prompted path.
+
+**A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
+phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
+review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
+part of planning when needed to make scheduled task paths durable. An unbound plan retains the
+skill's direct PR path. Foreman reads live publication ownership independently of Persona
+evidence eligibility and discards the verdict if binding identity, version, or trigger mode
+changes during verification or before the completion check. The completion claim carries that
+verified ownership as a comparison guard. The daemon checks it again inside the transaction
+that creates the run and consumes completion, so replacing a binding cannot spend the old
+verdict on a new workflow. An unbound answer does not reserve direct publication: Foreman
+refreshes ownership again immediately before recording and sending the direct handoff, and
+passes that expectation through to the SQL consumption statement. The statement refuses a
+direct handoff if a non-archived binding now exists, and checks binding identity, version, and
+trigger mode before recording a bound plan's Manual ask. Unknown or changed ownership holds
+without consuming the work generation. Manual workflow bindings retain manual submission.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow
 evidence from the current resolved intent episode and whether its current active binding accepts
@@ -610,6 +634,39 @@ the effective Foreman Provider or Backlog model also clears the old provider's s
 forces an immediate probe, even when the stored plan still covers the backlog. A failed
 probe returns to the same serial safety fallback; recovery is reported only after a fresh
 plan is successfully stored.
+
+### Errors in Foreman itself
+
+When Foreman reports a failure, its top-bar control turns amber and shows an issue count.
+Open it to read the error received, the activity and provider/model involved, occurrence
+count, first/last occurrence, and the names of sessions where it was seen. **Copy error**
+copies the displayed diagnostic; **Open model settings** takes you to Foreman's model
+choices. Error text is plain text, bounded to 600 characters, with common credential forms
+redacted. An unknown error stays an unknown error: a rate-limit response is not relabeled
+as exhausted account usage.
+
+The count represents grouped errors, not individual attempts. Repeated errors for the same
+activity, provider, model, and diagnostic update one group; changing request identifiers and
+timestamps do not create new groups. The popover keeps the 12 most recent groups and at most
+20 session names per group, and says when either limit is reached. Further groups are closed
+until opened. Errors do not create repeated toasts, sounds, or session questions.
+
+This covers Foreman's review, verification, cheap-tier, dependency-planning, and recovery
+model calls, including invalid model responses, plus failures caught in its main worker
+activities. A successful call for the same activity and provider/model clears that activity's
+reported failures. Selecting another provider/model retires the replaced choice's diagnostics;
+it does not test the new choice. A backlog with zero or one task is planned locally without
+calling a provider, so its success does not clear an earlier dependency-planning model error.
+Failures are observed regardless of task count. Existing retry, escalation, and planner fallback rules still
+decide what work runs next. Session names describe where a failure was observed, not a promise
+that every such session remains blocked.
+
+**Worker running** means the process holds its lease, not that its model calls succeed.
+Errors remain visible when Foreman is disabled or its worker stops, labeled as the last report
+when reporting is stale. Reports are process-local, not a durable incident history: a replacement
+worker starts a new record, and a surviving worker republishes on its next heartbeat after a
+daemon restart. The worker sends this bounded projection over HTTP; the daemon projects it in
+the existing Foreman status response, and the worker never opens the database.
 
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
 Foreman control: those are the things you reach for while watching the fleet, and the

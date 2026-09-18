@@ -64,8 +64,8 @@ services:
       # were acknowledged.
       - collector-queue:/var/lib/otelcol
     ports:
-      - "127.0.0.1:14318:4318" # OTLP/HTTP, the endpoint Mission Control is pointed at
-      - "127.0.0.1:14133:13133" # health check
+      - "127.0.0.1:${MC_OBS_OTLP_PORT:-14318}:4318" # OTLP/HTTP, the endpoint Mission Control is pointed at
+      - "127.0.0.1:${MC_OBS_HEALTH_PORT:-14133}:13133" # health check
     depends_on:
       queue-permissions:
         condition: service_completed_successfully
@@ -91,9 +91,10 @@ services:
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ../prometheus/cohorts.yml:/etc/prometheus/cohorts.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "127.0.0.1:19090:9090"
+      - "127.0.0.1:${MC_OBS_PROMETHEUS_PORT:-19090}:9090"
     restart: unless-stopped
 
   tempo:
@@ -103,7 +104,7 @@ services:
       - ../tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "127.0.0.1:13200:3200" # query API, which Grafana's data source uses
+      - "127.0.0.1:${MC_OBS_TEMPO_PORT:-13200}:3200" # query API, which Grafana's data source uses
     restart: unless-stopped
 
   grafana:
@@ -127,12 +128,14 @@ services:
       # source by hand, and a dashboard edited in the UI would drift from the file in Git.
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
       GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "127.0.0.1:13000:3000"
+      - "127.0.0.1:${MC_OBS_GRAFANA_PORT:-13000}:3000"
     depends_on:
       - prometheus
       - tempo

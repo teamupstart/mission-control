@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -164,7 +165,8 @@ let db: DatabaseSync | undefined;
  *    default-off: an upgraded database gains empty tables and captures nothing until an
  *    operator enables collection.
  */
-export const CURRENT_DATABASE_SCHEMA_VERSION = 2;
+// 3: bounded telemetry source checkpoints for immutable workflow context and timing.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 3;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1794,6 +1796,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       state            TEXT NOT NULL,     -- open | closed
       head_sha         TEXT,              -- head as of the last completed review
       review_posture   TEXT,              -- consent posture that produced head_sha
+      review_complete  INTEGER,           -- all verdict findings retained; null for legacy reviews
+      clean_review_head_sha TEXT,         -- confirmed final clean review on GitHub
       round            INTEGER NOT NULL DEFAULT 0,
       last_reviewed_at INTEGER,
       last_error       TEXT,
@@ -1840,6 +1844,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       replies             INTEGER NOT NULL DEFAULT 0,
       answered_comment_id INTEGER,           -- newest foreign comment we've answered
       created_at          INTEGER NOT NULL,
+      resolution_pending INTEGER NOT NULL DEFAULT 0,
       updated_at          INTEGER NOT NULL
     );
     -- No index on (pr_key) alone: it is the leftmost prefix of the unique index below,
@@ -2814,14 +2819,15 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- computed on read for the reason the retention ledger stores its own deadline: a restart
     -- resumes the boundary that was actually granted.
     --
-    -- No state column on purpose. Overdue is now past deadline_at and closed is "no row", so
-    -- there is no stored state that can disagree with the clock or with the sweep.
+    -- retired_at records forced registry retirement, NOT confirmed runtime shutdown. Keep
+    -- retrying until the runtime is observed gone, including after a daemon restart.
     CREATE TABLE IF NOT EXISTS task_session_closures (
       task_id      TEXT NOT NULL PRIMARY KEY,
       session_id   TEXT NOT NULL,
       requested_at INTEGER NOT NULL,
       deadline_at  INTEGER NOT NULL,
       attempts     INTEGER NOT NULL DEFAULT 0,
+      retired_at   INTEGER,
       -- Bounded internal diagnosis of the last attempt that did not stop the session, or NULL
       -- while every attempt so far has been serviced. Same rule as the retention ledger's
       -- column: what crosses to a browser is a sentence, never provider output or a path.
@@ -2915,6 +2921,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_file_comment_messages_thread
       ON file_comment_messages(thread_id, created_at);
 
+    -- Last reported account quota survives restarts, separately from billable usage.
+    CREATE TABLE IF NOT EXISTS claude_rate_limit_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reading_json TEXT NOT NULL
+    );
+
     -- The walkthrough's run state: one row per session, and a TABLE rather than a derived
     -- value. "Paused" and "never started" are the same set of rows - everything queued,
     -- nothing outstanding - so the walkthrough cannot tell them apart by looking at
@@ -2986,6 +2998,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
 
   // HTML preview comments originally persisted only a line-wide quote. When compact HTML
@@ -3698,6 +3711,9 @@ function migrate(d: DatabaseSync): void {
   // fail-closed for rows written by older builds: their reviewed head must be run again
   // before it can authorize a merge.
   addColumn(d, "inspector_prs", "review_posture", "TEXT");
+  addColumn(d, "inspector_prs", "review_complete", "INTEGER");
+  addColumn(d, "inspector_comments", "resolution_pending", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_prs", "clean_review_head_sha", "TEXT");
   // What the last poll SAW, as against what the last review was about.
   //
   // All four nullable with no default, and NULL reads as "this build has not looked at this
@@ -7251,6 +7267,7 @@ export interface TaskSessionClosureRow {
   requestedAt: number;
   deadlineAt: number;
   attempts: number;
+  retiredAt: number | null;
   lastError: string | null;
   updatedAt: number;
 }
@@ -7261,6 +7278,7 @@ interface TaskSessionClosureDbRow {
   requested_at: number;
   deadline_at: number;
   attempts: number;
+  retired_at: number | null;
   last_error: string | null;
   updated_at: number;
 }
@@ -7272,6 +7290,7 @@ function rowToTaskSessionClosure(r: TaskSessionClosureDbRow): TaskSessionClosure
     requestedAt: r.requested_at,
     deadlineAt: r.deadline_at,
     attempts: r.attempts,
+    retiredAt: r.retired_at,
     lastError: r.last_error,
     updatedAt: r.updated_at,
   };
@@ -7305,6 +7324,8 @@ export function openTaskSessionClosure(
                            THEN task_session_closures.deadline_at ELSE excluded.deadline_at END,
        attempts     = CASE WHEN task_session_closures.session_id = excluded.session_id
                            THEN task_session_closures.attempts ELSE 0 END,
+       retired_at   = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.retired_at ELSE NULL END,
        last_error   = CASE WHEN task_session_closures.session_id = excluded.session_id
                            THEN task_session_closures.last_error ELSE NULL END,
        updated_at   = excluded.updated_at`,
@@ -7403,6 +7424,12 @@ export function clearTaskSessionClosure(taskId: string): void {
   openDb().prepare(`DELETE FROM task_session_closures WHERE task_id = ?`).run(taskId);
 }
 
+/** Persist retirement before eviction, so discovery cannot readopt a surviving process. */
+export function retireTaskSessionClosure(taskId: string, sessionId: string, at: number): void {
+  openDb().prepare(`UPDATE task_session_closures SET retired_at = COALESCE(retired_at, ?)
+    WHERE task_id = ? AND session_id = ?`).run(at, taskId, sessionId);
+}
+
 /**
  * The bounded, browser-safe view of a task's automatic cleanup, or null.
  *
@@ -7464,8 +7491,8 @@ export function taskAutomaticCleanupSummaries(
 /**
  * Fold owed session closures into the automatic-cleanup projection.
  *
- * Only a closure that has already been REFUSED once, or that is past its four-minute
- * guarantee, says anything. The ordinary case - a stop that was serviced and a session the
+ * A closure that has been REFUSED, forcibly retired, or passed its four-minute guarantee
+ * needs a visible warning. The ordinary case - a stop that was serviced and a session the
  * daemon is about to watch disappear - is a second or two long and is not a maintenance note;
  * announcing it would put "automatic cleanup is retrying" onto the card of every recurring
  * mission run that finished perfectly.
@@ -7483,24 +7510,26 @@ function applySessionClosureSummaries(
   const one = wanted.size === 1 ? [...wanted][0]! : null;
   const rows = (one === null
     ? d.prepare(
-      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
-        WHERE last_error IS NOT NULL OR deadline_at <= ?`,
+      `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
+        WHERE last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?`,
     ).all(now)
     : d.prepare(
-      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
-        WHERE task_id = ? AND (last_error IS NOT NULL OR deadline_at <= ?)`,
+      `SELECT task_id, deadline_at, attempts, last_error, retired_at FROM task_session_closures
+        WHERE task_id = ? AND (last_error IS NOT NULL OR retired_at IS NOT NULL OR deadline_at <= ?)`,
     ).all(one, now)) as unknown as Array<{
       task_id: string;
       deadline_at: number;
       attempts: number;
       last_error: string | null;
+      retired_at: number | null;
     }>;
   for (const row of rows) {
     if (!wanted.has(row.task_id)) continue;
     const overdue = row.deadline_at <= now;
     const reason = row.last_error ?? "the agent has not gone away yet";
-    const detail =
-      `${overdue ? "this run's agent session is still open past its close deadline" : "closing this run's agent session"} - ${reason}`;
+    const detail = row.retired_at !== null
+      ? `this run's session was retired; agent cleanup is still unconfirmed - ${reason}`
+      : `${overdue ? "this run's agent session is still open past its close deadline" : "closing this run's agent session"} - ${reason}`;
     out.set(row.task_id, {
       state: "retrying",
       // The closure sweep runs on a fixed cadence rather than a scheduled instant, so there is
@@ -12050,6 +12079,8 @@ export interface ConsumePromptedGenerationInput {
   noteKey: string;
   sessionCwd: string | null;
   generation: number;
+  /** Compared inside the consumption statement, never an authority to select a workflow. */
+  expectedPlanPublication?: PlanPublicationContext;
   /** Daemon-verified intent episode. Absent only for legacy in-process callers. */
   episodeKey?: string | null;
   ask: boolean;
@@ -12100,6 +12131,7 @@ export function consumePromptedGeneration(
   const ask = input.ask ? 1 : 0;
   const handoffKind = input.directHandoff?.kind ?? null;
   const handoffEpisode = input.directHandoff?.episodeKey ?? null;
+  const publication = input.expectedPlanPublication;
   const currentRow = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
     .get(input.noteKey) as unknown as QueueRow | undefined;
   const previousDecision = currentRow ? toPromptedDecision(currentRow) : null;
@@ -12151,6 +12183,21 @@ export function consumePromptedGeneration(
         AND completed_at IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM foreman_queue_items WHERE note_key = ?
+        )
+        -- The read before this request is not a lock. Compare plan ownership in the
+        -- same statement as both INSERT and UPDATE consumption. A bound owner may
+        -- record a Manual ask, but can never authorize a direct-shipping latch.
+        AND (
+          ? IS NULL
+          OR (? = 'skill' AND NOT EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state <> 'archived'
+          ))
+          OR (? = 'workflow' AND ? IS NULL AND EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state = 'active'
+               AND id = ? AND workflow_version_id = ? AND trigger_mode = ?
+          ))
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
@@ -12206,6 +12253,15 @@ export function consumePromptedGeneration(
     input.noteKey,
     input.generation,
     input.noteKey,
+    publication?.owner ?? null,
+    publication?.owner ?? null,
+    input.noteKey,
+    publication?.owner ?? null,
+    handoffKind,
+    input.noteKey,
+    publication?.owner === "workflow" ? publication.bindingId : null,
+    publication?.owner === "workflow" ? publication.workflowVersionId : null,
+    publication?.owner === "workflow" ? publication.triggerMode : null,
     ask,
     ask,
   );
@@ -12836,6 +12892,8 @@ interface InspectorPrRow {
   state: string;
   head_sha: string | null;
   review_posture: string | null;
+  review_complete: number | null;
+  clean_review_head_sha: string | null;
   round: number;
   last_reviewed_at: number | null;
   last_error: string | null;
@@ -12868,6 +12926,8 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
     reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,
+    reviewComplete: r.review_complete === null ? null : r.review_complete === 1,
+    cleanReviewHeadSha: r.clean_review_head_sha,
     round: r.round,
     lastReviewedAt: r.last_reviewed_at,
     lastError: r.last_error,
@@ -12900,11 +12960,11 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
     .prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
+          head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -12920,6 +12980,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.state,
       pr.headSha,
       pr.reviewPosture,
+      pr.reviewComplete == null ? null : Number(pr.reviewComplete),
+      pr.cleanReviewHeadSha ?? null,
       pr.round,
       pr.lastReviewedAt,
       pr.lastError,
@@ -12957,6 +13019,8 @@ export function updateInspectorPr(
     state?: InspectorPrState;
     headSha?: string | null;
     reviewPosture?: InspectorPr["reviewPosture"];
+    reviewComplete?: boolean | null;
+    cleanReviewHeadSha?: string | null;
     round?: number;
     lastReviewedAt?: number | null;
     lastError?: string | null;
@@ -12982,6 +13046,7 @@ export function updateInspectorPr(
     .prepare(
       `UPDATE inspector_prs
           SET state = ?, head_sha = ?, review_posture = ?, round = ?,
+              review_complete = ?, clean_review_head_sha = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
@@ -12995,6 +13060,8 @@ export function updateInspectorPr(
       next.headSha,
       next.reviewPosture,
       next.round,
+      next.reviewComplete == null ? null : Number(next.reviewComplete),
+      next.cleanReviewHeadSha ?? null,
       next.lastReviewedAt,
       next.lastError,
       next.failCount,
@@ -13104,6 +13171,7 @@ interface InspectorCommentRow {
   status: string;
   replies: number;
   answered_comment_id: number | null;
+  resolution_pending: number;
   created_at: number;
   updated_at: number;
 }
@@ -13122,6 +13190,7 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     status: r.status as InspectorCommentStatus,
     replies: r.replies,
     answeredCommentId: r.answered_comment_id,
+    ...(r.resolution_pending === 1 ? { resolutionPending: true } : {}),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -13141,8 +13210,8 @@ export function upsertInspectorComment(c: InspectorComment): void {
     .prepare(
       `INSERT INTO inspector_comments
          (id, pr_key, fingerprint, path, line, title, body, severity,
-          round, status, replies, answered_comment_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          round, status, replies, answered_comment_id, resolution_pending, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
@@ -13153,6 +13222,7 @@ export function upsertInspectorComment(c: InspectorComment): void {
          status = excluded.status,
          replies = excluded.replies,
          answered_comment_id = excluded.answered_comment_id,
+         resolution_pending = excluded.resolution_pending,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -13168,6 +13238,7 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.status,
       c.replies,
       c.answeredCommentId,
+      Number(c.resolutionPending ?? false),
       c.createdAt,
       c.updatedAt,
     );

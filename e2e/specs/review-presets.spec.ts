@@ -16,18 +16,19 @@ for (const [name, judges] of [
     await dashboard.getByRole("button", { name: new RegExp(name) }).click();
     const pipeline = dashboard.locator(".wf-pipeline-strip");
     await expect(pipeline.locator(".wf-pipeline-reviewer-name")).toHaveText(name === "Plan Validation"
-      ? [...judges]
+      ? [...judges, "Session actionPull Request"]
       : ["Commandtypecheck", "Commandtest", "Commandlint", ...judges, "Session actionPull Request"]);
     await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
+    const pullRequest = pipeline.locator(".wf-pipeline-stage-name").filter({ hasText: /^Pull Request$/ });
+    await expect(pullRequest).toBeVisible();
     if (name === "Plan Validation") {
-      await expect(pipeline.locator(".wf-pipeline-stage-name").filter({ hasText: /^Pull Request$/ })).toHaveCount(0);
-      await expect(pipeline.locator("section.wf-pipeline-stage")).toHaveCount(2);
-    } else {
-      await expect(pipeline.locator(".wf-pipeline-stage-name").filter({ hasText: /^Pull Request$/ })).toBeVisible();
+      await expect(pipeline.locator("section.wf-pipeline-stage")).toHaveCount(3);
+      await pullRequest.scrollIntoViewIfNeeded();
+      await expect(pullRequest).toBeInViewport();
     }
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(EVIDENCE, { recursive: true });
-      const reviewStage = pipeline.locator("section.wf-pipeline-stage").nth(name === "Plan Validation" ? 1 : 2);
+      const reviewStage = pipeline.locator("section.wf-pipeline-stage").nth(2);
       await reviewStage.scrollIntoViewIfNeeded();
       await dashboard.screenshot({ path: `${EVIDENCE}${name.toLowerCase().replaceAll(" ", "-")}.png`, fullPage: true });
     }

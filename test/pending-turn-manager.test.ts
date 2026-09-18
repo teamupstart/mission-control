@@ -1673,3 +1673,81 @@ test("a session running no scout journals nothing at all", async () => {
   f.manager.stop();
   clearPendingTurns(f.key);
 });
+
+for (const { state, startOffset } of [
+  { state: "working", startOffset: 300 },
+  { state: "idle", startOffset: 300 },
+  { state: "during-injection", startOffset: 300 },
+  // Idle prevents the working-state fallback from masking an exclusive passive comparison.
+  { state: "idle", startOffset: 0 },
+] as const) {
+  const timing = startOffset === 0 ? "exactly at the write boundary" : "after the write within the same second";
+  test(`Codex passive ${state} confirms a turn that started ${timing}`, async (t) => {
+    const { parseRolloutActivity } = await import("../src/server/harness/codex/rollout.ts");
+    const registry = new Registry();
+    const name = `codex-fast-${state}-${startOffset}`;
+    const key = `agent:${name}`;
+    const terminal = {
+      ...discovered(name), agent: "codex" as const, agentSessionId: key,
+      transcriptPath: `/tmp/${name}.jsonl`,
+    };
+    // Deliberately fractional: Codex's payload timestamps round this turn's start
+    // BELOW the delivery boundary. The record timestamp retains its true ordering.
+    const second = Math.floor(Date.now() / 1000) * 1000;
+    const boundary = second + 200;
+    let now = boundary;
+    const observe = (lines: string[]) => {
+      registry.applyPassiveActivity(registry.getSession(terminal.syntheticId)!, parseRolloutActivity(lines));
+      registry.applyDiscovery([terminal]);
+    };
+    const marker = (type: string, at: number, turn: string) => JSON.stringify({
+      type: "event_msg", timestamp: new Date(at).toISOString(),
+      payload: { type, turn_id: turn, started_at: second / 1000,
+        ...(type === "task_complete" ? { completed_at: Math.floor(at / 1000) } : {}) },
+    });
+    registry.applyDiscovery([terminal]);
+    observe([marker("task_complete", second - 1000, "old")]);
+    const started = marker("task_started", boundary + startOffset, "new");
+    const completed = marker("task_complete", second + 800, "new");
+    const injected: string[] = [];
+    const manager = new PendingTurnManager(registry, { sendWhenIdle: async () => "started" }, {
+      now: () => now, idleSettleMs: 0, pickupTimeoutMs: 100,
+      inject: async (_session, text, _deps, beforeWrite) => {
+        assert.equal(beforeWrite?.(), null);
+        injected.push(text);
+        if (state === "during-injection" && injected.length === 1) {
+          now = second + 900;
+          observe([started, completed]);
+        }
+        return { ok: true, pasted: true, submitVerified: false };
+      },
+    });
+    t.after(() => manager.stop());
+    manager.start();
+    manager.submit(terminal.syntheticId, "first fast turn");
+    manager.submit(terminal.syntheticId, "second queued turn");
+    await until(() => injected.length >= 1, "first injection");
+    if (state === "during-injection") {
+      await until(() => injected.length === 2, "FIFO after completion during injection");
+      assert.deepEqual(injected, ["first fast turn", "second queued turn"]);
+      return;
+    }
+    assert.equal(listPendingTurns(key)[0]?.state, "sending");
+
+    // Even one millisecond before the write is too old, despite a newer completion.
+    observe([marker("task_started", boundary - 1, "old"), marker("task_complete", second + 300, "old")]);
+    assert.equal(listPendingTurns(key)[0]?.state, "sending", "a pre-boundary start is not pickup");
+
+    now = second + 900;
+    observe(state === "idle" ? [started, completed] : [started]);
+    assert.deepEqual(listPendingTurns(key).map(row => row.text), ["second queued turn"],
+      "pickup survives a whole fast turn between reads as well as same-second working evidence");
+    if (state === "working") {
+      await tick();
+      assert.deepEqual(injected, ["first fast turn"], "FIFO stays closed while the turn runs");
+      observe([started, completed]);
+    }
+    await until(() => injected.length === 2, "FIFO delivery after fast completion");
+    assert.deepEqual(injected, ["first fast turn", "second queued turn"]);
+  });
+}

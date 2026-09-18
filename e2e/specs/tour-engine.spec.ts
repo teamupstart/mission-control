@@ -14,16 +14,16 @@ import { expectSpotlight } from "../fixtures/tour-spotlight.ts";
  * from one registry, one active run whichever doorway asks, and a restoration that replays the
  * complete route rather than a per-tour list of fields.
  *
- * The automatic first-launch tour is Set up this machine, so the two fresh-profile cases below
- * read its first stop; `setup-banner-and-tour.spec.ts` walks the whole of it.
+ * The startup picker recommends Set up this machine, so the fresh-profile case below
+ * explicitly starts it; `setup-banner-and-tour.spec.ts` walks the whole of it.
  */
 const TOUR_COMMAND = /Start See the work tour, command/;
-const EVIDENCE = artifactsDir("guided-tour-default");
+const EVIDENCE = artifactsDir("startup-tour-picker");
 
 test.describe.configure({ timeout: 90_000 });
 // This file owns the fresh-profile case. The shared browser fixture otherwise turns the
-// one-time default off so unrelated specs can state their own visible preconditions.
-test.use({ guidedTour: true });
+// startup picker off so unrelated specs can state their own visible preconditions.
+test.use({ startupPicker: true });
 
 async function api<T>(daemon: DaemonHandle, path: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`);
@@ -35,40 +35,41 @@ function step(page: Page, title: string) {
   return page.getByRole("dialog", { name: title }).or(page.getByRole("status", { name: title }));
 }
 
-/** A frame of the automatic first-launch orientation, after its assertions have passed. */
+/** A frame of Setup explicitly started from the startup picker, after its assertions have passed. */
 async function shoot(target: Page): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}fresh-profile-tour.png`, animations: "disabled" });
   // eslint-disable-next-line no-console
-  console.log("CAPTURED e2e/.artifacts/guided-tour-default/fresh-profile-tour.png");
+  console.log("CAPTURED e2e/.artifacts/startup-tour-picker/fresh-profile-tour.png");
 }
 
 const FIRST_RUN_STOP = "Settings live behind the gear";
 
-test("a fresh profile enables and starts the guided tour by default", async ({ page, daemon }) => {
-  const initial = await api<{ configured: boolean; config: { guidedTour: boolean } }>(
+test("a fresh profile offers Setup and explicitly starting it preserves the Trust landing", async ({ page, daemon }) => {
+  const initial = await api<{ configured: boolean; config: { showToursOnStartup: boolean } }>(
     daemon,
     "/api/ui/config",
   );
   expect(initial.configured).toBe(false);
-  expect(initial.config.guidedTour).toBe(true);
+  expect(initial.config.showToursOnStartup).toBe(true);
 
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${daemon.baseURL}/#/fleet`);
+  const picker = page.getByRole("dialog", { name: "Explore Mission Control" });
+  await expect(picker).toBeVisible();
+  await picker.getByRole("button", { name: "Start this tour" }).click();
   const first = step(page, FIRST_RUN_STOP);
   await expect(first).toBeVisible();
   await expect(first).toContainText("Step 1 of 7");
   // The stop that teaches where Settings is spotlights the gear, and the gear only reads
-  // "Settings" from somewhere else - so the automatic tour opens on the fleet.
+  // "Settings" from somewhere else - so Setup opens on the fleet.
   await expectSpotlight(page.locator(".gear-btn"));
   await shoot(page);
 
-  // The default is one-time: starting the orientation records it before a later dashboard
-  // visit can reopen the overlay over the operator's work.
-  await expect.poll(async () => (
-    await api<{ config: { guidedTour: boolean } }>(daemon, "/api/ui/config")
-  ).config.guidedTour).toBe(false);
+  // An explicit start does not consume or rewrite the recurring startup preference.
+  expect((await api<{ config: { showToursOnStartup: boolean } }>(daemon, "/api/ui/config"))
+    .config.showToursOnStartup).toBe(true);
   await first.getByRole("button", { name: "Exit tour" }).click();
   await expect(first).toBeHidden({ timeout: 30_000 });
   // Exiting this tour LEAVES the operator on the page it hands over - Trust, its last stop -
@@ -99,29 +100,6 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   }, 200);
   expect(reclaimed, "the landing pass took focus back after it had already landed").toBeNull();
   await expectToursCleaned(daemon);
-});
-
-test("a rejected tour-consumption write stays consumed after reload", async ({ page, daemon }) => {
-  let rejectedWrites = 0;
-  await page.route("**/api/ui/config", async (route) => {
-    if (route.request().method() === "PUT") {
-      rejectedWrites += 1;
-      await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
-      return;
-    }
-    await route.continue();
-  });
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`${daemon.baseURL}/#/fleet`);
-  const first = step(page, FIRST_RUN_STOP);
-  await expect(first).toBeVisible();
-  await expect.poll(() => rejectedWrites).toBeGreaterThan(0);
-  await first.getByRole("button", { name: "Exit tour" }).click();
-  await expect(first).toBeHidden({ timeout: 30_000 });
-  await expectToursCleaned(daemon);
-
-  await page.reload();
-  await expect(step(page, FIRST_RUN_STOP)).toBeHidden();
 });
 
 /**
@@ -163,12 +141,14 @@ test("both entry points are drawn from the tour registry, and start the same one
   await dashboard.goto(`${daemon.baseURL}/#/settings/keyboard`);
 
   // The Settings footer draws one row per registered tour - a list, not hardcoded buttons
-  // that happen to look alike. Three tours are registered, and each has exactly one row.
+  // that happen to look alike. Four tours are registered, and each has exactly one row.
   const helpAndTours = dashboard.getByRole("group", { name: "Help & tours" });
-  await expect(helpAndTours.getByRole("button")).toHaveCount(3);
+  await expect(helpAndTours.getByRole("button")).toHaveCount(5);
   await expect(helpAndTours.getByRole("button", { name: "Start See the work tour" }))
     .toHaveCount(1);
   await expect(helpAndTours.getByRole("button", { name: "Start Author what runs tour" }))
+    .toHaveCount(1);
+  await expect(helpAndTours.getByRole("button", { name: "Start Follow the review tour" }))
     .toHaveCount(1);
   await expect(helpAndTours.getByRole("button", { name: "Start Set up this machine tour" }))
     .toHaveCount(1);

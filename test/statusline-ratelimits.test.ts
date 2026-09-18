@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,7 @@ const { Registry } = await import("../src/server/registry.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 openDb();
+beforeEach(() => openDb().exec("DELETE FROM claude_rate_limit_cache"));
 
 // Relative to now, and deliberately so: `resetsAt` is epoch SECONDS and a window whose
 // reset has passed is dropped where it is read, so a hard-coded date would quietly turn
@@ -184,4 +185,6 @@ test("a Claude SDK driver populates the same account-global runway as statusLine
   const limits = registry.snapshot().fleetCost?.rateLimits;
   assert.equal(limits?.fiveHour?.usedPercentage, 61);
   assert.equal(limits?.sevenDay?.usedPercentage, 72);
+  assert.deepEqual(new Registry().snapshot().fleetCost?.rateLimits, limits,
+    "the SDK's windows use the same durable cache as terminal reports");
 });

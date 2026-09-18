@@ -306,7 +306,7 @@ if (process.env.MC_E2E_CMUX_MODE === "unknown") {
  * agent binary is reachable from this process.
  */
 const FAKE_HERDR = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { join } = require("node:path");
 const { execFileSync, spawn } = require("node:child_process");
@@ -369,13 +369,14 @@ const ensureAgent = (pane) => {
   const agentBin = join(fakeDir, "claude");
   const script = join(fakeDir, "agent.mjs");
   if (!existsSync(agentBin)) symlinkSync(process.execPath, agentBin);
-  writeFileSync(script, "setInterval(() => {}, 1000);\\n");
-  const command = JSON.stringify(agentBin) + " " + JSON.stringify(script);
+  const pidPath = join(fakeDir, pane.pane_id + ".pid");
+  writeFileSync(script, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);\\n");
+  const command = [agentBin, script, pidPath].map((arg) => JSON.stringify(arg)).join(" ");
   // Discovery deliberately ignores headless agents. The script utility gives this fake the same real
   // controlling tty an agent has inside a Herdr pane, while remaining portable across the
   // two supported hosts. Cleanup kills its detached process group.
   const args = process.platform === "darwin"
-    ? ["-q", "/dev/null", agentBin, script]
+    ? ["-q", "/dev/null", agentBin, script, pidPath]
     : ["-q", "-c", command, "/dev/null"];
   const child = spawn("/usr/bin/script", args, {
     cwd: pane.cwd,
@@ -438,7 +439,15 @@ const server = createServer((socket) => {
         });
       } else if (request.method === "pane.process_info") {
         const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
-        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: foregroundProcesses(pane) } });
+        const foreground = foregroundProcesses(pane);
+        // After launch, model an exec-replaced shell using the real fake agent PID.
+        // Only the OS boundary changes; production correlation must retain its handle.
+        const execPane = join(home, "herdr-exec-pane");
+        const pidPath = join(home, "fake-herdr-agent", p.pane_id + ".pid");
+        const rootPid = existsSync(execPane) && readFileSync(execPane, "utf8") === p.pane_id
+          ? (existsSync(pidPath) ? Number(readFileSync(pidPath, "utf8")) : null)
+          : pane?.shell_pid || null;
+        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: rootPid, tty: null, foreground_processes: foreground } });
       } else if (request.method === "workspace.create") {
         serial += 1;
         const workspaceId = "fake-workspace-" + serial;
@@ -640,6 +649,8 @@ if (argv[0] === "--version") {
   // A product report, distinguished from every other \`issue create\` by the fixed triage
   // label only the product reporter attaches. Task sources and the PR path keep their
   // existing behavior below.
+  const target = argv[argv.indexOf("--repo") + 1];
+  const issueUrl = "https://github.com/" + target + "/issues/4242";
   if (product.issueCreate === "refused") {
     process.stderr.write("could not create issue: label not found\\n");
     process.exit(1);
@@ -647,14 +658,14 @@ if (argv[0] === "--version") {
     // The shape the daemon must treat as "may have happened": exit 0, no URL.
     process.stdout.write("\\n");
   } else if (product.issueCreate === "partial") {
-    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stdout.write(issueUrl + "\\n");
     process.stderr.write("failed to upload second.png: request failed\\n");
     process.exit(1);
   } else if (product.issueCreate === "partial-no-url") {
     process.stderr.write("attachment publication failed before gh returned the issue URL\\n");
     process.exit(1);
   } else {
-    process.stdout.write("${FAKE_GH_PRODUCT_ISSUE_URL}\\n");
+    process.stdout.write(issueUrl + "\\n");
   }
 } else if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue in the requested repository,

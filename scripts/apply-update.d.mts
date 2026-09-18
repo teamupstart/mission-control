@@ -15,6 +15,9 @@ export interface ApplyUpdateArgs {
    * reader before the swap can refuse a bundle that changed in between.
    */
   stagedRevision?: string | null;
+  sourceApp?: string;
+  targetApp?: string;
+  migrationPlan?: string;
 }
 
 /**

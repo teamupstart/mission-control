@@ -1,5 +1,63 @@
 # Changelog
 
+## [1.22.0](https://github.com/teamupstart/mission-control/compare/v1.21.1...v1.22.0) (2026-09-18)
+
+
+### Features
+
+* **observability:** deliver six local Grafana dashboards ([#1084](https://github.com/teamupstart/mission-control/issues/1084)) ([754fb51](https://github.com/teamupstart/mission-control/commit/754fb5178660bb6b4c79379504fb0091619ac4ce))
+
+
+### Bug Fixes
+
+* **tmux:** preserve unrelated sessions when killing an agent ([#1085](https://github.com/teamupstart/mission-control/issues/1085)) ([bb0dcf9](https://github.com/teamupstart/mission-control/commit/bb0dcf913e941b47f85a78e4b28fbb5a24c7863d))
+
+## [1.21.1](https://github.com/teamupstart/mission-control/compare/v1.21.0...v1.21.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **inspector:** align completion gates with published review state ([#1081](https://github.com/teamupstart/mission-control/issues/1081)) ([7f2c2cb](https://github.com/teamupstart/mission-control/commit/7f2c2cb242a31a43d5d8fc5fb2c81599992a624d))
+* **missions:** keep concluded sessions closed through cleanup and restart ([#1079](https://github.com/teamupstart/mission-control/issues/1079)) ([7a182a1](https://github.com/teamupstart/mission-control/commit/7a182a16f06e29fb98265b6d88f16ad9be56b189))
+* **pi:** repair an extension link left by a moved installation ([#1080](https://github.com/teamupstart/mission-control/issues/1080)) ([1cc9d41](https://github.com/teamupstart/mission-control/commit/1cc9d41aea9df139feb2508e737b003285020f27))
+* **scouts:** prevent implicit report commits ([#1083](https://github.com/teamupstart/mission-control/issues/1083)) ([26878fc](https://github.com/teamupstart/mission-control/commit/26878fce3012d8875d4898da9cc1451ae79a9004))
+
+## [1.21.0](https://github.com/teamupstart/mission-control/compare/v1.20.0...v1.21.0) (2026-09-17)
+
+
+### Features
+
+* **telemetry:** complete primary action and safe error coverage ([#1076](https://github.com/teamupstart/mission-control/issues/1076)) ([cf5520e](https://github.com/teamupstart/mission-control/commit/cf5520e2d3f9a5aaeb937c91fdd999e31245cd65))
+* **telemetry:** export bounded analytical cohort summaries ([#1075](https://github.com/teamupstart/mission-control/issues/1075)) ([25961c1](https://github.com/teamupstart/mission-control/commit/25961c13aa15f811f891c1ee8eb02aee62644069))
+* **telemetry:** track workflow execution and review outcomes ([#1071](https://github.com/teamupstart/mission-control/issues/1071)) ([dd30d5c](https://github.com/teamupstart/mission-control/commit/dd30d5c045071738a331102fd40116e70c1edfe1))
+* **tours:** add startup picker with saved opt-out ([#1072](https://github.com/teamupstart/mission-control/issues/1072)) ([f81c291](https://github.com/teamupstart/mission-control/commit/f81c2918c4c362d0ee31b3060d36f96dadbfb5d7))
+
+
+### Bug Fixes
+
+* **feedback:** route product issues to the base repository ([#1074](https://github.com/teamupstart/mission-control/issues/1074)) ([e955687](https://github.com/teamupstart/mission-control/commit/e95568784ac008bc606b0c36737dd1b202bd9e45))
+
+## [1.20.0](https://github.com/teamupstart/mission-control/compare/v1.19.0...v1.20.0) (2026-09-15)
+
+
+### Features
+
+* **updates:** enable automatic personal-install migration ([#1069](https://github.com/teamupstart/mission-control/issues/1069)) ([03421fb](https://github.com/teamupstart/mission-control/commit/03421fb706a88803cf9fe91e613e06271349cc9b))
+
+## [1.19.0](https://github.com/teamupstart/mission-control/compare/v1.18.0...v1.19.0) (2026-09-15)
+
+
+### Features
+
+* **telemetry:** attribute session activity and verified outcomes ([#1063](https://github.com/teamupstart/mission-control/issues/1063)) ([7706e2b](https://github.com/teamupstart/mission-control/commit/7706e2b90dc87a53080eb7155f1b4bba54394ff1))
+* **updates:** add gated user-install migration and recovery ([#1065](https://github.com/teamupstart/mission-control/issues/1065)) ([9a528c3](https://github.com/teamupstart/mission-control/commit/9a528c3687ed9c0e2cdbeb08f74b94c99f56ba28))
+
+
+### Bug Fixes
+
+* **cost:** preserve Claude utilization across restarts ([#1064](https://github.com/teamupstart/mission-control/issues/1064)) ([fc1d60a](https://github.com/teamupstart/mission-control/commit/fc1d60a234f055177445b4fcba50183394c43490))
+* **plans:** hand PR publication to bound workflows ([#1066](https://github.com/teamupstart/mission-control/issues/1066)) ([2c5f685](https://github.com/teamupstart/mission-control/commit/2c5f685948e62633bd669a9fc5f2e5fb68dc6782))
+
 ## [1.18.0](https://github.com/teamupstart/mission-control/compare/v1.17.0...v1.18.0) (2026-09-15)
 
 

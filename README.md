@@ -55,6 +55,17 @@ fleet.
 - [Ensembles](#ensembles)
 - [The whole loop](#the-whole-loop)
 
+## Guided tours
+
+Each new dashboard window or reload offers a tour picker with a list and preview. Browse
+**See the work**, **Author what runs**, or the recommended **Set up this machine**, then
+explicitly select **Start this tour**. No tour starts just from opening or browsing the picker.
+
+Uncheck **Show tours when Mission Control opens** to save an opt-out for this state home.
+**Browse tours** in **Settings > Help & tours** or the command palette always reopens it.
+Tours start at their first stop and do not save progress or resume. See the
+[guided tours reference](docs/ui.md#guided-tours) for details.
+
 ## The board
 
 The board turns a directory full of agent sessions into an operational view. One column per state
@@ -85,7 +96,8 @@ requires stable Herdr 0.8.2 or newer on protocol 20 or newer, and currently runs
 Linux. It uses the default local Herdr server only, and `HERDR_BIN` can point at a non-standard
 installation.
 Mission Control can create, discover, write, safely paste into, capture, focus, rename, close,
-detach from, and reattach to Herdr workspaces. See [Harnesses and terminal
+detach from, and reattach to Herdr workspaces. Discovery also recognizes an agent that replaces
+its pane's shell with `exec`, keeping Focus and input available. See [Harnesses and terminal
 backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
 
 Read more in [Sessions and conversations](docs/sessions.md) and
@@ -165,8 +177,12 @@ short decision brief. Draft-only, one-click, and Live modes make the level of de
 with repository trust and hard safety boundaries beneath all three.
 
 Foreman can also keep accepted work moving: verify completion, deliver focused repair gaps, follow
-pull request feedback and red CI, and schedule backlog work. It remains off until you enable it and
+pull request feedback and red CI, and schedule backlog work. It starts in draft-only mode and
 never treats destructive choices as routine.
+
+Use the **About Foreman** info button in its dropdown, settings panel, or session pane for a
+plain-language guide to its role, context, and responsibilities. The guide links directly to
+**Library → Personas → Foreman**, where you can edit its standing prompt.
 
 ![Mission Control Foreman settings](docs/images/foreman.png)
 
@@ -213,6 +229,10 @@ and the repository has separate review and merge grants. The final merge is pinn
 head that passed those gates.
 
 ![Mission Control GitHub Inspector settings](docs/images/inspector.png)
+
+Inspector completion gates require the matching reviewed PR commit and all findings resolved.
+In Live mode they also wait for the final clean review on GitHub. The session chip distinguishes
+that publication from workflow completion.
 
 Read more in [GitHub Inspector and shipping](docs/inspector-and-shipping.md).
 
@@ -291,6 +311,8 @@ repository:
   To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  Fresh installs use `~/Applications`. Eligible legacy system installations move there when
+  accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
@@ -338,6 +360,10 @@ This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.
 the integration enabled. Start a fresh Pi session normally; it loads the extension without
 being launched through Mission Control or passing `-e`. Building alone installs nothing.
 Keep the built checkout available because the installed link points to its extension artifact.
+If that installation later moves or is removed, an app bundle dragged to another folder or a
+checkout deleted, the link it left behind is dangling and Pi silently loads nothing. The next
+daemon start, or a run of the installer above, repoints it at the current build. A link
+written by anything other than Mission Control is still never replaced or removed.
 The standalone installer also works when the running app predates the configuration API.
 
 Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP
@@ -382,7 +408,8 @@ and build contracts.
 
 Sessions can [report product feedback](docs/sessions.md) with the
 `report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue automatically and returns its GitHub URL, without a second dashboard approval.
+issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
+dashboard approval. The dashboard feedback form uses the same destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
@@ -395,6 +422,8 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 - [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
+- [Analytical telemetry](docs/telemetry-analytics.md) - restart-safe cohort summaries, coverage
+  gaps and the OTLP query contract.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries

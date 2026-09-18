@@ -160,7 +160,7 @@ test("a loopback caller cannot authorize itself, while one Report click publishe
 test.describe("the default public issue target", () => {
   test.use({ daemonEnv: { MISSION_PRODUCT_ISSUES_REPO: "" } });
 
-  test("names mancej-cyc/mission-control-issues in the feedback dialog", async ({ dashboard }) => {
+  test("previews and publishes feedback to teamupstart/mission-control by default", async ({ dashboard, daemon }) => {
     await openFromTopbar(dashboard);
     await form(dashboard)
       .getByRole("textbox", { name: "Title", exact: true })
@@ -169,8 +169,10 @@ test.describe("the default public issue target", () => {
       .getByRole("textbox", { name: "Details", exact: true })
       .fill("The public repository shown here should be the product issue tracker.");
 
-    const target = form(dashboard).getByText("mancej-cyc/mission-control-issues").first();
+    const target = form(dashboard).getByText("teamupstart/mission-control").first();
     await expect(target).toBeVisible();
+    await expect(submit(dashboard)).toBeEnabled();
+    await expectContentClearsBorder(form(dashboard));
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "product-issue-default-target");
       mkdirSync(evidenceDir, { recursive: true });
@@ -179,6 +181,14 @@ test.describe("the default public issue target", () => {
         path: join(evidenceDir, "correct-default-target-preview.png"),
       });
     }
+    await publish(dashboard);
+    await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toHaveAttribute(
+      "href", "https://github.com/teamupstart/mission-control/issues/4242",
+    );
+    const creates = productCreates(daemon);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]!.argv[creates[0]!.argv.indexOf("--repo") + 1])
+      .toBe("teamupstart/mission-control");
   });
 });
 

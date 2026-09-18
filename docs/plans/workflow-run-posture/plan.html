@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow run posture: make "no action needed" unmistakable</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f6f7f9;
+    --page-fg: #1c2330;
+    --page-muted: #5b6675;
+    --page-panel: #ffffff;
+    --page-border: #d9dee6;
+    --code-bg: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1015;
+      --page-fg: #e7ebf1;
+      --page-muted: #939eae;
+      --page-panel: #14181e;
+      --page-border: #232a33;
+      --code-bg: #171c23;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+    max-width: 960px;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 44px 0 8px; }
+  h3 { font-size: 15px; margin: 26px 0 6px; }
+  p { margin: 8px 0; }
+  .lede { color: var(--page-muted); margin-bottom: 24px; }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.86em;
+    background: var(--code-bg);
+    border: 1px solid var(--page-border);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  .note {
+    border: 1px solid var(--page-border);
+    border-left: 3px solid #4a9eff;
+    background: var(--page-panel);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 16px 0;
+  }
+  .tradeoffs { color: var(--page-muted); font-size: 14px; }
+  .tradeoffs b { color: var(--page-fg); }
+
+  /* ---- mockup frames: always dark, because they depict the actual dashboard ---- */
+  .mock {
+    --bg: #0a0c0f; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+    background: var(--bg);
+    border: 1px solid var(--page-border);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 10px 0 4px;
+    color: var(--fg);
+    font-size: 13px;
+    overflow-x: auto;
+  }
+  .mock-caption {
+    font-size: 12.5px;
+    color: var(--page-muted);
+    margin: 2px 0 22px;
+  }
+  .mock .eyebrow {
+    font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--working); font-weight: 700; margin: 0 0 4px;
+  }
+  .mock h4 { font-size: 17px; margin: 0 0 8px; font-weight: 650; }
+  .mock .facts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+  .mock .chip {
+    border: 1px solid color-mix(in srgb, var(--working) 35%, var(--border));
+    background: color-mix(in srgb, var(--working) 9%, var(--panel));
+    border-radius: 999px; font-size: 11px; line-height: 1; padding: 5px 8px; white-space: nowrap;
+  }
+  .mock .chip.waiting { color: var(--attention); border-color: color-mix(in srgb, var(--attention) 35%, var(--border)); background: color-mix(in srgb, var(--attention) 9%, var(--panel)); }
+  .mock .chip.running { color: var(--working); }
+  .mock .chip.link { color: var(--working); }
+  .mock .repo { color: var(--muted); font-size: 11px; }
+  .mock .small { color: var(--dim); font-size: 11.5px; margin: 10px 0 0; }
+  .mock .parked { color: var(--muted); font-size: 12.5px; max-width: 62ch; margin: 8px 0 0; }
+  .mock .actions { display: flex; gap: 8px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
+  .mock .btn {
+    font-size: 12.5px; font-weight: 550; border-radius: 7px; padding: 7px 13px;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--fg); cursor: default;
+  }
+  .mock .btn-primary {
+    color: #fff;
+    background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+    border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+  }
+  .mock .btn-ghost { background: transparent; color: var(--muted); }
+  .mock .btn-danger { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+
+  .pulse {
+    width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none;
+    background: var(--working);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 55%, transparent);
+    animation: pulse 2s infinite;
+  }
+  .pulse.amber { background: var(--attention); box-shadow: 0 0 0 0 color-mix(in srgb, var(--attention) 55%, transparent); animation: none; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--working) 45%, transparent); }
+    70% { box-shadow: 0 0 0 7px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  /* Option A banner */
+  .banner {
+    display: flex; align-items: center; gap: 12px;
+    border: 1px solid color-mix(in srgb, var(--working) 30%, var(--border));
+    background: color-mix(in srgb, var(--working) 7%, var(--panel));
+    border-radius: 9px; padding: 11px 14px; margin: 0 0 16px;
+  }
+  .banner .b-eyebrow {
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700;
+    color: var(--working); margin: 0 0 2px;
+  }
+  .banner .b-text { font-size: 12.5px; color: var(--fg); margin: 0; max-width: 70ch; }
+  .banner.amber {
+    border-color: color-mix(in srgb, var(--attention) 40%, var(--border));
+    background: color-mix(in srgb, var(--attention) 8%, var(--panel));
+  }
+  .banner.amber .b-eyebrow { color: var(--attention); }
+
+  /* Option B ownership strip */
+  .ball { display: flex; gap: 6px; margin: 2px 0 8px; align-items: stretch; }
+  .ball .seg {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border-soft); border-radius: 8px;
+    padding: 8px 14px; color: var(--dim); font-size: 12px; font-weight: 600;
+    background: var(--panel);
+  }
+  .ball .seg .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex: none; }
+  .ball .seg.on {
+    color: var(--fg);
+    border-color: color-mix(in srgb, var(--working) 45%, var(--border));
+    background: color-mix(in srgb, var(--working) 10%, var(--panel));
+  }
+  .ball .seg.on .dot { background: var(--working); animation: pulse 2s infinite; }
+  .ball .seg.on.amber {
+    border-color: color-mix(in srgb, var(--attention) 50%, var(--border));
+    background: color-mix(in srgb, var(--attention) 10%, var(--panel));
+  }
+  .ball .seg.on.amber .dot { background: var(--attention); animation: none; }
+  .ball .arrow { align-self: center; color: var(--dim); font-size: 11px; }
+  .ball-line { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; max-width: 70ch; }
+  .disclosure {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--dim); font-size: 12px; border: 1px dashed var(--border);
+    border-radius: 7px; padding: 6px 11px; background: transparent;
+  }
+  .disclosure.open { border-style: solid; color: var(--muted); }
+  .disc-body {
+    border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel);
+    padding: 10px 12px; margin-top: 8px; max-width: 560px;
+  }
+  .disc-body p { color: var(--dim); font-size: 11.5px; margin: 0 0 8px; }
+
+  /* Option C status card */
+  .status-card {
+    display: flex; align-items: center; gap: 11px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); padding: 9px 14px;
+  }
+  .status-card .sc-title { font-size: 12.5px; font-weight: 600; margin: 0; }
+  .status-card .sc-sub { font-size: 11.5px; color: var(--dim); margin: 0; }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%; flex: none;
+    border: 2px solid color-mix(in srgb, var(--working) 30%, transparent);
+    border-top-color: var(--working);
+    animation: spin 1.1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .menu-pop {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+    padding: 6px; margin-top: 8px; max-width: 330px; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  .menu-pop .mi { padding: 7px 10px; border-radius: 6px; font-size: 12.5px; }
+  .menu-pop .mi small { display: block; color: var(--dim); font-size: 11px; }
+  .menu-pop .mi.danger { color: var(--danger); }
+  .tag {
+    display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; border-radius: 4px; padding: 2px 6px; margin-left: 8px;
+    color: var(--attention); border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse, .ball .seg.on .dot { animation: none; }
+    .spinner { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Workflow run posture: make "no action needed" unmistakable</h1>
+<p class="lede">Three mockups for the run page header. All three derive one shared
+<code>runPosture(detail)</code> from data the daemon already streams; they differ in how
+loudly the page states whose move it is, and where the force-override lives.</p>
+<div class="note">
+  <p><b>Adopted 2026-09-18: Option A</b> - the posture banner with the override demoted in
+  place - and implemented in the same session. The selection was submitted by the operator
+  through the Mission Control dashboard's plan-decision form
+  (<code>request_plan_decisions</code>), which chose "A - Posture banner, override demoted
+  in place" and "Implement now in this session"; the verbatim decision record is registered
+  as workflow evidence. Options B and C remain below as the record of what was
+  considered.</p>
+</div>
+
+<h2>Today: the pill and the button argue</h2>
+<div class="mock">
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <p class="parked">The session is still working. The next round opens once it settles.</p>
+  <div class="actions">
+    <button class="btn btn-primary">Start repair round 2</button>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-danger">Cancel run</button>
+  </div>
+  <p class="small">Started 9/18/2026, 9:53:34 AM &middot; updated 8m ago</p>
+</div>
+<p class="mock-caption">The parked sentence says "wait", the filled primary says "click me".
+The sentence is 12.5px and grey; the button is the brightest thing on the page.</p>
+
+<h2>Option A - Posture banner, override demoted in place</h2>
+<p>A full-width banner above the identity block states the posture. The action row keeps
+its shape, but the resubmit control's prominence follows the posture: when the run still
+carries a derived move (a parked round's start, a gate's recheck) it renders ghost with an
+override tag while the run moves itself and filled primary when the move is yours. An
+actively running state - evidence capturing, reviewers and commands executing, a session
+action in flight - has no derived move and shows no resubmission control at any weight;
+Cancel run remains offered.</p>
+
+<h3>State 1: feedback loop, session working - no action needed</h3>
+<div class="mock">
+  <div class="banner">
+    <span class="pulse"></span>
+    <div>
+      <p class="b-eyebrow">No action needed</p>
+      <p class="b-text">The session is working on round 1 feedback. Round 2 starts on its
+      own when it settles.</p>
+    </div>
+  </div>
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <div class="actions">
+    <button class="btn btn-ghost">Start repair round 2<span class="tag">override</span></button>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-danger">Cancel run</button>
+  </div>
+  <p class="small">Tooltip on the override: "Not required - this review resumes on its own.
+  Starting a round now interrupts the session's repair and spends one."</p>
+</div>
+
+<h3>State 2: session idle, run parked - your move</h3>
+<div class="mock">
+  <div class="banner amber">
+    <span class="pulse amber"></span>
+    <div>
+      <p class="b-eyebrow">Your move</p>
+      <p class="b-text">The session is idle and this review does not resume on its own.
+      Pick a path below.</p>
+    </div>
+  </div>
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary">Start repair round 2</button>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-danger">Cancel run</button>
+  </div>
+</div>
+<p class="tradeoffs"><b>Trade-offs.</b> Smallest change to the layout operators already
+know; banner and button can never disagree because both read one posture. The override
+stays one click away - visible enough that a hurried reader might still press it.</p>
+
+<h2>Option B - "Who has the ball" strip, overrides behind a disclosure</h2>
+<p>A three-segment ownership strip (Session / Reviewers / You) under the title. The owner
+is lit and pulsing; the others dim. While the ball is not with You, the mutating controls
+collapse into a quiet "Override" disclosure.</p>
+
+<h3>State 1: feedback loop, session working - ball with Session</h3>
+<div class="mock">
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="ball">
+    <div class="seg on"><span class="dot"></span>Session</div>
+    <span class="arrow">&rarr;</span>
+    <div class="seg"><span class="dot"></span>Reviewers</div>
+    <span class="arrow">&rarr;</span>
+    <div class="seg"><span class="dot"></span>You</div>
+  </div>
+  <p class="ball-line">Working on round 1 feedback. Round 2 starts on its own when it
+  settles - nothing is needed from you.</p>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <div class="actions">
+    <button class="disclosure open">Override &#9662;</button>
+    <button class="btn btn-ghost">Copy feedback</button>
+  </div>
+  <div class="disc-body">
+    <p>These interrupt a session that is mid-repair. None of them is required.</p>
+    <div class="actions" style="margin-top:0">
+      <button class="btn btn-ghost">Start round 2 now</button>
+      <button class="btn btn-danger">Cancel run</button>
+    </div>
+  </div>
+  <p class="small">The disclosure is drawn collapsed; it is shown open here so the mockup
+  carries its contents.</p>
+</div>
+
+<h3>State 2: session idle, run parked - ball with You</h3>
+<div class="mock">
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="ball">
+    <div class="seg"><span class="dot"></span>Session</div>
+    <span class="arrow">&rarr;</span>
+    <div class="seg"><span class="dot"></span>Reviewers</div>
+    <span class="arrow">&rarr;</span>
+    <div class="seg on amber"><span class="dot"></span>You</div>
+  </div>
+  <p class="ball-line">The session is idle and this review does not resume on its own.
+  Pick a path forward.</p>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary">Start repair round 2</button>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-danger">Cancel run</button>
+  </div>
+</div>
+<p class="tradeoffs"><b>Trade-offs.</b> The strongest at-a-glance answer to "whose move is
+it", and the strip teaches the run's lifecycle as a picture. Costs the most new UI
+vocabulary, and overrides are two clicks away instead of one.</p>
+
+<h2>Option C - Live status card replaces the primary slot</h2>
+<p>The action row itself becomes posture-aware: a button exists only when clicking it is
+the right move. While the run moves itself, the primary slot holds a non-interactive
+status card and every mutating control lives in a "Force&hellip;" menu.</p>
+
+<h3>State 1: feedback loop, session working - status card, no primary</h3>
+<div class="mock">
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <div class="actions">
+    <div class="status-card">
+      <span class="spinner"></span>
+      <div>
+        <p class="sc-title">Session addressing round 1 feedback</p>
+        <p class="sc-sub">Round 2 starts automatically when it settles - no action needed</p>
+      </div>
+    </div>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-ghost">Force &hellip;</button>
+  </div>
+  <div class="menu-pop">
+    <div class="mi">Start round 2 now<small>Interrupts the session's repair and spends a
+    round</small></div>
+    <div class="mi danger">Cancel run<small>Stops the review - it will not resume</small></div>
+  </div>
+  <p class="small">The menu is drawn closed; it is shown open here so the mockup carries
+  its contents.</p>
+</div>
+
+<h3>State 2: session idle, run parked - the primary returns</h3>
+<div class="mock">
+  <p class="eyebrow">Live &middot; round 1 of 6</p>
+  <h4>No-Mistakes Review (High Rigor)</h4>
+  <div class="facts">
+    <span class="chip">v19</span>
+    <span class="chip waiting">Waiting for the session</span>
+    <span class="chip link">The Delete Task Source Button&hellip;</span>
+    <span class="repo">mission-control</span>
+  </div>
+  <p class="parked">The session is idle and this review does not resume on its own.</p>
+  <div class="actions">
+    <button class="btn btn-primary">Start repair round 2</button>
+    <button class="btn btn-ghost">Copy feedback</button>
+    <button class="btn btn-danger">Cancel run</button>
+  </div>
+</div>
+<p class="tradeoffs"><b>Trade-offs.</b> The cleanest mental model - a rendered button is
+always the right move - and misclicks become nearly impossible. The menu hides overrides
+most aggressively, and the row changes shape between states, which moves controls out from
+under a pointer when a session settles.</p>
+
+<h2>Shared underpinnings</h2>
+<div class="note">
+  <p><b>The posture model all three render.</b> <code>runPosture(detail)</code> in
+  <code>run-model.ts</code> returns <code>auto</code> (workflow executing, a session action
+  on a machine-side wait reason, or a parked round that resumes itself; a run with a derived
+  move demotes it to a labelled override, and a run that is actively moving shows no
+  resubmission control at all), <code>yours</code> (session idle, nothing running, an
+  operator decision is the only way forward - including a session action whose wait reason
+  only a person can end), or <code>none</code> (terminal). Sources: <code>run.status</code>,
+  <code>summary.actionWait</code> through the shared
+  <code>sessionActionWaitsOnOperator</code> predicate, the resumption observer's withheld
+  ledger (<code>session_busy</code>, <code>session_needs_you</code>,
+  <code>policy_manual</code>, <code>resumesItself</code>), and
+  <code>summary.resumptionPolicy</code> plus the binding's <code>deliveryMode</code> through
+  <code>workflowRunResumesItself</code>. No new server state.</p>
+  <p>Whichever option is selected: unit cases beside <code>runNextMove</code>'s in
+  <code>test/workflow-run-next-move.test.ts</code>, and a Playwright spec in
+  <code>e2e/</code> driving reviewers-running, parked-with-session-working, and
+  session-idle states, plus the override path.</p>
+</div>
+
+</body>
+</html>

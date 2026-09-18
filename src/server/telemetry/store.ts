@@ -11,6 +11,7 @@
  * committed, which is what lets a crash mid-send be a retry rather than a hole.
  */
 import type { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import {
   TELEMETRY_LIMITS,
   type TelemetryActor,
@@ -35,37 +36,71 @@ let transactionDepth = 0;
 
 export function telemetryTransaction<T>(fn: (d: DatabaseSync) => T): T {
   const d = openDb();
-  // Reentrant by depth, because `node:sqlite` has no nested transactions. A helper that opens
-  // its own while one is already in progress throws "cannot start a transaction within a
-  // transaction", and the stray ROLLBACK in the catch below then takes the OUTER unit of work
-  // down with it - so an unrelated bookkeeping write could fail an operator's config change.
-  //
-  // An inner call JOINS the transaction in progress rather than suppressing anything. Its
-  // failure still propagates and the outermost frame rolls the whole thing back, which is what
-  // a caller of the outer transaction already expects. Committing at the inner frame instead
-  // would publish half a unit of work.
-  if (transactionDepth > 0) {
-    transactionDepth += 1;
-    try {
-      return fn(d);
-    } finally {
-      transactionDepth -= 1;
-    }
-  }
-  d.exec("BEGIN IMMEDIATE");
-  transactionDepth = 1;
+  // A source may call from its own transaction. A savepoint isolates telemetry failure
+  // without committing or rolling back the business write that owns that transaction.
+  const nested = d.isTransaction;
+  const savepoint = `telemetry_${++transactionDepth}`;
+  d.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
   try {
     const result = fn(d);
-    d.exec("COMMIT");
+    d.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
     return result;
   } catch (error) {
     try {
-      d.exec("ROLLBACK");
+      if (nested) {
+        d.exec(`ROLLBACK TO ${savepoint}`);
+        d.exec(`RELEASE ${savepoint}`);
+      } else d.exec("ROLLBACK");
     } catch {}
+    // Rollback invalidates this savepoint's admission estimate. An enclosing source rollback
+    // can only overstate it, which admission reconciles before any capacity refusal.
+    resetUsedBytesCache();
     throw error;
   } finally {
-    transactionDepth = 0;
+    transactionDepth -= 1;
   }
+}
+
+/** Durable source identity for the task's current open/settled observation interval. */
+export function taskOutcomeSourceId(
+  taskId: string,
+  dispatchedAt: number | null,
+  terminal: boolean,
+  now: number,
+): string {
+  return telemetryTransaction((d) => {
+    const previous = d.prepare(
+      `SELECT interval_id, dispatched_at, terminal FROM telemetry_task_outcome_state WHERE task_id = ?`,
+    ).get(taskId) as { interval_id: string; dispatched_at: number | null; terminal: number } | undefined;
+    // Adopt an already captured pre-interval outcome without counting it again on upgrade.
+    const legacyId = !previous && terminal && findSourceIdentity(d, {
+      kind: "mission.task", id: `${taskId}:${dispatchedAt ?? 0}`, revision: 1,
+    }) !== null ? String(dispatchedAt ?? 0) : null;
+    const intervalId = legacyId ?? (!previous || previous.dispatched_at !== dispatchedAt || (previous.terminal === 1 && !terminal)
+      ? randomUUID()
+      : previous.interval_id);
+    d.prepare(
+      `INSERT INTO telemetry_task_outcome_state (task_id, interval_id, dispatched_at, terminal, observed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO UPDATE SET interval_id = excluded.interval_id,
+         dispatched_at = excluded.dispatched_at, terminal = excluded.terminal, observed_at = excluded.observed_at`,
+    ).run(taskId, intervalId, dispatchedAt, terminal ? 1 : 0, now);
+    if (!previous) noteBytesAdded(taskId.length + intervalId.length + 24);
+    return `${taskId}:${intervalId}`;
+  });
+}
+
+/** Retire inactive source intervals on the same horizon as durable deduplication. */
+export function pruneTaskOutcomeState(d: DatabaseSync, before: number, limit: number): number {
+  return Number(d.prepare(
+    `DELETE FROM telemetry_task_outcome_state WHERE task_id IN
+       (SELECT task_id FROM telemetry_task_outcome_state WHERE observed_at < ? ORDER BY observed_at LIMIT ?)`,
+  ).run(before, limit).changes);
+}
+
+/** Retained PR polling and capture retries cannot cross a collection-consent boundary. */
+export function retirePrObservationWindows(d: DatabaseSync): void {
+  d.exec("DELETE FROM telemetry_pr_observations");
 }
 
 // ---- resources and contexts ----
@@ -323,6 +358,14 @@ export function putProjectionState(
   next: StoredProjectionState,
   now: number,
 ): void {
+  const json = JSON.stringify(next.state);
+  const bytes = Buffer.byteLength(json);
+  const previous = d.prepare("SELECT LENGTH(CAST(state_json AS BLOB)) AS bytes FROM telemetry_projection_state WHERE projection = ? AND profile = ?")
+    .get(projection, profile) as { bytes: number } | undefined;
+  if (bytes > TELEMETRY_LIMITS.maxProjectionStateBytes
+    || usedBytesForAdmission(d, bytes) + bytes - (previous?.bytes ?? 0) > TELEMETRY_LIMITS.maxTotalBytes) {
+    throw new Error("telemetry projection state exceeds its budget");
+  }
   d.prepare(
     `INSERT INTO telemetry_projection_state
        (projection, profile, state_version, consumed_seq, state_json, updated_at)
@@ -332,7 +375,8 @@ export function putProjectionState(
        consumed_seq  = excluded.consumed_seq,
        state_json    = excluded.state_json,
        updated_at    = excluded.updated_at`,
-  ).run(projection, profile, next.stateVersion, next.consumedSeq, JSON.stringify(next.state), now);
+  ).run(projection, profile, next.stateVersion, next.consumedSeq, json, now);
+  noteBytesAdded(bytes - (previous?.bytes ?? 0));
 }
 
 /** The lowest checkpoint across every registered projection, which bounds payload pruning. */
@@ -578,8 +622,8 @@ export function insertBatch(d: DatabaseSync, batch: StoredBatch, now: number): v
        (batch_id, profile, signal, state, attempts, next_attempt_at, updated_at)
      VALUES (?,?,?,'pending',0,?,?)`,
   ).run(batch.id, batch.profile, batch.signal, now, now);
-  // The one writer outside capture that adds a meaningful number of bytes. Reported so the
-  // admission estimate tracks a projection pass without another full scan.
+  // Report bytes written outside capture so the admission estimate tracks a projection
+  // pass without another full scan.
   noteBytesAdded(batch.bytes);
 }
 
@@ -955,6 +999,18 @@ export function listGaps(
 
 // ---- capacity ----
 
+const PR_OBSERVATION_BYTES_SQL = `LENGTH(task_id) + LENGTH(pr_key) + LENGTH(pr_url)
+  + LENGTH(repo_key) + LENGTH(repo_role) + LENGTH(task_kind) + LENGTH(context_json)
+  + LENGTH(COALESCE(session_id,'')) + 24`;
+
+/** Charge a newly retained PR row to the same estimate used by capture admission. */
+export function notePrObservationBytesAdded(d: DatabaseSync, taskId: string, prKey: string): void {
+  const row = d.prepare(
+    `SELECT ${PR_OBSERVATION_BYTES_SQL} AS bytes FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`,
+  ).get(taskId, prKey) as { bytes: number } | undefined;
+  if (row) noteBytesAdded(row.bytes);
+}
+
 /**
  * The logical bytes charged against the total budget.
  *
@@ -968,7 +1024,10 @@ export function usedBytes(d: DatabaseSync): number {
       `SELECT
          (SELECT COALESCE(SUM(bytes),0) FROM telemetry_journal WHERE payload_pruned_at IS NULL)
          + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_batches)
-         + (SELECT COALESCE(SUM(LENGTH(state_json)),0) FROM telemetry_projection_state)
+         + (SELECT COALESCE(SUM(LENGTH(CAST(state_json AS BLOB))),0) FROM telemetry_projection_state)
+         + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_source_state)
+         + (SELECT COALESCE(SUM(LENGTH(task_id) + LENGTH(interval_id) + 24),0) FROM telemetry_task_outcome_state)
+         + (SELECT COALESCE(SUM(${PR_OBSERVATION_BYTES_SQL}),0) FROM telemetry_pr_observations)
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
@@ -991,7 +1050,7 @@ export function usedBytes(d: DatabaseSync): number {
 /**
  * The admission-control read of the same number, which is the one on the hot path.
  *
- * `usedBytes` is seven unindexed aggregates, and no index can help: summing `LENGTH(...)` over
+ * `usedBytes` combines unindexed aggregates, and no index can help: summing `LENGTH(...)` over
  * every live row is the question being asked. Running it inside the capture transaction meant
  * every accepted fact scanned tables the budget lets grow to hundreds of thousands of rows -
  * while holding the single writer lock that serializes every OTHER write in `harness.db`.
@@ -1005,7 +1064,7 @@ export function usedBytes(d: DatabaseSync): number {
  *     remembered one. Approaching the cap costs a scan again, which is when it is worth paying.
  *   - Deletions are not subtracted, so retention and payload release leave it over-stating.
  *     Over-stating only ever buys an earlier recompute.
- *   - Writers that add bytes outside capture - a projection writing a batch - report what they
+ *   - Writers that add bytes outside capture, including retained source rows, report what they
  *     added, and `MAX_CACHE_AGE_MS` bounds whatever is left (series, context and resource rows,
  *     each tens of bytes) to one interval's worth of drift.
  */

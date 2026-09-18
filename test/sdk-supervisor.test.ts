@@ -20,7 +20,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
@@ -43,6 +43,54 @@ type SdkTurn = import("../src/server/harness/types.ts").SdkTurn;
 type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
 type MissionMcpDescriptor = NonNullable<LaunchOptions["mcp"]>;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
+
+test("a retired mission's failed SDK stop stays owed and rejects follow-up until the driver leaves", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  const handle = fakeHandle();
+  const normalStop = handle.stop;
+  handle.stop = async () => { throw new Error("driver refused stop"); };
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  t.after(() => tasks.stopMissionSessionClosures());
+  const session = await supervisor.start(START);
+  const taskId = "retired-sdk-mission";
+  t.after(() => clearTaskSessionClosure(taskId));
+  registry.upsertTask(mkTask({
+    id: taskId, sessionId: session.id, status: "done", completedAt: Date.now() - 180_000,
+  }));
+  openTaskSessionClosure(taskId, session.id, Date.now() - 180_000, Date.now() + 60_000);
+  registry.applyDiscovery([]);
+  const removed: number[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "session_remove" && event.id === session.id) removed.push(Date.now());
+  });
+  await tasks.sweepMissionSessionClosures();
+  handle.push({ kind: "state", state: "working", activity: "late driver event" });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.state, "exited", "driver events cannot undo retirement");
+  t.mock.timers.tick(9_000);
+  await drain();
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(removed.length, 1);
+  assert.ok(removed[0]! - registry.getTask(taskId)!.completedAt! <= 240_000);
+  assert.equal(registry.getSession(session.id), undefined);
+  assert.equal(supervisor.handleFor(session.id), handle, "a rejected stop still has a real runtime");
+  assert.ok(getTaskSessionClosure(taskId), "card removal cannot discard an unconfirmed SDK cleanup");
+  assert.match(registry.getTask(taskId)?.automaticCleanup?.detail ?? "", /cleanup is still unconfirmed/);
+  await assert.rejects(supervisor.send(session.id, { text: "late follow-up" }), /no live driver/);
+  assert.equal(handle.sent.length, 0);
+
+  handle.stop = normalStop;
+  await tasks.sweepMissionSessionClosures();
+  await drain();
+  await tasks.sweepMissionSessionClosures();
+  assert.equal(supervisor.handleFor(session.id), null);
+  assert.equal(getTaskSessionClosure(taskId), null);
+  assert.equal(registry.getTask(taskId)?.status, "done");
+});
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -580,6 +628,28 @@ test("a queued send rechecks its target inside session serialization", async () 
   }
 });
 
+test("a prompt queued before mission completion cannot reach the concluded SDK driver", async (t) => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const supervisor = new SdkSupervisor(new Registry());
+  const session = await supervisor.start(START);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  handle.send = async (turn) => { handle.sent.push(turn); await held; return "started"; };
+  const first = supervisor.send(session.id, { text: "accepted work" });
+  await waitFor(() => handle.sent.length === 1);
+  const queued = supervisor.send(session.id, { text: "queued follow-up" });
+  const rejected = assert.rejects(queued, /no live driver/);
+  openTaskSessionClosure("queued-mission", session.id, Date.now(), Date.now() + 240_000);
+  t.after(() => clearTaskSessionClosure("queued-mission"));
+  release();
+  await first;
+  await rejected;
+  assert.deepEqual(handle.sent, [{ text: "accepted work" }]);
+  await supervisor.stop(session.id);
+});
+
 test("idle-only delivery rolls back its durable reservation when the driver became busy", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
@@ -993,6 +1063,70 @@ test("shutdown owns a fresh SDK launch already waiting on its provider", async (
     assert.equal(getSdkSession(id), null);
   } finally {
     fake.restore();
+  }
+});
+
+test("restore carries durable task attribution through session telemetry", async (t) => {
+  const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+  const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
+  const { attachSessionTelemetry, observeUsageRecorded, resetSessionTelemetryForTesting } =
+    await import("../src/server/telemetry/sessions.ts");
+  registerBuiltinTelemetry();
+  resetSessionTelemetryForTesting();
+  assert.equal(setTelemetryConfig({ enabled: true }).ok, true);
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "task-restore-telemetry", kind: "ship", status: "running",
+    sessionId: "sdk:restore-telemetry", extraRepos: [{
+      repoRoot: "/repo/secondary", worktreePath: null, branch: null, provider: null,
+      worktreeLeaseId: null, baseSha: null, prUrl: null, prState: null, mergedAt: null,
+    }],
+  }));
+  const detach = attachSessionTelemetry(registry);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    upsertSdkSession({
+      id: "sdk:restore-telemetry", agent: "claude", agentSessionId: "restored-conversation",
+      cwd: "/wt/restore-telemetry", taskId: "task-restore-telemetry", model: null,
+      effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+    });
+    const supervisor = new SdkSupervisor(registry);
+    await supervisor.restore();
+    handle.push({ kind: "state", state: "working", activity: null });
+    handle.push({ kind: "turn_done", usage: null });
+    await drain();
+    observeUsageRecorded({
+      identity: "restored-usage", usageOrigin: "authoring", costBasis: "reported",
+      modelId: "claude-sonnet-4-6", input: 1, output: 2, reasoningOutput: 0,
+      cacheRead: 0, cacheWrite: 0, costUsd: 0.01, sessionId: "sdk:restore-telemetry",
+    });
+    handle.push({ kind: "exited", reason: "done", resumable: false });
+    handle.end();
+    await drain();
+    t.mock.timers.tick(9_000);
+    const rows = openDb().prepare("SELECT name, facts_json, refs_json FROM telemetry_journal").all();
+    const events = rows.map((row) => ({
+      name: row.name, facts: JSON.parse(String(row.facts_json)), refs: JSON.parse(String(row.refs_json)),
+    })).filter((row) => row.refs.session_id === "sdk:restore-telemetry");
+    for (const name of ["mission.session.started", "mission.session.segment.opened",
+      "mission.session.turn.finished", "mission.usage.recorded", "mission.session.ended"]) {
+      const found = events.filter((row) => row.name === name);
+      assert.ok(found.length > 0, `${name} was captured`);
+      assert.ok(found.every((row) => row.refs.task_id === "task-restore-telemetry"), `${name} retains the durable task`);
+    }
+    const started = events.find((row) => row.name === "mission.session.started")!;
+    assert.equal(started.facts.origin, "restored");
+    assert.equal(started.facts.task_kind, "ship");
+    assert.equal(started.facts.repo_count, 2);
+    assert.equal(events.find((row) => row.name === "mission.session.ended")?.facts.ended_while_work_open, true);
+  } finally {
+    handle.end();
+    detach();
+    fake.restore();
+    setTelemetryConfig({ enabled: false });
+    resetSessionTelemetryForTesting();
   }
 });
 

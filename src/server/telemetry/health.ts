@@ -35,6 +35,25 @@ import {
   usedBytes,
 } from "./store.ts";
 import { registeredProjections } from "./registration.ts";
+import { HEALTH_EVENT } from "@shared/telemetry-sources/health.ts";
+import { captureTelemetry } from "./capture.ts";
+
+/** Bounded cadence and semantic identity also deduplicate concurrent manual drains. */
+export function captureTelemetryHealth(now = Date.now()): void {
+  if (!getTelemetryConfig().enabled) return;
+  const health = telemetryHealth(now);
+  for (const p of health.profiles) {
+    if (!p.capturing) continue;
+    captureTelemetry({ event: HEALTH_EVENT, profiles: [p.profile],
+      source: { kind: "mission.telemetry.health", id: `${p.profile}:${p.policyEpoch}:${Math.floor(now / 30_000)}`, revision: 1 },
+      facts: { profile: p.profile, pending: p.pending, retrying: p.retrying, accepted: p.accepted,
+        rejected: p.rejected, expired: p.expired, pending_bytes: p.pendingBytes,
+        oldest_pending_age: Math.max(0, p.oldestPendingAgeMs ?? 0) / 1000,
+        last_accepted_at: (p.lastAcceptedAt ?? 0) / 1000, observed_at: now / 1000 },
+      now, actor: { kind: "system", origin: "daemon", basis: "owner" },
+    });
+  }
+}
 
 export function telemetryHealth(now = Date.now()): TelemetryHealth {
   const config = getTelemetryConfig();

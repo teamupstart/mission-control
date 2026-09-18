@@ -305,3 +305,64 @@ test("no Workflow module imports the Ensemble store - the guard is a one-way ans
     assert.doesNotMatch(src, /ensembles\/(store|manager|engine)/, `${file} must not import the ensemble store/manager/engine`);
   }
 });
+
+test("Phase 5: member, stage and handoff outcomes survive repeated publication once per identity", async () => {
+  const { enableExperience } = await import("./helpers/experience-assertions.ts");
+  enableExperience();
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const finalize = new FakeFinalize();
+  const workflow = new FakeWorkflow();
+  workflow.bindResult = { ok: false, reason: "conflict", detail: "PRIVATE_SENTINEL handoff conflict" };
+  finalize.workflow = workflow;
+  const manager = new EnsembleManager(new Registry(), store);
+  const engine = new EnsembleEngine({ store, tasks: gateway, adapters: stubAdapters(), finalize,
+    publish: (runId) => { manager.publish(runId); }, now: () => 1000, armTimer: () => () => {} });
+  const runId = await driveToDecision(store, gateway, engine, { ...PINNED, workflowName: "PRIVATE_SENTINEL" });
+  const observations = () => (db.prepare(`SELECT facts_json, refs_json, actor_json FROM telemetry_journal
+    WHERE name = 'mission.automation.transition' AND json_extract(facts_json, '$.feature') = 'ensembles'
+      AND EXISTS (SELECT 1 FROM json_each(profiles_json) WHERE value = 'local') ORDER BY seq`)
+    .all() as { facts_json: string; refs_json: string; actor_json: string }[])
+    .map((row) => ({ facts: JSON.parse(row.facts_json), refs: JSON.parse(row.refs_json), actor: JSON.parse(row.actor_json) }));
+  const outcomes = (action: string, outcome: string) => observations()
+    .filter((e) => e.facts.action === action && e.facts.outcome === outcome);
+  const republish = () => {
+    const before = observations();
+    manager.publish(runId); manager.publish(runId);
+    assert.deepEqual(observations(), before, "republishing owner state cannot recount any child outcome");
+  };
+
+  assert.equal(store.getRun(runId)?.status, "awaiting_decision");
+  assert.equal(outcomes("member", "running").length, 3);
+  assert.equal(outcomes("member", "applied").length, 3);
+  assert.equal(new Set(outcomes("member", "applied").map((e) => e.refs.subject_id)).size, 3,
+    "all three member identities are distinct, even though they have the same outcome");
+  assert.equal(outcomes("stage", "applied").length, 1, "the member wave has completed");
+  assert.equal(outcomes("stage", "waiting").length, 1, "the human decision stage is waiting");
+  assert.equal(outcomes("handoff", "pending").length, 1);
+  assert.equal(outcomes("handoff", "applied").length, 0);
+  republish();
+
+  await decide(engine, runId, winnerArtifact(store, runId).id);
+  assert.equal(store.getRun(runId)?.workflowHandoff?.state, "conflict");
+  assert.equal(outcomes("handoff", "refused").length, 1);
+  assert.equal(outcomes("handoff", "applied").length, 0, "a conflict does not complete the handoff");
+  republish();
+
+  workflow.bindResult = { ok: true, bindingId: "binding-1", created: true };
+  assert.equal((await engine.resolveFinalization(runId, false)).ok, true);
+  assert.equal(store.getRun(runId)?.status, "completed");
+  assert.equal(store.getRun(runId)?.workflowHandoff?.state, "submitted");
+  assert.equal(outcomes("member", "applied").length, 3, "retaining the winner does not recount its submitted outcome");
+  assert.equal(outcomes("stage", "applied").length, 3, "wave, decision and finalization each complete once");
+  assert.equal(new Set(outcomes("stage", "applied").map((e) => e.refs.subject_id)).size, 3);
+  assert.equal(outcomes("handoff", "refused").length, 1, "recovery preserves the earlier refusal");
+  assert.equal(outcomes("handoff", "applied").length, 1);
+  republish();
+
+  const facts = observations();
+  assert.equal(new Set(facts.map((e) => `${e.facts.action}:${e.refs.subject_id}:${e.facts.outcome}`)).size, facts.length);
+  assert.ok(facts.every((e) => e.facts.coverage === "owner_transition"));
+  assert.ok(facts.every((e) => e.actor.kind === "system" && e.actor.basis === "owner"));
+  assert.ok(!JSON.stringify(facts).includes("PRIVATE_SENTINEL"));
+});

@@ -478,15 +478,31 @@ test("commission disclosures reset to their feature defaults when rail selection
       workflowId: null,
     });
     expect(response.ok, await response.text()).toBe(true);
+    // A reservation exists before readiness has finished writing provider events. Wait
+    // for the host before scripting its work, or those writes can reuse a readiness
+    // revision and make the daemon correctly reject the launch as a projection conflict.
     await expect
       .poll(async () => {
         const tasks = (await (await request(daemon, "/api/tasks")).json()) as Array<{
           title: string;
           pipelineCommissionId: string | null;
+          status: string;
+          sessionId: string | null;
         }>;
-        return tasks.find((task) => task.title === title)?.pipelineCommissionId ?? null;
+        const task = tasks.find((candidate) => candidate.title === title);
+        return task ? {
+          pipelineCommissionId: task.pipelineCommissionId,
+          status: task.status,
+          sessionId: task.sessionId,
+        } : null;
+      }, {
+        message: "the Engineer host must finish readiness before emitting its work events",
       })
-      .not.toBeNull();
+      .toMatchObject({
+        pipelineCommissionId: expect.any(String),
+        status: "running",
+        sessionId: expect.any(String),
+      });
     await expect
       .poll(() =>
         existsSync(providerState) ? readConductorEngineerRuns(daemon.home).length : 0,

@@ -1,3 +1,4 @@
+import { observePipelineCommission } from "../telemetry/automation.ts";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -163,6 +164,7 @@ export function bindPipelineCommissionAttempt(input: {
     updatedAt: now,
   };
   upsertPipelineCommissionAttempt(next, bound);
+  observePipelineCommission(next);
   return next;
 }
 
@@ -224,6 +226,7 @@ export function appendPipelineCommissionAttempt(input: {
     updatedAt: now,
   };
   upsertPipelineCommissionAttempt(next, attempt);
+  observePipelineCommission(next);
   return next;
 }
 
@@ -262,6 +265,7 @@ export function cancelPipelineCommission(input: {
     updatedAt: now,
   };
   upsertPipelineCommissionAttempt(next, attempt);
+  observePipelineCommission(next);
   return next;
 }
 
@@ -300,6 +304,7 @@ export function recordPipelineCommissionCancellationFailure(input: {
     updatedAt: now,
   };
   upsertPipelineCommissionAttempt(next, attempt);
+  observePipelineCommission(next);
   return next;
 }
 
@@ -708,9 +713,11 @@ export function applyEngineerEvent(
     body: event as Record<string, unknown>,
     observedAt,
   });
+  const commission = outcome === "stored" ? getPipelineCommission(held.id) : held;
+  if (outcome === "stored" && commission) observePipelineCommission(commission);
   return {
     outcome,
-    commission: outcome === "stored" ? getPipelineCommission(held.id) : held,
+    commission,
   };
 }
 

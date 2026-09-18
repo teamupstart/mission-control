@@ -1,3 +1,4 @@
+import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
@@ -113,6 +114,7 @@ import {
   runEvidenceCriterionRows,
   runGrantNotice,
   runParkedSentence,
+  runPosture,
   evidenceChipLabel,
   openEvidenceTray,
   roundEvidenceCountLabel,
@@ -161,6 +163,7 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
+  overriddenNextMoveTooltip,
   refusedUnchangedRequestId,
   runActionTooltip,
   runNextMove,
@@ -1199,6 +1202,7 @@ function RunWorklist({
    * own handler, because picking a segment clears the selection rather than moving it.
    */
   const selectIn = (key: string | null): void => {
+    if (key !== (selected?.key ?? null)) featureAction("runs", "select");
     setSelectedKey(key);
     setChosenSegment({ segment, round });
   };
@@ -1601,7 +1605,13 @@ function RunRecordTabs({
   const fallback = offers(initial) ? initial : offered[0]?.pane.id ?? "worklist";
   const selected = routed ?? localPick ?? fallback;
   const tabs = useRef(new Map<RunRecordPane, HTMLButtonElement>());
+  // The workflows tour spotlights two of these panes. The shared tabpanel wrapper is the
+  // registered element, under the id of whichever pane is showing, so each target has one
+  // owner and switching panes re-registers through React's own ref detach.
+  const tourEvidenceRef = useTourTargetRef<HTMLDivElement>("workflows:run-evidence");
+  const tourCompletionRef = useTourTargetRef<HTMLDivElement>("workflows:run-completion");
   const select = (pane: RunRecordPane): void => {
+    if (pane !== selected) featureAction("runs", "select");
     if (pane === selected) return;
     if (onPane) onPane(pane);
     else setPick(pane);
@@ -1675,6 +1685,9 @@ function RunRecordTabs({
           role="tabpanel"
           id={runRecordPaneId(active.pane.id)}
           aria-labelledby={runRecordTabId(active.pane.id)}
+          ref={active.pane.id === "evidence"
+            ? tourEvidenceRef
+            : active.pane.id === "completion" ? tourCompletionRef : undefined}
         >
           {active.content}
         </div>
@@ -1790,7 +1803,7 @@ function DeliveriesPane({
         <p className="wf-run-meta">
           {`Showing round ${viewedRound}'s ${rows.length} of ${detail.deliveries.length} packets. `}
           <Tooltip label="Show every packet this run has sent, in every round">
-            <button className="btn btn-ghost" onClick={() => setThisRoundOnly(false)}>
+            <button className="btn btn-ghost" onClick={() => { featureAction("runs", "filter"); setThisRoundOnly(false); }}>
               Show every round
             </button>
           </Tooltip>
@@ -1802,7 +1815,7 @@ function DeliveriesPane({
             ? "A refused or uncertain packet keeps the whole ledger open."
             : (
               <Tooltip label="Show only the packets belonging to the round being read">
-                <button className="btn btn-ghost" onClick={() => setThisRoundOnly(true)}>
+                <button className="btn btn-ghost" onClick={() => { featureAction("runs", "filter"); setThisRoundOnly(true); }}>
                   Show round {viewedRound} only
                 </button>
               </Tooltip>
@@ -2294,6 +2307,8 @@ function EvidencePane({
   onRecover?: (submissionId: string) => Promise<void>;
 }): React.JSX.Element {
   const bodies = useFrozenImageBodies(runId, images);
+  /** The workflows tour's handle on the readiness strip. Inert unless a tour is running. */
+  const tourReadinessRef = useTourTargetRef<HTMLDivElement>("workflows:run-readiness");
   const [preview, setPreview] = useState<string | null>(null);
   const returnFocus = useRef<FocusBookmark | null>(null);
   const [busy, setBusy] = useState<"retry" | "override" | null>(null);
@@ -2396,7 +2411,7 @@ function EvidencePane({
 
   return (
     <>
-      <div className="wf-run-strip">
+      <div className="wf-run-strip" ref={tourReadinessRef}>
         <RunStat
           label="Readiness"
           value={summary.status ? evidenceCodeLabel(summary.status) : "not evaluated"}
@@ -3423,6 +3438,8 @@ export function WorkflowRunView({
     .map((node) => node.id));
   /** The guided tour's handle on the worklist. Inert unless a tour is running. */
   const tourWorklistRef = useTourTargetRef<HTMLElement>("library:run-worklist");
+  /** The workflows tour's handle on the round scrubber. Inert unless a tour is running. */
+  const tourRoundsRef = useTourTargetRef<HTMLElement>("workflows:run-rounds");
   const [directiveNodeId, setDirectiveNodeId] = useState<string | null>(null);
   const [worklistFocus, setWorklistFocus] = useState<{
     runId: string;
@@ -3564,6 +3581,18 @@ export function WorkflowRunView({
    */
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
+  /**
+   * Whose move this run is on, and how loudly the action row may offer its one move.
+   *
+   * The banner and the demotion read the SAME derivation, which is what keeps the header from
+   * arguing with itself - a "No action needed" strip over a filled primary was exactly the
+   * confusion being repaired. Under an `auto` posture the derived move stays clickable as an
+   * override, in ghost weight with the override tag, and its tooltip says why clicking is not
+   * required. The parked sentence is not rendered separately any more: for a parked round the
+   * posture sentence IS `runParkedSentence`'s, so the banner is where that sentence now lives.
+   */
+  const posture = runPosture(detail);
+  const nextMoveOverride = posture?.tone === "auto" && nextMove !== null;
   const refusedSentence = runRefusedSentence(detail);
   const refusedClaimSentence = runRefusedCompletionSentence(detail);
   /*
@@ -3609,6 +3638,22 @@ export function WorkflowRunView({
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
       <header className="wf-run-head">
+        {/* Whose move it is, stated before anything else on the page. `role="status"` so a
+            posture flip - the session settles, the observer opens the next round - is read
+            aloud without stealing focus. Terminal runs render no banner: "done" is not a
+            posture, and the run-again primary explains itself. */}
+        {posture && (
+          <div
+            className={`wf-run-posture${posture.tone === "yours" ? " wf-run-posture-yours" : ""}`}
+            role="status"
+          >
+            <span className="wf-run-posture-dot" aria-hidden="true" />
+            <div>
+              <p className="wf-run-posture-eyebrow">{posture.headline}</p>
+              <p className="wf-run-posture-text">{posture.sentence}</p>
+            </div>
+          </div>
+        )}
         <div className="wf-run-identity">
           <p className="workflow-eyebrow">
             {preview ? "Preview" : "Live"} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}
@@ -3683,7 +3728,6 @@ export function WorkflowRunView({
           {/* Under the refusal: that one says what to fix, this one says the session has
               already done its half. */}
           {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
-          {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
         </div>
@@ -3696,9 +3740,17 @@ export function WorkflowRunView({
               because it returns at most one descriptor there is no arrangement of state in which
               two primaries can appear. */}
           {nextMove && (
-            <Tooltip label={runActionTooltip(nextMove, isActionPending(nextMove.id))}>
+            <Tooltip label={nextMoveOverride
+              ? runActionTooltip(
+                  { tooltip: overriddenNextMoveTooltip(nextMove) },
+                  isActionPending(nextMove.id),
+                )
+              : runActionTooltip(nextMove, isActionPending(nextMove.id))}>
+              {/* Ghost weight under an `auto` posture, primary otherwise. The move itself is
+                  identical either way - the posture only decides whether the page is
+                  recommending the click or merely permitting it. */}
               <button
-                className="btn btn-primary"
+                className={nextMoveOverride ? "btn btn-ghost wf-run-override" : "btn btn-primary"}
                 disabled={isActionPending(nextMove.id)}
                 onClick={() => {
                   if (!nextMove.confirm) {
@@ -3712,6 +3764,7 @@ export function WorkflowRunView({
                 }}
               >
                 {nextMove.label}
+                {nextMoveOverride && <span className="wf-run-override-tag">override</span>}
               </button>
             </Tooltip>
           )}
@@ -3797,7 +3850,7 @@ export function WorkflowRunView({
       </header>
 
       {rounds.length > 0 && (
-        <section className="wf-run-rounds" aria-label="Rounds">
+        <section className="wf-run-rounds" aria-label="Rounds" ref={tourRoundsRef}>
           {/* One tile per ROUND. Eleven captures in one repair round is a detail OF that
               round, and drawn as eleven tiles it claimed eleven rounds had happened - so the
               tile carries a COUNT, and the captures themselves live in a tray below that
@@ -4528,6 +4581,9 @@ export function WorkflowRuns({
   const selectedIndex = useRef(0);
   const page = useRef<HTMLElement>(null);
   const runRows = useRef(new Map<string, HTMLButtonElement>());
+  /** The workflows tour's close stop reads the chips; its exit lands on All. Inert otherwise. */
+  const tourFiltersRef = useTourTargetRef<HTMLDivElement>("workflows:run-filters");
+  const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
@@ -4952,10 +5008,16 @@ export function WorkflowRuns({
     <section ref={page} className="workflow-runs">
       <aside className="wf-run-rail">
         {listError && <p className="wf-run-error" role="alert">{listError}</p>}
-        <div className="wf-run-chips" role="group" aria-label="Filter runs by state">
+        <div
+          className="wf-run-chips"
+          role="group"
+          aria-label="Filter runs by state"
+          ref={tourFiltersRef}
+        >
           {RUN_FILTER_CHIPS.map((chip) => (
             <Tooltip key={chip.label} label={chip.hint}>
               <button
+                ref={chip.status === undefined ? tourFilterAllRef : undefined}
                 className={`wf-run-chip${filters?.status === chip.status ? " active" : ""}`}
                 aria-pressed={filters?.status === chip.status}
                 onClick={() => {

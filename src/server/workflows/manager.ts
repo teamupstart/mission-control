@@ -6,6 +6,7 @@ import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
+import { samePlanPublicationContext, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
@@ -192,6 +193,7 @@ import {
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
 import { infrastructureRecoveryAvailable, inspectorRecoveryCanRecheck } from "./recovery.ts";
+import { TOUR_DEMO_RUN_ID, seedWorkflowsTourDemoRun } from "./tour-demo-run.ts";
 import { getWorkflowPolicy } from "./config.ts";
 import {
   renderInspectorFeedback,
@@ -1018,6 +1020,26 @@ export class WorkflowManager {
     return this.store.listRunSummaries();
   }
 
+  /**
+   * The Follow the review tour's one daemon ask: THE demonstration run, deterministically.
+   *
+   * Always the seeded record, never the operator's own history - the tour's whole point is
+   * that every machine walks the identical run, so a fleet full of real reviews changes
+   * nothing about what the tour shows. The record is durable and keyed by a fixed id, so the
+   * first ask fabricates it (see `tour-demo-run.ts`) and every later ask answers with the
+   * same run; a fresh fabrication is published onto the fleet stream exactly as a real run
+   * and its orphaned binding would be.
+   */
+  seedTourDemoRun(): { runId: string; seeded: boolean } {
+    if (this.store.getRun(TOUR_DEMO_RUN_ID)) {
+      return { runId: TOUR_DEMO_RUN_ID, seeded: false };
+    }
+    const run = seedWorkflowsTourDemoRun(this.store);
+    this.publishRun(run.id);
+    this.publishBinding(run.bindingId);
+    return { runId: run.id, seeded: true };
+  }
+
   runPage(input: {
     limit: number;
     cursor: { updatedAt: number; id: string } | null;
@@ -1434,6 +1456,34 @@ export class WorkflowManager {
       ? this.store.getWorkflowVersionById(workflow.currentVersionId)
       : null;
     return Boolean(version && versionSupportsWorkflowEvidence(version));
+  }
+
+  /** Current PR ownership for planning, independent of whether the graph has a Persona. */
+  planPublicationContext(sessionId: string): PlanPublicationContext {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      return { owner: "unavailable", reason: "The planning session is not live" };
+    }
+    const key = noteKeyFor(session);
+    const binding = this.store.activeBindingForNote(key);
+    if (binding) {
+      if (!this.store.getWorkflowVersionById(binding.workflowVersionId)) {
+        return { owner: "unavailable", reason: "The bound workflow version is unavailable" };
+      }
+      return {
+        owner: "workflow", bindingId: binding.id, workflowVersionId: binding.workflowVersionId,
+        triggerMode: binding.triggerMode,
+      };
+    }
+    const previous = this.store.latestBindingForNote(key);
+    if (previous && previous.state !== "archived") {
+      return { owner: "unavailable", reason: "The workflow binding is paused or orphaned; resolve its ownership before publication" };
+    }
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!previous && task?.workflowId) {
+      return { owner: "unavailable", reason: "The task selected a workflow but its binding has not been established" };
+    }
+    return { owner: "skill" };
   }
 
   /** The same live authority for agent registration and Foreman's evidence obligation. */
@@ -3539,6 +3589,11 @@ export class WorkflowManager {
         throw new Error("Foreman completion work cycle is no longer current");
       }
     }
+    // Reject changed ownership even when the new owner is Manual or the skill, before
+    // returning an unclaimed answer that could authorize the worker's fallback.
+    if (claim.expectedPlanPublication && !samePlanPublicationContext(
+      claim.expectedPlanPublication, this.planPublicationContext(sessionId),
+    )) throw new Error("Foreman plan publication ownership is no longer current");
     // Resolve a matching historical prompted guard before entering the claim
     // transaction. A rejected legacy replay must persist its compatibility consume;
     // doing this inside the transaction would roll that migration back with the claim.
@@ -3678,6 +3733,7 @@ export class WorkflowManager {
         evidenceFingerprint: claim.evidenceFingerprint,
         evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
         expectedIntent: claim.expectedIntent,
+        expectedPlanPublication: claim.expectedPlanPublication,
         runId: randomUUID(),
         submissionId: randomUUID(),
         retireGuard,
@@ -4175,11 +4231,13 @@ export class WorkflowManager {
     let state = run ? this.gateState(run) : null;
     const waitingForPrHandoff = run?.status === "waiting_for_session"
       && run.currentPhase === "pr_handoff";
+    const waitingForMatchingHead = run?.status === "waiting_for_session"
+      && run.currentPhase === "inspector_head_mismatch";
     if (
       !run
       || !state
       || runIsTerminal(run)
-      || (run.status === "waiting_for_session" && !waitingForPrHandoff)
+      || (run.status === "waiting_for_session" && !waitingForPrHandoff && !waitingForMatchingHead)
     ) return;
     if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
     // A legacy record decodes as non-executable, and the gate is an execution path, so it
@@ -4364,11 +4422,18 @@ export class WorkflowManager {
 
     let submission = this.store.latestSubmission(run.id);
     if (!submission) return;
+    // A recovered binding may predate repository capture. The pinned adopted PR is
+    // durable repository provenance; never fall back to an unrelated session's cwd.
+    const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      const priorHeads = new Set(
-        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : []),
-      );
+      const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+      const priorHeads = new Set(await Promise.all(
+        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
+          .map((head) => repositoryRoot
+            ? resolve(repositoryRoot, head).catch(() => head)
+            : head),
+      ));
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(
           run,
@@ -4382,43 +4447,51 @@ export class WorkflowManager {
         );
         return;
       }
-      if (newHead === state.failedHeadSha || priorHeads.has(newHead)) return;
-      if (submission.round > run.maxRepairRounds) {
-        this.transitionInspectorGate(
-          run,
-          state,
-          { ...state, waitReason: "findings" },
-          "blocked",
-          "round_limit",
-          "inspector_round_limit",
-          { maxRepairRounds: run.maxRepairRounds },
+      if (newHead === state.failedHeadSha) {
+        // Inspector can withdraw a finding in a reply without another push. Its current
+        // review and publication prove that conclusion; do not require an empty commit.
+        if (ledger.headSha !== newHead
+          || loadInspectorComments(state.prKey!).some((row) => row.status !== "resolved")
+          || (ledger.reviewPosture === "live" && ledger.cleanReviewHeadSha !== newHead)) return;
+      } else {
+        if (priorHeads.has(newHead)) return;
+        if (submission.round > run.maxRepairRounds) {
+          this.transitionInspectorGate(
+            run,
+            state,
+            { ...state, waitReason: "findings" },
+            "blocked",
+            "round_limit",
+            "inspector_round_limit",
+            { maxRepairRounds: run.maxRepairRounds },
+            now,
+          );
+          return;
+        }
+        const nextState: WorkflowInspectorGateState = {
+          ...state,
+          targetHeadSha: newHead,
+          reviewPosture: ledger.reviewPosture,
+          waitReason: "review_pending",
+        };
+        const created = this.store.createInspectorOnlySubmission({
+          id: randomUUID(),
+          runId: run.id,
+          triggerKey: `inspector-head:${run.id}:${newHead}`,
+          newHeadSha: newHead,
+          failedHeadSha: state.failedHeadSha,
+          priorFindingFingerprints: state.findingFingerprints,
+          bypassReason: "Published GitHub Inspector-only findings policy",
+          expectedState: state,
+          state: nextState,
           now,
-        );
-        return;
+        });
+        if (!created) return;
+        run = created.run;
+        submission = created.submission;
+        state = nextState;
+        this.publishRun(run.id);
       }
-      const nextState: WorkflowInspectorGateState = {
-        ...state,
-        targetHeadSha: newHead,
-        reviewPosture: ledger.reviewPosture,
-        waitReason: "review_pending",
-      };
-      const created = this.store.createInspectorOnlySubmission({
-        id: randomUUID(),
-        runId: run.id,
-        triggerKey: `inspector-head:${run.id}:${newHead}`,
-        newHeadSha: newHead,
-        failedHeadSha: state.failedHeadSha,
-        priorFindingFingerprints: state.findingFingerprints,
-        bypassReason: "Published GitHub Inspector-only findings policy",
-        expectedState: state,
-        state: nextState,
-        now,
-      });
-      if (!created) return;
-      run = created.run;
-      submission = created.submission;
-      state = nextState;
-      this.publishRun(run.id);
     }
 
     const fullContext = submission.mode === "full_workflow"
@@ -4450,8 +4523,11 @@ export class WorkflowManager {
       );
       return;
     }
-    const submittedHead = submission.prHeadSha
+    const capturedHead = submission.prHeadSha
       ?? (fullContext?.success ? fullContext.data.evidence.headSha : null);
+    const submittedHead = capturedHead && repositoryRoot
+      ? await (this.options.resolveCommit ?? resolveCapturedCommit)(repositoryRoot, capturedHead).catch(() => null)
+      : null;
     if (!submittedHead) {
       this.transitionInspectorGate(
         run,
@@ -4466,16 +4542,11 @@ export class WorkflowManager {
       return;
     }
     if (state.observedHeadSha !== submittedHead) {
-      const afterPin = state.targetHeadSha !== null;
-      const handoffChangedHead = submission.mode === "full_workflow"
-        && this.submissionHadPrHandoff(run.id, submission.id);
       this.transitionInspectorGate(
         run,
         state,
         { ...state, waitReason: "head_mismatch" },
-        afterPin || handoffChangedHead
-          ? submission.mode === "full_workflow" ? "waiting_for_session" : "blocked"
-          : "waiting_for_inspector",
+        submission.mode === "full_workflow" ? "waiting_for_session" : "blocked",
         "inspector_head_mismatch",
         null,
         null,
@@ -4545,6 +4616,12 @@ export class WorkflowManager {
       await this.handleInspectorFindings(run, submission, binding, version, state, ledger.round, findings, now);
       return;
     }
+    if (ledger.reviewPosture === "live" && ledger.cleanReviewHeadSha !== state.targetHeadSha) {
+      this.transitionInspectorGate(run, state,
+        { ...state, reviewPosture: ledger.reviewPosture, waitReason: "clean_review_pending" },
+        "waiting_for_inspector", "inspector_clean_review", null, null, now);
+      return;
+    }
     const cleanState: WorkflowInspectorGateState = {
       ...state,
       reviewPosture: ledger.reviewPosture,
@@ -4590,12 +4667,6 @@ export class WorkflowManager {
       || inspection.repoRoot !== binding.sessionRepoRoot
     ) return false;
     return true;
-  }
-
-  /** Whether PR preparation was requested for the submission whose head is being compared. */
-  private submissionHadPrHandoff(runId: string, submissionId: string): boolean {
-    return this.store.listDeliveries(runId).some((delivery) =>
-      delivery.submissionId === submissionId && delivery.kind === "pr_handoff");
   }
 
   private async handleInspectorFindings(

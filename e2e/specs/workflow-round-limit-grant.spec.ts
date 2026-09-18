@@ -386,12 +386,12 @@ async function seedCleanSpentInspectorGate(
     db.prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, review_posture, round, last_reviewed_at, last_error, fail_count,
+          head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at, last_error, fail_count,
           last_fail_kind, next_attempt_at, last_attempt_sha, merged_at, merge_block,
           observed_head_sha, observed_state, observed_at, head_ref_name, title,
           adopted_at, updated_at)
        VALUES (?, ?, 'owner', 'repo', ?, ?, ?, NULL, 'hook', 'open',
-               ?, 'live', 5, ?, NULL, 0, NULL, NULL, ?, NULL, 'workflow-gate-spent',
+               ?, 'live', 1, ?, 5, ?, NULL, 0, NULL, NULL, ?, NULL, 'workflow-gate-spent',
                ?, 'OPEN', ?, 'feat/spent-inspector-gate', 'Spent Inspector gate', ?, ?)`,
     ).run(
       fixture.prKey,
@@ -399,6 +399,7 @@ async function seedCleanSpentInspectorGate(
       fixture.prNumber,
       daemon.repo,
       daemon.repo,
+      fixture.currentHead,
       fixture.currentHead,
       now,
       fixture.currentHead,

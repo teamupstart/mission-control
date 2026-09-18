@@ -1,5 +1,8 @@
 # Observability and telemetry
 
+The [six Grafana dashboards and isolated demo](observability-dashboards.md) are the local
+operator experience. That guide covers setup, query semantics, trace drill-down and Phase 7 verification.
+
 Mission Control can capture what it does as OpenTelemetry signals, keep them on disk until a
 backend is reachable, and export them over OTLP/HTTP. This page covers what it collects, how to
 turn it on, the local Grafana stack that ships with the repository, and the measured costs.
@@ -14,13 +17,22 @@ points back at its own address.
 
 ## What state it is in
 
-Phases 1 and 2 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) are
-implemented: the durable path, the export protocol, the consent model, the local reference stack,
-one working diagnostic dashboard, and the **Settings > Telemetry** panel that drives all of it.
-Four events are captured today - the daemon's own start, the synthetic connection probe, telemetry
-control actions, and the one browser-originated fact the daemon cannot observe for itself. Session,
-workflow, action and error coverage arrive in later phases through the registration seams described
-below.
+Phases 1, 2 and 3 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) established
+the durable path, the export protocol, the consent model, the local reference stack,
+a compatibility diagnostic, the **Settings > Telemetry** panel that drives all of it, and
+session attribution - how sessions start, the model and effort known for each turn with explicit
+attribution quality, what they spend, how they end, and which pull requests verifiably landed.
+When execution metadata is unavailable, attribution can be launch-resolved or unknown.
+
+Phase 7 adds the [six product dashboards and isolated demo](observability-dashboards.md),
+including cohort views and trace drill-down. They consume the workflow, action and error sources
+from Phases 4 and 5 and the analytical projections from Phase 6.
+
+The initial Phases 1-3 scope captured sixteen events: the daemon's own start, the synthetic connection probe,
+telemetry control actions, the one browser-originated fact the daemon cannot observe for itself,
+and [the twelve session, model, task and pull request facts below](#session-model-and-outcome-sources).
+The following sections describe that foundation; additional sources use the registration seams
+described below.
 
 ## Turning it on
 
@@ -125,12 +137,28 @@ anywhere reads them.
 
 ### What travels, and what never does
 
-Captured: app version, launch mode, bounded outcome enums, durations, and an installation
-pseudonym. Every event is validated against a strict schema that rejects undeclared fields, so an
-internal object cannot be spread into a record by accident.
+Captured: app version, launch mode, bounded outcome enums, durations, token counts, an
+installation pseudonym, and - from Phase 3 - the harness, runtime, task kind, multiplexer and
+emulator TYPES a session ran on, plus reported model ids. Every event is validated against a
+strict schema that rejects undeclared fields, so an internal object cannot be spread into a record
+by accident.
+
+Usage metrics retain separate model labels only for ids in the shipped model catalog.
+Off-catalog ids share `model_id=other`; missing ids use `model_id=unknown`. Each metric's model
+dimension therefore has at most the number of shipped ids plus two values, regardless of
+stored defaults or live model discovery. Token and cost totals stay intact. Source facts and
+session/dispatch traces retain the reported ids for detailed attribution.
+
+Missing or unrecognized harness, runtime, task-kind and effort values are `unknown`. Explicit
+`unsupported` capability evidence stays distinct; neither value is replaced with a real harness,
+runtime, task kind or effort level. A personal session with no task remains `none`.
 
 Never captured: prompts, code, file paths, branches, repository or PR URLs, terminal output,
-rationale text, headers or free-text error detail.
+rationale text, headers or free-text error detail. Nor, specifically: tty, process id, pane token,
+multiplexer session name, window or tab title, or session and task names. Sessions, tasks,
+conversations, repositories and pull requests are correlatable on traces through opaque
+per-destination identifiers derived with a profile salt, so the same session reaches two audiences
+under two unrelated ids and neither can be turned back into the thing it came from.
 
 Every record carries a `deployment.environment.name` resource attribute, `local` by default and
 overridable with `MISSION_TELEMETRY_ENVIRONMENT`. It exists so demo, development and test signals
@@ -221,6 +249,101 @@ entries to an existing group rather than coining a parallel taxonomy. Instrument
 dimension allowlist; unbounded identities and content-bearing keys are refused by a catalog test
 rather than by review.
 
+### Workflow sources
+
+[Workflow telemetry](observability-workflows.md) documents Phase 4 ownership, counting,
+reason categories, actor coverage, transaction boundaries and the independent Phase 5/6
+extension points.
+
+### Session, model and outcome sources
+
+Phase 3's owner map. Every row states three things a later phase needs and cannot infer: which
+code owns the observation, what identity it deduplicates on, and what a restart cannot rebuild.
+The last column is the one worth reading before building anything on top of these: a post-restart
+scan of a live session reports the model it is running NOW, and nothing durable records what it
+was running an hour ago.
+
+| Event | Owner | Deduplicates on | What a restart cannot rebuild |
+| --- | --- | --- | --- |
+| `mission.session.started` | `telemetry/sessions.ts` observer | `start:<session id>` | A session that started and ended while capture was off. Re-adopting a live session after a restart updates continuity rather than counting a second session, because the identity is durable. |
+| `mission.session.restore.finished` | `sdk/supervisor.ts` | `restore:<session id>:<at>` | A restoration whose result was never captured. |
+| `mission.dispatch.finished` | `dispatcher.ts` | `<task id>:<attempt start>` | The resolved model and effort. They are computed in memory at launch and persisted nowhere a scan could read. |
+| `mission.session.segment.opened` | `telemetry/sessions.ts` observer | `segment:<session id>:<observation id>:<sequence>` | Segments during a gap. Each adoption opens a new observation interval with a random id, so its first segment cannot collide with one captured before restart. Repeated metadata within that interval opens no segment. |
+| `mission.session.effort.selected` | `routes.ts` `POST /api/sessions/:id/effort` | `effort:<session id>:<at>:<level>` | A selection that was never captured. It is an operator action, not a durable record. |
+| `mission.session.operation` | `routes.ts` send, interrupt and the two option routes | `op:<session id>:<operation>:<at>:<n>` | The same. |
+| `mission.session.turn.finished` | `telemetry/sessions.ts` observer | `turn:<session id>:<observation id>:<n>` | A turn spanning a gap is reported with `observation_bounded`, which makes its duration a lower bound rather than a measurement. The observation id prevents post-restart turns from colliding with earlier turns. |
+| `mission.session.ended` | `telemetry/sessions.ts` observer, on `session_remove` | `end:<session id>` | A departure during a gap. |
+| `mission.session.kill.requested` | `routes.ts` `POST /api/sessions/:id/kill` | `kill:<session id>:<at>` | An uncaptured request. |
+| `mission.usage.recorded` | `usage.ts`, `spend-ledger.ts`, `registry.ts` - the three ledger writers | The ledger's own conflict target | Rows committed while capture was off. They are deliberately not re-read: a later opt-in may not widen the audience of facts captured before it. |
+| `mission.task.outcome` | `telemetry/sessions.ts` observer, on `task_upsert` | `<task id>:<durable observation interval>` | Which intermediate statuses a task passed through while collection was off. The terminal row is recovered on its next publication. |
+| `mission.pr.observed` | `telemetry/pr-observations.ts` | `<task id>:<pr key>:<fact>` | An association made while capture was off. A retained association itself survives restarts in its own table until the late-outcome horizon. |
+
+Three rules hold this together and are worth stating separately, because each of them is a
+number a dashboard would otherwise get confidently wrong.
+
+**Effective is not requested.** A level the driver accepted for the NEXT turn does not move the
+running turn's attribution. Each turn freezes its effort, quality, segment and conversation
+when it first enters `working`; later metadata updates apply to subsequent turns. Segments
+open on an OBSERVED change only, `quality` says how strongly the value is known, and `unknown`
+and `unsupported` are never narrowed into a level - a harness with no effort knob and a
+session nobody has read yet are different answers. Dispatch model and resolution source
+come from one evaluation of the shared model ladder.
+Changing collection consent clears in-memory observation windows. After opt-in, the next
+publication of an existing session opens a bounded first observation and segment. Turns and
+launch intents from before consent are not replayed, and re-consent does not count another
+session adoption.
+
+**A session ending is not a task outcome.** They are separate events with separate owners.
+`TaskManager` settles a departed task as `failed` while documenting that a clean exit cannot be
+told from a crash, so that row exports `status=failed` with `completion_evidence=missing`, and a
+product dashboard must not turn the pair into a measured correctness failure.
+For terminal handoffs, `sdk/handoff.ts` marks the departure after preflight and before stopping
+the driver, so removal during that stop still records `reason=handoff`. A failed stop with a
+surviving driver clears the marker. A stopped driver retains its handoff reason even if the
+terminal fails to open; the task outcome describes that failure separately.
+An accepted kill remains an action fact even when the session survives. Its departure marker
+clears on stop-failure restoration, cancelled eviction, or a later handoff, and otherwise
+correlates removal for at most one minute. Later unexplained departures retain `unknown`.
+Failed and superseded dispatches discard unused launch intents so a retry cannot inherit
+their model, effort, or task. A non-terminal task publication clears its prior settlement
+marker so a retry's departure can report that work is still open.
+`telemetry_task_outcome_state` preserves each task's current observation interval across
+restarts. Reopening or changing dispatch time rotates it; terminal cleanup updates retain it,
+even if they rewrite completion timestamps. An immediate cancellation after reopening gets
+its own outcome. This source state is charged to the telemetry byte budget and expires after
+the same 30-day inactivity window as deduplication state.
+Restored SDK sessions retain the supervisor row's durable task association for session,
+segment, turn, usage and departure facts. A missing task row preserves the ID with unknown
+task kind; it does not turn the session into a taskless one. Restoration also preserves any
+unrelated dispatch intent waiting for a new session in the same checkout.
+
+**Late delivery survives ownership invalidation, and gains no authority by doing so.**
+`invalidateTaskOwnershipInTransaction` deletes a task's work-episode binding without archiving it,
+so after a rotation `mergedPrFor` reads nothing and `taskPrPollTargets` stops harvesting the URL.
+Telemetry retains its own bounded observation of each verified association, keyed by a digest, and
+the daemon's existing pull request poller asks about those URLs on the same cadence -
+deduplicated, so a pull request wanted by both harvests still costs one `gh` call. An
+observation-only result emits the late-delivery fact and nothing else: it does not enter
+`mergedPrFor`, complete a task, or satisfy a dependency edge. The URL never leaves the daemon;
+`test/telemetry-pr-late-outcome.test.ts` pins both halves.
+Live delivery requires the retained author's current task/session binding to own that PR;
+secondary repositories also match the current episode and repository. Another task or a
+dependency polling the same URL does not make an old author's observation live.
+Merge observations remain pollable until capture is durably accepted or recognized as a
+duplicate. A transient capture refusal or failed completion stamp can therefore retry after
+a restart without losing or double-counting the merge.
+The retained context also freezes the initial association fact and its capture status. A
+later sighting or the shared poll cadence retries a pending association using its original
+time, author and creation evidence, even if the merge has already been captured. Retries
+remain bounded by the same retention horizon and 500-row poll limit.
+Retained PR URLs, frozen context and row metadata count toward the total telemetry byte
+budget, including the cached admission estimate immediately after insertion.
+Expiry removes settled observations without reporting a gap. Only an uncaptured association
+or a missing merge verdict counts as incomplete coverage at the late-outcome horizon.
+Changing collection consent retires retained PR observation windows in the same transaction.
+Re-enabling cannot resume their polling or pending capture across the gap. Previously captured
+facts and operational PR ownership remain intact; a fresh association starts a new window.
+
 ## The local reference stack
 
 Four pinned long-running containers, all published on loopback only, plus a one-shot
@@ -247,7 +370,8 @@ npm run observability:reset    # stop AND destroy every data volume
 | Grafana | `12.4.10` | `http://127.0.0.1:13000` |
 
 Point Mission Control at `http://127.0.0.1:14318` and open
-`http://127.0.0.1:13000/d/mission-telemetry-diagnostics`. Both data sources and the dashboard are
+`http://127.0.0.1:13000/d/mission-adoption`. The compatibility diagnostic remains available at
+`/d/mission-telemetry-diagnostics`. Both data sources and all dashboards are
 provisioned from files; nothing is imported by hand, and dashboards are not editable in place so a
 browser edit cannot silently diverge from the repository.
 
@@ -263,8 +387,9 @@ From the app, that is four steps in **Settings > Telemetry**:
    Tempo will store, so it is searchable once the next export lands.
 
 The probe is synthetic, and the panel says so where it reports the result: it is a connection
-check, not a record of anything the app did. The daemon does not capture telemetry about its own
-export attempts either, so a failing backend does not fill the queue it cannot drain.
+check, not a record of anything the app did. The daemon does not create an event per export
+attempt. Bounded destination-health gauges are captured at most once per 30-second bucket,
+under the same consent and storage limits as other telemetry.
 
 Container-to-container traffic uses service names (`http://collector:4318`); the host uses the
 published ports above. Mixing the two up is the most common way this stack appears broken.
@@ -281,19 +406,19 @@ published ports above. Mixing the two up is the most common way this stack appea
 - **`out_of_order_time_window: 8d`** is one day longer than the app's queue. Without it a laptop
   that was offline for a week drains successfully, gets 200s the whole way, and has every sample
   silently refused as too old.
-- **The Collector's queues are persistent**, backed by a volume. A default in-memory queue would
-  add a brand new loss window immediately downstream of a store that exists to have none.
-- **Tempo's `max_duration` and `block_retention`** reach past the app's queue window, or a replayed
-  old trace exists in storage and cannot be found by a time-bounded search.
+- **The Collector's queues are persistent**, backed by a volume, with no asynchronous batch
+  processor before persistence. An in-memory buffer would add a loss window after an ACK.
+- **Tempo's `max_duration`, `block_retention` and WAL `ingestion_time_range_slack`** reach past
+  the app's queue window, or an old trace can be missed by time-bounded search after block flush.
 
 ### Verifying it end to end
 
 ```sh
-npm run observability:up
-npm run test:telemetry-stack        # queries the real Prometheus and Tempo, not just HTTP status
+MC_OBSERVABILITY_MODE=test npm run observability:up
+MC_OBSERVABILITY_MODE=test npm run test:telemetry-stack # actual backends in the isolated test project
 
 npm run build
-MC_E2E_OBSERVABILITY=1 npm run test:e2e -- \
+MC_OBSERVABILITY_MODE=test MC_E2E_OBSERVABILITY=1 npm run test:e2e -- \
   e2e/specs/telemetry-diagnostics-dashboard.spec.ts --workers=1
 ```
 
@@ -347,13 +472,16 @@ rather than claiming a precise number.
 That invariant reaches exactly as far as the daemon can see, and where it ends is worth saying
 plainly. A batch is accepted, and its copy released, the moment the Collector returns 200 - the
 Collector owns it from there, and nothing it does afterwards can reach the health view. So the
-reference stack is configured never to drop: both exporters retry with **no elapsed-time ceiling**
+reference stack retries transient backend failures with **no elapsed-time ceiling**
 (`max_elapsed_time: 0`). A ceiling would expire queued items during a long Prometheus or Tempo
 outage - a Docker Desktop restart, a sleeping host, a maintenance window - and that loss would
 appear only in the Collector's own logs while the health view still read zero gaps. Retrying
 indefinitely turns the same outage into backpressure instead: the persistent queue fills, enqueue
 begins failing, the OTLP receiver answers the daemon with an error, and the daemon keeps its own
-copy. Loss then happens only where it can be counted, against the daemon's own bounded retention.
+copy. Permanent downstream rejection and storage failure can still lose data after an ACK;
+those failures are visible in Collector logs, not retrospectively in the daemon's accepted count.
+The [dashboard acceptance guide](observability-dashboards.md#storage-and-delivery-limits) describes
+the tested boundaries.
 
 A different backend, configured by an operator, keeps its own promises. The daemon's guarantee is
 about what it accepted and has not yet handed over.
@@ -444,3 +572,5 @@ invocation may need `DOCKER_CLI_HINTS=false COMPOSE_MENU=false`.
 **The Collector refuses to start over its queue directory.** That refusal is correct - it will not
 fall back to an in-memory queue. The `queue-permissions` one-shot service in `compose.yaml` gives
 the volume to the Collector's user; if you removed it, put it back.
+
+See [primary actions and safe errors](observability-actions.md) for Phase 5 source semantics, the operation inventory and coverage limits.

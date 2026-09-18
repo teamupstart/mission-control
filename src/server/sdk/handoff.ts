@@ -1,9 +1,11 @@
 import type { Session } from "@shared/types.ts";
 import { resumeArgvFor, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
+import type { SpawnedHome } from "../terminal/home.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 import { clearSdkSessionTask, restoreSdkSessionTask } from "./store.ts";
+import { noteSessionHandoff } from "../telemetry/sessions.ts";
 
 /**
  * "Continue in terminal": end the embedded session and reopen the SAME conversation in a
@@ -134,6 +136,9 @@ async function transfer(
     registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
   }
 
+  // Preflight succeeded. Record the cause before stop can emit session_remove, even if
+  // opening the terminal takes longer than the Registry's eviction linger.
+  const cancelHandoff = noteSessionHandoff(session.id);
   try {
     await supervisor.stop(session.id);
   } catch (err) {
@@ -147,6 +152,7 @@ async function transfer(
     // would let the message describe a decision the code did not take, on the one path
     // where a human has nothing else to go on.
     const stillDriving = supervisor.handleFor(session.id) !== null;
+    if (stillDriving) cancelHandoff();
     if (task) {
       if (stillDriving) {
         // The driver survived its own stop, so this is a handoff that simply did not
@@ -176,9 +182,9 @@ async function transfer(
   }
 
   const name = sessionLabel(task?.title?.trim() || session.name || session.agent);
-  let homeName: string;
+  let home: SpawnedHome;
   try {
-    homeName = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
+    home = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     // The agent is gone and nothing is going to replace it, so the task has to be SETTLED
@@ -202,7 +208,7 @@ async function transfer(
         `${cwd} to continue the conversation yourself`,
     };
   }
-  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, homeName, updatedAt: Date.now() });
+  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, ...home, updatedAt: Date.now() });
 
   // Rebind the task to whatever discovery finds in that checkout. Absence is not an error -
   // the home is open and the sweep will keep looking - so this reports what it got rather
@@ -216,5 +222,5 @@ async function transfer(
     });
     registry.bindTaskToWorkEpisode(task.id, adopted.id);
   }
-  return { ok: true, homeName, sessionId: adopted?.id ?? null };
+  return { ok: true, homeName: home.homeName, sessionId: adopted?.id ?? null };
 }

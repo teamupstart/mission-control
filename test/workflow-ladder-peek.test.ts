@@ -72,11 +72,11 @@ test("the Inspector gate outranks already-passed stages in the Board peek", () =
   const detail = ladderDetail("gate");
   const view = workflowLadderPeekView(detail.summary, detail);
   assert.equal(view?.name, "GitHub Inspector gate");
-  assert.equal(view?.sub, "PR #301 · head 4f2ab19c");
+  assert.equal(view?.sub, "PR #301 · head 4f2ab19c0000");
   assert.equal(view?.sentence, gateWaitSentence("review_pending"));
 
   const html = render("gate");
-  assert.match(html, /PR #301 · head 4f2ab19c/);
+  assert.match(html, /PR #301 · head 4f2ab19c0000/);
   assert.ok(html.includes(gateWaitSentence("review_pending")));
 });
 

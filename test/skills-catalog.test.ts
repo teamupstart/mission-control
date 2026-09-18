@@ -322,6 +322,11 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   // chain itself, not assume it.
   assert.match(text, /committed and pushed on this session's branch/);
   assert.match(text, /If you cannot commit and push the artifacts, do not create the tasks/);
+  assert.match(text, /get_plan_publication_context/);
+  assert.match(text, /owner: "workflow"/);
+  assert.match(text, /report that planning is complete and end the turn/);
+  assert.match(text, /Direct publication when no workflow is bound/);
+  assert.match(text, /Do not treat an unknown binding as absent/);
 
   const mcp = readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
   const start = mcp.indexOf('"create_task"');

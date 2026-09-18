@@ -134,6 +134,7 @@ export type PaletteTarget =
   | { kind: "dispatch" }
   | { kind: "launch-ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "bind-workflow" }
+  | { kind: "browse-tours" }
   | { kind: "start-tour"; tourId: TourId }
   | { kind: "report-product-issue" }
   | { kind: "open-mission"; scheduleId: string };
@@ -497,6 +498,14 @@ const strategyProvider: PaletteProvider = {
 const commandProvider: PaletteProvider = {
   id: "commands",
   rows: () => [
+    {
+      id: "command:browse-tours",
+      kind: "command",
+      title: "Browse tours",
+      detail: "Explore Mission Control and choose a walkthrough.",
+      keywords: ["tour", "learn", "help", "onboarding", "startup"],
+      target: { kind: "browse-tours" },
+    },
     ...TOUR_ENTRIES.map((tour): PaletteRow => ({
       id: tour.palette.rowId,
       kind: "command",
@@ -696,6 +705,8 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open Dispatch already in Ensemble mode on this strategy.";
     case "bind-workflow":
       return "Open the binding dialog to pick a session and a published workflow version.";
+    case "browse-tours":
+      return "Preview every available tour and choose one to start.";
     case "start-tour":
       return tourEntry(row.target.tourId).palette.hint;
     case "report-product-issue":

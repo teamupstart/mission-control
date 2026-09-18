@@ -1736,6 +1736,7 @@ async function runShipEvidenceScenario(input: {
   verdict: { complete: boolean; summary: string; gaps: FixedGap[]; resolved?: string[] };
   evidence?: WorkflowStagedEvidenceList;
   evidenceStatus?: number;
+  evidenceReadsBeforeStop?: number;
   claimReason?: "no_binding" | "manual_trigger";
   stopOn: "claim" | "consume" | "none";
   generation?: number;
@@ -1873,7 +1874,8 @@ async function runShipEvidenceScenario(input: {
       ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
       : input.stopOn === "consume"
         ? () => stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length > 0
-        : () => evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250,
+        : () => evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250
+          && stub.to("GET", "/api/sessions/s1/workflow-evidence").length >= (input.evidenceReadsBeforeStop ?? 1),
   });
   await stub.close();
   return { stub, out, prompt: fake.prompt, log: fake.log };
@@ -2211,6 +2213,9 @@ test("a registered-evidence read failure neither verifies, consumes nor claims",
   const result = await runShipEvidenceScenario({
     verdict: { complete: true, summary: "would have completed", gaps: [] },
     evidenceStatus: 500,
+    // Wait for both paths to reach the failed read before ending the fixture. A quiet
+    // 250ms after the first request alone could stop a contended worker between them.
+    evidenceReadsBeforeStop: 2,
     stopOn: "none",
   });
   // Recovery and completion both consult the same authority, and neither may turn a failed

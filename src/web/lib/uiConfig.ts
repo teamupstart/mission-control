@@ -86,8 +86,8 @@ export async function hydrateUiConfig(): Promise<void> {
     // and a stray from a rename two generations back must never overwrite it.
     const legacy = readLegacySettings();
     if (legacy) {
-      // Legacy settings identify an existing profile. Do not let `coerce`'s new-profile
-      // default turn that rescued profile into an onboarding candidate.
+      // Retain the old one-time flag's upgrade behavior for compatible clients.
+      // The independent startup-picker preference keeps its default-on value.
       if (!await updateUiConfig({ ...legacy, guidedTour: false })) {
         retryHydration();
         return;

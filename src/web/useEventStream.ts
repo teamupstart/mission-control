@@ -1,3 +1,4 @@
+import { observeBrowserConnection } from "./lib/experience.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileCommentReview,
@@ -247,6 +248,7 @@ export function useEventStream(): MissionState {
 
     es.onopen = () => {
       if (esRef.current !== es) return;
+      observeBrowserConnection(true);
       setConnected(true);
       // A change announced while the channel was down reached nobody, and this config is not
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
@@ -259,6 +261,7 @@ export function useEventStream(): MissionState {
     };
     es.onerror = () => {
       if (esRef.current !== es) return;
+      observeBrowserConnection(false);
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
       // off it instead of storming for everything that changed during the gap.

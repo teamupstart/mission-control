@@ -90,3 +90,21 @@ test("a triage hint cannot authorize an operation missing from the allowed set",
   run.recovery!.operations = [];
   assert.equal(runRemedy(run as WorkflowRunSummary), null);
 });
+
+test("a head-mismatch handoff retains the daemon's Inspector recheck recovery", () => {
+  const d = detail(context({
+    status: "waiting_for_session", phase: "inspector_head_mismatch",
+    gate: { waitReason: "head_mismatch" } as WorkflowRecoveryContext["gate"],
+  }));
+  assert.ok(d.summary.recovery?.operations.includes("recheck-inspector"));
+  assert.ok(inspectorGateActions(d).some((action) => action.kind === "recheck-inspector"));
+});
+
+test("a clean-review wait keeps the Inspector recheck available", () => {
+  const d = detail(context({
+    status: "waiting_for_inspector", phase: "inspector_clean_review",
+    gate: { waitReason: "clean_review_pending" } as WorkflowRecoveryContext["gate"],
+  }));
+  assert.equal(d.summary.recovery?.phaseKnown, true);
+  assert.equal(runNextMove(d)?.kind, "recheck-inspector");
+});

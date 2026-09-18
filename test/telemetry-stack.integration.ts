@@ -44,6 +44,10 @@ const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.
 const { serializeMetrics } = await import("../src/server/telemetry/otlp.ts");
 const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
 const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import(
+  "../src/server/telemetry/sessions.ts"
+);
+const { scopedRef } = await import("../src/server/telemetry/identity.ts");
 const { ENDPOINTS, composeService, waitUntilReady } = await import(
   "../scripts/observability.mjs"
 );
@@ -258,6 +262,119 @@ test("a completed span is searchable in Tempo at its original timestamp", async 
     Math.abs(startMs - (occurredAt - 275)) < 2_000,
     `span started at ${new Date(startMs).toISOString()}, expected near ${new Date(occurredAt - 275).toISOString()}`,
   );
+});
+
+test("session attribution across restart reaches real metrics and scoped traces", async () => {
+  resetTelemetryState();
+  resetSessionTelemetryForTesting();
+  enableExport();
+  const instance = resourceAttributes()["service.instance.id"];
+  const sessionId = `private-session-${RUN}`;
+  let publish: (event: { type: string } & Record<string, unknown>) => void = () => {};
+  const attach = () => attachSessionTelemetry({
+    subscribe(listener) {
+      publish = listener;
+      return () => { publish = () => {}; };
+    },
+    getTask: () => undefined,
+  });
+  const observe = (effort: string) => publish({
+    type: "session_upsert",
+    session: {
+      id: sessionId, agent: "claude", runtime: "sdk", state: "idle", terminals: [],
+      agentSessionId: `private-conversation-${RUN}`, cwd: `/private/repository/${RUN}`,
+      pendingEffort: null,
+      meta: { modelId: "claude-opus-5", thinkingLevel: effort, nativeEffort: null, source: "driver" },
+    },
+  });
+  let detach = attach();
+  try {
+    observe("medium");
+    runProjectionPass();
+    detach();
+    closeDb();
+    resetSessionTelemetryForTesting();
+    detach = attach();
+    observe("high");
+    observe("high");
+    runProjectionPass();
+    runProjectionPass();
+
+    const segments = openDb().prepare(
+      "SELECT refs_json FROM telemetry_journal WHERE name = 'mission.session.segment.opened' ORDER BY seq",
+    ).all() as Array<{ refs_json: string }>;
+    assert.equal(segments.length, 2);
+    const refs = segments.map((row) => JSON.parse(row.refs_json) as Record<string, string>);
+    assert.notEqual(refs[0]!.segment_id, refs[1]!.segment_id);
+    const delivered = await runDeliveryPass();
+    assert.ok(delivered.accepted > 0);
+
+    const result = await promEventually(
+      `mission_session_segments_total{service_instance_id="${instance}"}`,
+      (r) => r.data.result.length === 2,
+    );
+    assert.deepEqual(result.data.result.map((s) => s.metric.effort).sort(), ["high", "medium"]);
+    assert.equal(result.data.result.reduce((n, s) => n + Number(s.value[1]), 0), 2);
+    const starts = await promEventually(
+      `mission_sessions_started_total{service_instance_id="${instance}"}`,
+      (r) => r.data.result.length > 0,
+    );
+    assert.equal(Number(starts.data.result[0]!.value[1]), 1);
+
+    const salt = profileSalt("user");
+    for (const [index, ref] of refs.entries()) {
+      const traceId = scopedTraceId("user", salt, ref.__trace_id!);
+      const trace = await tempoTrace(traceId) as {
+        batches?: Array<{ scopeSpans?: Array<{ spans?: Array<{
+          name: string; attributes?: Array<{ key: string; value: { stringValue?: string } }>;
+        }> }> }>;
+      } | null;
+      assert.ok(trace, `missing session trace ${traceId}`);
+      const span = trace.batches?.flatMap((b) => b.scopeSpans ?? [])
+        .flatMap((s) => s.spans ?? []).find((s) => s.name === "mission.session.segment");
+      assert.ok(span);
+      const attrs = Object.fromEntries((span.attributes ?? []).map((a) => [a.key, a.value.stringValue]));
+      assert.equal(attrs["mission.effort"], index === 0 ? "medium" : "high");
+      assert.equal(attrs["mission.ref.session_id"], scopedRef("user", salt, `session_id:${sessionId}`));
+      assert.equal(attrs["mission.ref.segment_id"], scopedRef("user", salt, `segment_id:${ref.segment_id}`));
+      for (const sentinel of [sessionId, `private-conversation-${RUN}`, `/private/repository/${RUN}`]) {
+        assert.equal(JSON.stringify(trace).includes(sentinel), false, `${sentinel} leaked to Tempo`);
+      }
+    }
+  } finally {
+    detach();
+    resetSessionTelemetryForTesting();
+  }
+});
+
+test("workflow golden metrics and scoped review traces survive restart in the real stack", async () => {
+  resetTelemetryState();
+  enableExport();
+  const { runWorkflowGoldenFixture } = await import("./helpers/workflow-telemetry.ts");
+  const { runId } = await runWorkflowGoldenFixture(`stack-${RUN}`);
+  runProjectionPass(); runProjectionPass();
+  const instance = resourceAttributes()["service.instance.id"];
+  const delivered = await runDeliveryPass();
+  assert.ok(delivered.accepted > 0);
+  const expected: Record<string, number> = {
+    mission_persona_verdicts_total: 3, mission_persona_executions_total: 4,
+    mission_persona_response_errors_total: 1, mission_workflow_repair_packets_total: 1,
+    mission_workflow_repair_rounds_total: 1, mission_workflow_interventions_total: 1,
+  };
+  for (const [metric, value] of Object.entries(expected)) {
+    const result = await promEventually(`${metric}{service_instance_id="${instance}"}`,
+      (r) => r.data.result.reduce((n, point) => n + Number(point.value[1]), 0) === value);
+    assert.equal(result.data.result.reduce((n, point) => n + Number(point.value[1]), 0), value, metric);
+  }
+  const row = openDb().prepare("SELECT refs_json FROM telemetry_journal WHERE name = 'mission.workflow.review.finished' LIMIT 1")
+    .get() as { refs_json: string };
+  const refs = JSON.parse(row.refs_json) as Record<string, string>;
+  const trace = await tempoTrace(scopedTraceId("user", profileSalt("user"), refs.__trace_id!));
+  assert.ok(trace, "completed workflow review trace must be searchable");
+  const json = JSON.stringify(trace);
+  assert.ok(json.includes("mission.workflow.review.finished"));
+  assert.ok(!json.includes("PRIVATE_SENTINEL"));
+  assert.ok(!json.includes(runId));
 });
 
 test("a batch built days ago lands at the time it was built, not the time it drained", async () => {
@@ -697,4 +814,41 @@ test("the daemon's journal is unchanged by everything the backend did", async ()
     .prepare(`SELECT COUNT(*) AS n FROM telemetry_journal`)
     .get() as { n: number };
   assert.ok(rows.n > 0, "facts captured during this run are still in the journal");
+});
+
+test("Phase 5 source replay exports single logical outcomes and correlated safe errors to both audiences", async () => {
+  const { recordPrimaryAction, recordSafeError, recordAutomationTransition } = await import("../src/server/telemetry/experience.ts");
+  const { resolveOperationContext } = await import("../src/shared/telemetry-ingress.ts");
+  for (const profile of ["user", "product"] as const) {
+    resetTelemetryState();
+    assert.equal(setTelemetryConfig({ enabled: true, [profile]: { enabled: true, endpoint: ENDPOINTS.otlp } }).ok, true);
+    const operation = { operationId: `phase5${RUN}operation`, startedAt: Date.now(), context: resolveOperationContext(new Headers({
+      "x-mission-operation-id": `phase5${RUN}operation`, "x-mission-operation-surface": "runs", "x-mission-operation-actor": "human",
+    })) };
+    const action = { ...operation, feature: "pipelines", action: "pipeline.start" } as const;
+    recordPrimaryAction({ ...action, outcome: "pending" });
+    recordSafeError({ component: "provider", family: "provider", code: "timeout", handled: true, retryable: "yes", fingerprint: "unknown", suppressed: 0 }, new Error("PRIVATE_SENTINEL /private/file"), operation);
+    recordPrimaryAction({ ...action, outcome: "applied" });
+    recordAutomationTransition("PRIVATE_SENTINEL-owner-id", { feature: "schedules", action: "occurrence", outcome: "applied", coverage: "owner_transition" }, { kind: "scheduler", origin: "daemon", basis: "owner" });
+    closeDb(); openDb();
+    recordPrimaryAction({ ...action, outcome: "applied" });
+    recordAutomationTransition("PRIVATE_SENTINEL-owner-id", { feature: "schedules", action: "occurrence", outcome: "applied", coverage: "owner_transition" }, { kind: "scheduler", origin: "daemon", basis: "owner" });
+    runProjectionPass(); runProjectionPass();
+    const instance = resourceAttributes()["service.instance.id"];
+    assert.ok((await runDeliveryPass()).accepted > 0);
+    for (const metric of ["mission_action_count_total", "mission_feature_used_total", "mission_errors_total", "mission_automation_actions_total"]) {
+      const value = await promEventually(`${metric}{service_instance_id="${instance}"}`, (r) => r.data.result.reduce((sum, p) => sum + Number(p.value[1]), 0) === 1);
+      assert.equal(value.data.result.reduce((sum, p) => sum + Number(p.value[1]), 0), 1, `${profile}: ${metric}`);
+    }
+    const row = openDb().prepare("SELECT refs_json FROM telemetry_journal WHERE name = 'mission.error.occurrence' LIMIT 1").get() as { refs_json: string };
+    const refs = JSON.parse(row.refs_json) as Record<string, string>;
+    const traceId = scopedTraceId(profile, profileSalt(profile), refs.__trace_id!);
+    const trace = await tempoTrace(traceId);
+    assert.ok(trace, `${profile}: correlated trace must arrive in Tempo`);
+    const text = JSON.stringify(trace);
+    assert.ok(text.includes("mission.error.occurrence"));
+    assert.ok(text.includes("mission.action.result"));
+    assert.ok(!text.includes("PRIVATE_SENTINEL"));
+    checkpoint(`Phase 5 ${profile}`, `action=1, feature use=1, error=1, schedule outcome=1 after restart/replay; Tempo trace ${traceId} contains action and error, no private sentinel`);
+  }
 });

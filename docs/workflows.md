@@ -1,5 +1,9 @@
 # Workflows and Personas
 
+The **Follow the review** guided tour is the fastest orientation to the run side of
+everything below: it walks one real No-Mistakes Review run stage by stage, from the Settings
+rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#guided-tours).
+
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
 database. Their name, description, optional provider and model overrides, and guidance are
@@ -169,7 +173,7 @@ Four ready-made workflows ship already published in the Library:
 | **General Review** | Intent Conformance; then Code Risk, Code Quality, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
-| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Review completion |
+| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -180,7 +184,10 @@ resumption, and up to five repair rounds, subject to the existing trust and exec
 General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
 Codex Sol for Code Design and Terra for its other judges.
 
-Plan Validation has no code-test Commands, Slop Filter, PR action, or Inspector gate. It compares
+Plan Validation v2 follows its judges with the verified Pull Request action. It has no code-test
+Commands, Slop Filter, or Inspector gate. Existing v1 bindings retain their review-only graph;
+upgrade or rebind them explicitly to add publication. Custom workflows retain their own authored
+completion behavior. Plan Validation compares
 complete relevant plan files, not just changed hunks: repeated requirements and interfaces, phase
 producers and consumers, safe intermediate states, and feasible validation steps. Single-phase
 plans receive the same checks across their sections and tasks. Missing or truncated comparison
@@ -1674,6 +1681,26 @@ not change the browser's action choice. An open run with a phase the daemon cann
 remains inspectable and offers **Cancel run** only. A response from an older daemon without
 recovery capabilities shows an explanation and no recovery controls.
 
+**Whose move it is comes first.** A posture banner at the top of the header classifies every
+open run into one of two postures with one sentence. **No action needed**, with a pulsing dot,
+while the run is advancing itself: reviewers and commands running, a session action executing,
+or a parked round whose session is still working on the feedback and whose resumption observer
+opens the next round on its own. **Your move** when the session is idle, nothing is running,
+and an operator decision is the only way forward. The banner and the action row read the same
+derivation (`runPosture`), so they cannot argue: when a run under **No action needed** still
+carries a derived move - a parked round's **Start repair round N**, a gate's **Check again** -
+that move demotes from the filled primary to a ghost button carrying an **override** tag,
+with a tooltip that opens "Not required". For a resubmission the tooltip goes on to say what
+the click costs - it interrupts the session's repair and spends a round; every other demoted
+move keeps its own tooltip after that prefix, because a gate recheck spends nothing and
+saying otherwise would be untrue. A run that is actively moving - evidence capturing, reviewers and
+commands running, a session action executing - has no derived move at all, so it shows no
+resubmission control at any weight; Cancel run remains offered. Where a move exists it stays
+clickable - the posture only decides how loudly the page offers it. For a parked round the
+banner's sentence is the resumption observer's own withheld reason, verbatim, so the fact is
+stated once, in the place that says who moves next. A finished run renders no banner: done is
+not a posture, and the run-again primary explains itself.
+
 That primary used to read **Resume review**, over a tooltip promising to "resume this run
 where it stalled". It does no such thing: the daemon computes `latest.round + 1`, re-runs the
 graph from the Session node with an empty attempt slate, and every reviewer that passed last
@@ -2375,6 +2402,14 @@ taken before the upgrade, then start the matching older build. Do not open the u
 with that build or relabel recovery rows as author refinements. A downgrade loses history recorded
 after the backup; retain exports for audit before restoring. Settings-only backups do not restore
 workflow history.
+
+The same downgrade restriction applies after creating bindings or runs for a built-in version
+that the older build did not ship, including Plan Validation v2. Built-in versions come from
+the application catalog, so an older build cannot resolve a newer version id from the upgraded
+database. Before upgrading, keep an offline database backup. To return to a build that only
+ships Plan Validation v1 after using v2, stop the application, restore that pre-upgrade backup,
+and start the matching older build. Restoring only the previous app bundle does not restore
+workflow compatibility or preserve history written since the backup.
 
 ### Canvas and accessibility controls
 

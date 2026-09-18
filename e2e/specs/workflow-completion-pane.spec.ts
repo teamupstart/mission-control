@@ -251,6 +251,55 @@ function seedCompletionRecord(daemon: DaemonHandle, runId: string): void {
 
 const tab = (page: Page, name: RegExp): Locator => page.getByRole("tab", { name });
 
+test("the Inspector gate explains a commit mismatch and pending final publication", async ({ dashboard, daemon }) => {
+  const runId = await seedRun(dashboard, daemon);
+  seedCompletionRecord(daemon, runId);
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
+    const gate = JSON.parse(row.gate_state_json);
+    gate.targetHeadSha = "91c63bd21d904302cf8f20cc968c211c39242f6f";
+    gate.observedHeadSha = "90067183549367465f1b7c0507d30224a4ac62eb";
+    gate.waitReason = "head_mismatch";
+    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = 'inspector_head_mismatch', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify(gate), runId);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await expect(pane).toContainText("expected 91c63bd21d90, PR at 900671835493");
+  await expect(pane).toContainText("Submit the current work for review to continue");
+  const gateSentence = pane.locator(".wf-run-sentence").first();
+  await gateSentence.scrollIntoViewIfNeeded();
+  await expect(gateSentence).toBeVisible();
+  await shoot(dashboard, gateSentence, "04-inspector-head-mismatch");
+
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
+    const gate = JSON.parse(row.gate_state_json);
+    gate.targetHeadSha = gate.observedHeadSha;
+    gate.waitReason = "clean_review_pending";
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(PR_KEY);
+    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_inspector', current_phase = 'inspector_clean_review', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify(gate), runId);
+  });
+  await dashboard.reload();
+  await expect(pane).toContainText("waiting to confirm its final clean review on GitHub");
+  await gateSentence.scrollIntoViewIfNeeded();
+  await expect(gateSentence).toBeVisible();
+  await shoot(dashboard, gateSentence, "05-inspector-publication-pending");
+});
+
+test("the workflow view explains every requirement of its Inspector gate", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.getByRole("button", { name: /^No-Mistakes Review \(High Rigor\) built-in/ }).click();
+  const footer = dashboard.getByRole("region", { name: "GitHub Inspector, the fixed completion policy after End" });
+  await expect(footer).toContainText("every Inspector finding is resolved");
+  await expect(footer).toContainText("final clean review must also be published");
+  await expect(footer).toContainText("enabled in Settings");
+  await footer.scrollIntoViewIfNeeded();
+  await expect(footer).toBeVisible();
+  await shoot(dashboard, footer, "06-inspector-gate-requirements");
+});
+
 test("the Completion tab folds the gate and the Foreman claims into one pane", async ({
   dashboard,
   daemon,

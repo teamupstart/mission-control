@@ -5,6 +5,7 @@ import type { ForemanEpisode, IntentRelationship, Session, SessionGoal } from "@
 import { askPreview } from "@shared/foreman-ask.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 import { relativeTime } from "../lib/format.ts";
 
 // Everything Foreman has decided on this session, with the context that produced it.
@@ -45,12 +46,13 @@ export function ForemanDrawer({
   onWithdraw: () => void;
 }): React.JSX.Element | null {
   const [selected, setSelected] = useState<number | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   // Escape backs out one level at a time - detail to list, list to closed - rather
   // than dismissing the whole drawer from the detail view. Anything else loses the
   // reader's place in a list they may have scrolled a long way down.
   useEffect(() => {
-    if (!open) return;
+    if (!open || guideOpen) return;
     function onKey(ev: KeyboardEvent): void {
       if (ev.key !== "Escape") return;
       ev.stopPropagation();
@@ -62,13 +64,16 @@ export function ForemanDrawer({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose, selected]);
+  }, [open, onClose, selected, guideOpen]);
 
   // Closing forgets the selection, so re-opening lands on the list. A drawer that
   // reopened onto whichever episode was last read would hide the newest one, which is
   // the one it is usually being opened for.
   useEffect(() => {
-    if (!open) setSelected(null);
+    if (!open) {
+      setSelected(null);
+      setGuideOpen(false);
+    }
   }, [open]);
 
   if (!open) return null;
@@ -87,6 +92,7 @@ export function ForemanDrawer({
         ) : (
           <>
             <span className="fn-badge">Foreman</span>
+            <ForemanInfoButton onClick={() => setGuideOpen(true)} />
             <span className="fd-title">
               {episodes.length} {episodes.length === 1 ? "note" : "notes"} on this session
             </span>
@@ -142,6 +148,7 @@ export function ForemanDrawer({
           </>
         )}
       </div>
+      {guideOpen && <ForemanGuide onClose={() => setGuideOpen(false)} />}
     </aside>
   );
 }

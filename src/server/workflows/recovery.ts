@@ -56,6 +56,7 @@ export const WORKFLOW_PHASE_RECOVERY = {
   unchanged_repository: "repository",
   inspector_adapter_error: "resume",
   inspector_awaiting_fresh_observation: "resume",
+  inspector_clean_review: "resume",
   inspector_disabled: "decision",
   inspector_findings: "decision",
   inspector_gate_context_invalid: "resume",
@@ -94,7 +95,8 @@ export function inspectorRecoveryCanRecheck(run: Pick<WorkflowRecoveryContext, "
   return run.status === "waiting_for_pr"
     || run.status === "waiting_for_inspector"
     || run.status === "waiting_for_new_head"
-    || (run.status === "waiting_for_session" && run.phase === "pr_handoff")
+    || (run.status === "waiting_for_session"
+      && (run.phase === "pr_handoff" || run.phase === "inspector_head_mismatch"))
     || (run.status === "blocked" && run.phase === "inspector_disabled");
 }
 

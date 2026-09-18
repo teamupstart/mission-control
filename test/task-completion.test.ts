@@ -291,3 +291,39 @@ test("bugfix receives the same implementation and deferred-shipping instructions
   assert.deepEqual(taskCompletionContract("bugfix")!.complete, taskCompletionContract("ship")!.complete);
   assert.deepEqual(taskCompletionContract("bugfix")!.deferred, taskCompletionContract("ship")!.deferred);
 });
+
+test("a workflow-bound plan defers its PR but still publishes artifacts before scheduling", () => {
+  const contract = taskCompletionContract("plan", true);
+  assert.ok(contract);
+  assert.deepEqual(contract.deferred.map((action) => action.id), ["pull-request", "review", "ci", "merge"]);
+  assert.ok(contract.complete.some((requirement) => /human.*approved/.test(requirement)));
+  assert.ok(contract.complete.some((requirement) => /committed and pushed.*before.*scheduling/.test(requirement)));
+  assert.ok(contract.complete.some((requirement) => /when requested/.test(requirement)));
+  const task = mkTask({ kind: "plan", workflowId: "plan-review" });
+  const delivered = withTaskKindContract(task, task.intent, {
+    planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+  });
+  const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
+  assert.ok(delivered.includes(`do not ${deferredImperativeList(contract)}`));
+  for (const requirement of contract.complete) {
+    assert.ok(delivered.includes(requirement));
+    assert.ok(prompt.includes(requirement));
+  }
+  assert.match(prompt, /absence is NOT a/);
+  assert.doesNotMatch(prompt, /Judge only whether the implementation work/);
+  assert.match(delivered, /end this turn/);
+});
+
+test("unbound plans keep skill-owned PR creation and other kinds keep their contract", () => {
+  assert.equal(taskCompletionContract("plan", false), null);
+  for (const kind of TASK_KINDS.filter((kind) => kind !== "plan")) {
+    assert.equal(taskCompletionContract(kind, true), taskCompletionContract(kind, false));
+  }
+  const task = mkTask({ kind: "plan" });
+  const delivered = withTaskKindContract(task, task.intent, {
+    planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+  });
+  assert.match(delivered, /phased-plan skill owns.*pull request/);
+  assert.match(delivered, /get_plan_publication_context/);
+  assert.doesNotMatch(delivered, /## Plan task completion handoff/);
+});

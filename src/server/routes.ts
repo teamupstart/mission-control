@@ -1,4 +1,8 @@
+import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
+import { retainTurnOperation } from "./telemetry/experience.ts";
+import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
+import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -55,6 +59,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
   type McpCreateTaskV2,
   McpAdoptPipelineRunSchema,
@@ -257,6 +262,7 @@ import {
   foremanStatus,
   getForemanConfig,
   recordForemanPlannerHealth,
+  recordForemanHealth,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -372,6 +378,7 @@ import {
   TelemetryOperationRequestSchema,
   TelemetryProbeRequestSchema,
 } from "@shared/telemetry.ts";
+import type { TelemetryActor } from "@shared/telemetry.ts";
 import {
   TELEMETRY_INGRESS_LIMITS,
   TelemetryIngressRequestSchema,
@@ -380,6 +387,9 @@ import {
 import {
   admitBrowserTelemetry,
   telemetryCycle,
+  observeEffortSelected,
+  observeKillRequested,
+  observeSessionOperation,
   recordTelemetryControl,
   runTelemetryOperation,
   runTelemetryProbe,
@@ -1532,6 +1542,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.use("/api/*", requireLoopback);
   app.use("/events", requireLoopback);
 
+  app.use("/api/*", primaryActionTelemetry());
+  app.use("/mcp/*", primaryActionTelemetry());
+
   app.get("/api/health", (c) =>
     c.json({
       ok: true,
@@ -1855,6 +1868,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
     spawn: spawnUniquely,
@@ -1894,7 +1908,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             if (!launched.ok && launched.status !== 504) {
               throw new Error(launched.error ?? `${launched.label} could not open a window`);
             }
-            return launched.homeName ?? name;
+            return {
+              homeName: launched.homeName ?? name,
+              homeBackend: backend,
+              terminalResourceId: launched.terminalResourceId ?? null,
+            };
           },
         }
       : defaultHandoffDeps;
@@ -2460,6 +2478,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return manager
       ? c.json(manager.bindings())
       : c.json({ error: "Workflow manager unavailable" }, 503);
+  });
+  app.get("/api/sessions/:id/plan-publication", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    return c.json(manager.planPublicationContext(c.req.param("id")));
   });
   app.post("/api/workflow-bindings", async (c) => {
     const manager = workflowManager();
@@ -4707,6 +4730,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ task: result.task, replayed: result.replayed });
   });
 
+  app.post("/mcp/plan-publication", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, McpPlanPublicationSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    return c.json(manager.planPublicationContext(session.id));
+  });
+
   app.post("/mcp/workflow-evidence", bodyLimit({
     maxSize: WORKFLOW_EVIDENCE_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "Workflow evidence request is too large" }, 413),
@@ -5034,6 +5068,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
@@ -5047,6 +5082,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         undefined,
         parsed.data.origin,
       );
+      // AFTER the delivery, because "delivered" is the only fact worth recording and it is
+      // not known before. No text, no length and no draft content travels with it: the
+      // question this answers is how often conversation operations land, not what they said.
+      observeSessionOperation({
+        session,
+        operation: "send",
+        outcome: sent.ok ? "delivered" : "refused",
+        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+      });
       return c.json(
         {
           ok: sent.ok,
@@ -5063,6 +5108,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       undefined,
       () => registry.promptResourceBlockerForSession(session.id),
     );
+    observeSessionOperation({
+      session,
+      // An unsubmitted write leaves a draft in somebody's composer and starts no turn, which
+      // is a different operation from a send and is recorded as one.
+      operation: parsed.data.submit ? "send" : "queued",
+      outcome: r.ok ? "delivered" : "refused",
+      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+    });
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -5101,10 +5155,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         { reviews, by: parsed.data.by },
       );
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
     const r = await selectPaneOption(session, parsed.data, panes);
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -5146,6 +5202,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         { reviews, by: parsed.data.by },
       );
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -5158,6 +5215,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    // `formDelivered`, not `ok`, for the same reason the retirement above uses it: a pane form
+    // reports `ok` for two states that sent the child nothing, and recording those as answered
+    // questions would count decisions that are still owed.
+    observeQuestionResponse(session, formDelivered(r), parsed.data.by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -5235,6 +5296,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
+      // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
+      // it can be recalled or dropped - so recording it as a delivery would count turns the
+      // session never saw. `mission.session.operation` keeps the two apart by name.
+      observeSessionOperation({
+        session,
+        operation: "queued",
+        outcome: result.ok ? "delivered" : "refused",
+        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+      });
       return c.json(result, result.ok ? 200 : 409);
     }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
@@ -5271,6 +5342,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // reopened this race on the path Foreman's recovery packets travel.
       else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
     }
+    // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
+    // here rather than at the button for the reason this whole route exists: `ok` is the only
+    // place delivery is actually known, and on the pane arm it is genuinely different from
+    // "the text is in the composer". No text, no length and no origin prose travels with it.
+    observeSessionOperation({
+      session,
+      operation: "send",
+      outcome: r.ok ? "delivered" : "refused",
+      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+    });
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -5314,6 +5396,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, PendingTurnRevisionSchema);
     if (!parsed.ok) return parsed.res;
     const turn = pendingTurns.recall(session.id, c.req.param("turnId"), parsed.data.revision);
+    // A recall CANCELS a queued turn: the row leaves the outbox and its text goes back to the
+    // composer, so the agent never sees it. Recorded as a cancellation rather than left silent,
+    // because a `queued` with no matching `send` and no `cancel` reads as a turn that vanished.
+    // Keyed on the durable row id, so a retried recall of the same row records one cancel.
+    observeSessionOperation({
+      session,
+      operation: "cancel",
+      outcome: turn ? "delivered" : "refused",
+      actor: promptActor("human", c.req.raw.headers),
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+      ...(turn ? { identity: c.req.param("turnId") } : {}),
+    });
     return turn
       ? c.json({ ok: true as const, text: turn.text })
       : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
@@ -5415,6 +5509,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions);
+    // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
+    // orthogonal: a kill the agent survives and a session that vanishes with no request are
+    // both real, and neither implies the other.
+    observeKillRequested({
+      session,
+      taskId: registry.taskForSession(session.id, session.cwd)?.id ?? null,
+      outcome: r.ok ? "accepted" : "refused",
+      actor: resolveOperationContext(c.req.raw.headers).actor,
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+    });
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -5442,6 +5546,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
     if (unsupported) return c.json({ error: unsupported }, 400);
     const r = await interruptSession(session, sdkSessions, pendingTurns, panes);
+    observeSessionOperation({
+      session,
+      operation: "interrupt",
+      outcome: r.ok ? "delivered" : "refused",
+      actor: resolveOperationContext(c.req.raw.headers).actor,
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+    });
     return c.json(r, r.ok ? 200 : r.paneBlocked ? 409 : 500);
   });
 
@@ -5610,6 +5721,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // that settles immediately - choosing back the level the conversation is already on -
     // does not announce a pending change nothing is waiting for.
     const pending = deferred && registry.getSession(session.id)?.pendingEffort === r.effort;
+    // The SELECTION, which is not the same fact as what the session is executing. `applies`
+    // is read from `pending` rather than from `deferred`, for the reason directly above: a
+    // deferred request that settled on arrival took effect on the current turn, and reporting
+    // it as next-turn would leave a pending selection in the data that nothing ever retires.
+    observeEffortSelected({
+      session,
+      requested: parsed.data.effort,
+      outcome: r.ok ? "accepted" : "refused",
+      applies: !r.ok ? "unknown" : pending ? "next_turn" : "current_turn",
+      actor: resolveOperationContext(c.req.raw.headers).actor,
+      operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
+    });
     return c.json({ ...r, ...(r.ok ? { pending } : {}) }, r.ok ? 200 : 409);
   });
 
@@ -6087,6 +6210,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(config);
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+  app.post("/api/foreman/health", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthReportSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!recordForemanHealth(parsed.data)) {
+      return c.json({ error: "that worker does not hold the Foreman lease" }, 409);
+    }
+    return c.json({ ok: true });
+  });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
   app.get("/api/foreman/planner/control", (c) => c.json(foremanPlannerControl()));
@@ -6541,13 +6672,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/task-sources/config", async (c) => {
     const parsed = await parseBody(c, TaskSourcesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const before = getTaskSourcesConfig();
+    const beforeById = new Map(before.sources.map((source) => [source.id, source]));
     const sources = [];
     for (const s of parsed.data.sources) {
       const repoRoot = await resolveRepoRoot(s.repoRoot);
-      if (!repoRoot) return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
+      if (!repoRoot) {
+        // A repository can disappear after this source was configured - most commonly when
+        // its checkout is renamed. The whole-list PUT must still let an operator add another
+        // source, repair one stale source while a sibling remains stale, or remove either one.
+        // Carry only the exact stored (id, path) pair through unchanged. A new source or a
+        // changed path still has to resolve, so this does not let a typo enter the config.
+        const stored = beforeById.get(s.id);
+        if (!stored || stored.repoRoot !== s.repoRoot) {
+          return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
+        }
+        sources.push(s);
+        continue;
+      }
       sources.push({ ...s, repoRoot });
     }
-    const before = getTaskSourcesConfig();
     setTaskSourcesConfig({ sources });
     noteTaskSourceConfigChange(before.sources, sources);
     // Removing a failing source, or pausing one, changes the failing count the red dot
@@ -7188,7 +7332,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Computed per request rather than at boot; see `environmentCheckViews` for why an operator
   // who fixes what a warning names must not have to restart the daemon to stop seeing it.
   app.get("/api/environment/checks", async (c) =>
-    c.json({ checks: await environmentCheckViews() } satisfies EnvironmentChecksView));
+    c.json({
+      checks: await (setupDeps
+        ? setupDeps.environmentChecks(setupDeps.environment)
+        : environmentCheckViews()),
+    } satisfies EnvironmentChecksView));
 
   // Uncached. Re-checking reflects installs and sign-ins without restarting, while every
   // remedy remains inert data for the browser to link or copy. The one write during this read
@@ -7357,6 +7505,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // recipe creates one fixed Chat task through the manual-dispatch capability, which is the
   // only supported way Chat can launch.
   app.post("/api/tours/:tourId/preview", (c) => runTourRecipe(c, "preview"));
+
+  // The Follow the review tour's one daemon ask: a No-Mistakes run to read. With any run of
+  // the built-in already in history the newest answers and nothing is written; only a machine
+  // with no history at all receives the fabricated demonstration record (tour-demo-run.ts).
+  // Only this tour seeds runs, so the guard is the literal id rather than a recipe table.
+  app.post("/api/tours/:tourId/seed-run", (c) => {
+    if (c.req.param("tourId") !== "workflows") {
+      return c.json({ ok: false, error: "no such tour" }, 404);
+    }
+    const manager = workflowManager();
+    if (!manager) return c.json({ ok: false, error: "Workflow manager unavailable" }, 503);
+    return c.json({ ok: true, ...manager.seedTourDemoRun() });
+  });
 
   // A tour's single terminal path for every task it created. A live demo follows
   // CompleteModal's ordering: record the outcome, then stop the session. An Exit during
@@ -7897,4 +8058,50 @@ export function hostIsLoopback(host: string | undefined): boolean {
   // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
   const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+
+/**
+ * What a write into somebody's session is attributed to.
+ *
+ * The prompt origin is a DECLARATION by the caller, and it is treated as one: a
+ * `foreman`-marked send earns `declared`, never `owner`. The app's own operation headers can
+ * raise a human send to `app_context`, which is as strong as a request can get - P0's rule
+ * that `owner` is unreachable from a request holds here exactly as it does for the telemetry
+ * controls. A user-role message is not proof of a human sender, which is why this reads the
+ * origin rather than assuming one.
+ */
+function promptActor(
+  origin: "human" | "foreman" | "workflow",
+  headers: { get(name: string): string | null },
+): TelemetryActor {
+  const context = resolveOperationContext(headers);
+  if (context.actor.kind !== "unknown" && context.actor.kind !== origin) {
+    return { kind: "unknown", origin: context.actor.origin, basis: "unknown" };
+  }
+  if (origin === "foreman") return { kind: "foreman", origin: "mcp", basis: "declared" };
+  if (origin === "workflow") return { kind: "workflow", origin: "daemon", basis: "declared" };
+  return { kind: "human", origin: "dashboard", basis: context.actor.basis };
+}
+
+/**
+ * One answered driver question, on whichever of the four seams settled it.
+ *
+ * Extracted rather than repeated because all four ask exactly the same question of exactly
+ * the same facts, and four copies is four chances for one of them to start recording a
+ * refusal as an answer.
+ */
+function observeQuestionResponse(
+  session: Session,
+  delivered: boolean,
+  by: "human" | "foreman" | "workflow",
+  headers: { get(name: string): string | null },
+): void {
+  observeSessionOperation({
+    session,
+    operation: "question_response",
+    outcome: delivered ? "delivered" : "refused",
+    actor: promptActor(by, headers),
+    operationId: resolveOperationContext(headers).operationId ?? undefined,
+  });
 }

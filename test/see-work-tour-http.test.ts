@@ -7,6 +7,7 @@ import { buildApp } from "../src/server/routes.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
 import { SERVER_TOURS, serverTour, tourRecipeFor } from "../src/server/tours.ts";
+import { enableExperience, experienceFacts } from "./helpers/experience-assertions.ts";
 
 function tourTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -52,6 +53,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
 }
 
 test("the tour route fixes Terra, the harmless prompt, and request_input at the server", async () => {
+  enableExperience();
   const captured: {
     created?: CreateTaskInput;
     options?: Record<string, unknown>;
@@ -89,6 +91,9 @@ test("the tour route fixes Terra, the harmless prompt, and request_input at the 
     overrideDisabled: true,
     missionMcp: { tools: ["request_input"] },
   });
+  const actions = experienceFacts("mission.action.result").filter((e) => e.facts.action === "help.tour_dispatch");
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.facts.outcome, "applied", "the tour action launched; Phase 3 separately owns subsequent dispatch completion");
 });
 
 test("an empty-fleet preview launches one fixed manual Chat conversation", async () => {

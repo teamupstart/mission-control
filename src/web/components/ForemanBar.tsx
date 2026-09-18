@@ -4,6 +4,8 @@ import type { WrapupTrigger } from "@shared/queue.ts";
 import type { ForemanState } from "../useForeman.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
+import { ForemanErrors } from "./ForemanErrors.tsx";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
@@ -222,17 +224,20 @@ export function NumberSetting({
 export function ForemanBar({
   state,
   onOpenSettings,
+  onOpenModels = onOpenSettings,
   openRequest = 0,
 }: {
   state: ForemanState;
   /** Open Settings on the Foreman category, where the cheap tier, completion safeguards,
    *  and trusted-repo list now live. The popover keeps only the in-the-moment knobs. */
   onOpenSettings: () => void;
+  onOpenModels?: () => void;
   /** A changed value opens this existing control without moving ownership out of the bar. */
   openRequest?: number;
 }): React.JSX.Element {
   const { config, status } = state;
   const [open, setOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const handledOpenRequest = useRef(openRequest);
 
@@ -244,6 +249,7 @@ export function ForemanBar({
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {
+      if (guideOpen) return;
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     // Escape closes the popover the same way a click outside does. It stops there rather
@@ -251,6 +257,7 @@ export function ForemanBar({
     // drop the fleet selection behind it - this popover is not a registered overlay, so
     // nothing else knows to swallow the key on its behalf.
     function onKey(e: KeyboardEvent): void {
+      if (guideOpen) return;
       if (open && e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);
@@ -262,38 +269,53 @@ export function ForemanBar({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, guideOpen]);
 
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
   const chip = !enabled ? "off" : MODE_LABEL[mode] ?? mode;
   const running = status?.running ?? false;
   const queue = status?.queueDepth ?? 0;
+  const issues = status?.health?.issues.length ?? 0;
+  const accessibleName = `Foreman - the auto-responder (${enabled ? chip : "off"})${issues ? `, ${issues} ${issues === 1 ? "issue" : "issues"}` : ""}`;
 
   return (
     <div className="foremanbar" ref={ref}>
-      <Tooltip label={`Foreman - the auto-responder (${enabled ? chip : "off"})`}>
+      <Tooltip label={accessibleName}>
         <button
-          className={`ghost-btn foreman-btn${enabled ? " on" : ""}`}
+          className={`ghost-btn foreman-btn${enabled ? " on" : ""}${issues ? " has-errors" : ""}`}
           onClick={() => setOpen((o) => !o)}
           // Named explicitly because the word below is a `.tb-label`, which the topbar's
           // narrow ladder takes away: the dot and the mode chip survive the collapse, the
           // accessible name has to survive it too.
-          aria-label={`Foreman - the auto-responder (${enabled ? chip : "off"})`}
+          aria-label={accessibleName}
+          aria-expanded={open}
         >
-          <span className={`foreman-dot${enabled && running ? " live" : ""}`} aria-hidden />
+          {issues ? <span className="foreman-warning" aria-hidden>⚠</span>
+            : <span className={`foreman-dot${enabled && running ? " live" : ""}`} aria-hidden />}
           <span className="tb-label">Foreman</span>
-          <span className="foreman-chip">{chip}</span>
-          {enabled && queue > 0 && <span className="ghost-badge">{queue}</span>}
+          <span className="foreman-chip">{issues ? `${issues} ${issues === 1 ? "issue" : "issues"}` : chip}</span>
+          {!issues && enabled && queue > 0 && <span className="ghost-badge">{queue}</span>}
         </button>
       </Tooltip>
 
       {open && (
         <ForemanPopover
           state={state}
+          onOpenGuide={() => setGuideOpen(true)}
+          onOpenModels={() => { setOpen(false); onOpenModels(); }}
           onOpenSettings={() => {
             setOpen(false);
             onOpenSettings();
+          }}
+        />
+      )}
+      {guideOpen && (
+        <ForemanGuide
+          onClose={() => setGuideOpen(false)}
+          onOpenProfile={() => {
+            setGuideOpen(false);
+            setOpen(false);
           }}
         />
       )}
@@ -310,9 +332,13 @@ export function ForemanBar({
 export function ForemanPopover({
   state,
   onOpenSettings,
+  onOpenGuide,
+  onOpenModels = onOpenSettings,
 }: {
   state: ForemanState;
   onOpenSettings: () => void;
+  onOpenGuide: () => void;
+  onOpenModels?: () => void;
 }): React.JSX.Element | null {
   const { config, status, update, error } = state;
   const planner = status?.planner;
@@ -346,17 +372,23 @@ export function ForemanPopover({
   const running = status?.running ?? false;
 
   return (
-    <div className="alert-pop foreman-pop" role="dialog" aria-label="Foreman settings">
-      <Tooltip label="Let Foreman watch sessions and answer them for you">
-        <label className="alert-row">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => void update({ enabled: e.target.checked })}
-          />
-          Enable Foreman
-        </label>
-      </Tooltip>
+    <div className={`alert-pop foreman-pop${status?.health?.issues.length ? " has-errors" : ""}`} role="dialog" aria-label="Foreman settings">
+      {status?.health && status.health.issues.length > 0 && (
+        <ForemanErrors health={status.health} running={running} enabled={enabled} onOpenModels={onOpenModels} />
+      )}
+      <div className="foreman-info-row foreman-enable-row">
+        <Tooltip label="Let Foreman watch sessions and answer them for you">
+          <label className="alert-row">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => void update({ enabled: e.target.checked })}
+            />
+            Enable Foreman
+          </label>
+        </Tooltip>
+        <ForemanInfoButton onClick={onOpenGuide} />
+      </div>
 
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Mode</legend>

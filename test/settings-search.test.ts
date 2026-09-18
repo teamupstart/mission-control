@@ -92,6 +92,7 @@ function renderCategory(category: SettingsCategoryId): string {
       onLayoutChange: () => {},
       settingsStatus: EVERY_CATEGORY,
       onStartTour: () => {},
+      onBrowseTours: () => {},
     }),
   );
 }

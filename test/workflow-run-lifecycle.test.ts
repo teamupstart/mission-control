@@ -131,6 +131,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   inspector_missing_pr: { detail: asJson(gate), kind: "none" },
   inspector_pr_closed: { detail: asJson(gate), kind: "none" },
   inspector_pr_switch_refused: { detail: asJson(gate), kind: "none" },
+  inspector_clean_review: { detail: asJson(gate), kind: "none" },
   inspector_review: { detail: asJson(gate), kind: "none" },
   inspector_review_backoff: { detail: asJson(gate), kind: "none" },
   inspector_review_error: { detail: asJson(gate), kind: "none" },

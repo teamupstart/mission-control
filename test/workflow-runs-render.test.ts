@@ -2197,9 +2197,11 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(pane, /Show finding/);
   assert.match(html, /Persona review bypassed for GitHub Inspector repair/);
   assert.match(html, /moved from oldhead01234 to newhead01234/);
-  // The gate's recheck IS this run's next move, so it is the header's primary and wears the
-  // imperative a reader can act on rather than the route's own name.
-  assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Check again</);
+  // The gate's recheck is still this run's one derived move, but a `waiting_for_new_head`
+  // run advances on its own when a head is pushed (`runPosture`), so the header offers the
+  // recheck as an override rather than presenting it as the required move.
+  assert.match(headerOf(html), /class="btn btn-ghost wf-run-override"[^>]*>Check again</);
+  assert.match(headerOf(html), /No action needed/);
   assert.match(html, /Restart full workflow/);
   assert.match(html, /Open GitHub Inspector settings/);
   // This gate has an adopted pull request, so Open PR is present, enabled, and a real link.

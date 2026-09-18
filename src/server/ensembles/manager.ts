@@ -1,3 +1,4 @@
+import { observeEnsemble } from "../telemetry/automation.ts";
 import { createHash } from "node:crypto";
 import {
   ENSEMBLE_LIMITS,
@@ -1374,6 +1375,7 @@ export class EnsembleManager {
     this.refreshProjection();
     const decorated = this.summaryOf(id);
     if (decorated === null) return null;
+    observeEnsemble(() => this.store.detail(id));
     this.rememberPublished(decorated);
     this.registry.upsertEnsemble(decorated);
     return decorated;

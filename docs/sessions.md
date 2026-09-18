@@ -157,12 +157,22 @@ Rename and Kill split the same way *on the terminal runtime*. Renaming a multipl
 session moves the session name *and* retitles every tab attached to it; renaming an
 emulator-hosted one sets a tab title. An Agent SDK session sits outside this split entirely -
 it has no home to move, so its name is a durable field of its own and no backend is consulted,
-which is also why the characters tmux reserves are ordinary text in its title. Kill always
-signals the agent, and additionally tears down the whole group
-when the backend says it has one - a multiplexer session is a group, a terminal tab is
-not, and that is declared rather than inferred from which vendor answered. If a Mission
+which is also why the characters tmux reserves are ordinary text in its title. Kill signals the selected agent. For tmux, it also closes the session when that agent's
+pane is still the only pane in its only window. Other panes and windows are preserved,
+including a convenience shell in a Mission Control-created session. The check runs inside
+tmux immediately before closing, against a captured session ID and server identity. Renaming
+a session, reusing its name, or restarting the server cannot redirect this close. If the
+backend cannot verify the sole-pane condition, Kill only signals the agent. If a Mission
 Control task was running in that session, killing it also settles the task - see
 [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
+
+Explicit task cleanup is a separate operation: it can close the task's recorded terminal
+home, including its convenience shell. New tmux launches record the server and session
+identity before discovery. Cleanup never resolves a saved name to a replacement session.
+If closing fails, cleanup releases the checkout only after verifying that the recorded
+resource is absent. A live resource or an unknown result keeps the checkout.
+If an older task has only a name and that terminal is still open, close it manually before
+retrying cleanup; Mission Control preserves its checkout when it cannot safely close the home.
 
 **Dispatch follows whichever backend you actually have.** With a multiplexer installed you
 get what you always got: a detached session with a shell pane split beside the agent. With
@@ -315,6 +325,11 @@ then waits for prompt-pickup evidence after pasting. A refusal before any termin
 written returns the row to `queued`. If text may have landed but pickup cannot be proved,
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
+
+For Codex terminal sessions, passive rollout reads retain the start of the newest turn even
+when it finishes between reads. A start at or after the message's write boundary confirms pickup;
+the matching idle completion releases the next queued message. A completion without its start,
+or a start from before delivery, does not confirm the message.
 
 The outbox is stored in SQLite under the native conversation id when Mission Control knows
 it, and otherwise under the discovered session id. It survives browser and daemon restarts.
@@ -1673,9 +1688,18 @@ adds the block and only `--uninstall` removes it: re-running `npm run setup` or 
 installer leaves an existing block exactly as it found it, so **Settings → Cost** stays the one
 switch.
 
-A plan meter disappears once its window resets rather than holding the last percentage -
-a quota that has already rolled over is not a figure worth showing, and the same rule
-already governs an account with no rate limits to report.
+Claude's last reported windows are saved in the daemon database and restored automatically
+after a restart, even when Claude cannot provide another report because its quota is exhausted
+or usage lookup is unavailable. Each window shows when its value was recorded and its reset
+countdown. Repeated identical reports keep that recording time; a partial report updates only
+the window it carries. This saves reported percentages, never estimates quota from token cost.
+
+After a Claude window resets, its saved bar remains visible as **last reported**, with
+**Reset passed · awaiting update**. It no longer produces a quota warning or runway projection;
+the current percentage is unknown until another usage report arrives. If Claude has never
+reported usage, the Spend popover says **Claude utilization unavailable**, with no invented
+zero-percent bar. The next valid report updates the display automatically. Codex windows still
+disappear when their reset time passes.
 
 **Every dollar figure is one API-equivalent estimate.** Session surfaces mark it `≈$`; so does
 the cost chip, and the Spend popover says so once in its footer rather than five times.
@@ -1699,7 +1723,7 @@ is exactly when the record starts being interesting.
 
 Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
 to a parent by cwd or timing because that relationship is not proven. The standard-price
-snapshot includes `gpt-6-astra`, all shipped Codex choices, and older OpenAI text/code
+snapshot includes all shipped Codex choices, including `gpt-6-astra`, and older OpenAI text/code
 models (GPT-5, GPT-4.1, GPT-4o, and o-series). The exact supported ids and rates live in
 `src/server/harness/codex/pricing.ts`, verified against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and the linked model reference pages on September 11, 2026. Astra includes cached input,

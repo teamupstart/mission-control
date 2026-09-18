@@ -175,7 +175,28 @@ test("the Library and Setup tour targets are declared, namespaced, and their own
     "setup:trust-add",
   ]);
   assert.ok(setup.every((id) => tourTargetScope(id) === "page"));
-  assert.equal(seeWork.length + library.length + setup.length, TOUR_TARGET_IDS.length);
+  // The workflows tour follows one run's lifecycle, so every target has one rendered owner
+  // at a time and all of them are page-scoped; its stage-level beats resolve inside the
+  // registered strip rather than owning targets of their own.
+  const workflows = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "workflows");
+  assert.deepEqual(workflows, [
+    "workflows:dispatch-modal",
+    "workflows:dispatch-after-work",
+    "workflows:binding-chip",
+    "workflows:bind-dialog",
+    "workflows:run-pipeline",
+    "workflows:run-evidence",
+    "workflows:run-readiness",
+    "workflows:run-rounds",
+    "workflows:run-completion",
+    "workflows:run-filters",
+    "workflows:run-filter-all",
+  ]);
+  assert.ok(workflows.every((id) => tourTargetScope(id) === "page"));
+  assert.equal(
+    seeWork.length + library.length + workflows.length + setup.length,
+    TOUR_TARGET_IDS.length,
+  );
 });
 
 test("the namespace table is the one source of target names", () => {

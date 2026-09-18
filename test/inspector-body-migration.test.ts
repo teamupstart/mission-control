@@ -90,3 +90,11 @@ test("legacy nulls and already-scrubbed bodies round trip and survive resolution
   assert.equal(resolved.status, "resolved");
   assert.equal(resolved.body, scrubbed, "resolution must not erase the frozen repair detail");
 });
+
+
+test("legacy findings gain a pending-resolution marker without authorizing thread closure", () => {
+  const row = loadInspectorComments("owner/repo#7")[0]!;
+  assert.equal(row.resolutionPending ?? false, false);
+  upsertInspectorComment({ ...row, resolutionPending: true });
+  assert.equal(loadInspectorComments("owner/repo#7")[0]?.resolutionPending, true);
+});

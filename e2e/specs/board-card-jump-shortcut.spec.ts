@@ -218,10 +218,12 @@ function railKeycap(row: Locator): Locator {
 }
 
 /** A rail keycap's laid-out paint, which is where the rail's own rule becomes observable. */
-function keycapPaint(row: Locator): Promise<{ color: string; background: string }> {
+function keycapPaint(
+  row: Locator,
+): Promise<{ color: string; background: string; border: string }> {
   return railKeycap(row).evaluate((el) => {
     const style = getComputedStyle(el);
-    return { color: style.color, background: style.backgroundColor };
+    return { color: style.color, background: style.backgroundColor, border: style.borderTopColor };
   });
 }
 
@@ -422,6 +424,14 @@ test("the Console rail prints the same keys beside its state words, and they ope
     dashboard,
     "color-mix(in oklab, var(--jump-key) 20%, transparent)",
   );
+  const restBorder = await resolvedColour(
+    dashboard,
+    "color-mix(in oklab, var(--jump-key) 42%, var(--border))",
+  );
+  const activeBorder = await resolvedColour(
+    dashboard,
+    "color-mix(in oklab, var(--jump-key) 64%, var(--border))",
+  );
   expect(restColour, "the palette declares a jump-key colour").not.toBe("");
   expect(activeColour, "the brightened colour differs from the rest one").not.toBe(restColour);
 
@@ -432,6 +442,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
     rest.background,
     "and carries a tint behind it rather than sitting bare on the row",
   ).not.toBe("rgba(0, 0, 0, 0)");
+  expect(rest.border, "with the rest border drawn from the same token").toBe(restBorder);
 
   // The row under the cursor is the row the key is about to open, so its keycap brightens
   // within the same hue and deepens its tint. Measured with the pointer actually on the row,
@@ -440,6 +451,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   const hovered = await keycapPaint(idleRow);
   expect(hovered.color, "hover brightens the keycap within the jump-key hue").toBe(activeColour);
   expect(hovered.background, "and deepens the tint behind it").toBe(activeTint);
+  expect(hovered.border, "and strengthens its border").toBe(activeBorder);
 
   await dashboard.mouse.move(0, 0);
   const restored = await keycapPaint(idleRow);
@@ -447,6 +459,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
     rest.color,
   );
   expect(restored.background, "and to its rest tint, not the hovered one").toBe(rest.background);
+  expect(restored.border, "and to its rest border").toBe(rest.border);
   await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
 
   // The chord is announced on the control it drives - the row itself here, since the rail's
@@ -467,6 +480,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   expect(selected.color, "the selected row's keycap carries the brightened jump-key colour")
     .toBe(activeColour);
   expect(selected.background, "and its deeper tint").toBe(activeTint);
+  expect(selected.border, "and its stronger border").toBe(activeBorder);
   await shoot(dashboard, "08-rail-jumped-to-the-idle-row");
 
   // ⌘1 re-points the open detail at the other row, the same way it does inside the Board's

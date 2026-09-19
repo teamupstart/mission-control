@@ -5068,7 +5068,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: refusal.error }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
-      const result = pendingTurns.submit(session.id, parsed.data.text, parsed.data.deliveryMode);
+      const result = pendingTurns.submit(session.id, parsed.data.text);
       if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
@@ -5296,7 +5296,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
-      const result = pendingTurns.submit(session.id, parsed.data.text, parsed.data.deliveryMode);
+      const result = pendingTurns.submit(session.id, parsed.data.text);
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.

@@ -23,6 +23,7 @@ const {
   clearPendingTurns,
   createPendingTurn,
   deleteClaimedPendingTurn,
+  expeditePendingTurn,
   listPendingTurns,
   markPendingTurnUncertain,
   recallPendingTurn,
@@ -187,12 +188,19 @@ test("reset cleanup can preserve only an ambiguous claimed row", () => {
   clearPendingTurns(key);
 });
 
-test("delivery deadlines survive persistence, explicit selection uses CAS, and unresolved sends block bypass", () => {
+test("an expedited row survives persistence, uses CAS, and unresolved sends block bypass", () => {
   const key = "delivery-modes";
   const earlier = add(key, "mode-earlier");
-  const steer = createPendingTurn({ id: "mode-steer", noteKey: key, text: "correction", now: 100, deliveryMode: "steer-after-wait" });
-  assert.equal(steer.deadlineAt, 60_100);
-  assert.equal(listPendingTurns(key)[1]?.deliveryMode, "steer-after-wait");
+  const queued = createPendingTurn({ id: "mode-steer", noteKey: key, text: "correction", now: 100 });
+  // Enqueued on the standard policy, like every message: the escalation is derived from
+  // `createdAt`, and only an operator's explicit action writes a mode and an instant.
+  assert.equal(queued.deliveryMode, "after-turn");
+  assert.equal(queued.deadlineAt, null);
+  assert.equal(expeditePendingTurn(key, queued.id, 99, "steer", 150), null);
+  const steer = expeditePendingTurn(key, queued.id, queued.revision, "steer", 150)!;
+  assert.equal(steer.deliveryMode, "steer");
+  assert.equal(steer.deadlineAt, 150);
+  assert.equal(listPendingTurns(key)[1]?.deliveryMode, "steer");
   assert.equal(listPendingTurns(key)[0]?.deliveryMode, "after-turn");
   assert.equal(claimNextPendingTurn(key, 200, { id: steer.id, revision: 99 }), null);
   const claimed = claimNextPendingTurn(key, 200, { id: steer.id, revision: steer.revision })!;

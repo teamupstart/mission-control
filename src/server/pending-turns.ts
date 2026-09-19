@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
-import { MESSAGE_INTERRUPT_WATCHDOG_MS, messageDeliveryMode, supportsMessageDelivery, type MessageDeliveryMode } from "@shared/message-delivery.ts";
+import {
+  MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
+  supportsDeliveryAction, type MessageDeliveryAction,
+} from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
@@ -83,14 +86,14 @@ interface SdkHandoff {
 
 interface ArmedDrain {
   timer: ReturnType<typeof setTimeout>;
-  /** The next idle-settle boundary or persisted delivery deadline. */
+  /** The next idle-settle boundary or message escalation instant. */
   drainAt: number;
 }
 
 /**
  * Durable human-turn outbox shared by embedded and terminal conversations.
  *
- * Delivery follows registry evidence and the operator's per-message policy. SDK drivers
+ * Delivery follows registry evidence and the one message-delivery policy. SDK drivers
  * re-check the appropriate busy or idle boundary while accepting, and terminal
  * rows remain claimed until a hook or passive reader observes work beginning. That keeps an
  * editable row on Mission Control's side of the line and makes every ambiguous terminal
@@ -229,7 +232,7 @@ export class PendingTurnManager {
     if (session) this.scheduleDrain(noteKeyFor(session));
   }
 
-  submit(sessionId: string, text: string, deliveryMode: MessageDeliveryMode = "after-turn"): PendingTurnSubmitResult {
+  submit(sessionId: string, text: string): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -250,9 +253,6 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
-    if (!supportsMessageDelivery(session, deliveryMode)) {
-      return { ok: false, pasted: false, submitVerified: false, error: "This session does not support that delivery mode." };
-    }
     const trimmed = text.trim();
     if (!trimmed) {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
@@ -262,7 +262,6 @@ export class PendingTurnManager {
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
-      deliveryMode,
     });
     this.registry.refreshPendingTurns(pendingTurn.noteKey);
     this.scheduleDrain(pendingTurn.noteKey);
@@ -340,7 +339,7 @@ export class PendingTurnManager {
   expedite(sessionId: string, id: string, revision: number, action: "steer" | "interrupt"): boolean {
     const session = this.registry.getSession(sessionId);
     if (!this.started || this.stopped || !session || !this.canDeliver(session)) return false;
-    if (!supportsMessageDelivery(session, action === "steer" ? "steer" : "interrupt-after-wait")) return false;
+    if (!supportsDeliveryAction(session, action)) return false;
     // An unresolved handoff must be reconciled before another instruction can pass it.
     if (session.pendingTurns.some((turn) => turn.state !== "queued")) return false;
     const updated = expeditePendingTurn(noteKeyFor(session), id, revision, action, this.deps.now());
@@ -593,30 +592,52 @@ export class PendingTurnManager {
       this.registry.sessionForNoteKey(noteKeyFor(session))?.id === session.id;
   }
 
-  private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | "steer" | "interrupt" } | null {
+  /**
+   * The stage each queued row would act on now, in enqueue order.
+   *
+   * A refused steer has not crossed acceptance and may resume - including by escalating -
+   * when its blocker clears. An attempted interruption is different: the attempt is recorded
+   * before the request leaves, so a message stops one turn at most however that attempt ends,
+   * and a repeat is an explicit operator action.
+   */
+  private stages(session: Session): { turn: PendingTurn; at: number; action: MessageDeliveryAction }[] {
+    return session.pendingTurns.flatMap((row) => {
+      if (row.interruptAttemptedAt != null) return [];
+      const stage = deliveryStage(session, row, this.deps.now());
+      return stage ? [{ turn: row, ...stage }] : [];
+    });
+  }
+
+  private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
     const first = session.pendingTurns[0];
     if (!first) return null;
-    const eligible = session.pendingTurns.filter((row) => {
-      const mode = messageDeliveryMode(row);
-      // A refused steer has not crossed acceptance and may resume when its blocker clears.
-      // Interruption failures still require an explicit retry, even before an attempt.
-      return row.deadlineAt != null && row.interruptAttemptedAt == null &&
-        (mode !== "interrupt-after-wait" || !row.lastError) && supportsMessageDelivery(session, mode);
-    });
-    const due = eligible.find(row => row.deadlineAt! <= this.deps.now());
+    const stages = this.stages(session);
+    const due = stages.find(stage => stage.at <= this.deps.now());
     if (this.canDrain(session)) {
-      return { turn: due ?? first, at: (session.lastActivity ?? session.firstSeen) + this.deps.idleSettleMs, action: "idle" };
+      return { turn: due?.turn ?? first, at: (session.lastActivity ?? session.firstSeen) + this.deps.idleSettleMs, action: "idle" };
     }
     // A terminal can still show old idle evidence while a previous paste awaits pickup.
     // That is not proof of a running turn that may be interrupted.
     if (session.state !== "working") return null;
-    // Next-turn rows may be passed only by rows whose operator explicitly allowed joining
-    // or interrupting this turn. Among due rows keep enqueue order, even after restart.
-    const turn = due ?? eligible.reduce<PendingTurn | undefined>((first, row) =>
-        !first || row.deadlineAt! < first.deadlineAt! ? row : first, undefined);
-    if (!turn) return null;
-    return { turn, at: turn.deadlineAt!, action: messageDeliveryMode(turn) === "interrupt-after-wait" ? "interrupt" : "steer" };
+    // A row still inside its quiet first minute may not pass one whose minute is up. Among
+    // due rows keep enqueue order, even after restart.
+    return due ?? stages.reduce<{ turn: PendingTurn; at: number; action: MessageDeliveryAction } | null>(
+      (best, stage) => !best || stage.at < best.at ? stage : best, null);
+  }
+
+  /**
+   * The earliest escalation still ahead of us, which is what a refused or not-yet-due
+   * message needs a timer for. A turn that has gone silent emits no event that would
+   * re-arm one, and that is exactly the turn the two-minute interruption exists for.
+   */
+  private nextEscalationAt(session: Session): number | null {
+    if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
+    const ahead = session.pendingTurns
+      .filter((row) => row.interruptAttemptedAt == null)
+      .flatMap((row) => deliverySchedule(session, row).map((stage) => stage.at))
+      .filter((at) => at > this.deps.now());
+    return ahead.length ? Math.min(...ahead) : null;
   }
 
   private readyToDrain(session: Session): boolean {
@@ -631,10 +652,15 @@ export class PendingTurnManager {
     const session = this.registry.sessionForNoteKey(key);
     const next = session ? this.nextDelivery(session) : null;
     if (!next) { this.cancelIdleTimer(key); return; }
-    const drainAt = next.at;
+    this.armDrain(key, next.at);
+  }
+
+  /**
+   * Recompute after every relevant event. Output may move an idle boundary, but must never
+   * extend a message's escalation instant or delay an explicit Steer now request.
+   */
+  private armDrain(key: string, drainAt: number): void {
     const armed = this.idleTimers.get(key);
-    // Recompute after every relevant event. Output may move an idle boundary, but must
-    // never extend a message's deadline or delay an explicit Steer now request.
     if (armed) {
       if (armed.drainAt === drainAt) return;
       clearTimeout(armed.timer);
@@ -714,9 +740,16 @@ export class PendingTurnManager {
       const current = this.registry.sessionForNoteKey(key);
       const following = current ? this.nextDelivery(current) : null;
       const retiredId = turn?.id;
-      if (retiredId && current && !current.pendingTurns.some((row) => row.id === retiredId) &&
-          following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
+      const retired = !!retiredId && !!current && !current.pendingTurns.some((row) => row.id === retiredId);
+      if (retired && following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
+      } else if (!retired && current) {
+        // The row is still queued: a refusal, or a stage that did not finish the message.
+        // Arm the escalation that is still ahead of it rather than waiting for an event a
+        // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
+        // that keeps refusing cannot become a loop.
+        const escalation = this.nextEscalationAt(current);
+        if (escalation != null) this.armDrain(key, escalation);
       }
     }
   }
@@ -956,7 +989,7 @@ export class PendingTurnManager {
       handoff.ownershipUncertain = true;
       return "The SDK conversation owner changed before delivery.";
     }
-    if (steer ? (!this.canDeliver(current) || !supportsMessageDelivery(current, "steer")) : !this.readyToDrain(current)) {
+    if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
     return this.registry.promptResourceBlockerForSession(current.id);

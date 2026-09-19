@@ -2,6 +2,11 @@
 
 The operator approved the message-delivery scout and requested implementation in this session.
 
+> **Superseded.** The composer no longer offers a delivery selector. Every message now
+> follows one policy - wait for the turn, steer at one minute, interrupt at two - and the
+> explicit **Steer now** and **Interrupt and deliver** actions remain on each queued row.
+> See [sessions](../../sessions.md) for the behavior as it ships.
+
 ## Behavior
 
 Keep the existing After this turn behavior. Embedded harnesses with steering support also offer Steer now and Steer after 1 minute. A separate, explicitly selected Interrupt after 2 minutes policy and Interrupt and deliver action stop active work while preserving the outbox. Messages with possible prior delivery are never automatically replayed. Show queue age and the blocking reason after 30 seconds.

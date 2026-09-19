@@ -263,19 +263,18 @@ test("a submitted human turn waits for acceptance rather than journaling on the 
   clearScoutPromptContext(episode.taskId, episode.episodeId);
 });
 
-test("both composer routes preserve delivery choices and reject unknown modes", async () => {
+test("both composer routes queue on the standard policy, with nothing to choose", async () => {
   const f = fixture();
   for (const route of ["send", "inject"]) {
+    // A caller cannot ask for anything else: the request carries no delivery field at all,
+    // and a row that named its own mode would be one the escalation clock disagreed with.
     const response = await post(f.app, `/api/sessions/${f.session.id}/${route}`, {
-      text: `timed ${route}`, deliveryMode: "steer-after-wait",
+      text: `timed ${route}`, deliveryMode: "steer",
     });
     assert.equal(response.status, 200);
-    const result = await response.json() as { pendingTurn: { deliveryMode: string; deadlineAt: number; createdAt: number } };
-    assert.equal(result.pendingTurn.deliveryMode, "steer-after-wait");
-    assert.equal(result.pendingTurn.deadlineAt - result.pendingTurn.createdAt, 60000);
-    assert.equal((await post(f.app, `/api/sessions/${f.session.id}/${route}`, {
-      text: "invalid", deliveryMode: "force",
-    })).status, 400);
+    const result = await response.json() as { pendingTurn: { deliveryMode: string; deadlineAt: number | null } };
+    assert.equal(result.pendingTurn.deliveryMode, "after-turn");
+    assert.equal(result.pendingTurn.deadlineAt, null);
   }
   f.pending.stop();
 });

@@ -302,36 +302,36 @@ Every multiline text box grows as text wraps or new lines are added. It keeps up
 lines visible, including the end of the draft, then scrolls inside the box for longer input.
 The field's original row count remains its empty-state floor.
 
-The **Delivery** selector controls when the message may join the conversation:
+Every message follows the same delivery policy. There is nothing to choose in the composer:
 
-- **After this turn** is the default. It waits for confirmed idle and stays editable.
-- **Steer now** joins the running turn through an embedded driver's native input path.
-- **Steer after 1 minute** first allows normal idle delivery, then steers if it is still
-  waiting after 60 seconds. Ongoing output does not postpone the deadline.
-- **Interrupt after 2 minutes** is an explicit alternative for an unsent message. After
-  120 seconds it stops the current turn, waits for confirmed idle, and delivers that message.
-  It may cancel a running tool; other queued messages are kept.
+1. It waits for the current turn to finish, and stays editable while it waits.
+2. One minute after it was queued, it steers into the running turn through the embedded
+   driver's native input path.
+3. Two minutes after it was queued, it stops the current turn, waits for confirmed idle and
+   delivers. That may cancel a running tool; other queued messages are kept.
 
-The choice is remembered across composer mounts in this browser tab, separately for each
-session. Each submitted message stores its own choice and deadline durably, so a daemon or
-browser restart cannot turn an intentional next-turn message into a correction. Reset clears
-the composer's remembered choice. Native steering is available on embedded Claude, Codex and
-Pi sessions. Terminal sessions offer next-turn delivery and queue-preserving interruption.
+Both deadlines are measured from the moment the message was queued, never from the latest
+output, so a turn that keeps talking cannot postpone them. They are derived from the queued
+row itself rather than from a timer, so a daemon restart arrives at exactly the same instant.
+A stage the session cannot perform is skipped: native steering is available on embedded
+Claude, Codex and Pi sessions, so a terminal session waits out the two minutes and is
+interrupted instead. A message stops at most one turn, however that attempt ends.
 
-Each queued row also offers **Steer now**, where supported, and **Interrupt and deliver**.
-These explicit actions can pass messages intentionally waiting for the next turn. Due
-messages retain their enqueue order; a future deadline never delays a newer Steer now.
-After 30 seconds, a row shows its elapsed waiting time and the reason it is waiting.
+Each queued row also offers **Steer now**, where supported, and **Interrupt and deliver**,
+for an operator who does not want to wait out the clock. These explicit actions can pass
+messages that are still inside their quiet first minute; among messages whose stage is due,
+enqueue order is kept. After 30 seconds, a row shows its elapsed waiting time and what is
+about to happen to it.
 
-No delivery mode bypasses a permission or review question, reset, an ending session, or an
+No stage of this bypasses a permission or review question, reset, an ending session, or an
 unresolved delivery. A queued message held by a question reads `You · queued · held`, with
 **Held until you answer the review above** and a **Go to review** jump. A stopping or exited
 session instead says **Held - this session is ending and will not receive it**. Recall still
 works on held rows. Resolving a question releases eligible messages on the next drain.
 
-An interrupt-and-deliver attempt waits at most ten seconds for acknowledgement and confirmed
-idle. If it fails, the message remains queued with an explanation and automatic interruption
-will not repeat. The operator can retry the explicit action. The ordinary Stop control keeps
+An interruption attempt waits at most ten seconds for acknowledgement and confirmed idle. If
+it fails, the message remains queued with an explanation and is not interrupted again
+automatically. The operator can retry the explicit action. The ordinary Stop control keeps
 its separate meaning: stop the current turn and discard safely queued messages.
 
 A driver acceptance means the runtime accepted the input, not that the model read it or acted

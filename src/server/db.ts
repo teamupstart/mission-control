@@ -40,7 +40,7 @@ import {
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
-import { MESSAGE_DELIVERY, MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
+import { MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -11376,17 +11376,18 @@ export function listPendingTurns(noteKey: string): PendingTurn[] {
   return rows.map(rowToPendingTurn);
 }
 
+/**
+ * Every message is queued on the standard policy. `delivery_mode` and `deadline_at` carry an
+ * operator's later explicit action on this row; the timed escalation is derived from
+ * `created_at` instead, so it needs nothing written here to survive a restart.
+ */
 export function createPendingTurn(input: {
   id: string;
   noteKey: string;
   text: string;
   now: number;
-  deliveryMode?: MessageDeliveryMode;
 }): PendingTurn {
   const d = openDb();
-  const deliveryMode = input.deliveryMode ?? "after-turn";
-  const delay = MESSAGE_DELIVERY[deliveryMode].delayMs;
-  const deadlineAt = delay === null ? null : input.now + delay;
   d.exec("BEGIN IMMEDIATE");
   try {
     const row = d
@@ -11395,8 +11396,8 @@ export function createPendingTurn(input: {
     d.prepare(
       `INSERT INTO pending_turns
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at)
-       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, ?)`,
-    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now, deliveryMode, deadlineAt);
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
     d.exec("COMMIT");
     return {
       id: input.id,
@@ -11409,8 +11410,8 @@ export function createPendingTurn(input: {
       updatedAt: input.now,
       claimedAt: null,
       lastError: null,
-      deliveryMode,
-      deadlineAt,
+      deliveryMode: "after-turn",
+      deadlineAt: null,
       interruptAttemptedAt: null,
     };
   } catch (err) {

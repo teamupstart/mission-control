@@ -1727,8 +1727,10 @@ function steeringFixture(name: string, options: {
 test("steering passes intentional next-turn work while preserving it and all input is claimed once", async () => {
   const f = steeringFixture("bypass");
   const later = f.manager.submit(f.id, "after the turn").pendingTurn!;
-  f.manager.submit(f.id, "correction one", "steer");
-  f.manager.submit(f.id, "correction two", "steer");
+  const one = f.manager.submit(f.id, "correction one").pendingTurn!;
+  const two = f.manager.submit(f.id, "correction two").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, one.id, one.revision, "steer"));
+  assert.ok(f.manager.expedite(f.id, two.id, two.revision, "steer"));
   await until(() => f.sends.length === 2, "both steers");
   assert.deepEqual(f.sends, ["correction one", "correction two"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns.map(t => t.id), [later.id]);
@@ -1740,7 +1742,8 @@ test("steering passes intentional next-turn work while preserving it and all inp
 
 test("ambiguous steering is uncertain and never replayed by timers or idle", async () => {
   const f = steeringFixture("ambiguous", { sendError: true });
-  f.manager.submit(f.id, "only once", "steer");
+  const row = f.manager.submit(f.id, "only once").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
   await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "uncertain", "uncertainty");
   idle(f.registry, f.id);
   await tick();
@@ -1776,11 +1779,15 @@ test("an unconfirmed interrupt times out without sending and is not attempted ag
   f.manager.stop();
 });
 
-test("a persisted deadline expires despite continued output and survives manager restart", async (t) => {
+test("every message steers at one minute despite continued output, and survives manager restart", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100000 });
   const f = steeringFixture("deadline-restart");
-  const row = f.manager.submit(f.id, "timed correction", "steer-after-wait").pendingTurn!;
-  assert.equal(row.deadlineAt, 160000);
+  const row = f.manager.submit(f.id, "timed correction").pendingTurn!;
+  // Nothing about the escalation is chosen or written: it is derived from the enqueue time,
+  // which is what lets a restarted daemon arrive at the same instant.
+  assert.equal(row.deliveryMode, "after-turn");
+  assert.equal(row.deadlineAt, null);
+  assert.equal(row.createdAt, 100000);
   t.mock.timers.tick(59000);
   working(f.registry, f.id);
   assert.deepEqual(f.sends, []);
@@ -1807,7 +1814,7 @@ test("a persisted deadline expires despite continued output and survives manager
 test("a deadline never answers a blocking review and resumes when the review is resolved", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 200000 });
   const f = steeringFixture("deadline-review");
-  f.manager.submit(f.id, "do not answer the menu", "steer-after-wait");
+  f.manager.submit(f.id, "do not answer the menu");
   f.registry.applyDriverEvent(f.id, { kind: "request", request: {
     id: "deadline-ask", kind: "permission", prompt: "Allow this?", options: [{ number: 1, label: "Yes" }],
   } });
@@ -1822,25 +1829,37 @@ test("a deadline never answers a blocking review and resumes when the review is 
   f.manager.stop();
 });
 
-test("automatic interruption is opt-in, fires at two minutes, and keeps other rows", async (t) => {
+test("a message a steer could not deliver interrupts at two minutes and keeps the other rows", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 300000 });
-  const f = steeringFixture("deadline-interrupt");
-  f.manager.submit(f.id, "wait intentionally");
-  f.manager.submit(f.id, "interrupt if still unsent", "interrupt-after-wait");
-  t.mock.timers.tick(119999);
+  // Steering is refused for as long as the gate is held, which is what a driver that has
+  // stopped answering looks like from here. The second stage is the whole point of the
+  // policy: the one-minute steer is not a guarantee that the message arrived.
+  let allowSteer = false;
+  const f = steeringFixture("deadline-interrupt", { beforeSteer: async () => {
+    if (!allowSteer) throw new Error("the driver refused this steer");
+  } });
+  f.manager.submit(f.id, "interrupt if still unsent");
+  f.manager.submit(f.id, "queued behind it");
+  t.mock.timers.tick(60000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "the steer did not reach the agent");
   assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(59999);
+  assert.equal(f.interrupts(), 0, "two minutes from the enqueue, not from the failed steer");
+  allowSteer = true;
   t.mock.timers.tick(1);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(f.interrupts(), 1);
   assert.deepEqual(f.sends, ["interrupt if still unsent"]);
-  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "wait intentionally");
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "queued behind it");
   f.manager.stop();
 });
 
 test("an immediate steer does not wait behind a future deadline", async () => {
   const f = steeringFixture("future-before-now");
-  f.manager.submit(f.id, "wait one minute", "steer-after-wait");
-  f.manager.submit(f.id, "correct this now", "steer");
+  f.manager.submit(f.id, "wait one minute");
+  const now = f.manager.submit(f.id, "correct this now").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, now.id, now.revision, "steer"));
   await until(() => f.sends.length === 1, "immediate correction");
   assert.deepEqual(f.sends, ["correct this now"]);
   assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "wait one minute");
@@ -1850,7 +1869,8 @@ test("an immediate steer does not wait behind a future deadline", async () => {
 test("an explicit correction still wins if the active turn ends before its timer fires", async () => {
   const f = steeringFixture("idle-before-steer");
   f.manager.submit(f.id, "intentional next-turn work");
-  f.manager.submit(f.id, "urgent correction", "steer");
+  const urgent = f.manager.submit(f.id, "urgent correction").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, urgent.id, urgent.revision, "steer"));
   idle(f.registry, f.id);
   await until(() => f.sends.length === 1, "correction as a new turn");
   assert.deepEqual(f.sends, ["urgent correction"]);
@@ -1861,8 +1881,10 @@ test("an explicit correction still wins if the active turn ends before its timer
 test("a steer queued beside a newly started turn does not depend on another driver event", async () => {
   const f = steeringFixture("follow-idle-start");
   idle(f.registry, f.id);
-  f.manager.submit(f.id, "start work", "steer");
-  f.manager.submit(f.id, "also consider this", "steer");
+  const start = f.manager.submit(f.id, "start work").pendingTurn!;
+  const also = f.manager.submit(f.id, "also consider this").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, start.id, start.revision, "steer"));
+  assert.ok(f.manager.expedite(f.id, also.id, also.revision, "steer"));
   await until(() => f.sends.length === 2, "both corrections");
   assert.deepEqual(f.sends, ["start work", "also consider this"]);
   f.manager.stop();
@@ -1872,7 +1894,8 @@ test("a review opening before steering acceptance leaves the message unsent", as
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const f = steeringFixture("review-before-acceptance", { beforeSteer: () => gate });
-  f.manager.submit(f.id, "do not answer the review", "steer");
+  const row = f.manager.submit(f.id, "do not answer the review").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
   await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "sending", "claim");
   f.registry.applyDriverEvent(f.id, { kind: "request", request: {
     id: "new-review", kind: "permission", prompt: "Allow this?", options: [{ number: 1, label: "Yes" }],
@@ -1889,7 +1912,7 @@ test("a timed steer refused by a newly opened review resumes automatically after
   const gate = new Promise<void>(resolve => { release = resolve; });
   const f = steeringFixture("timed-review-before-acceptance", { beforeSteer: () => gate });
   t.after(() => f.manager.stop());
-  const row = f.manager.submit(f.id, "deliver after the review", "steer-after-wait").pendingTurn!;
+  f.manager.submit(f.id, "deliver after the review");
   t.mock.timers.tick(60000);
   assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "sending");
   f.registry.applyDriverEvent(f.id, { kind: "request", request: {
@@ -1900,9 +1923,8 @@ test("a timed steer refused by a newly opened review resumes automatically after
   const refused = f.registry.getSession(f.id)?.pendingTurns[0];
   assert.equal(refused?.state, "queued");
   assert.match(refused?.lastError ?? "", /opened a dialog/);
-  assert.equal(refused?.deadlineAt, row.deadlineAt);
   assert.deepEqual(f.sends, []);
-  t.mock.timers.tick(60000);
+  t.mock.timers.tick(30000);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(f.sends, [], "the unresolved review still blocks expired steering");
 
@@ -1931,6 +1953,44 @@ test("a serialized interruption that outlives its watchdog cannot stop a later t
   f.manager.stop();
 });
 
+test("a terminal, which cannot steer, interrupts its turn two minutes after the message was queued", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 600000 });
+  const registry = new Registry();
+  const name = "terminal-timed-interrupt";
+  registry.applyDiscovery([discovered(name)]);
+  stopHook(registry, name);
+  userPromptHook(registry, name);
+  const session = registry.snapshot().sessions[0]!;
+  const injected: string[] = [];
+  let interrupted = false;
+  const manager = new PendingTurnManager(registry, { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" }, {
+    idleSettleMs: 0, interruptTimeoutMs: 1000,
+    interruptPane: async () => { interrupted = true; return { ok: true }; },
+    inject: async (_session, text) => {
+      injected.push(text);
+      userPromptHook(registry, name);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  manager.start();
+  manager.submit(session.id, "a terminal correction");
+  // The one-minute stage belongs to harnesses with a native mid-turn input path. A terminal
+  // has none, so its message waits out the full two minutes rather than being typed into a
+  // running TUI, and nothing here needed an event from the silent pane to notice.
+  t.mock.timers.tick(119999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(interrupted, false);
+  assert.deepEqual(injected, []);
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(interrupted, true);
+  assert.deepEqual(injected, [], "a successful keypress is not an idle acknowledgement");
+  stopHook(registry, name);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(injected, ["a terminal correction"]);
+  manager.stop();
+});
+
 test("terminal interruption waits for observed idle and then for verified pickup", async () => {
   const registry = new Registry();
   const name = "terminal-interrupt-delivery";
@@ -1951,7 +2011,6 @@ test("terminal interruption waits for observed idle and then for verified pickup
     },
   });
   manager.start();
-  assert.equal(manager.submit(session.id, "unsupported", "steer").ok, false);
   const other = manager.submit(session.id, "for later").pendingTurn!;
   const urgent = manager.submit(session.id, "terminal replacement").pendingTurn!;
   assert.ok(manager.expedite(session.id, urgent.id, urgent.revision, "interrupt"));
@@ -1987,16 +2046,20 @@ test("ordinary Stop cancels an unsent interrupt-and-deliver replacement", async 
 
 test("a refused normal Stop releases its hold so an unsent steer can still arrive", async () => {
   const f = steeringFixture("refused-normal-stop");
+  let queued!: import("../src/shared/types.ts").PendingTurn;
   const supervisor = {
     interrupt: async () => {
-      f.manager.submit(f.id, "keep this correction", "steer");
+      queued = f.manager.submit(f.id, "keep this correction").pendingTurn!;
+      assert.equal(f.manager.expedite(f.id, queued.id, queued.revision, "steer"), false,
+        "the pending stop holds every delivery, the explicit ones included");
       await tick(20);
-      assert.deepEqual(f.sends, [], "no deadline delivery can race the stop request");
+      assert.deepEqual(f.sends, [], "no timed delivery can race the stop request");
       throw new Error("interruption refused");
     },
   } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
   const stopped = await interruptSession(f.registry.getSession(f.id)!, supervisor, f.manager);
   assert.equal(stopped.ok, false);
+  assert.ok(f.manager.expedite(f.id, queued.id, queued.revision, "steer"), "the hold is gone");
   await until(() => f.sends.length === 1, "resumed steering");
   assert.deepEqual(f.sends, ["keep this correction"]);
   f.manager.stop();

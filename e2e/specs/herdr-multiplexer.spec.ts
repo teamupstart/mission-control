@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -9,6 +9,39 @@ import { expect, test } from "../fixtures/test.ts";
 
 const EVIDENCE = artifactsDir("herdr-multiplexer");
 const TASK = "Exercise the Herdr multiplexer from Mission Control";
+
+for (const mode of ["cwd-alias", "cwd-mismatch"] as const) {
+  test.describe(`Herdr creation with ${mode}`, () => {
+    test.use({ daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: mode, MISSION_POLL_MS: "0" } });
+
+    test("reports the verified launch outcome without duplicating or closing the workspace", async ({ dashboard, daemon }) => {
+      await dispatch(dashboard, daemon);
+      const card = await openDispatchedSession(dashboard);
+      await card.locator(".conv-launch").getByRole("button", { name: "Terminal", exact: true }).click();
+      const menu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+      await menu.getByRole("menuitem").filter({ hasText: "Herdr" }).click();
+
+      if (mode === "cwd-alias") {
+        await expect(card.locator(".launch-flash")).toHaveText("Opened in Herdr");
+        await expect(card.locator(".launch-flash.is-error")).toHaveCount(0);
+      } else {
+        await expect(card.locator(".launch-flash.is-error")).toHaveText(
+          "Herdr did not report back - the window may still be opening",
+        );
+      }
+      const requests = herdrRequests(daemon);
+      const creates = requests.filter((request) => request.method === "workspace.create");
+      expect(creates).toHaveLength(1);
+      const requested = String(creates[0]!.params?.cwd);
+      const reported = join(daemon.home, "herdr-cwd-1");
+      expect(reported).not.toBe(requested);
+      expect(realpathSync(reported) === realpathSync(requested)).toBe(mode === "cwd-alias");
+      expect(requests.some((request) => request.method === "workspace.close")).toBe(false);
+      expect(requests.some((request) => request.method === "pane.send_input")).toBe(mode === "cwd-alias");
+      await shoot(dashboard, `herdr-${mode}-outcome`);
+    });
+  });
+}
 
 interface HerdrRequest {
   id: string;

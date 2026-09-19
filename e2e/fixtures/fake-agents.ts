@@ -452,7 +452,12 @@ const server = createServer((socket) => {
         serial += 1;
         const workspaceId = "fake-workspace-" + serial;
         const tabId = workspaceId + ":tab";
-        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: stuck ? process.pid : null, pasted: "", foreground_pid: null, stuck };
+        let cwd = p.cwd;
+        if (["cwd-alias", "cwd-mismatch"].includes(process.env.MC_E2E_HERDR_MODE)) {
+          cwd = join(home, "herdr-cwd-" + serial);
+          symlinkSync(process.env.MC_E2E_HERDR_MODE === "cwd-alias" ? p.cwd : home, cwd, "dir");
+        }
+        const pane = { pane_id: workspaceId + ":pane", cwd, shell_pid: stuck ? process.pid : null, pasted: "", foreground_pid: null, stuck };
         workspaces.set(workspaceId, { workspaceId, tabId, label: p.label, panes: [pane] });
         ok(socket, request.id, {
           type: "workspace_created",

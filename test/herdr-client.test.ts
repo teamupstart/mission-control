@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import test from "node:test";
 
 import { executableSpec } from "../src/server/executables/catalog.ts";
@@ -171,6 +174,73 @@ test("workspace creation rejects a successful response for a different label or 
     } finally {
       await fake.close();
     }
+  }
+});
+
+test("workspace creation verifies local cwd identity without guessing or retrying", async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "herdr-create-cwd-")));
+  const target = join(dir, "target"), alias = join(dir, "alias"), other = join(dir, "other");
+  const missing = join(dir, "missing"), dangling = join(dir, "dangling"), loop = join(dir, "loop");
+  const locked = join(dir, "locked"), lockedAlias = join(locked, "alias");
+  mkdirSync(target);
+  mkdirSync(other);
+  mkdirSync(locked);
+  symlinkSync(target, alias, "dir");
+  symlinkSync(missing, dangling, "dir");
+  symlinkSync(loop, loop, "dir");
+  symlinkSync(target, lockedAlias, "dir");
+  try {
+    for (const c of [
+      { name: "requested alias", requested: alias, reported: target, ok: true },
+      { name: "reported alias", requested: target, reported: alias, ok: true },
+      { name: "trailing slash", requested: target + "/", reported: target, ok: true },
+      { name: "different directory", requested: target, reported: other, ok: false },
+      { name: "missing requested path", requested: missing, reported: target, ok: false },
+      { name: "missing reported path", requested: target, reported: missing, ok: false },
+      { name: "dangling symlink", requested: dangling, reported: missing, ok: false },
+      { name: "symlink cycle", requested: loop, reported: target, ok: false },
+      { name: "relative path", requested: relative(process.cwd(), target), reported: target, ok: false },
+      { name: "remote URI", requested: "ssh://host" + target, reported: target, ok: false },
+      { name: "remote home", requested: "~/target", reported: target, ok: false },
+      { name: "missing cwd", requested: target, reported: undefined, ok: false },
+      { name: "null cwd", requested: target, reported: null, ok: false },
+      { name: "exact spelling retains existing semantics", requested: missing, reported: missing, ok: true },
+      { name: "wrong label with equivalent cwd", requested: alias, reported: target, label: "wrong", ok: false },
+      { name: "wrong workspace with equivalent cwd", requested: alias, reported: target, workspace: "wrong", ok: false },
+      { name: "incomplete creation", requested: alias, reported: target, incomplete: true, ok: false },
+      { name: "inaccessible path", requested: lockedAlias, reported: target, locked: true, ok: false },
+    ]) {
+      await t.test(c.name, { skip: c.locked && process.getuid?.() === 0 }, async () => {
+        const fake = await fakeHerdrSocket((request, socket) => {
+          reply(socket, request.id, {
+            type: "workspace_created",
+            workspace: { workspace_id: "w1", label: c.label ?? "Feature work" },
+            tab: c.incomplete ? undefined : { tab_id: "t1", workspace_id: "w1", number: 1, label: "main" },
+            root_pane: { pane_id: "p1", workspace_id: c.workspace ?? "w1", tab_id: "t1", cwd: c.reported },
+          });
+        });
+        try {
+          if (c.locked) {
+            chmodSync(locked, 0);
+            assert.throws(() => realpathSync(lockedAlias), { code: "EACCES" });
+          }
+          const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).createWorkspace({
+            label: "Feature work", cwd: c.requested, focus: false,
+          });
+          assert.equal(result.ok, c.ok, JSON.stringify(result));
+          assert.equal(result.outcomeUnknown, !c.ok);
+          assert.deepEqual(fake.requests.map(({ method, params }) => ({ method, params })), [{
+            method: "workspace.create",
+            params: { label: "Feature work", cwd: c.requested, focus: false },
+          }], "validation must not retry or close an uncertain workspace");
+        } finally {
+          chmodSync(locked, 0o700);
+          await fake.close();
+        }
+      });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

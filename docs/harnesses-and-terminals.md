@@ -136,6 +136,14 @@ text, focus an agent inside Herdr, rename a workspace, close it, detach a client
 normal full client. Passive discovery and actions on an existing pane never start a stopped
 server. Workspace creation is the only path that may start the default server.
 
+Creation verifies the returned workspace, tab and root-pane identities, the requested label,
+and the root pane's cwd. Exact cwd spellings are accepted as before. Different absolute local
+paths are equivalent only when both resolve to the same physical path, including macOS
+`/var` and `/private/var` aliases. Relative paths and remote URI spellings are not resolved
+against the daemon's cwd or filesystem. Differing paths that cannot be proved equivalent, or
+an incomplete response, leave the creation outcome unknown. Mission Control does not retry the
+creation or close a workspace on that uncertain result.
+
 Herdr's socket API has no command parameter, so a dispatch is delivered by typing it into the new
 workspace's login shell. Mission Control sends the command and its Enter as separate writes, and
 then confirms the pane is running something other than that shell before it reports the launch as

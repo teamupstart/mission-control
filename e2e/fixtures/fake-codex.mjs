@@ -132,6 +132,11 @@ const RUN_COMMANDS = [
   "sed -n '1,40p' src/server/registry.ts",
 ];
 
+/** The prompt whose turn emits a lifecycle-only failure: `task_complete.error`, no agent message. */
+const FAILING_TURN = "E2E_CODEX_TURN_FAILS";
+const FAILURE_SENTENCE =
+  "The 'gpt-6-e2e' model requires a newer version of Codex. Please upgrade and try again.";
+
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
   mkdirSync(join(recordDir, "codex"), { recursive: true });
@@ -597,6 +602,25 @@ function runTurn(turnId, input, effort) {
     // `finishTurn` is idempotent.
     notify("thread/status/changed", { threadId: THREAD_ID, status: { type: "idle" } });
   };
+
+  if (prompt === FAILING_TURN) {
+    appendRolloutEvent({
+      type: "task_complete",
+      turn_id: turnId,
+      last_agent_message: null,
+      error: {
+        message: JSON.stringify({
+          type: "error",
+          status: 400,
+          error: { type: "invalid_request_error", message: FAILURE_SENTENCE },
+        }),
+        codex_error_info: "other",
+      },
+    });
+    // No prompts, so no `agent_message`. A failed turn still returns the session to idle.
+    finish([]);
+    return;
+  }
 
   // A preamble, then a run of commands, then the echoed reply - the shape a real working
   // stretch has. The reply is written last for the same reason it is on the Claude side: its

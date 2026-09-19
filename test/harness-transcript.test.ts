@@ -145,6 +145,121 @@ test("Codex projects an interrupted rollout turn as the same visible marker Clau
   ]);
 });
 
+/** A rejection nests its sentence two levels down inside `message`. */
+test("Codex projects a failed turn's reason into the conversation", () => {
+  const failedAt = "2026-09-18T15:54:48.282Z";
+  const messages = parseCodexMessages([
+    {
+      type: "event_msg",
+      timestamp: failedAt,
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-rejected",
+        last_agent_message: null,
+        error: {
+          message: JSON.stringify({
+            type: "error",
+            status: 400,
+            error: {
+              type: "invalid_request_error",
+              message: "The 'gpt-6-astra' model requires a newer version of Codex.",
+            },
+          }),
+          codex_error_info: "other",
+        },
+      },
+    },
+  ]);
+
+  assert.deepEqual(messages, [
+    {
+      id: "error:turn-rejected",
+      role: "assistant",
+      text: "[Codex error] The 'gpt-6-astra' model requires a newer version of Codex.",
+      tools: [],
+      ts: Date.parse(failedAt),
+    },
+  ]);
+});
+
+test("Codex draws an already-readable failure verbatim, and a successful turn not at all", () => {
+  const ts = "2026-09-16T14:07:47.000Z";
+  const limit = "You've hit your usage limit. Visit the settings page to purchase more credits.";
+  const messages = parseCodexMessages([
+    // Plain prose, no envelope to unwrap.
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-out-of-credit",
+        error: { message: limit, codex_error_info: "usage_limit_reached" },
+      },
+    },
+    // Written for EVERY turn; a null error must stay silent.
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: { type: "task_complete", turn_id: "turn-fine", error: null },
+    },
+    // An unrecognised envelope is shown as written rather than discarded.
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-unfamiliar",
+        error: { message: '{"unexpected":"envelope"}' },
+      },
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((m) => [m.id, m.text]),
+    [
+      ["error:turn-out-of-credit", `[Codex error] ${limit}`],
+      ["error:turn-unfamiliar", '[Codex error] {"unexpected":"envelope"}'],
+    ],
+  );
+});
+
+/** The other two exits: a parsed envelope's top-level `message`, and input that never parses. */
+test("Codex reads a flat failure envelope, and keeps an unparseable one verbatim", () => {
+  const ts = "2026-09-18T16:00:00.000Z";
+  const flat = "Selected model is at capacity. Please try a different model.";
+  // Truncated mid-document: starts with `{`, reaches `JSON.parse`, throws.
+  const truncated = '{"type":"error","status":500,"error":{"message":"upstream go';
+  const messages = parseCodexMessages([
+    // Sentence at the TOP level rather than nested under `error`.
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-flat-envelope",
+        error: { message: JSON.stringify({ type: "error", status: 503, message: flat }) },
+      },
+    },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-truncated-envelope",
+        error: { message: truncated },
+      },
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((m) => [m.id, m.text]),
+    [
+      ["error:turn-flat-envelope", `[Codex error] ${flat}`],
+      ["error:turn-truncated-envelope", `[Codex error] ${truncated}`],
+    ],
+  );
+});
+
 /**
  * Codex CLI 0.153.4's rollout, whose prose moved and whose tool calls did not.
  *

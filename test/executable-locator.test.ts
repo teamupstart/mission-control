@@ -129,6 +129,50 @@ test("the deterministic path ladder records custom, inherited, login, manager, a
   }
 });
 
+/** Both halves of the rank: an installed agent wins, and a project-only tool is still found. */
+test("a project-local node_modules/.bin never outranks an installed agent", async () => {
+  const f = fixture();
+  const projectBin = join(f.root, "checkout", "node_modules", ".bin");
+  const xdg = join(f.root, "xdg");
+  const installed = executable(join(f.root, "home", ".local", "bin", "codex"));
+  const bundled = executable(join(projectBin, "codex"));
+  // Carried only by the project tree.
+  const projectOnly = executable(join(projectBin, "pi"));
+  Object.assign(f.env, {
+    // First on PATH, as npm writes it.
+    PATH: [projectBin, join(f.root, "home", ".local", "bin")].join(delimiter),
+    HOME: join(f.root, "home"),
+    XDG_DATA_HOME: xdg,
+  });
+  try {
+    const locator = new ExecutableLocator({
+      env: f.env,
+      executable: f.executable,
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    });
+
+    const codex = await locator.resolve(executableSpec("codex"));
+    assert.equal(codex?.path, installed, "the operator's own install wins");
+    assert.notEqual(codex?.path, bundled);
+    // `inherited-path`, not `project-local`: only the `node_modules/.bin` entry moved.
+    assert.equal(codex?.source, "inherited-path");
+
+    // Still reachable, just last.
+    const pi = await locator.resolve(executableSpec("pi"));
+    assert.equal(pi?.path, projectOnly);
+    assert.equal(pi?.source, "project-local");
+
+    // The rewritten PATH children inherit agrees, not just the resolver.
+    const order = locator.snapshot().path.split(delimiter);
+    assert.ok(
+      order.indexOf(projectBin) > order.indexOf(join(f.root, "home", ".local", "bin")),
+      "the project bin is ranked after the installation directory",
+    );
+  } finally {
+    f.clean();
+  }
+});
+
 test("an ad hoc command carries no fabricated built-in identity", async () => {
   const f = fixture();
   const customBin = join(f.root, "custom");

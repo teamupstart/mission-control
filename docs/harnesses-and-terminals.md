@@ -19,6 +19,15 @@ daemons, and the separate Foreman worker. Resolution has a fixed order:
 3. Absolute directories from `MISSION_EXECUTABLE_PATHS` and its legacy prefix forms.
 4. The PATH inherited by the process, then one bounded login-shell PATH reading.
 5. Supported version-manager and OS locations.
+6. Any `node_modules/.bin` directory found in step 4, ranked last.
+
+Step 6 is a demotion, not an extra search path. A package manager puts the project's own
+`node_modules/.bin` at the front of the PATH it gives a lifecycle script, so a daemon started
+with `make start` or `npm run dev` inherits that checkout's bundled agent CLI ahead of the one
+you installed. Mission Control moves those entries below every real installation instead, so
+the daemon drives the Codex, Claude, or Pi build you actually maintain even when it was
+launched from a checkout whose dependencies lag. They stay reachable at the bottom of the
+ladder, because a project-only tool has nowhere else to be found.
 
 No step scans the filesystem. Login-shell reads time out after five seconds, concurrent reads
 coalesce, and misses share a 30-second negative cache. An explicit Setup re-check forces a new

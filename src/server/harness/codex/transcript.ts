@@ -153,6 +153,35 @@ function assistantNarration(p: Record<string, unknown>): string | null {
   return prose?.role === "assistant" ? prose.text : null;
 }
 
+/** What the conversation draws in front of a failed turn's reason. */
+const FAILURE_MARKER = "[Codex error]";
+
+/**
+ * The sentence inside a failed turn's `error`, or null when the turn did not fail.
+ *
+ * `message` may be a JSON envelope carrying the readable text under `error` or at the top
+ * level; both are unwrapped. Anything that does not parse is returned as written.
+ */
+function turnFailureText(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const raw = (error as { message?: unknown }).message;
+  if (typeof raw !== "string") return null;
+  const message = raw.trim();
+  if (!message || !message.startsWith("{")) return message || null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return message;
+  }
+  if (!parsed || typeof parsed !== "object") return message;
+  const nested = (parsed as { error?: { message?: unknown } }).error?.message;
+  if (typeof nested === "string" && nested.trim()) return nested.trim();
+  const flat = (parsed as { message?: unknown }).message;
+  if (typeof flat === "string" && flat.trim()) return flat.trim();
+  return message;
+}
+
 /**
  * Distinguishes one parse from the next in the ids synthesized below.
  *
@@ -223,6 +252,20 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
         `interrupt:${String(p.turn_id ?? id)}`,
         ts,
       );
+      continue;
+    }
+    // The failure reason is recorded ONLY here - no `agent_message` accompanies it. Assistant
+    // rather than user, or the conversation's "Yours" rail would claim it.
+    if (rec.type === "event_msg" && p.type === "task_complete") {
+      const failure = turnFailureText(p.error);
+      if (failure) {
+        pushProse(
+          "assistant",
+          `${FAILURE_MARKER} ${failure}`,
+          `error:${String(p.turn_id ?? id)}`,
+          ts,
+        );
+      }
       continue;
     }
     // The 0.153.4 spelling, beside the older one rather than instead of it - the two test

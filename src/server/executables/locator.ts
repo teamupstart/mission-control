@@ -104,6 +104,16 @@ function collectPathEntries(groups: readonly PathEntryGroup[]): PathEntry[] {
   return entries;
 }
 
+/**
+ * Matched on the last two segments, not by substring, so an installation merely living under
+ * a path containing those words is not demoted. Separator-agnostic: `absoluteDirectory`
+ * normalizes but does not rewrite Windows separators.
+ */
+function isProjectLocalBin(directory: string): boolean {
+  const segments = directory.split(/[\\/]/);
+  return segments.at(-1) === ".bin" && segments.at(-2) === "node_modules";
+}
+
 function isPathCommand(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
@@ -491,14 +501,26 @@ export class ExecutableLocator {
         detail: custom.name,
       });
     }
+    // `node_modules/.bin` entries from the two inherited PATHs, held back and re-added below
+    // every installed location. See `project-local` in `@shared/executables.ts`.
+    const projectLocal: string[] = [];
+    const ranked = (values: readonly string[]): string[] => {
+      const kept: string[] = [];
+      for (const value of values) {
+        const directory = absoluteDirectory(value);
+        if (directory && isProjectLocalBin(directory)) projectLocal.push(value);
+        else kept.push(value);
+      }
+      return kept;
+    };
     groups.push(
       {
-        values: splitPath(this.inheritedPath ?? this.env.PATH),
+        values: ranked(splitPath(this.inheritedPath ?? this.env.PATH)),
         source: "inherited-path",
         detail: "PATH inherited by Mission Control",
       },
       {
-        values: splitPath(shell.path ?? undefined),
+        values: ranked(splitPath(shell.path ?? undefined)),
         source: "login-shell",
         detail: this.env.SHELL?.trim() || "/bin/zsh",
       },
@@ -528,6 +550,11 @@ export class ExecutableLocator {
           : ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
         source: "os-default",
         detail: `${this.platform} supported defaults`,
+      },
+      {
+        values: projectLocal,
+        source: "project-local",
+        detail: "project-local node_modules/.bin, ranked after every installation",
       },
     );
     const entries = collectPathEntries(groups);

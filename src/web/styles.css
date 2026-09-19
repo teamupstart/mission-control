@@ -6755,6 +6755,7 @@ a.btn {
 }
 .compose-pending {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 7px;
   min-width: 0;
@@ -7898,6 +7899,33 @@ kbd {
   font: 10.5px/1.3 var(--sans);
   color: var(--dim);
 }
+.message-delivery-choice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 6px;
+  font: 11px/1.4 var(--sans);
+  color: var(--dim);
+}
+.message-delivery-choice select {
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--fg);
+  font: inherit;
+}
+.pending-message-delivery {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pending-message-age { color: var(--attention); }
 .pending-turn-action {
   font: inherit;
   color: var(--working);
@@ -8066,6 +8094,20 @@ kbd {
   gap: 6px;
   align-items: flex-end;
   flex-wrap: wrap;
+}
+/* Keep delivery controls beside the reply box instead of charging every conversation
+   another full row. The explanation stays visible and wraps inside its own column. */
+.transcript-compose .message-delivery-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  flex: 0 1 250px;
+  width: auto;
+  max-width: 100%;
+  gap: 3px 8px;
+  margin: 0;
+}
+.transcript-compose .message-delivery-choice > span:last-child {
+  grid-column: 1 / -1;
 }
 .transcript-input {
   flex: 1;

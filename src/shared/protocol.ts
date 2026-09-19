@@ -1,5 +1,6 @@
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
+import { MESSAGE_DELIVERY_MODES } from "./message-delivery.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
@@ -354,6 +355,7 @@ const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("hum
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),
+  deliveryMode: z.enum(MESSAGE_DELIVERY_MODES).default("after-turn"),
   /** Whether to submit (press Enter) after typing. Default true. */
   submit: z.boolean().optional().default(true),
   /**
@@ -4410,6 +4412,7 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  */
 export const InjectPromptSchema = z.object({
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
+  deliveryMode: z.enum(MESSAGE_DELIVERY_MODES).default("after-turn"),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
   /**
@@ -4472,6 +4475,9 @@ export type RetroResponse =
 /** CAS guard for a pending-turn action selected from the current session projection. */
 export const PendingTurnRevisionSchema = z.object({
   revision: z.number().int().min(0),
+});
+export const PendingTurnDeliverSchema = PendingTurnRevisionSchema.extend({
+  action: z.enum(["steer", "interrupt"]),
 });
 export type PendingTurnRevision = z.infer<typeof PendingTurnRevisionSchema>;
 

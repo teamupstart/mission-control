@@ -302,23 +302,44 @@ Every multiline text box grows as text wraps or new lines are added. It keeps up
 lines visible, including the end of the draft, then scrolls inside the box for longer input.
 The field's original row count remains its empty-state floor.
 
-Delivery begins only after the session positively reports idle and no question is covering
-its input. A queued message that either rule is stopping reads `You · queued · held` in the
-dashboard's attention gold rather than the ordinary working blue, and says which rule:
+The **Delivery** selector controls when the message may join the conversation:
 
-- **Held until you answer the review above**, with a **Go to review** jump to the card that
-  is holding it. A message queued under an open question is not late, it is stopped, and it
-  stays stopped for as long as the question goes unanswered. Answering releases it on the
-  next drain, and the row goes back to plain `queued` on its way out.
-- **Held - this session is ending and will not receive it**, on a session that is stopping or
-  has exited. Nothing releases that one: the outbox needs a session reporting idle, and this
-  one never will again. No jump is offered, because a dying session's question is withdrawn
-  from the dashboard and there is no card to open.
+- **After this turn** is the default. It waits for confirmed idle and stays editable.
+- **Steer now** joins the running turn through an embedded driver's native input path.
+- **Steer after 1 minute** first allows normal idle delivery, then steers if it is still
+  waiting after 60 seconds. Ongoing output does not postpone the deadline.
+- **Interrupt after 2 minutes** is an explicit alternative for an unsent message. After
+  120 seconds it stops the current turn, waits for confirmed idle, and delivers that message.
+  It may cancel a running tool; other queued messages are kept.
 
-Recall still works on a held row under either. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
-message that is still shown as editable never joins a turn that is already running. Both
-embedded harnesses would do exactly that with it: Codex through an explicit steer, Claude
-Code by attaching it to the running turn, which then answers both and ends once. A terminal
+The choice is remembered across composer mounts in this browser tab, separately for each
+session. Each submitted message stores its own choice and deadline durably, so a daemon or
+browser restart cannot turn an intentional next-turn message into a correction. Reset clears
+the composer's remembered choice. Native steering is available on embedded Claude, Codex and
+Pi sessions. Terminal sessions offer next-turn delivery and queue-preserving interruption.
+
+Each queued row also offers **Steer now**, where supported, and **Interrupt and deliver**.
+These explicit actions can pass messages intentionally waiting for the next turn. Due
+messages retain their enqueue order; a future deadline never delays a newer Steer now.
+After 30 seconds, a row shows its elapsed waiting time and the reason it is waiting.
+
+No delivery mode bypasses a permission or review question, reset, an ending session, or an
+unresolved delivery. A queued message held by a question reads `You · queued · held`, with
+**Held until you answer the review above** and a **Go to review** jump. A stopping or exited
+session instead says **Held - this session is ending and will not receive it**. Recall still
+works on held rows. Resolving a question releases eligible messages on the next drain.
+
+An interrupt-and-deliver attempt waits at most ten seconds for acknowledgement and confirmed
+idle. If it fails, the message remains queued with an explanation and automatic interruption
+will not repeat. The operator can retry the explicit action. The ordinary Stop control keeps
+its separate meaning: stop the current turn and discard safely queued messages.
+
+A driver acceptance means the runtime accepted the input, not that the model read it or acted
+on it. Accepted messages are never automatically replayed or interrupted merely because an
+answer is slow. Steering joins the active turn and does not reserve a second turn completion.
+A row is claimed before it crosses the runtime boundary, so Edit cannot race a delivery.
+Next-turn messages are also checked for idleness at the driver's acceptance boundary.
+A terminal
 session uses the
 same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
 then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was

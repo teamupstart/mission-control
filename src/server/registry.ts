@@ -4453,7 +4453,11 @@ export class Registry extends EventEmitter {
     } = {},
   ): SessionWorkEpisode | null {
     const session = this.sessions.get(sessionId);
-    const at = options.at ?? Date.now();
+    // A driver can publish its cleared identity before clearContext returns. That
+    // rotation already cancelled the previous task; replaying the earlier clear-issued
+    // timestamp here would put the replacement episode before its own cancellation and
+    // incorrectly block every subsequent prompt as reuse of cancelled resources.
+    const at = Math.max(options.at ?? Date.now(), sessionWorkEpisodeFor(sessionId)?.startedAt ?? 0);
     const awaitingAgentRebind = Boolean(
       options.awaitingAgentRebind &&
       session?.agentSessionId === options.previousAgentSessionId

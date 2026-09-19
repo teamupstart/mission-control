@@ -133,6 +133,8 @@ test("a queued message says the open review is what is holding it, and stops say
   await expect(followUpRow).toHaveCSS("border-left-color", ATTENTION_GOLD);
   // Stuck, not out of reach: recall still works on a held row.
   await expect(followUpRow.getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(followUpRow.getByRole("button", { name: "Steer now", exact: true })).toBeDisabled();
+  await expect(followUpRow.getByRole("button", { name: "Interrupt and deliver", exact: true })).toBeDisabled();
   // And the composer is refusing new text for the same reason, as it always did.
   await expect(card.getByPlaceholder(/^Waiting on a menu/)).toBeDisabled();
   await shoot(dashboard, "held-by-the-review");

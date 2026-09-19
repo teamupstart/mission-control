@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { MessageSendDisposition, PendingTurn, ServerEvent, Session } from "@shared/types.ts";
+import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
+import { MESSAGE_INTERRUPT_WATCHDOG_MS, messageDeliveryMode, supportsMessageDelivery, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
-import { injectPrompt, type InjectResult } from "./actions.ts";
+import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
 import {
   claimNextPendingTurn,
   createPendingTurn,
+  expeditePendingTurn,
+  recordPendingTurnInterrupt,
   createReviewContinuationPendingTurn,
   deleteClaimedPendingTurn,
   dropQueuedPendingTurns,
@@ -31,6 +34,8 @@ export interface IdleSdkSender {
     turn: SdkTurn,
     beforeSend?: () => string | null,
   ): Promise<"started" | null>;
+  send(id: string, turn: SdkTurn, beforeSend?: () => string | null): Promise<SdkSendDisposition>;
+  interruptForDelivery(id: string, beforeInterrupt: () => string | null): Promise<void>;
 }
 
 export interface PendingTurnSubmitResult {
@@ -48,6 +53,8 @@ interface PendingTurnDeps {
   inject: typeof injectPrompt;
   idleSettleMs: number;
   pickupTimeoutMs: number;
+  interruptTimeoutMs: number;
+  interruptPane: typeof interruptPaneSession;
 }
 
 interface PickupCandidate {
@@ -76,15 +83,15 @@ interface SdkHandoff {
 
 interface ArmedDrain {
   timer: ReturnType<typeof setTimeout>;
-  /** The moment this session's current idle observation finishes settling. */
+  /** The next idle-settle boundary or persisted delivery deadline. */
   drainAt: number;
 }
 
 /**
  * Durable human-turn outbox shared by embedded and terminal conversations.
  *
- * The manager reacts only to registry evidence. An idle card is necessary but never the
- * delivery boundary by itself: SDK drivers re-check idleness while accepting, and terminal
+ * Delivery follows registry evidence and the operator's per-message policy. SDK drivers
+ * re-check the appropriate busy or idle boundary while accepting, and terminal
  * rows remain claimed until a hook or passive reader observes work beginning. That keeps an
  * editable row on Mission Control's side of the line and makes every ambiguous terminal
  * outcome an explicit human decision instead of an automatic duplicate.
@@ -96,6 +103,8 @@ export class PendingTurnManager {
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
   private readonly sdkHandoffs = new Map<string, SdkHandoff>();
+  private readonly interruptions = new Map<string, { turn: PendingTurn; cancel: () => void }>();
+  private readonly interruptHolds = new Map<string, number>();
   private readonly activeDeliveries = new Map<string, Promise<void>>();
   private readonly resetPreserve = new Map<string, Set<string>>();
   private readonly knownKeys = new Map<string, string>();
@@ -114,6 +123,8 @@ export class PendingTurnManager {
       inject: deps.inject ?? injectPrompt,
       idleSettleMs: deps.idleSettleMs ?? DEFAULT_IDLE_SETTLE_MS,
       pickupTimeoutMs: deps.pickupTimeoutMs ?? DEFAULT_PICKUP_TIMEOUT_MS,
+      interruptTimeoutMs: deps.interruptTimeoutMs ?? MESSAGE_INTERRUPT_WATCHDOG_MS,
+      interruptPane: deps.interruptPane ?? interruptPaneSession,
     };
   }
 
@@ -218,7 +229,7 @@ export class PendingTurnManager {
     if (session) this.scheduleDrain(noteKeyFor(session));
   }
 
-  submit(sessionId: string, text: string): PendingTurnSubmitResult {
+  submit(sessionId: string, text: string, deliveryMode: MessageDeliveryMode = "after-turn"): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -239,6 +250,9 @@ export class PendingTurnManager {
         error: "this session cannot receive messages",
       };
     }
+    if (!supportsMessageDelivery(session, deliveryMode)) {
+      return { ok: false, pasted: false, submitVerified: false, error: "This session does not support that delivery mode." };
+    }
     const trimmed = text.trim();
     if (!trimmed) {
       return { ok: false, pasted: false, submitVerified: false, error: "message is empty" };
@@ -248,6 +262,7 @@ export class PendingTurnManager {
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
+      deliveryMode,
     });
     this.registry.refreshPendingTurns(pendingTurn.noteKey);
     this.scheduleDrain(pendingTurn.noteKey);
@@ -322,6 +337,33 @@ export class PendingTurnManager {
     return recalled;
   }
 
+  expedite(sessionId: string, id: string, revision: number, action: "steer" | "interrupt"): boolean {
+    const session = this.registry.getSession(sessionId);
+    if (!this.started || this.stopped || !session || !this.canDeliver(session)) return false;
+    if (!supportsMessageDelivery(session, action === "steer" ? "steer" : "interrupt-after-wait")) return false;
+    // An unresolved handoff must be reconciled before another instruction can pass it.
+    if (session.pendingTurns.some((turn) => turn.state !== "queued")) return false;
+    const updated = expeditePendingTurn(noteKeyFor(session), id, revision, action, this.deps.now());
+    if (!updated) return false;
+    this.registry.refreshPendingTurns(updated.noteKey);
+    this.scheduleDrain(updated.noteKey);
+    return true;
+  }
+
+  /** Keep normal Stop ahead of deadline delivery until its outcome is known. */
+  pauseForInterrupt(sessionId: string): () => void {
+    this.interruptHolds.set(sessionId, (this.interruptHolds.get(sessionId) ?? 0) + 1);
+    const session = this.registry.getSession(sessionId);
+    if (session) this.cancelIdleTimer(noteKeyFor(session));
+    return () => {
+      const remaining = (this.interruptHolds.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.interruptHolds.set(sessionId, remaining);
+      else this.interruptHolds.delete(sessionId);
+      const current = this.registry.getSession(sessionId);
+      if (current) this.scheduleDrain(noteKeyFor(current));
+    };
+  }
+
   /**
    * Drop everything still waiting to be delivered to this session, and say how much went.
    *
@@ -340,7 +382,16 @@ export class PendingTurnManager {
     const session = this.registry.getSession(sessionId);
     if (!session) return 0;
     const key = noteKeyFor(session);
-    const dropped = dropQueuedPendingTurns(key);
+    // This claim has only requested interruption; its text has not entered the runtime.
+    // An ordinary Stop still owns that unsent replacement and must prevent it restarting
+    // work as soon as the interrupted turn reports idle.
+    const interruption = this.interruptions.get(sessionId);
+    let dropped = 0;
+    if (interruption) {
+      interruption.cancel();
+      if (deleteClaimedPendingTurn(interruption.turn.id, interruption.turn.revision)) dropped++;
+    }
+    dropped += dropQueuedPendingTurns(key);
     if (dropped > 0) this.registry.refreshPendingTurns(key);
     return dropped;
   }
@@ -448,8 +499,7 @@ export class PendingTurnManager {
       }
       return;
     }
-    if (this.canDrain(session)) this.scheduleDrain(key);
-    else this.cancelIdleTimer(key);
+    this.scheduleDrain(key);
   }
 
   private pickupActivityAt(session: Session, boundaryAt: number): number | null {
@@ -529,8 +579,44 @@ export class PendingTurnManager {
       // rather than leaving it as an argument someone has to re-derive.
       activePaneDialog(session) === null &&
       !this.registry.sessionResetInProgress(session.id) &&
+      !this.interruptHolds.has(session.id) &&
       canMessage(session)
     );
+  }
+
+  /** Shared safety gates; only steering is allowed to relax the idle requirement. */
+  private canDeliver(session: Session): boolean {
+    return !this.stopped && !this.interruptHolds.has(session.id) && session.stateConfirmed &&
+      (session.state === "idle" || session.state === "working") &&
+      activePaneDialog(session) === null &&
+      !this.registry.sessionResetInProgress(session.id) && canMessage(session) &&
+      this.registry.sessionForNoteKey(noteKeyFor(session))?.id === session.id;
+  }
+
+  private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | "steer" | "interrupt" } | null {
+    if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;
+    const first = session.pendingTurns[0];
+    if (!first) return null;
+    const eligible = session.pendingTurns.filter((row) => {
+      const mode = messageDeliveryMode(row);
+      // A refused steer has not crossed acceptance and may resume when its blocker clears.
+      // Interruption failures still require an explicit retry, even before an attempt.
+      return row.deadlineAt != null && row.interruptAttemptedAt == null &&
+        (mode !== "interrupt-after-wait" || !row.lastError) && supportsMessageDelivery(session, mode);
+    });
+    const due = eligible.find(row => row.deadlineAt! <= this.deps.now());
+    if (this.canDrain(session)) {
+      return { turn: due ?? first, at: (session.lastActivity ?? session.firstSeen) + this.deps.idleSettleMs, action: "idle" };
+    }
+    // A terminal can still show old idle evidence while a previous paste awaits pickup.
+    // That is not proof of a running turn that may be interrupted.
+    if (session.state !== "working") return null;
+    // Next-turn rows may be passed only by rows whose operator explicitly allowed joining
+    // or interrupting this turn. Among due rows keep enqueue order, even after restart.
+    const turn = due ?? eligible.reduce<PendingTurn | undefined>((first, row) =>
+        !first || row.deadlineAt! < first.deadlineAt! ? row : first, undefined);
+    if (!turn) return null;
+    return { turn, at: turn.deadlineAt!, action: messageDeliveryMode(turn) === "interrupt-after-wait" ? "interrupt" : "steer" };
   }
 
   private readyToDrain(session: Session): boolean {
@@ -543,15 +629,14 @@ export class PendingTurnManager {
   private scheduleDrain(key: string): void {
     if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
     const session = this.registry.sessionForNoteKey(key);
-    if (!session || !this.canDrain(session)) return;
-    const idleSince = session.lastActivity ?? session.firstSeen;
-    const drainAt = idleSince + this.deps.idleSettleMs;
+    const next = session ? this.nextDelivery(session) : null;
+    if (!next) { this.cancelIdleTimer(key); return; }
+    const drainAt = next.at;
     const armed = this.idleTimers.get(key);
-    // Keep whichever timer fires LATER. An armed timer measured against an older idle
-    // observation would wake inside the current settle window, find `readyToDrain` false,
-    // and leave the row with nothing holding a claim on it.
+    // Recompute after every relevant event. Output may move an idle boundary, but must
+    // never extend a message's deadline or delay an explicit Steer now request.
     if (armed) {
-      if (armed.drainAt >= drainAt) return;
+      if (armed.drainAt === drainAt) return;
       clearTimeout(armed.timer);
     }
     const timer = unref(
@@ -596,38 +681,47 @@ export class PendingTurnManager {
     if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
     const session = this.registry.sessionForNoteKey(key);
     if (!session) return;
-    if (!this.readyToDrain(session)) {
+    const next = this.nextDelivery(session);
+    if (!next || next.at > this.deps.now()) {
       // Woke inside a settle window that moved after this timer was armed. Re-arm instead
       // of returning: nothing re-polls an embedded session on the outbox's behalf, so a
       // dropped claim here is a queued row that never leaves.
-      if (this.canDrain(session)) this.scheduleDrain(key);
+      this.scheduleDrain(key);
       return;
     }
     this.draining.add(key);
     let turn: PendingTurn | null = null;
     try {
-      turn = claimNextPendingTurn(key, this.deps.now());
+      turn = claimNextPendingTurn(key, this.deps.now(), next.turn);
       if (!turn) return;
       this.registry.refreshPendingTurns(key);
-      if (session.runtime === "sdk") await this.deliverSdk(session, turn);
+      if (next.action === "interrupt") {
+        try {
+          await this.interruptAndWait(session, turn);
+        } catch (err) {
+          releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+          this.registry.refreshPendingTurns(key);
+          return;
+        }
+      }
+      if (session.runtime === "sdk") await this.deliverSdk(session, turn, next.action === "steer");
       else await this.deliverTerminal(session, turn);
     } finally {
       this.draining.delete(key);
-      // A fast turn may finish before injection returns. Its idle event could not
-      // arm another drain while this claim was active. Re-arm only after the row
-      // retired; a refused or uncertain delivery must never become a retry loop.
-      const current = this.registry.getSession(session.id);
+      // Steering may leave state unchanged, and a fast terminal turn may finish before
+      // injection returns. Wake eligible input after retirement without another event;
+      // a refused or uncertain delivery must never become a retry loop.
+      const current = this.registry.sessionForNoteKey(key);
+      const following = current ? this.nextDelivery(current) : null;
       const retiredId = turn?.id;
-      if (
-        session.runtime === "terminal" && retiredId && current?.pendingTurns.length &&
-        !current.pendingTurns.some(row => row.id === retiredId)
-      ) {
-        this.scheduleDrain(noteKeyFor(current));
+      if (retiredId && current && !current.pendingTurns.some((row) => row.id === retiredId) &&
+          following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
+        this.scheduleDrain(key);
       }
     }
   }
 
-  private async deliverSdk(session: Session, turn: PendingTurn): Promise<void> {
+  private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
     const handoff: SdkHandoff = {
       sessionId: session.id,
       turn,
@@ -636,8 +730,9 @@ export class PendingTurnManager {
     };
     this.sdkHandoffs.set(turn.noteKey, handoff);
     try {
-      const accepted = await this.sdk.sendWhenIdle(session.id, { text: turn.text }, () => {
-        const blocker = this.acceptanceBlocker(handoff);
+      const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
+      const accepted = await send(session.id, { text: turn.text }, () => {
+        const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) handoff.acceptanceBoundaryCrossed = true;
         return blocker;
       });
@@ -850,7 +945,7 @@ export class PendingTurnManager {
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
-  private acceptanceBlocker(handoff: SdkHandoff): string | null {
+  private acceptanceBlocker(handoff: SdkHandoff, steer = false): string | null {
     const current = this.registry.getSession(handoff.sessionId);
     if (
       handoff.ownershipUncertain ||
@@ -861,10 +956,91 @@ export class PendingTurnManager {
       handoff.ownershipUncertain = true;
       return "The SDK conversation owner changed before delivery.";
     }
-    if (!this.readyToDrain(current)) {
+    if (steer ? (!this.canDeliver(current) || !supportsMessageDelivery(current, "steer")) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
-    return null;
+    return this.registry.promptResourceBlockerForSession(current.id);
+  }
+
+  private async interruptAndWait(session: Session, turn: PendingTurn): Promise<void> {
+    let active = true;
+    const guard = (): string | null => {
+      if (!active) return "This interruption attempt has expired.";
+      const current = this.registry.getSession(session.id);
+      if (!current || noteKeyFor(current) !== turn.noteKey || !this.canDeliver(current)) {
+        return "The session changed, reset, or opened a dialog before interruption.";
+      }
+      return this.registry.promptResourceBlockerForSession(current.id);
+    };
+    const blocked = guard();
+    if (blocked) throw new Error(blocked);
+    if (!recordPendingTurnInterrupt(turn.id, turn.revision, this.deps.now())) {
+      throw new Error("This message already attempted interruption.");
+    }
+    const boundary = this.deps.now();
+    await new Promise<void>((resolve, reject) => {
+      let acknowledged = false;
+      let finished = false;
+      let settle: ReturnType<typeof setTimeout> | undefined;
+      const finish = (error?: Error): void => {
+        if (finished) return;
+        finished = true;
+        active = false;
+        clearTimeout(timer);
+        clearTimeout(settle);
+        unsubscribe();
+        this.interruptions.delete(session.id);
+        if (error) reject(error); else resolve();
+      };
+      const check = (): void => {
+        if (finished) return;
+        const blockedNow = guard();
+        if (blockedNow) { finish(new Error(blockedNow)); return; }
+        const current = this.registry.getSession(session.id)!;
+        if (acknowledged && current.state === "idle" &&
+            (current.runtime === "sdk" || (current.lastActivity ?? 0) >= boundary)) {
+          // Use the normal settled-idle acceptance guard after confirmed interruption.
+          if (this.readyToDrain(current)) finish();
+          else {
+            clearTimeout(settle);
+            settle = setTimeout(check, Math.max(1,
+              (current.lastActivity ?? current.firstSeen) + this.deps.idleSettleMs - this.deps.now()));
+          }
+        }
+      };
+      const unsubscribe = this.registry.subscribe(() => check());
+      const timer = setTimeout(() => finish(new Error(
+        "Interruption was not confirmed in time. The message was not sent; automatic interruption will not repeat.",
+      )), this.deps.interruptTimeoutMs);
+      this.interruptions.set(session.id, {
+        turn,
+        cancel: () => finish(new Error("The operator stopped this queued replacement.")),
+      });
+      const interrupt = async (): Promise<void> => {
+        try {
+          const beforeInterrupt = (): string | null => {
+            const blocker = guard();
+            if (blocker) return blocker;
+            const current = this.registry.getSession(session.id)!;
+            if (current.workCycle?.generation !== session.workCycle?.generation) {
+              return "The active turn changed before interruption. This message remains queued.";
+            }
+            return null;
+          };
+          if (session.runtime === "sdk") {
+            await this.sdk.interruptForDelivery(session.id, beforeInterrupt);
+          } else {
+            const blocker = beforeInterrupt();
+            if (blocker) throw new Error(blocker);
+            const result = await this.deps.interruptPane(session);
+            if (!result.ok) throw new Error(result.error ?? "The terminal refused interruption.");
+          }
+          acknowledged = true;
+          check();
+        } catch (err) { finish(new Error(errorMessage(err))); }
+      };
+      void interrupt();
+    });
   }
 
   private markResetUncertain(sessionId: string, turn: PendingTurn, error: string): void {

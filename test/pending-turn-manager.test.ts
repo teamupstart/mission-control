@@ -1,3 +1,4 @@
+import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -22,6 +23,7 @@ const {
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { resetSession } = await import("../src/server/reset.ts");
+const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
@@ -86,6 +88,7 @@ function sdkFixture(
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_id, turn, beforeSend) => {
         calls.push(turn.text);
         const blocker = beforeSend?.();
@@ -156,7 +159,7 @@ function terminalFixture(
   const injected: string[] = [];
   const manager = new PendingTurnManager(
     registry,
-    { sendWhenIdle: async () => "started" },
+    { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
     {
       idleSettleMs: 0,
       pickupTimeoutMs,
@@ -257,6 +260,7 @@ test("SDK-to-terminal handoff waits for one live owner and wakes after eviction"
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async () => {
         throw new Error("the exited SDK owner must not receive the pending turn");
       },
@@ -314,6 +318,7 @@ test("manager startup projects an interrupted delivery as uncertain without send
   claimNextPendingTurn(key, 2);
   let sends = 0;
   const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
     sendWhenIdle: async () => {
       sends += 1;
       return "started";
@@ -391,6 +396,7 @@ test("an SDK failure before the acceptance boundary remains safely retryable", a
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async () => {
         throw new Error("supervisor refused before acceptance");
       },
@@ -428,6 +434,7 @@ test("SDK ownership changes before acceptance preserve uncertainty", async () =>
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
         deliveryReached();
         await acceptanceMayContinue;
@@ -480,6 +487,7 @@ test("SDK ownership changes during acknowledgement preserve uncertainty", async 
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
         const blocker = beforeSend?.();
         if (blocker) throw new Error(blocker);
@@ -864,7 +872,7 @@ test("Codex terminal delivery follows passive rollout completion and pickup mark
   const injected: string[] = [];
   const manager = new PendingTurnManager(
     registry,
-    { sendWhenIdle: async () => "started" },
+    { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
     {
       idleSettleMs: 0,
       pickupTimeoutMs: 100,
@@ -938,7 +946,7 @@ test("a late SDK binding carries and clears the claimed synthetic-key row", asyn
   const accepted = new Promise<"started">((resolve) => (accept = resolve));
   const manager = new PendingTurnManager(
     registry,
-    { sendWhenIdle: async () => accepted },
+    { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => accepted },
     { idleSettleMs: 0 },
   );
   manager.start();
@@ -1005,6 +1013,7 @@ test("an SDK reset refuses a claimed turn at the runtime acceptance boundary", a
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
         deliveryReached();
         await deliveryMayContinue;
@@ -1067,6 +1076,7 @@ test("an SDK reset preserves uncertainty after runtime acceptance may have begun
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
         const blocker = beforeSend?.();
         if (blocker) throw new Error(blocker);
@@ -1133,6 +1143,7 @@ test("an SDK ownership race during reset retains the accepted row", async () => 
   const manager = new PendingTurnManager(
     registry,
     {
+      ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
         const blocker = beforeSend?.();
         if (blocker) throw new Error(blocker);
@@ -1674,6 +1685,322 @@ test("a session running no scout journals nothing at all", async () => {
   clearPendingTurns(f.key);
 });
 
+function steeringFixture(name: string, options: {
+  sendError?: boolean; interruptFails?: boolean; interruptTimeoutMs?: number;
+  beforeSteer?: () => Promise<void>; beforeInterrupt?: () => Promise<void>;
+} = {}) {
+  const registry = new Registry();
+  const id = `sdk:steering:${name}`;
+  registry.registerSdkSession({ id, agent: "claude", name, cwd: `/repo/${name}`, agentSessionId: `steering:${name}` });
+  working(registry, id);
+  const sends: string[] = [];
+  let interrupts = 0;
+  const manager = new PendingTurnManager(registry, {
+    sendWhenIdle: async (_id, turn, guard) => {
+      const blocked = guard?.();
+      if (blocked) throw new Error(blocked);
+      if (registry.getSession(id)?.state !== "idle") return null;
+      sends.push(turn.text);
+      working(registry, id);
+      return "started";
+    },
+    send: async (_id, turn, guard) => {
+      await options.beforeSteer?.();
+      const blocked = guard?.();
+      if (blocked) throw new Error(blocked);
+      if (options.sendError) throw new Error("receipt lost");
+      sends.push(turn.text);
+      return "steered";
+    },
+    interruptForDelivery: async (_id, guard) => {
+      await options.beforeInterrupt?.();
+      const blocked = guard();
+      if (blocked) throw new Error(blocked);
+      interrupts++;
+      if (!options.interruptFails) idle(registry, id);
+    },
+  }, { idleSettleMs: 0, interruptTimeoutMs: options.interruptTimeoutMs ?? 100 });
+  manager.start();
+  return { registry, id, manager, sends, interrupts: () => interrupts };
+}
+
+test("steering passes intentional next-turn work while preserving it and all input is claimed once", async () => {
+  const f = steeringFixture("bypass");
+  const later = f.manager.submit(f.id, "after the turn").pendingTurn!;
+  f.manager.submit(f.id, "correction one", "steer");
+  f.manager.submit(f.id, "correction two", "steer");
+  await until(() => f.sends.length === 2, "both steers");
+  assert.deepEqual(f.sends, ["correction one", "correction two"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns.map(t => t.id), [later.id]);
+  idle(f.registry, f.id);
+  await until(() => f.sends.length === 3, "the next turn");
+  assert.equal(f.sends[2], "after the turn");
+  f.manager.stop();
+});
+
+test("ambiguous steering is uncertain and never replayed by timers or idle", async () => {
+  const f = steeringFixture("ambiguous", { sendError: true });
+  f.manager.submit(f.id, "only once", "steer");
+  await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "uncertain", "uncertainty");
+  idle(f.registry, f.id);
+  await tick();
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "uncertain");
+  assert.deepEqual(f.sends, []);
+  f.manager.stop();
+});
+
+test("interrupt and deliver preserves the other queued messages and stale actions cannot replay it", async () => {
+  const f = steeringFixture("interrupt");
+  const other = f.manager.submit(f.id, "later").pendingTurn!;
+  const urgent = f.manager.submit(f.id, "change course").pendingTurn!;
+  assert.equal(f.manager.expedite(f.id, urgent.id, urgent.revision + 1, "interrupt"), false);
+  assert.equal(f.manager.expedite(f.id, urgent.id, urgent.revision, "interrupt"), true);
+  await until(() => f.sends.length === 1, "interruption delivery");
+  assert.equal(f.interrupts(), 1);
+  assert.deepEqual(f.sends, ["change course"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns.map(t => t.id), [other.id]);
+  assert.equal(f.manager.expedite(f.id, urgent.id, urgent.revision, "interrupt"), false);
+  f.manager.stop();
+});
+
+test("an unconfirmed interrupt times out without sending and is not attempted again", async () => {
+  const f = steeringFixture("timeout", { interruptFails: true, interruptTimeoutMs: 10 });
+  const row = f.manager.submit(f.id, "do not lose me").pendingTurn!;
+  assert.equal(f.manager.expedite(f.id, row.id, row.revision, "interrupt"), true);
+  await until(() => !!f.registry.getSession(f.id)?.pendingTurns[0]?.lastError, "watchdog");
+  working(f.registry, f.id);
+  await tick(20);
+  assert.equal(f.interrupts(), 1);
+  assert.deepEqual(f.sends, []);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "queued");
+  f.manager.stop();
+});
+
+test("a persisted deadline expires despite continued output and survives manager restart", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100000 });
+  const f = steeringFixture("deadline-restart");
+  const row = f.manager.submit(f.id, "timed correction", "steer-after-wait").pendingTurn!;
+  assert.equal(row.deadlineAt, 160000);
+  t.mock.timers.tick(59000);
+  working(f.registry, f.id);
+  assert.deepEqual(f.sends, []);
+  f.manager.stop();
+  const resumed = new PendingTurnManager(f.registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async () => "started",
+    send: async (_id, turn, guard) => {
+      assert.equal(guard?.(), null);
+      f.sends.push(turn.text);
+      return "steered";
+    },
+  }, { idleSettleMs: 0 });
+  resumed.start();
+  t.mock.timers.tick(1000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, ["timed correction"]);
+  t.mock.timers.tick(120000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.sends.length, 1);
+  resumed.stop();
+});
+
+test("a deadline never answers a blocking review and resumes when the review is resolved", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 200000 });
+  const f = steeringFixture("deadline-review");
+  f.manager.submit(f.id, "do not answer the menu", "steer-after-wait");
+  f.registry.applyDriverEvent(f.id, { kind: "request", request: {
+    id: "deadline-ask", kind: "permission", prompt: "Allow this?", options: [{ number: 1, label: "Yes" }],
+  } });
+  t.mock.timers.tick(65000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, []);
+  f.registry.applyDriverEvent(f.id, { kind: "request_resolved", requestId: "deadline-ask" });
+  working(f.registry, f.id);
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, ["do not answer the menu"]);
+  f.manager.stop();
+});
+
+test("automatic interruption is opt-in, fires at two minutes, and keeps other rows", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 300000 });
+  const f = steeringFixture("deadline-interrupt");
+  f.manager.submit(f.id, "wait intentionally");
+  f.manager.submit(f.id, "interrupt if still unsent", "interrupt-after-wait");
+  t.mock.timers.tick(119999);
+  assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 1);
+  assert.deepEqual(f.sends, ["interrupt if still unsent"]);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "wait intentionally");
+  f.manager.stop();
+});
+
+test("an immediate steer does not wait behind a future deadline", async () => {
+  const f = steeringFixture("future-before-now");
+  f.manager.submit(f.id, "wait one minute", "steer-after-wait");
+  f.manager.submit(f.id, "correct this now", "steer");
+  await until(() => f.sends.length === 1, "immediate correction");
+  assert.deepEqual(f.sends, ["correct this now"]);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "wait one minute");
+  f.manager.stop();
+});
+
+test("an explicit correction still wins if the active turn ends before its timer fires", async () => {
+  const f = steeringFixture("idle-before-steer");
+  f.manager.submit(f.id, "intentional next-turn work");
+  f.manager.submit(f.id, "urgent correction", "steer");
+  idle(f.registry, f.id);
+  await until(() => f.sends.length === 1, "correction as a new turn");
+  assert.deepEqual(f.sends, ["urgent correction"]);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.text, "intentional next-turn work");
+  f.manager.stop();
+});
+
+test("a steer queued beside a newly started turn does not depend on another driver event", async () => {
+  const f = steeringFixture("follow-idle-start");
+  idle(f.registry, f.id);
+  f.manager.submit(f.id, "start work", "steer");
+  f.manager.submit(f.id, "also consider this", "steer");
+  await until(() => f.sends.length === 2, "both corrections");
+  assert.deepEqual(f.sends, ["start work", "also consider this"]);
+  f.manager.stop();
+});
+
+test("a review opening before steering acceptance leaves the message unsent", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = steeringFixture("review-before-acceptance", { beforeSteer: () => gate });
+  f.manager.submit(f.id, "do not answer the review", "steer");
+  await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "sending", "claim");
+  f.registry.applyDriverEvent(f.id, { kind: "request", request: {
+    id: "new-review", kind: "permission", prompt: "Allow this?", options: [{ number: 1, label: "Yes" }],
+  } });
+  release();
+  await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued", "refusal");
+  assert.deepEqual(f.sends, []);
+  f.manager.stop();
+});
+
+test("a timed steer refused by a newly opened review resumes automatically after resolution", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 400000 });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = steeringFixture("timed-review-before-acceptance", { beforeSteer: () => gate });
+  t.after(() => f.manager.stop());
+  const row = f.manager.submit(f.id, "deliver after the review", "steer-after-wait").pendingTurn!;
+  t.mock.timers.tick(60000);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "sending");
+  f.registry.applyDriverEvent(f.id, { kind: "request", request: {
+    id: "timed-review", kind: "permission", prompt: "Allow this?", options: [{ number: 1, label: "Yes" }],
+  } });
+  release();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const refused = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.equal(refused?.state, "queued");
+  assert.match(refused?.lastError ?? "", /opened a dialog/);
+  assert.equal(refused?.deadlineAt, row.deadlineAt);
+  assert.deepEqual(f.sends, []);
+  t.mock.timers.tick(60000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "the unresolved review still blocks expired steering");
+
+  f.registry.applyDriverEvent(f.id, { kind: "request_resolved", requestId: "timed-review" });
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, ["deliver after the review"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  working(f.registry, f.id);
+  t.mock.timers.tick(120000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.sends.length, 1, "accepted steering is never replayed");
+});
+
+test("a serialized interruption that outlives its watchdog cannot stop a later turn", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = steeringFixture("expired-guard", { beforeInterrupt: () => gate, interruptTimeoutMs: 10 });
+  const row = f.manager.submit(f.id, "replacement").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "interrupt"));
+  await until(() => !!f.registry.getSession(f.id)?.pendingTurns[0]?.lastError, "watchdog");
+  release();
+  await tick();
+  assert.equal(f.interrupts(), 0);
+  assert.deepEqual(f.sends, []);
+  f.manager.stop();
+});
+
+test("terminal interruption waits for observed idle and then for verified pickup", async () => {
+  const registry = new Registry();
+  const name = "terminal-interrupt-delivery";
+  registry.applyDiscovery([discovered(name)]);
+  stopHook(registry, name);
+  userPromptHook(registry, name);
+  const session = registry.snapshot().sessions[0]!;
+  const injected: string[] = [];
+  let interrupted = false;
+  const manager = new PendingTurnManager(registry, { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" }, {
+    idleSettleMs: 0, interruptTimeoutMs: 1000,
+    interruptPane: async () => { interrupted = true; return { ok: true }; },
+    inject: async (_session, text, _deps, beforeWrite) => {
+      assert.equal(beforeWrite?.(), null);
+      injected.push(text);
+      userPromptHook(registry, name);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  manager.start();
+  assert.equal(manager.submit(session.id, "unsupported", "steer").ok, false);
+  const other = manager.submit(session.id, "for later").pendingTurn!;
+  const urgent = manager.submit(session.id, "terminal replacement").pendingTurn!;
+  assert.ok(manager.expedite(session.id, urgent.id, urgent.revision, "interrupt"));
+  await until(() => interrupted, "terminal Escape");
+  assert.deepEqual(injected, [], "a successful keypress is not an idle acknowledgement");
+  stopHook(registry, name);
+  await until(() => injected.length === 1, "replacement pickup");
+  assert.deepEqual(injected, ["terminal replacement"]);
+  assert.deepEqual(registry.getSession(session.id)?.pendingTurns.map(turn => turn.id), [other.id]);
+  manager.stop();
+});
+
+test("ordinary Stop cancels an unsent interrupt-and-deliver replacement", async () => {
+  const f = steeringFixture("stop-replacement", { interruptFails: true });
+  f.manager.submit(f.id, "later");
+  const replacement = f.manager.submit(f.id, "do not restart stopped work").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, replacement.id, replacement.revision, "interrupt"));
+  await until(() => f.interrupts() === 1, "interrupt request");
+  const supervisor = {
+    interrupt: async () => {
+      idle(f.registry, f.id);
+      await tick(20);
+      return "interrupted" as const;
+    },
+  } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  const stopped = await interruptSession(f.registry.getSession(f.id)!, supervisor, f.manager);
+  assert.equal(stopped.droppedQueued, 2);
+  await tick(20);
+  assert.deepEqual(f.sends, []);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  f.manager.stop();
+});
+
+test("a refused normal Stop releases its hold so an unsent steer can still arrive", async () => {
+  const f = steeringFixture("refused-normal-stop");
+  const supervisor = {
+    interrupt: async () => {
+      f.manager.submit(f.id, "keep this correction", "steer");
+      await tick(20);
+      assert.deepEqual(f.sends, [], "no deadline delivery can race the stop request");
+      throw new Error("interruption refused");
+    },
+  } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  const stopped = await interruptSession(f.registry.getSession(f.id)!, supervisor, f.manager);
+  assert.equal(stopped.ok, false);
+  await until(() => f.sends.length === 1, "resumed steering");
+  assert.deepEqual(f.sends, ["keep this correction"]);
+  f.manager.stop();
+});
 for (const { state, startOffset } of [
   { state: "working", startOffset: 300 },
   { state: "idle", startOffset: 300 },
@@ -1710,7 +2037,7 @@ for (const { state, startOffset } of [
     const started = marker("task_started", boundary + startOffset, "new");
     const completed = marker("task_complete", second + 800, "new");
     const injected: string[] = [];
-    const manager = new PendingTurnManager(registry, { sendWhenIdle: async () => "started" }, {
+    const manager = new PendingTurnManager(registry, { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" }, {
       now: () => now, idleSettleMs: 0, pickupTimeoutMs: 100,
       inject: async (_session, text, _deps, beforeWrite) => {
         assert.equal(beforeWrite?.(), null);

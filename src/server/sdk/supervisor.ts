@@ -818,6 +818,15 @@ export class SdkSupervisor {
     return running ? "interrupted" : "idle";
   }
 
+  /** Queue-preserving interruption for an outbox claim, serialized with other input. */
+  interruptForDelivery(id: string, beforeInterrupt: () => string | null): Promise<void> {
+    return this.serialize(id, async (handle) => {
+      const blocked = beforeInterrupt();
+      if (blocked) throw new Error(blocked);
+      await handle.interrupt();
+    });
+  }
+
   /**
    * Accept an operator stop without making the HTTP request wait for driver exit.
    *

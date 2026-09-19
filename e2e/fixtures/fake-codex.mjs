@@ -777,7 +777,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // second `turn/completed` is ever sent for it. A fake that completed a steer
       // separately would hand the driver an extra completion and hide the accounting bug
       // this pair of harnesses exists to keep honest.
-      if (openTurn) openTurn.prompts.push(textOf(params?.input));
+      if (openTurn) {
+        const prompt = textOf(params?.input);
+        openTurn.prompts.push(prompt);
+        // Record acceptance while the original turn is still running, as the live
+        // rollout does. A steering spec must not have to wait for the final answer.
+        appendRollout("user_message", prompt);
+      }
       respond(id, {});
       return;
     }

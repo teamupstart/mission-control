@@ -3,9 +3,20 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-db-"));
 process.env.MISSION_HOME = home;
+
+// Open a database containing the previous outbox schema, as an upgrade would.
+const legacy = new DatabaseSync(join(home, "harness.db"));
+legacy.exec(`CREATE TABLE pending_turns (
+  id TEXT PRIMARY KEY, note_key TEXT NOT NULL, seq INTEGER NOT NULL, text TEXT NOT NULL,
+  state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL, claimed_at INTEGER, last_error TEXT
+);
+INSERT INTO pending_turns VALUES ('legacy', 'legacy', 0, 'keep waiting', 'queued', 0, 1, 1, NULL, NULL);`);
+legacy.close();
 
 const {
   claimNextPendingTurn,
@@ -20,6 +31,7 @@ const {
   releasePendingTurn,
   resolveUncertainPendingTurn,
   retryPendingTurn,
+  openDb,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -27,6 +39,25 @@ after(() => rmSync(home, { recursive: true, force: true }));
 function add(noteKey: string, id: string, text = id, now = 10) {
   return createPendingTurn({ id, noteKey, text, now });
 }
+
+test("upgrading the existing outbox keeps old messages on next-turn delivery", () => {
+  const row = listPendingTurns("legacy")[0]!;
+  assert.equal(row.text, "keep waiting");
+  assert.equal(row.deliveryMode, "after-turn");
+  assert.equal(row.deadlineAt, null);
+  assert.equal(row.interruptAttemptedAt, null);
+  clearPendingTurns("legacy");
+});
+
+test("an unknown stored delivery mode blocks selection of another row", () => {
+  const key = "unknown-mode";
+  add(key, "unknown-mode-first");
+  const next = add(key, "unknown-mode-second");
+  openDb().prepare("UPDATE pending_turns SET delivery_mode = 'future-mode' WHERE id = ?").run("unknown-mode-first");
+  assert.equal(listPendingTurns(key)[0]?.state, "uncertain");
+  assert.equal(claimNextPendingTurn(key, 20, next), null);
+  clearPendingTurns(key);
+});
 
 test("pending turns receive durable FIFO sequence numbers", () => {
   const key = "fifo";
@@ -153,5 +184,22 @@ test("reset cleanup can preserve only an ambiguous claimed row", () => {
     listPendingTurns(key).map((turn) => [turn.id, turn.state]),
     [[uncertain.id, "uncertain"]],
   );
+  clearPendingTurns(key);
+});
+
+test("delivery deadlines survive persistence, explicit selection uses CAS, and unresolved sends block bypass", () => {
+  const key = "delivery-modes";
+  const earlier = add(key, "mode-earlier");
+  const steer = createPendingTurn({ id: "mode-steer", noteKey: key, text: "correction", now: 100, deliveryMode: "steer-after-wait" });
+  assert.equal(steer.deadlineAt, 60_100);
+  assert.equal(listPendingTurns(key)[1]?.deliveryMode, "steer-after-wait");
+  assert.equal(listPendingTurns(key)[0]?.deliveryMode, "after-turn");
+  assert.equal(claimNextPendingTurn(key, 200, { id: steer.id, revision: 99 }), null);
+  const claimed = claimNextPendingTurn(key, 200, { id: steer.id, revision: steer.revision })!;
+  assert.equal(claimed.id, steer.id);
+  assert.equal(claimNextPendingTurn(key, 201), null);
+  assert.equal(recallPendingTurn(key, steer.id, steer.revision), null);
+  markPendingTurnUncertain(claimed.id, claimed.revision, "lost receipt", 202);
+  assert.equal(claimNextPendingTurn(key, 203, { id: earlier.id, revision: earlier.revision }), null);
   clearPendingTurns(key);
 });

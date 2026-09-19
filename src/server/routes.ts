@@ -78,6 +78,7 @@ import {
   OpenWorktreeSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
+  PendingTurnDeliverSchema,
   ReattachQueueSchema,
   ReorderTaskSchema,
   RescheduleTaskSchema,
@@ -5067,7 +5068,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: refusal.error }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
-      const result = pendingTurns.submit(session.id, parsed.data.text);
+      const result = pendingTurns.submit(session.id, parsed.data.text, parsed.data.deliveryMode);
       if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
@@ -5295,7 +5296,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
-      const result = pendingTurns.submit(session.id, parsed.data.text);
+      const result = pendingTurns.submit(session.id, parsed.data.text, parsed.data.deliveryMode);
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.
@@ -5387,6 +5388,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       );
     }
     return c.json(result);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/deliver", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnDeliverSchema);
+    if (!parsed.ok) return parsed.res;
+    const accepted = pendingTurns.expedite(session.id, c.req.param("turnId"), parsed.data.revision, parsed.data.action);
+    return accepted
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "That message changed, delivery is blocked, or this session does not support the requested action." }, 409);
   });
 
   app.post("/api/sessions/:id/pending-turns/:turnId/recall", async (c) => {

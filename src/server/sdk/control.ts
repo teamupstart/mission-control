@@ -17,6 +17,8 @@ import type { SdkSupervisor } from "./supervisor.ts";
  */
 export interface PendingTurnQueueDrop {
   dropQueued(sessionId: string): number;
+  /** Hold delivery while a normal Stop is deciding whether to discard queued work. */
+  pauseForInterrupt?(sessionId: string): () => void;
 }
 
 /** What an interrupt did, beyond succeeding. */
@@ -76,22 +78,27 @@ export async function interruptSession(
   pendingTurns?: PendingTurnQueueDrop,
   paneDeps?: PaneDeps,
 ): Promise<InterruptResult> {
-  const stopped = session.runtime === "sdk"
-    ? await interruptDriver(session, supervisor)
-    : await interruptPane(session, paneDeps);
-  // Gated on a turn having GENUINELY been in flight, not merely on the request succeeding.
-  //
-  // Two failures this closes, and the second is the one that is easy to miss. A refused
-  // interrupt has changed nothing about what the agent is doing, so dropping the queue behind
-  // it would discard work still going to be wanted. And a request that arrived a moment after
-  // the turn ended on its own is ALSO not a stop: the driver accepts it happily, but nothing
-  // was cancelled, so the queued messages behind it are about to be delivered normally - by
-  // the outbox's own idle drain, within `DEFAULT_IDLE_SETTLE_MS` - rather than being work
-  // anybody asked to restart. Deleting durable rows on the strength of a stop that did not
-  // happen is data loss, and reporting "Stopped, and dropped 1 queued message" for it is a
-  // lie the operator would act on.
-  if (!stopped.ok || !stopped.stoppedTurn) return stopped;
-  return { ...stopped, droppedQueued: pendingTurns?.dropQueued(session.id) ?? 0 };
+  const resumeDelivery = pendingTurns?.pauseForInterrupt?.(session.id);
+  try {
+    const stopped = session.runtime === "sdk"
+      ? await interruptDriver(session, supervisor)
+      : await interruptPane(session, paneDeps);
+    // Gated on a turn having GENUINELY been in flight, not merely on the request succeeding.
+    //
+    // Two failures this closes, and the second is the one that is easy to miss. A refused
+    // interrupt has changed nothing about what the agent is doing, so dropping the queue behind
+    // it would discard work still going to be wanted. And a request that arrived a moment after
+    // the turn ended on its own is ALSO not a stop: the driver accepts it happily, but nothing
+    // was cancelled, so the queued messages behind it are about to be delivered normally - by
+    // the outbox's own idle drain, within `DEFAULT_IDLE_SETTLE_MS` - rather than being work
+    // anybody asked to restart. Deleting durable rows on the strength of a stop that did not
+    // happen is data loss, and reporting "Stopped, and dropped 1 queued message" for it is a
+    // lie the operator would act on.
+    if (!stopped.ok || !stopped.stoppedTurn) return stopped;
+    return { ...stopped, droppedQueued: pendingTurns?.dropQueued(session.id) ?? 0 };
+  } finally {
+    resumeDelivery?.();
+  }
 }
 
 /** The embedded arm: the driver's own interrupt primitive, through its supervisor. */

@@ -1,4 +1,5 @@
 import { actionFetch } from "./experience.ts";
+import type { MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   AgentType,
   AssignResetConfirm,
@@ -1611,8 +1612,10 @@ export const api = {
       `/api/sessions/${encodeURIComponent(id)}/file/open`,
       { path, target },
     ),
-  sendText: (id: string, text: string, submit = true) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  sendText: (id: string, text: string, submit = true, deliveryMode: MessageDeliveryMode = "after-turn") =>
+    post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit, deliveryMode }),
+  deliverPendingTurn: (id: string, turnId: string, revision: number, action: "steer" | "interrupt") =>
+    post(`/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/deliver`, { revision, action }),
   reportComposerActivity: (
     id: string,
     clientId: string,
@@ -2062,8 +2065,8 @@ export const api = {
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
-  injectPrompt: (id: string, text: string, buffer = true) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
+  injectPrompt: (id: string, text: string, buffer = true, deliveryMode: MessageDeliveryMode = "after-turn") =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer, deliveryMode }),
 
   // ---- Archives ----
 

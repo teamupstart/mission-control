@@ -13,6 +13,7 @@ const { resetToOrigin } = await import("../src/server/actions.ts");
 const { resetSession, driverClearFor } = await import("../src/server/reset.ts");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 import { gitIn, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
 
@@ -184,6 +185,35 @@ function registerBound(registry: InstanceType<typeof Registry>, id: string, cwd:
     pid: null,
   } satisfies SdkEvent);
 }
+
+test("a driver rebind before clear returns does not backdate the reset before its task cancellation", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000_000 });
+  const registry = new Registry();
+  const id = `${SDK_SESSION_ID_PREFIX}88888888-8888-4888-8888-888888888888`;
+  const cwd = "/reset-rebind-order";
+  registerBound(registry, id, cwd);
+  registry.upsertTask(mkTask({
+    id: "reset-rebind-order-task", title: "Reset work", status: "running",
+    sessionId: id, worktreePath: cwd,
+  }));
+  const before = registry.getSession(id)!;
+  const clearIssuedAt = Date.now();
+  const result = await resetSession(registry, before, true, async () => {
+    t.mock.timers.tick(10);
+    registry.applyDriverEvent(id, {
+      kind: "bound", agentSessionId: "agent-new", transcriptPath: null,
+      modelId: null, pid: null, cleared: true,
+    });
+    return { ok: true, error: null, root: cwd, cleared: true, detached: false, clearIssuedAt };
+  });
+  assert.equal(result.workIdentityReady, true);
+  const oldTask = registry.getTask("reset-rebind-order-task")!;
+  assert.equal(oldTask.status, "cancelled", "the reset still abandons the previous work");
+  assert.equal(oldTask.completedAt, clearIssuedAt + 10, "the driver cancelled it after clear was issued");
+  assert.equal(registry.promptResourceBlockerForSession(id), null,
+    "the completed reset must allow a message to its replacement conversation");
+  assert.ok(registry.workEpisodeForSession(id)!.startedAt >= oldTask.completedAt!);
+});
 
 test("a cleared rebind transfers the work episode; an ordinary one does not", async () => {
   // The half phase 2's handoff note called for, and the reason the `bound` event has to

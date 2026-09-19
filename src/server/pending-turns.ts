@@ -629,7 +629,7 @@ export class PendingTurnManager {
   /**
    * The earliest escalation still ahead of us, which is what a refused or not-yet-due
    * message needs a timer for. A turn that has gone silent emits no event that would
-   * re-arm one, and that is exactly the turn the two-minute interruption exists for.
+   * re-arm one, and that is exactly the turn the three-minute interruption exists for.
    */
   private nextEscalationAt(session: Session): number | null {
     if (!this.canDeliver(session) || session.pendingTurns.some((turn) => turn.state !== "queued")) return null;

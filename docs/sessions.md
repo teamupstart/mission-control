@@ -307,14 +307,14 @@ Every message follows the same delivery policy. There is nothing to choose in th
 1. It waits for the current turn to finish, and stays editable while it waits.
 2. One minute after it was queued, it steers into the running turn through the embedded
    driver's native input path.
-3. Two minutes after it was queued, it stops the current turn, waits for confirmed idle and
+3. Three minutes after it was queued, it stops the current turn, waits for confirmed idle and
    delivers. That may cancel a running tool; other queued messages are kept.
 
 Both deadlines are measured from the moment the message was queued, never from the latest
 output, so a turn that keeps talking cannot postpone them. They are derived from the queued
 row itself rather than from a timer, so a daemon restart arrives at exactly the same instant.
 A stage the session cannot perform is skipped: native steering is available on embedded
-Claude, Codex and Pi sessions, so a terminal session waits out the two minutes and is
+Claude, Codex and Pi sessions, so a terminal session waits out the three minutes and is
 interrupted instead. A message stops at most one turn, however that attempt ends.
 
 Each queued row also offers **Steer now**, where supported, and **Interrupt and deliver**,

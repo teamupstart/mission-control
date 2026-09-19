@@ -1829,7 +1829,7 @@ test("a deadline never answers a blocking review and resumes when the review is 
   f.manager.stop();
 });
 
-test("a message a steer could not deliver interrupts at two minutes and keeps the other rows", async (t) => {
+test("a message a steer could not deliver interrupts at three minutes and keeps the other rows", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 300000 });
   // Steering is refused for as long as the gate is held, which is what a driver that has
   // stopped answering looks like from here. The second stage is the whole point of the
@@ -1844,8 +1844,8 @@ test("a message a steer could not deliver interrupts at two minutes and keeps th
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(f.sends, [], "the steer did not reach the agent");
   assert.equal(f.interrupts(), 0);
-  t.mock.timers.tick(59999);
-  assert.equal(f.interrupts(), 0, "two minutes from the enqueue, not from the failed steer");
+  t.mock.timers.tick(119999);
+  assert.equal(f.interrupts(), 0, "three minutes from the enqueue, not from the failed steer");
   allowSteer = true;
   t.mock.timers.tick(1);
   await new Promise<void>(resolve => setImmediate(resolve));
@@ -1953,7 +1953,7 @@ test("a serialized interruption that outlives its watchdog cannot stop a later t
   f.manager.stop();
 });
 
-test("a terminal, which cannot steer, interrupts its turn two minutes after the message was queued", async (t) => {
+test("a terminal, which cannot steer, interrupts its turn three minutes after the message was queued", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 600000 });
   const registry = new Registry();
   const name = "terminal-timed-interrupt";
@@ -1975,9 +1975,9 @@ test("a terminal, which cannot steer, interrupts its turn two minutes after the 
   manager.start();
   manager.submit(session.id, "a terminal correction");
   // The one-minute stage belongs to harnesses with a native mid-turn input path. A terminal
-  // has none, so its message waits out the full two minutes rather than being typed into a
+  // has none, so its message waits out the full three minutes rather than being typed into a
   // running TUI, and nothing here needed an event from the silent pane to notice.
-  t.mock.timers.tick(119999);
+  t.mock.timers.tick(179999);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(interrupted, false);
   assert.deepEqual(injected, []);

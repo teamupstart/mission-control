@@ -28,7 +28,7 @@
   "GET /api/ensembles/:id": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "GET /api/ensembles/:id/artifacts/:artifactId": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "GET /api/ensembles/:id/artifacts/:artifactId/patch": "503 {\"error\":\"Ensemble manager unavailable\"}",
-  "GET /api/environment/checks": "200 {\"checks\":[{\"detail\":null,\"id\":\"upstartclaw-core-setup\",\"label\":\"UpstartClaw core setup\",\"ready\":false,\"warning\":null},{\"detail\":null,\"id\":\"mission-hook-script\",\"label\":\"Claude Code hooks\",\"warning\":null},{\"detail\":null,\"id\":\"pi-extension\",\"label\":\"Pi extension\",\"ready\":false,\"warning\":null}]}",
+  "GET /api/environment/checks": "200 fields{checks}",
   "GET /api/extensions/pi/config": "200 {\"enabled\":false}",
   "GET /api/file-comments/:id": "503 {\"error\":\"file comments are not available\"}",
   "GET /api/foreman/config": "200 {\"autoApproveAccess\":true,\"autoBacklog\":false,\"backlogDefaultModel\":{\"claude\":null,\"codex\":null,\"pi\":null},\"backlogRespectOpenPrs\":true,\"enabled\":true,\"keepShipTasksMoving\":true,\"maxFixAttempts\":3,\"maxFixRounds\":10,\"maxSessions\":3,\"mode\":\"dry-run\",\"repoAllowlist\":[],\"shipRecoveryMinutes\":20,\"skipReviewArtifactWrapup\":true,\"skipScoutWrapup\":true,\"trackCiFailures\":true,\"trackReviewFeedback\":true,\"triage\":\"on\",\"wrapup\":\"ask\",\"wrapupTriggers\":[\"drain\",\"prompted\"]}",

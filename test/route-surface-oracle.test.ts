@@ -74,6 +74,7 @@ const ORACLE = fileURLToPath(new URL("./fixtures/route-surface.json", import.met
  * Keep this list short, and justify additions.
  */
 const HOST_PROBING = new Set([
+  "GET /api/environment/checks", // reports the operator's installed environment checks
   "GET /api/open-targets", // enumerates browsers and editors installed here
   "GET /api/terminal-targets", // enumerates terminal emulators installed here
   // `savedDirectories` carries the home-relative defaults (~/workspace, ~/code) with a status

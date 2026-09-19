@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.23.0](https://github.com/teamupstart/mission-control/compare/v1.22.0...v1.23.0) (2026-09-19)
+
+
+### Features
+
+* **console:** make the rail jump keycap readable beside the state word ([#1099](https://github.com/teamupstart/mission-control/issues/1099)) ([3edd35e](https://github.com/teamupstart/mission-control/commit/3edd35eae820f7b3a9e1b60eda532cd040e7799c))
+* **conversation:** allow 100k character pastes ([9f72656](https://github.com/teamupstart/mission-control/commit/9f726566da4f8e9691a5a73cfba99942e1c11755))
+* **conversation:** open the send box in a full-size editor with Ctrl+G ([#1100](https://github.com/teamupstart/mission-control/issues/1100)) ([64861b1](https://github.com/teamupstart/mission-control/commit/64861b103df8ae42a2802aa810a4143573bbd71c))
+* **foreman:** add an in-app guide with a prompt editor link ([#1090](https://github.com/teamupstart/mission-control/issues/1090)) ([8c5df60](https://github.com/teamupstart/mission-control/commit/8c5df60dee420bfc080af3e3b7bc9d3cd9d364db))
+* **foreman:** surface grouped worker and model errors ([#1087](https://github.com/teamupstart/mission-control/issues/1087)) ([d965dca](https://github.com/teamupstart/mission-control/commit/d965dcac218d335be0d99891789696ce8f69f024))
+* **sessions:** add timed steering and message delivery controls ([#1102](https://github.com/teamupstart/mission-control/issues/1102)) ([3b14845](https://github.com/teamupstart/mission-control/commit/3b1484531ddc5356a928e82d8379e9fc3d4ec4af))
+* **tours:** add the Follow the review workflows tour ([#1094](https://github.com/teamupstart/mission-control/issues/1094)) ([5ad1aa6](https://github.com/teamupstart/mission-control/commit/5ad1aa6bcceb06a8668a780e25b1a4021928205f))
+* **workflows:** state whose move a run is on with a posture banner ([#1093](https://github.com/teamupstart/mission-control/issues/1093)) ([454bfd5](https://github.com/teamupstart/mission-control/commit/454bfd592b2281fff27566d864038ca944216ed5))
+
+
+### Bug Fixes
+
+* **discovery:** retain Herdr handles after shell exec ([#1095](https://github.com/teamupstart/mission-control/issues/1095)) ([e2a7225](https://github.com/teamupstart/mission-control/commit/e2a7225ebcb9da69afbf0127bc11b1b5a70480f3))
+* **dispatch:** keep modal open after selecting text outside ([#1097](https://github.com/teamupstart/mission-control/issues/1097)) ([d0ca2a3](https://github.com/teamupstart/mission-control/commit/d0ca2a311a383d3c0cc36af05d1a49e1724644e1))
+* **herdr:** accept equivalent local workspace cwd paths ([#1101](https://github.com/teamupstart/mission-control/issues/1101)) ([32ad5b4](https://github.com/teamupstart/mission-control/commit/32ad5b46206f70a46a7ab90b0d61d71879a101f2))
+* **models:** offer GPT-6 Astra for Codex ([#1060](https://github.com/teamupstart/mission-control/issues/1060)) ([c1e0048](https://github.com/teamupstart/mission-control/commit/c1e0048aeebc6e7e8cf87c8a98617899e060eb92))
+* **sessions:** confirm fast Codex terminal message delivery ([#1096](https://github.com/teamupstart/mission-control/issues/1096)) ([f45dc0a](https://github.com/teamupstart/mission-control/commit/f45dc0a2382f3e4c9168b634b880e66420259b85))
+* **settings:** make task source deletion visible ([#1089](https://github.com/teamupstart/mission-control/issues/1089)) ([e76d21a](https://github.com/teamupstart/mission-control/commit/e76d21acdf6e93de7a990e55c93a1e339e7df80e))
+* **task-sources:** allow Jira repairs after repository renames ([#1091](https://github.com/teamupstart/mission-control/issues/1091)) ([71d8ac4](https://github.com/teamupstart/mission-control/commit/71d8ac4647fd4fcb66e69305f8b14a79e855a659))
+* **workflows:** project recovery actions from the daemon ([#1067](https://github.com/teamupstart/mission-control/issues/1067)) ([9208086](https://github.com/teamupstart/mission-control/commit/920808641c69cea675a159c70815bbb9bb86bffc))
+
 ## [1.22.0](https://github.com/teamupstart/mission-control/compare/v1.21.1...v1.22.0) (2026-09-18)
 
 

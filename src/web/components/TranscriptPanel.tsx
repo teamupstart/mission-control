@@ -18,11 +18,7 @@ import { pipelineRunHash } from "../workflows/useWorkflowRoute.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { useComposerActivity } from "../lib/composer-activity.ts";
-import {
-  composerEditorRequested,
-  composerExpandHint,
-  composerKeysHint,
-} from "../lib/composer-editor.ts";
+import { composerEditorRequested, composerKeysHint } from "../lib/composer-editor.ts";
 import { chordFromEvent, formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
@@ -435,11 +431,6 @@ export function TranscriptPanel({
    */
   const { view } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
-  // Content differs by rendering; the element and its narrow-width hide do not. Empty is a
-  // real answer - see `composerKeysHint`.
-  const composerLegend = terminal
-    ? composerKeysHint(expandChord)
-    : composerExpandHint(expandChord);
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
   // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
   // owns the whole displayed string, prefix included - see its note on why a leaf plus a
@@ -1220,6 +1211,13 @@ export function TranscriptPanel({
               }
             }}
           />
+          {/* The composer's SECOND COLUMN, and it is the same column the conversation above
+              already has: the box sits under the log, and Send plus the key legend sit under
+              the Observed activity rail, in a slot the same width. That is what keeps Send on
+              the edge the rail shares with it - as a plain row item, a legend long enough to
+              name the expand chord simply dragged Send inward off that edge, and giving the
+              legend the full row width instead pushed it under the box and cost the
+              transcript a line. Inside this column the legend wraps. */}
           <Tooltip
             label={
               !canSend
@@ -1239,16 +1237,19 @@ export function TranscriptPanel({
               {drop.uploading ? "Uploading…" : "Send"}
             </button>
           </Tooltip>
-          {/* The mockup's `enter sends`, now carrying the expand chord too. Hidden at narrow
-              container widths, where the box needs every pixel - the keys still work.
+          {/* One row, two columns, matching the conversation above it: the box and Send are
+              the first and end where the log ends, and this legend is the second, the same
+              width as the Observed activity rail it sits under. Fixed width rather than sized
+              to its text, because a legend that grew with its content was exactly what dragged
+              Send inward off the edge it shares with the rail; inside a pinned column the text
+              wraps instead.
 
-              Chat takes only the expand clause: it is the one key a placeholder cannot
-              teach, since the placeholder is gone by the time you are typing. See
-              `composerKeysHint` for why the rest cannot move here.
-
-              Nothing rather than an empty element when that clause is empty, or `gap` holds
-              a 6px hole open beside Send. Same rule `Keycap` keeps. */}
-          {composerLegend && <span className="pty-sendkey">{composerLegend}</span>}
+              TERMINAL ONLY, and hidden below the container width where the split stacks and
+              the rail stops being a column at all. Chat teaches its keys through the
+              placeholder; the expand chord is named in Settings and in the docs. */}
+          {terminal && (
+            <span className="pty-sendkey">{composerKeysHint(expandChord)}</span>
+          )}
         </div>
         {flash && (
           <span className={`action-flash${flash.ok ? " is-ok" : ""}`} role="status">

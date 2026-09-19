@@ -58,8 +58,9 @@ test("⌃G opens the draft full size and ⌘Enter stages it back, unsent", async
 }) => {
   const { card, composer } = await openTheOnlySession(dashboard, daemon);
 
-  // The legend beside the box is the only place the chord is named outside Settings.
-  await expect(card.locator(".pty-sendkey")).toContainText("⌃G expands");
+  // Chat carries no legend: it would cost the reply box its width or the transcript its
+  // height. The terminal rendering's legend is asserted in its own spec below.
+  await expect(card.locator(".pty-sendkey")).toHaveCount(0);
 
   await composer.fill(DRAFT);
   await composer.press("Control+g");
@@ -145,11 +146,7 @@ test("the expand chord is rebindable, and refuses a key that would type itself",
   await shoot(dashboard, "rebound-in-keyboard-settings");
 
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
-  const { card, composer } = await openTheOnlySession(dashboard, daemon);
-
-  // The legend follows the rebinding rather than teaching a key that does nothing.
-  await expect(card.locator(".pty-sendkey")).toContainText("⌘E expands");
-  await expect(card.locator(".pty-sendkey")).not.toContainText("⌃G");
+  const { composer } = await openTheOnlySession(dashboard, daemon);
 
   await composer.fill(DRAFT);
   const editor = dashboard.getByRole("dialog", { name: "Edit the message" });

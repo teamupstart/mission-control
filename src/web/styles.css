@@ -9246,8 +9246,19 @@ mark.find-hit.is-current {
 .pty-sendkey {
   flex: none;
   color: var(--dim);
-  font: 9.5px/1 var(--mono);
+  font: 9.5px/1.5 var(--mono);
   white-space: nowrap;
+}
+/* The composer's SECOND COLUMN in the terminal rendering, the same 244px the Observed
+   activity rail above it claims - so the composer reads as the same one row of two columns
+   the conversation does: box and Send to the log's right edge, keys under the rail. Pinned
+   rather than sized to its text, because a legend that grew with its content was exactly what
+   dragged Send inward off that edge; inside a fixed column the text wraps instead.
+   Below the container width where `.find-split` stacks, the rail stops being a column and the
+   same query hides this outright. */
+.transcript[data-view="terminal"] .pty-sendkey {
+  width: 244px;
+  white-space: normal;
 }
 
 /* The status line. `flex: none` and wrapping rather than clipping: this row carries the

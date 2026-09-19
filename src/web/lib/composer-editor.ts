@@ -48,10 +48,11 @@ export function composerEditorStages(e: {
 }
 
 /**
- * Just the expand clause, for a composer that teaches its other keys elsewhere. Empty when
- * the action has no chord, so the caller renders nothing rather than a legend with a hole.
+ * Just the expand clause. Internal to `composerKeysHint` since the chat composer stopped
+ * carrying a legend of its own; empty when the action has no chord, so the legend drops the
+ * clause rather than printing a hole.
  */
-export function composerExpandHint(expandChord: string): string {
+function composerExpandHint(expandChord: string): string {
   const expand = formatChord(expandChord);
   return expand ? `${expand} expands` : "";
 }

@@ -1061,8 +1061,11 @@ yourself, with the ordinary <kbd>Enter</kbd>, when you mean to.
 chord. <kbd>Esc</kbd> or **Cancel** closes it and leaves the reply box holding exactly what
 it had. Press <kbd>⌃</kbd><kbd>G</kbd> again to keep working on the staged text.
 
-The keys are printed beside the box, in both conversation renderings. Attachments stay on
-the composer: the editor is text, and images you had dropped survive it untouched.
+The keys are printed beside the box in the **terminal** rendering, which is the one with a
+prompt line to carry them. The chat rendering keeps its placeholder and no legend, because a
+legend there either takes width off the reply box or height off the transcript; look the
+chord up in **Settings → Keyboard** if you read conversations as chat. Attachments stay on
+the composer either way: the editor is text, and images you had dropped survive it untouched.
 
 The chord is rebindable in **Settings → Keyboard**, with one constraint no other shortcut
 has. This is the only action that fires while the cursor is already in a text field, so its

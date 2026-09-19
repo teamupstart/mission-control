@@ -26,7 +26,6 @@ const {
   COMPOSER_EDITOR_KEYS_HINT,
   composerEditorRequested,
   composerEditorStages,
-  composerExpandHint,
   composerKeysHint,
 } = await import("../src/web/lib/composer-editor.ts");
 const {
@@ -237,9 +236,6 @@ test("the composer legend names the resolved expand chord, not the default", () 
 
 test("an unset expand action drops its clause rather than printing empty punctuation", () => {
   assert.equal(composerKeysHint(""), "enter sends · shift+enter newline · drop images");
-  // And the chat rendering prints an empty span rather than a stray chord-less word.
-  assert.equal(composerExpandHint(""), "");
-  assert.equal(composerExpandHint("ctrl+g"), "⌃G expands");
 });
 
 function renderComposer(view: "chat" | "terminal"): string {
@@ -249,37 +245,33 @@ function renderComposer(view: "chat" | "terminal"): string {
   );
 }
 
-test("both conversation composers print the expand chord beside the box", () => {
-  for (const view of ["chat", "terminal"] as const) {
-    assert.match(renderComposer(view), /⌃G expands/, view);
-  }
-});
-
-test("the chat composer takes only the expand clause, and keeps teaching the rest", () => {
-  // The whole legend on its own line under chat costs the transcript log ~20px, a share
-  // `console-tabs-toolbar.spec.ts` measures. Chat prints the one key a placeholder cannot
-  // carry; the placeholder keeps the other three.
-  const chat = renderComposer("chat");
-  assert.match(chat, /<span class="pty-sendkey">⌃G expands<\/span>/);
-  assert.ok(!chat.includes("enter sends ·"), "the full legend must not reach the chat row");
-  assert.match(
-    chat,
-    /Reply to this session…  \(Enter to send, Shift\+Enter for newline, drop or paste images\)/,
-  );
-  // The terminal prompt row has space beside it, so it keeps the whole list.
+test("the terminal composer prints the whole legend, expand chord included", () => {
   assert.match(
     renderComposer("terminal"),
     /enter sends · shift\+enter newline · ⌃G expands · drop images/,
   );
 });
 
-test("both conversation composers follow a rebound expand action", () => {
+test("the chat composer carries no legend at all, and keeps its placeholder", () => {
+  // The legend is terminal-only. In chat the row cannot wrap around a `flex: none` item, so
+  // a legend there cost the reply box about 60px of writing width and pushed Send inward;
+  // giving it its own line took that width back and spent it on the transcript's height
+  // instead. Chat teaches its keys through the placeholder, which is where they had always
+  // been, and the expand chord is named in Settings and in the docs.
+  const chat = renderComposer("chat");
+  assert.ok(!chat.includes("pty-sendkey"), "the chat composer must render no legend element");
+  assert.ok(!chat.includes("expands"), "and must not name the expand chord beside the box");
+  assert.match(
+    chat,
+    /Reply to this session…  \(Enter to send, Shift\+Enter for newline, drop or paste images\)/,
+  );
+});
+
+test("the terminal legend follows a rebound expand action", () => {
   setBinding("composerEditor", "cmd+e");
-  for (const view of ["chat", "terminal"] as const) {
-    const html = renderComposer(view);
-    assert.match(html, /⌘E expands/, view);
-    assert.ok(!html.includes("⌃G"), `${view}: the stale default must not remain`);
-  }
+  const html = renderComposer("terminal");
+  assert.match(html, /⌘E expands/);
+  assert.ok(!html.includes("⌃G"), "the stale default must not remain");
 });
 
 // ---- the dialog ----------------------------------------------------------------

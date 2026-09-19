@@ -1,3 +1,4 @@
+import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -73,6 +74,7 @@ function fixture(options: { interrupt?: () => Promise<"interrupted" | "idle" | n
       interrupted.push(id);
       return options.interrupt ? await options.interrupt() : "interrupted";
     },
+    ...unexpectedActiveSdkDelivery,
     sendWhenIdle: async () => "started" as const,
   } as unknown as SdkSupervisor;
   const pending = new PendingTurnManager(registry, supervisor, { idleSettleMs: 0 });

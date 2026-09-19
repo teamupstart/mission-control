@@ -13,11 +13,11 @@ import { useCallback, useState } from "react";
  * anywhere in the tree: the text has to outlive every mount that can end under it,
  * and each of those mounts is exactly what the old state was tied to.
  *
- * It is deliberately NOT a store with subscribers - nothing renders from it. Inputs
- * hydrate from it on mount and write through on change, which is also what keeps
+ * Text inputs hydrate from it on mount and write through on change, which keeps
  * DispatchLayer's bargain: a keystroke must never re-render the session grid (dozens
  * of cards, each with an ActionBar) to save itself. Uncontrolled boxes stay
- * uncontrolled, and a write here costs a Map set.
+ * uncontrolled, and a text write here costs a Map set. Only the delivery choice notifies
+ * subscribers, so both composers show the same choice without subscribing to keystrokes.
  *
  * Its scope is honestly the tab - a reload starts over, the same deal `wrapupSent`
  * makes. What it buys is that no click on the dashboard can lose your typing.
@@ -30,9 +30,16 @@ export type DraftKind =
   /** The session detail's transcript reply box. */
   | "reply"
   /** The ActionBar send box, which opens on a collapsed OR an session detail. */
-  | "send";
+  | "send"
+  /** Tab-scoped choice; submitted messages persist their own copy. */
+  | "delivery";
 
 const drafts = new Map<string, string>();
+const deliveryListeners = new Set<() => void>();
+export function subscribeDeliveryChoice(listener: () => void): () => void {
+  deliveryListeners.add(listener);
+  return () => { deliveryListeners.delete(listener); };
+}
 
 const keyOf = (sessionId: string, kind: DraftKind): string => `${sessionId}:${kind}`;
 
@@ -49,6 +56,7 @@ export function readDraft(sessionId: string, kind: DraftKind): string {
 export function writeDraft(sessionId: string, kind: DraftKind, text: string): void {
   if (text) drafts.set(keyOf(sessionId, kind), text);
   else drafts.delete(keyOf(sessionId, kind));
+  if (kind === "delivery") for (const listener of deliveryListeners) listener();
 }
 
 /**
@@ -60,6 +68,7 @@ export function writeDraft(sessionId: string, kind: DraftKind, text: string): vo
  */
 export function clearDraft(sessionId: string, kind: DraftKind): void {
   drafts.delete(keyOf(sessionId, kind));
+  if (kind === "delivery") for (const listener of deliveryListeners) listener();
 }
 
 /**
@@ -75,6 +84,7 @@ export function clearDraft(sessionId: string, kind: DraftKind): void {
  * `dropSessionDrafts`, which wipes ALL of a departed session's boxes.
  */
 export function dropMessageDrafts(sessionId: string): void {
+  clearDraft(sessionId, "delivery");
   clearDraft(sessionId, "send");
   clearDraft(sessionId, "reply");
 }
@@ -104,11 +114,13 @@ export function dropSessionDrafts(sessionId: string): void {
   for (const k of [...drafts.keys()]) {
     if (k.slice(0, k.lastIndexOf(":")) === sessionId) drafts.delete(k);
   }
+  for (const listener of deliveryListeners) listener();
 }
 
 /** Test seam: forget everything. Never called by the app. */
 export function resetDrafts(): void {
   drafts.clear();
+  for (const listener of deliveryListeners) listener();
 }
 
 /**

@@ -152,6 +152,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/tours/:tourId/preview", "help.tour_preview", "help"],
   ["POST", "/api/tours/:tourId/seed-run", "help.tour_seed_run", "help"],
   ["POST", "/api/tours/:tourId/tasks/:id/complete", "help.tour_complete", "help"],
+  ["POST", "/api/sessions/:id/pending-turns/:turnId/deliver", "conversation.expedite", "sessions"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

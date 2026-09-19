@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { MessageDeliveryChoice, PendingMessageDelivery, useMessageDeliveryChoice } from "./MessageDelivery.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { interruptUnsupportedWhy } from "@shared/harness-capabilities.ts";
@@ -138,6 +139,7 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [deliveryMode, setDeliveryMode] = useMessageDeliveryChoice(session);
   const composerActivity = useComposerActivity(session.id);
   const releaseComposerActivity = composerActivity.release;
   const closeComposer = useCallback((): void => {
@@ -214,7 +216,7 @@ export function ActionBar({
   async function submitMessage() {
     const text = inputRef.current?.value.trim();
     if (!text) return;
-    const r = await run("send", () => api.sendText(session.id, text));
+    const r = await run("send", () => api.sendText(session.id, text, true, deliveryMode));
     if (r.ok) {
       const confirmation = sdkDeliveryConfirmation(r.delivery);
       if (confirmation) {
@@ -413,6 +415,7 @@ export function ActionBar({
     <div className="actions" ref={tourTargetRef}>
       {composing ? (
         <div className="compose">
+          <MessageDeliveryChoice session={session} value={deliveryMode} onChange={setDeliveryMode} disabled={busy !== null} />
           {session.pendingTurns.length > 0 && (
             <div className="compose-pending-list" aria-label="Pending messages">
               {session.pendingTurns.map((turn) => {
@@ -423,6 +426,8 @@ export function ActionBar({
                   key={turn.id}
                 >
                   <span className="compose-pending-text">{turn.text}</span>
+                  <PendingMessageDelivery session={session} turn={turn} busy={busy !== null}
+                    onDeliver={action => { void run("pending", () => api.deliverPendingTurn(session.id, turn.id, turn.revision, action)); }} />
                   <Tooltip
                     label={hold ? `${PENDING_TURN_HELD_REASON[hold]}.` : "Waiting to be delivered"}
                   >

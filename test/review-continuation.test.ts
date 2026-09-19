@@ -1,3 +1,4 @@
+import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -57,7 +58,7 @@ function fixture(prefix: string) {
   registry.applyDriverEvent(id, { kind: "state", state: "working", activity: null });
   const pendingTurns = new PendingTurnManager(
     registry,
-    { sendWhenIdle: async () => "started" },
+    { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
     { idleSettleMs: 60_000 },
   );
   pendingTurns.start();
@@ -128,7 +129,7 @@ test("a pending review restored after restart is treated as detached", () => {
   registry.applyDriverEvent(first.id, { kind: "state", state: "working", activity: null });
   const pendingTurns = new PendingTurnManager(
     registry,
-    { sendWhenIdle: async () => "started" },
+    { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
     { idleSettleMs: 60_000 },
   );
   pendingTurns.start();

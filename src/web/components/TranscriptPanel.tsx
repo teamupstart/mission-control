@@ -21,6 +21,7 @@ import { useComposerActivity } from "../lib/composer-activity.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
+import { MessageDeliveryChoice, PendingMessageDelivery, useMessageDeliveryChoice } from "./MessageDelivery.tsx";
 import {
   latestEditablePendingTurn,
   PENDING_TURN_HELD_REASON,
@@ -300,6 +301,7 @@ export function TranscriptPanel({
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useMessageDeliveryChoice(session);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -820,7 +822,7 @@ export function TranscriptPanel({
     // this guard is a nuisance if it slips; this one silently answers a question.
     if (dialogOpen || drop.uploading || sending || (!text && ready.length === 0)) return;
     setSending(true);
-    const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
+    const r = await api.injectPrompt(sessionId, withAttachments(text, ready), true, deliveryMode);
     setSending(false);
     if (r.ok) {
       const confirmation = sdkDeliveryConfirmation(r.delivery);
@@ -887,6 +889,14 @@ export function TranscriptPanel({
     const result = await api.resolvePendingTurn(sessionId, turn.id, turn.revision);
     setPendingAction(null);
     if (!result.ok) showFlash({ text: result.error ?? "Could not resolve message.", ok: false }, 3500);
+  }
+
+  async function deliverPending(turn: PendingTurn, action: "steer" | "interrupt"): Promise<void> {
+    if (pendingAction) return;
+    setPendingAction(turn.id);
+    const result = await api.deliverPendingTurn(sessionId, turn.id, turn.revision, action);
+    setPendingAction(null);
+    if (!result.ok) showFlash({ text: result.error ?? "Delivery could not be started", ok: false }, 5000);
   }
 
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
@@ -1030,6 +1040,8 @@ export function TranscriptPanel({
             onEdit={() => void recall(turn)}
             onRetry={() => void retry(turn)}
             onMarkSent={() => void markSent(turn)}
+            deliveryControls={<PendingMessageDelivery session={session} turn={turn} busy={pendingAction !== null}
+              onDeliver={action => void deliverPending(turn, action)} />}
           />
         ))}
           </div>
@@ -1095,6 +1107,7 @@ export function TranscriptPanel({
       ) : (
       <div className="transcript-compose" {...drop.dropProps}>
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+        <MessageDeliveryChoice session={session} value={deliveryMode} onChange={setDeliveryMode} disabled={sending} />
         <div className="compose-row">
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
@@ -1427,6 +1440,7 @@ export function PendingTurnView({
   onRetry,
   onMarkSent,
   onGoToReview,
+  deliveryControls,
 }: {
   turn: PendingTurn;
   editable: boolean;
@@ -1437,6 +1451,7 @@ export function PendingTurnView({
   onRetry?: () => void;
   onMarkSent?: () => void;
   onGoToReview?: () => void;
+  deliveryControls?: React.ReactNode;
 }): React.JSX.Element {
   return (
     <div
@@ -1452,6 +1467,7 @@ export function PendingTurnView({
       </div>
       <div className="turn-text">{turn.text}</div>
       <div className="pending-turn-actions">
+        {deliveryControls}
         {turn.state === "queued" && editable && (
           <Tooltip label="Move this queued message back into the reply box">
             <button type="button" className="pending-turn-action" disabled={busy} onClick={onEdit}>

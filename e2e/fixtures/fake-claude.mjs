@@ -94,7 +94,7 @@ const MODEL = argvValue("--model") ?? "claude-e2e-mock";
  */
 let effort = argvValue("--effort") ?? "medium";
 const HELD_TURN = "hold the current turn open";
-const HELD_TURN_MS = 5_000;
+const HELD_TURN_MS = Number(process.env.MC_E2E_CLAUDE_HELD_TURN_MS ?? 5_000);
 // This review scenario has to submit two queued messages before the held turn drains. A
 // separate longer window keeps that setup deterministic under the full gate's four workers
 // without adding ten seconds to every spec that uses the ordinary held turn.

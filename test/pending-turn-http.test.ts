@@ -1,3 +1,4 @@
+import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -57,6 +58,7 @@ function fixture() {
       acceptedGoals.push(acceptedGoal);
       return "started" as const;
     },
+    interruptForDelivery: unexpectedActiveSdkDelivery.interruptForDelivery,
     sendWhenIdle: async () => "started" as const,
   } as unknown as SdkSupervisor;
   const pending = new PendingTurnManager(registry, supervisor, { idleSettleMs: 0 });
@@ -259,4 +261,39 @@ test("a submitted human turn waits for acceptance rather than journaling on the 
   assert.deepEqual(scoutPromptTurns(episode.taskId, episode.episodeId), []);
   f.pending.stop();
   clearScoutPromptContext(episode.taskId, episode.episodeId);
+});
+
+test("both composer routes preserve delivery choices and reject unknown modes", async () => {
+  const f = fixture();
+  for (const route of ["send", "inject"]) {
+    const response = await post(f.app, `/api/sessions/${f.session.id}/${route}`, {
+      text: `timed ${route}`, deliveryMode: "steer-after-wait",
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json() as { pendingTurn: { deliveryMode: string; deadlineAt: number; createdAt: number } };
+    assert.equal(result.pendingTurn.deliveryMode, "steer-after-wait");
+    assert.equal(result.pendingTurn.deadlineAt - result.pendingTurn.createdAt, 60000);
+    assert.equal((await post(f.app, `/api/sessions/${f.session.id}/${route}`, {
+      text: "invalid", deliveryMode: "force",
+    })).status, 400);
+  }
+  f.pending.stop();
+});
+
+test("delivery actions reject stale revisions and covering reviews", async () => {
+  const f = fixture();
+  f.registry.applyDriverEvent(f.session.id, { kind: "state", state: "working", activity: null });
+  const row = f.pending.submit(f.session.id, "correction").pendingTurn!;
+  const path = `/api/sessions/${f.session.id}/pending-turns/${row.id}/deliver`;
+  assert.equal((await post(f.app, path, { revision: row.revision + 1, action: "steer" })).status, 409);
+  assert.equal((await post(f.app, path, { revision: row.revision, action: "force" })).status, 400);
+  f.registry.applyDriverEvent(f.session.id, { kind: "request", request: {
+    id: "delivery-review", kind: "permission", prompt: "Allow?", options: [{ number: 1, label: "Yes" }],
+  } });
+  assert.equal((await post(f.app, path, { revision: row.revision, action: "interrupt" })).status, 409);
+  assert.equal(f.registry.getSession(f.session.id)?.pendingTurns[0]?.revision, row.revision);
+  f.registry.applyDriverEvent(f.session.id, { kind: "request_resolved", requestId: "delivery-review" });
+  f.registry.applyDriverEvent(f.session.id, { kind: "state", state: "working", activity: null });
+  assert.equal((await post(f.app, path, { revision: row.revision, action: "steer" })).status, 200);
+  f.pending.stop();
 });

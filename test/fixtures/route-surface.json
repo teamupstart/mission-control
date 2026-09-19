@@ -186,6 +186,7 @@
   "POST /api/sessions/:id/launch": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/mode": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/mode/cycle": "404 {\"error\":\"no such session\"}",
+  "POST /api/sessions/:id/pending-turns/:turnId/deliver": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/pending-turns/:turnId/recall": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/pending-turns/:turnId/resolve": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/pending-turns/:turnId/retry": "404 {\"error\":\"no such session\"}",

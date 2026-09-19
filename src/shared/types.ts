@@ -197,6 +197,12 @@ export interface PendingTurn {
   claimedAt: number | null;
   /** Positive non-delivery detail retained beside an editable row. */
   lastError: string | null;
+  /** Missing on older wire snapshots: those messages always wait for the next turn. */
+  deliveryMode?: import("./message-delivery.ts").MessageDeliveryMode;
+  /** Durable deadline measured from enqueue time, never from the latest output. */
+  deadlineAt?: number | null;
+  /** A timed interruption is attempted at most once, including across daemon restart. */
+  interruptAttemptedAt?: number | null;
 }
 
 /**

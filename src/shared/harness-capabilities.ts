@@ -516,6 +516,8 @@ interface HarnessCapabilitiesBase {
   multiRepoDispatch: MultiRepoDispatchSpec | null;
   /** Null for a harness whose running turn cannot be stopped on any runtime. */
   interrupt: InterruptSpec | null;
+  /** Verified mid-turn delivery, distinct from typing into a terminal composer. */
+  steering: InterruptSpec | null;
   /**
    * Which channel carries repository standing instructions, per runtime. Never null: a
    * harness with no out-of-band channel declares an empty record and is prefixed instead.
@@ -634,6 +636,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // open. `terminal` is `Escape` into the bound pane, measured live against the TUI: a
     // streaming turn stops and the session takes a next prompt.
     interrupt: { runtimes: ["terminal", "sdk"] },
+    steering: { runtimes: ["sdk"] },
     // Claude carries operator text that is not a turn on BOTH runtimes, by two different
     // spellings. `--append-system-prompt` is single-valued and the CLI carries no guard
     // against the flag being repeated against itself, so a second flag silently discards
@@ -781,6 +784,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // TUI's own footer advertises "esc to interrupt", and it answers with
     // "Conversation interrupted" while the session stays open.
     interrupt: { runtimes: ["terminal", "sdk"] },
+    steering: { runtimes: ["sdk"] },
     // Only the embedded driver. `thread/start` takes `developerInstructions`; a terminal
     // Codex has no equivalent, so that pair is prefixed into turn one instead.
     standingInstructions: { outOfBand: { sdk: "codex-developer-instructions" } },
@@ -897,6 +901,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // This is the declaration that took `interrupt` off `harness-capabilities.test.ts`'s
     // real-null-declarer list; the slot's null path is a named fixture there now.
     interrupt: { runtimes: ["terminal", "sdk"] },
+    steering: { runtimes: ["sdk"] },
     // BOTH runtimes, by the same mechanism, because it is the same mechanism: `pi
     // --append-system-prompt <value>` is the CLI spelling of the resource loader's
     // `appendSystemPrompt`, which the managed driver hands to `createAgentSessionServices`

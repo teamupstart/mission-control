@@ -40,6 +40,7 @@ import {
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
+import { MESSAGE_DELIVERY, MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -2998,6 +2999,9 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
+  addColumn(d, "pending_turns", "deadline_at", "INTEGER");
+  addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
   migrateWorktreeOrdinalHighWater(d);
 
@@ -11332,12 +11336,16 @@ interface PendingTurnRow {
   updated_at: number;
   claimed_at: number | null;
   last_error: string | null;
+  delivery_mode: string;
+  deadline_at: number | null;
+  interrupt_attempted_at: number | null;
 }
 
 const PENDING_TURN_STATE_SET = new Set<PendingTurnState>(["queued", "sending", "uncertain"]);
 
 function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
-  const state = PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+  const validMode = MESSAGE_DELIVERY_MODES.includes(row.delivery_mode as MessageDeliveryMode);
+  const state = validMode && PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
     ? (row.state as PendingTurnState)
     : "uncertain";
   return {
@@ -11350,7 +11358,11 @@ function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     claimedAt: row.claimed_at,
+    deliveryMode: validMode ? row.delivery_mode as MessageDeliveryMode : "after-turn",
+    deadlineAt: row.deadline_at,
+    interruptAttemptedAt: row.interrupt_attempted_at,
     lastError:
+      !validMode ? `unrecognized delivery mode: ${row.delivery_mode}` :
       state === "uncertain" && !PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
         ? `unrecognized pending-turn state: ${row.state}`
         : row.last_error,
@@ -11369,8 +11381,12 @@ export function createPendingTurn(input: {
   noteKey: string;
   text: string;
   now: number;
+  deliveryMode?: MessageDeliveryMode;
 }): PendingTurn {
   const d = openDb();
+  const deliveryMode = input.deliveryMode ?? "after-turn";
+  const delay = MESSAGE_DELIVERY[deliveryMode].delayMs;
+  const deadlineAt = delay === null ? null : input.now + delay;
   d.exec("BEGIN IMMEDIATE");
   try {
     const row = d
@@ -11378,9 +11394,9 @@ export function createPendingTurn(input: {
       .get(input.noteKey) as unknown as { seq: number };
     d.prepare(
       `INSERT INTO pending_turns
-         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
-       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
-    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, ?)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now, deliveryMode, deadlineAt);
     d.exec("COMMIT");
     return {
       id: input.id,
@@ -11393,6 +11409,9 @@ export function createPendingTurn(input: {
       updatedAt: input.now,
       claimedAt: null,
       lastError: null,
+      deliveryMode,
+      deadlineAt,
+      interruptAttemptedAt: null,
     };
   } catch (err) {
     try {
@@ -11402,17 +11421,22 @@ export function createPendingTurn(input: {
   }
 }
 
-/** Claim only the FIFO head, and only while no delivery for this conversation is unresolved. */
-export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn | null {
+/** Claim the FIFO head or an explicitly selected row, never past an unresolved delivery. */
+export function claimNextPendingTurn(
+  noteKey: string,
+  now: number,
+  selected?: { id: string; revision: number },
+): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const unresolved = d
       .prepare(
         `SELECT 1 AS present FROM pending_turns
-          WHERE note_key = ? AND state <> 'queued' LIMIT 1`,
+          WHERE note_key = ? AND (state <> 'queued' OR
+            delivery_mode NOT IN (${MESSAGE_DELIVERY_MODES.map(() => "?").join(",")})) LIMIT 1`,
       )
-      .get(noteKey) as unknown as { present: number } | undefined;
+      .get(noteKey, ...MESSAGE_DELIVERY_MODES) as unknown as { present: number } | undefined;
     if (unresolved) {
       d.exec("COMMIT");
       return null;
@@ -11420,10 +11444,11 @@ export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn 
     const row = d
       .prepare(
         `SELECT * FROM pending_turns
-          WHERE note_key = ? AND state = 'queued' ORDER BY seq ASC LIMIT 1`,
+          WHERE note_key = ? AND state = 'queued'
+          ${selected ? "AND id = ? AND revision = ?" : ""} ORDER BY seq ASC LIMIT 1`,
       )
-      .get(noteKey) as unknown as PendingTurnRow | undefined;
-    if (!row) {
+      .get(...(selected ? [noteKey, selected.id, selected.revision] : [noteKey])) as unknown as PendingTurnRow | undefined;
+    if (!row || rowToPendingTurn(row).state !== "queued") {
       d.exec("COMMIT");
       return null;
     }
@@ -11454,6 +11479,25 @@ export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn 
     } catch {}
     throw err;
   }
+}
+
+/** An explicit operator action may change only text that has not left the outbox. */
+export function expeditePendingTurn(
+  noteKey: string, id: string, revision: number, action: "steer" | "interrupt", now: number,
+): PendingTurn | null {
+  const d = openDb();
+  const changed = d.prepare(`UPDATE pending_turns SET delivery_mode = ?, deadline_at = ?,
+    interrupt_attempted_at = NULL, last_error = NULL, updated_at = ?, revision = revision + 1
+    WHERE note_key = ? AND id = ? AND revision = ? AND state = 'queued'`)
+    .run(action === "steer" ? "steer" : "interrupt-after-wait", now, now, noteKey, id, revision).changes;
+  if (changed !== 1) return null;
+  return rowToPendingTurn(d.prepare("SELECT * FROM pending_turns WHERE id = ?").get(id) as unknown as PendingTurnRow);
+}
+
+export function recordPendingTurnInterrupt(id: string, revision: number, now: number): boolean {
+  return openDb().prepare(`UPDATE pending_turns SET interrupt_attempted_at = ?
+    WHERE id = ? AND revision = ? AND state = 'sending' AND interrupt_attempted_at IS NULL`)
+    .run(now, id, revision).changes === 1;
 }
 
 /** Move the newest still-editable row back to the composer. */

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.24.0](https://github.com/teamupstart/mission-control/compare/v1.23.0...v1.24.0) (2026-09-19)
+
+
+### Features
+
+* **sessions:** deliver every message on one escalating policy ([#1106](https://github.com/teamupstart/mission-control/issues/1106)) ([8dcccfd](https://github.com/teamupstart/mission-control/commit/8dcccfdc0e979b7a8813db708a8f9df18abce697))
+
+
+### Bug Fixes
+
+* **agents:** show Codex turn failures and prefer installed agent CLIs ([#1103](https://github.com/teamupstart/mission-control/issues/1103)) ([db4b4d0](https://github.com/teamupstart/mission-control/commit/db4b4d0a11d9f3781035dacf4f127e0e2fcc1bf4))
+
 ## [1.23.0](https://github.com/teamupstart/mission-control/compare/v1.22.0...v1.23.0) (2026-09-19)
 
 

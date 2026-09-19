@@ -125,6 +125,30 @@ test("a text-editing command is refused, so the send box keeps copy, paste and u
   }
 });
 
+test("macOS text-field commands on Control are refused too", () => {
+  const bindings = resolveKeybindings({});
+  // Cocoa's field editor ships the emacs movement and deletion set, and a browser text field
+  // inherits every one: ⌃E to end of line, ⌃K kill to it, ⌃H delete back, ⌃B/⌃F walk the
+  // caret. Each carries a command modifier, so the clipboard-only rule called them safe while
+  // preventDefault took the command away from the box.
+  for (const chord of ["ctrl+e", "ctrl+k", "ctrl+h", "ctrl+b", "ctrl+f", "ctrl+d", "ctrl+n", "ctrl+p", "ctrl+t", "ctrl+o", "ctrl+l"]) {
+    assert.match(
+      bindingValidationError(bindings, "composerEditor", chord) ?? "",
+      /text-editing command/,
+      `${chord} should be refused`,
+    );
+    assert.equal(composerEditorRequested(chord, chord), false, `${chord} must not open the editor`);
+  }
+  // ⌘ owns a much shorter list, so the same letters stay bindable there - barring the ones
+  // another action already holds (⌘K is the palette, ⌘F is find), which is a conflict rather
+  // than an editing refusal.
+  for (const chord of ["cmd+e", "cmd+b", "cmd+d", "cmd+h"]) {
+    assert.equal(bindingValidationError(bindings, "composerEditor", chord), null, `${chord} should bind`);
+  }
+  // And the shipped default is not in either set.
+  assert.equal(bindingValidationError(bindings, "composerEditor", "ctrl+g"), null);
+});
+
 test("excluding editing chords does not disturb Interrupt, which App dispatches itself", () => {
   // ⌃C is the shipped interrupt binding. It is not a `firesWhileTyping` action - App runs it
   // behind its own typing guard - so the composer's rule must not reach it.

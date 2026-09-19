@@ -580,19 +580,62 @@ export function chordUsesFunctionKey(chord: string): boolean {
 }
 
 /**
- * The letters that are a text-editing command when ⌘ or ⌃ is held: copy, paste, cut,
+ * The letters that are a text-editing command under EITHER modifier: copy, paste, cut,
  * select-all, undo, and redo (⌘⇧Z on macOS, ⌃Y on Windows and Linux).
  *
  * These are the chords a person uses ON a draft rather than instead of one, which makes
  * them the opposite of safe inside a text field even though they carry a command modifier.
  */
-const EDITING_KEYS = new Set(["c", "v", "x", "a", "z", "y"]);
+const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "y", "z"]);
 
-/** True when a chord is a standard editing command rather than a shortcut a field can take. */
+/**
+ * What macOS text fields additionally bind to CONTROL, on top of the clipboard set.
+ *
+ * Cocoa's field editor ships the emacs movement and deletion commands, and a browser text
+ * field inherits every one: ⌃E jumps to the end of the line, ⌃K kills to it, ⌃H deletes
+ * backwards, ⌃B and ⌃F walk the caret, ⌃D deletes forward, ⌃N and ⌃P change line, ⌃T
+ * transposes, ⌃O opens a line, ⌃L recentres. Each carries a command modifier, so the
+ * clipboard set alone called them safe while `preventDefault` quietly took the command away
+ * from the one box a person edits in most.
+ *
+ * Refused on every platform rather than only on macOS. The binding is stored per machine but
+ * a config is not, and a rule that changed by platform would leave a chord that records
+ * cleanly on Linux and is silently dropped by `sanitize` on a Mac - a shortcut that works
+ * until it does not, with nothing on screen to explain it. The cost is a handful of ⌃
+ * letters on platforms that do not use them; `g`, `i`, `j`, `m`, `q`, `r`, `s`, `u` and `w`
+ * remain, and every ⌘ letter outside the clipboard set does too.
+ */
+const CONTROL_EDITING_KEYS = new Set([
+  ...CLIPBOARD_KEYS,
+  "b",
+  "d",
+  "e",
+  "f",
+  "h",
+  "k",
+  "l",
+  "n",
+  "o",
+  "p",
+  "t",
+]);
+
+/**
+ * True when a chord is a standard editing command rather than a shortcut a field can take.
+ *
+ * Split by modifier because the two carry different commands. ⌘ owns the clipboard and
+ * undo/redo, which is a short list, so ⌘E and ⌘B stay bindable. ⌃ owns that same list PLUS
+ * Cocoa's emacs movement set, which is long - see `CONTROL_EDITING_KEYS`.
+ */
 export function chordEditsText(chord: string): boolean {
   const { mods, key } = parseChord(chord);
-  if (!mods.includes("cmd") && !mods.includes("ctrl")) return false;
-  return EDITING_KEYS.has(key.toLowerCase());
+  const k = key.toLowerCase();
+  if (mods.includes("cmd")) return CLIPBOARD_KEYS.has(k);
+  // Ctrl+Alt is AltGr rather than an editing command - ⌃⌥E types `€`, it does not jump to
+  // the end of a line. Leaving it here would answer the right refusal with the wrong reason.
+  if (mods.includes("alt")) return false;
+  if (mods.includes("ctrl")) return CONTROL_EDITING_KEYS.has(k);
+  return false;
 }
 
 /**

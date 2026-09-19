@@ -1072,9 +1072,12 @@ has. This is the only action that fires while the cursor is already in a text fi
 key has to be one a message could never contain: a <kbd>⌘</kbd> or <kbd>⌃</kbd>
 combination, or a function key. The editor refuses a bare letter and says why, rather than
 accepting a binding that would open a dialog every time you typed that letter. It also
-refuses the text-editing commands (copy, paste, cut, select all, undo, redo), and
-<kbd>⌃</kbd><kbd>⌥</kbd> combinations, which are how Windows and Linux report
-<kbd>AltGr</kbd> and type a character on many layouts.
+refuses the text-editing commands, and <kbd>⌃</kbd><kbd>⌥</kbd> combinations, which are how
+Windows and Linux report <kbd>AltGr</kbd> and type a character on many layouts. The editing
+set is larger under <kbd>⌃</kbd> than under <kbd>⌘</kbd>: both cover copy, paste, cut, select
+all, undo and redo, and <kbd>⌃</kbd> also covers the caret and deletion commands macOS text
+fields inherit from emacs (<kbd>⌃</kbd><kbd>E</kbd>, <kbd>⌃</kbd><kbd>K</kbd>,
+<kbd>⌃</kbd><kbd>H</kbd>, <kbd>⌃</kbd><kbd>B</kbd>, <kbd>⌃</kbd><kbd>F</kbd> among them).
 
 ### Reading a session's whole conversation
 

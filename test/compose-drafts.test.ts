@@ -8,7 +8,6 @@ import {
   dropSessionDrafts,
   readDraft,
   resetDrafts,
-  subscribeDeliveryChoice,
   writeDraft,
 } from "../src/web/lib/drafts.ts";
 import { WorkQueue } from "../src/web/components/WorkQueue.tsx";
@@ -38,20 +37,6 @@ test("a draft outlives the mount that wrote it", () => {
   // The whole bug in one line: the component is gone, the text is not.
   writeDraft("s1", "queue", "half a thought");
   assert.equal(readDraft("s1", "queue"), "half a thought");
-});
-
-test("delivery choice listeners ignore keystrokes and reset with the session", () => {
-  let changes = 0;
-  const unsubscribe = subscribeDeliveryChoice(() => { changes++; });
-  writeDraft("s1", "reply", "typing");
-  assert.equal(changes, 0);
-  writeDraft("s1", "delivery", "steer-after-wait");
-  assert.equal(changes, 1);
-  assert.equal(readDraft("s1", "delivery"), "steer-after-wait");
-  dropMessageDrafts("s1");
-  assert.equal(readDraft("s1", "delivery"), "");
-  assert.equal(changes, 2);
-  unsubscribe();
 });
 
 test("a box never typed in reads as empty, not undefined", () => {

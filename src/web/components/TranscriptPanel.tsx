@@ -22,7 +22,7 @@ import { composerEditorRequested, composerKeysHint } from "../lib/composer-edito
 import { chordFromEvent, formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { revealPaneDialog } from "../lib/pane-dialog-anchor.ts";
-import { MessageDeliveryChoice, PendingMessageDelivery, useMessageDeliveryChoice } from "./MessageDelivery.tsx";
+import { PendingMessageDelivery } from "./MessageDelivery.tsx";
 import {
   latestEditablePendingTurn,
   PENDING_TURN_HELD_REASON,
@@ -304,7 +304,6 @@ export function TranscriptPanel({
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
-  const [deliveryMode, setDeliveryMode] = useMessageDeliveryChoice(session);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -831,7 +830,7 @@ export function TranscriptPanel({
     // this guard is a nuisance if it slips; this one silently answers a question.
     if (dialogOpen || drop.uploading || sending || (!text && ready.length === 0)) return;
     setSending(true);
-    const r = await api.injectPrompt(sessionId, withAttachments(text, ready), true, deliveryMode);
+    const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
     if (r.ok) {
       const confirmation = sdkDeliveryConfirmation(r.delivery);
@@ -1137,7 +1136,6 @@ export function TranscriptPanel({
       <div className="transcript-compose" {...drop.dropProps}>
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
         <div className="compose-row">
-          <MessageDeliveryChoice session={session} value={deliveryMode} onChange={setDeliveryMode} disabled={sending} />
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
               "mission (s) >" would replace that sentence with a prompt. The key is the

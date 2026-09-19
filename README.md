@@ -86,9 +86,11 @@ Read it as a terminal stream or a chat, queue and reorder messages, answer struc
 change permission posture, interrupt a turn, and drop images directly into the composer.
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
-Conversation delivery can wait for the next turn, steer an embedded agent now or after one minute,
-or explicitly interrupt after two minutes while preserving other queued messages. Queue age and
-blocking reasons stay visible, and acknowledged messages are never automatically replayed.
+Every message follows one delivery policy, with nothing to choose before sending: it waits for the
+current turn, steers an embedded agent one minute after it was queued, and interrupts the turn one
+minute after that, keeping the other queued messages. Steer now and Interrupt and deliver are there
+for anyone who will not wait. Queue age and blocking reasons stay visible, and acknowledged
+messages are never automatically replayed.
 
 The diff is scoped to what that agent changed. Files support pull request-style line comments and a
 guided review that walks the agent through one thread at a time. A terminal in the same working copy

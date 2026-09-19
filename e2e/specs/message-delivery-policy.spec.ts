@@ -10,7 +10,7 @@ async function openSession(dashboard: import("@playwright/test").Page, daemon: i
   const modal = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await modal.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
-  await modal.getByPlaceholder("What should this agent do?").fill("exercise message delivery choices");
+  await modal.getByPlaceholder("What should this agent do?").fill("exercise the message delivery policy");
   await modal.locator("select").filter({ hasText: "Claude Code" }).selectOption(agent);
   await modal.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await modal.getByRole("button", { name: "Dispatch now" }).click();
@@ -28,23 +28,29 @@ async function openSession(dashboard: import("@playwright/test").Page, daemon: i
 }
 
 for (const agent of ["claude", "codex"]) {
-test(`${agent}: steer now reaches the active turn and interrupt-and-deliver preserves other queued messages`, async ({ dashboard, daemon }) => {
+test(`${agent}: the send box offers no delivery choice, and interrupt-and-deliver preserves other queued messages`, async ({ dashboard, daemon }) => {
   const { card, composer, rail } = await openSession(dashboard, daemon, agent);
-  await expect(card.getByLabel("Message delivery")).toHaveValue("after-turn");
+  // There is nothing to pick before sending. Every message carries the same policy, so a
+  // selector here would only be a way to get it wrong.
+  await expect(card.getByRole("combobox", { name: "Message delivery" })).toHaveCount(0);
+  await expect(card.getByText("Delivery", { exact: true })).toHaveCount(0);
+
   await composer.fill("leave this for after the turn");
   await composer.press("Enter");
   const later = card.locator(".pending-turn").filter({ hasText: "leave this for after the turn" });
   await expect(later).toBeVisible();
   await expect(composer).toHaveValue("");
-  await card.getByLabel("Message delivery").selectOption("steer");
+
+  // The queued row still carries both explicit actions, which is where an operator who does
+  // not want to wait out the clock reaches instead.
   await composer.fill("a correction during active work");
   await composer.press("Enter");
+  const correction = card.locator(".pending-turn").filter({ hasText: "a correction during active work" });
+  await correction.getByRole("button", { name: "Steer now", exact: true }).click();
   await expect(card.locator(".turn-user:not(.pending-turn)").getByText("a correction during active work", { exact: true })).toBeVisible();
   await expect(rail.locator(".rail-state")).toHaveText("working");
   await expect(later).toBeVisible();
-  await expect(composer).toHaveValue("");
 
-  await card.getByLabel("Message delivery").selectOption("after-turn");
   await composer.fill("hold the current turn open");
   await composer.press("Enter");
   const replacement = card.locator(".pending-turn").filter({ hasText: "hold the current turn open" });
@@ -53,7 +59,7 @@ test(`${agent}: steer now reaches the active turn and interrupt-and-deliver pres
   await expect(later).toBeVisible();
   await expect(rail.locator(".rail-state")).toHaveText("working");
   if (process.env.MC_E2E_EVIDENCE) {
-    const dir = artifactsDir("message-delivery-modes");
+    const dir = artifactsDir("message-delivery-policy");
     mkdirSync(dir, { recursive: true });
     await dashboard.mouse.move(0, 0);
     await dashboard.screenshot({ path: `${dir}${agent}-steered-and-preserved.png` });
@@ -61,41 +67,23 @@ test(`${agent}: steer now reaches the active turn and interrupt-and-deliver pres
 });
 }
 
-test("timed steering shows its age and reaches a busy agent after one minute", async ({ dashboard, daemon }) => {
-  test.setTimeout(110000);
+test("a message nobody touched shows its wait and steers into the running turn after one minute", async ({ dashboard, daemon }) => {
+  // The message's own minute is only part of this: a cold dispatch, a settling session and a
+  // held turn all precede it, and this spec cannot start the clock until they are done.
+  test.setTimeout(180000);
   const { card, composer, rail } = await openSession(dashboard, daemon);
-  await card.getByLabel("Message delivery").selectOption("steer-after-wait");
   await composer.fill("send automatically after the deadline");
   await composer.press("Enter");
   const pending = card.locator(".pending-turn").filter({ hasText: "send automatically after the deadline" });
   await expect(pending).toBeVisible();
-  await expect(pending.getByText(/Waiting \d+s/)).toBeVisible({ timeout: 40000 });
+  await expect(pending.getByText(/Waiting \d+s · Steering it into this turn/)).toBeVisible({ timeout: 40000 });
   if (process.env.MC_E2E_EVIDENCE) {
-    const dir = artifactsDir("message-delivery-modes");
+    const dir = artifactsDir("message-delivery-policy");
     mkdirSync(dir, { recursive: true });
     await dashboard.mouse.move(0, 0);
     await dashboard.screenshot({ path: `${dir}timed-wait.png` });
   }
-  await expect(card.locator(".turn-user:not(.pending-turn)").getByText("send automatically after the deadline", { exact: true })).toBeVisible({ timeout: 45000 });
+  await expect(card.locator(".turn-user:not(.pending-turn)").getByText("send automatically after the deadline", { exact: true })).toBeVisible({ timeout: 60000 });
   await expect(pending).toHaveCount(0);
-  await expect(rail.locator(".rail-state")).toHaveText("working");
-});
-
-test("an explicitly selected two-minute interruption delivers without losing next-turn messages", async ({ dashboard, daemon }) => {
-  test.setTimeout(160000);
-  const { card, composer, rail } = await openSession(dashboard, daemon);
-  await composer.fill("keep this queued for later");
-  await composer.press("Enter");
-  const later = card.locator(".pending-turn").filter({ hasText: "keep this queued for later" });
-  await expect(later).toBeVisible();
-  await expect(composer).toHaveValue("");
-  await card.getByLabel("Message delivery").selectOption("interrupt-after-wait");
-  await expect(card.getByText("May stop a running tool. Other messages are kept.")).toBeVisible();
-  await composer.fill("hold the current turn open");
-  await composer.press("Enter");
-  const replacement = card.locator(".pending-turn").filter({ hasText: "hold the current turn open" });
-  await expect(replacement).toBeVisible();
-  await expect(replacement).toHaveCount(0, { timeout: 135000 });
-  await expect(later).toBeVisible();
   await expect(rail.locator(".rail-state")).toHaveText("working");
 });

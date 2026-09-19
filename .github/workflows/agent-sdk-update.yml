@@ -1,0 +1,126 @@
+name: Agent SDK update
+
+# Proposes locked bumps of the three agent SDKs as a pull request, on a schedule, so CI
+# judges them before they land.
+#
+# The lockfile is what decides: both CI and `scripts/install-app.mjs` install with `npm ci`,
+# which ignores semver ranges, so widening a range would change nothing here. Only these
+# three are bumped, because two of them vendor a CLI into `node_modules/.bin` - their
+# version decides which agent build the daemon can run, not just which library it compiles
+# against.
+#
+# The GitHub App token is required: a pull request opened with `GITHUB_TOKEN` does not
+# trigger `on: pull_request`, so it would arrive with no CI.
+
+on:
+  schedule:
+    # Mondays, early UTC: a bump lands at the start of a week rather than into a Friday.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One proposal at a time. A manual run while the weekly one is in flight should replace it,
+  # not race it to the same branch.
+  group: agent-sdk-update
+  cancel-in-progress: true
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    name: propose agent SDK bumps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      # `--save` keeps the pin and the lock from drifting apart. `install <pkg>@latest` rather
+      # than `npm update`, which respects the existing range - and a caret on a `0.x` package
+      # pins its minor, so it can never reach a new one.
+      - name: Install the latest agent SDKs
+        id: bump
+        run: |
+          set -euo pipefail
+          npm install --save \
+            @openai/codex-sdk@latest \
+            @anthropic-ai/claude-agent-sdk@latest \
+            @earendil-works/pi-coding-agent@latest
+          if git diff --quiet -- package.json package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Every agent SDK is already at its latest release."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo 'summary<<SDKEOF'
+            for pkg in @openai/codex-sdk @anthropic-ai/claude-agent-sdk @earendil-works/pi-coding-agent; do
+              printf -- '- `%s` -> %s\n' "$pkg" "$(node -p "require('./node_modules/$pkg/package.json').version")"
+            done
+            echo SDKEOF
+          } >> "$GITHUB_OUTPUT"
+
+      # Non-blocking, so an SDK whose types moved arrives as a red PR with a diagnosis.
+      - name: Typecheck the bumped tree
+        if: steps.bump.outputs.changed == 'true'
+        continue-on-error: true
+        id: typecheck
+        run: npm run typecheck
+
+      - name: Mint a token that can open a pull request CI will run
+        if: steps.bump.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or update the pull request
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: chore/agent-sdk-update
+          # Parseable by Release Please, which `.github/workflows/pull-request-title.yml`
+          # enforces on every squash subject.
+          title: 'chore(deps): update the agent SDKs'
+          commit-message: 'chore(deps): update the agent SDKs'
+          add-paths: |
+            package.json
+            package-lock.json
+          delete-branch: true
+          body: |
+            Scheduled refresh of the agent SDKs, opened by `.github/workflows/agent-sdk-update.yml`.
+
+            ${{ steps.bump.outputs.summary }}
+
+            Typecheck on the bumped tree: **${{ steps.typecheck.outcome }}**.
+
+            ## For humans
+
+            These pins decide which agent build the daemon can run, not just which library it
+            compiles against: `@openai/codex-sdk` and `@earendil-works/pi-coding-agent` vendor a
+            CLI into `node_modules/.bin`, so a lagging pin is a lagging agent. A pin that lags far
+            enough stops supporting newly released models, and the session fails per turn with a
+            provider rejection.
+
+            Worth a look before merging, in rough order of how much trouble each has caused:
+
+            - Codex rollout records and app-server protocol. Both have moved under this product
+              before. `test/codex-app-server-bindings.test.ts` turns a renamed method into a
+              compile error, and the conversation reader is covered by
+              `test/harness-transcript.test.ts` plus `e2e/specs/codex-*.spec.ts`.
+            - The model catalogue each build offers, which is what a task's pinned model is
+              checked against at dispatch.
+            - Anything in the release notes about permission modes or approval policy.
+
+            CI is the gate. If typecheck above is `failure`, the SDK moved something and this
+            needs a person rather than a merge.

@@ -64,9 +64,12 @@ chmodSync(claudePath, 0o755);
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restoreTransport = configureClaudeRunnerTransport(() => "print");
 
-// The fake `gh` records every snapshot read and every diff read in the state file, and
-// writes it atomically (write + rename) because the test polls the file while ticks are
-// still running.
+// The fake `gh` records every snapshot read and every diff read in the state file.
+//
+// A busy tick runs several `gh` subprocesses at once, so updates must serialize: atomic
+// rename prevents a torn read but not a lost update. Each writer takes an exclusive lock
+// around read-mutate-publish, and stages through a pid-scoped temp file so two stagers
+// cannot collide.
 writeFileSync(
   ghPath,
   `#!/usr/bin/env node
@@ -74,17 +77,37 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const statePath = process.env.FAKE_GITHUB_STATE;
 const load = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
-const save = (state) => {
-  fs.writeFileSync(statePath + ".tmp", JSON.stringify(state, null, 2));
-  fs.renameSync(statePath + ".tmp", statePath);
+const lockPath = statePath + ".lock";
+const napper = new Int32Array(new SharedArrayBuffer(4));
+// Read, mutate and publish under one lock, so concurrent subprocesses cannot lose an
+// update. Returns the mutated state for callers that keep reading it afterwards.
+const withState = (mutate) => {
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, "wx");
+    } catch {
+      Atomics.wait(napper, 0, 0, 2);
+      continue;
+    }
+    try {
+      const state = load();
+      mutate(state);
+      const staged = statePath + "." + process.pid + ".tmp";
+      fs.writeFileSync(staged, JSON.stringify(state, null, 2));
+      fs.renameSync(staged, statePath);
+      return state;
+    } finally {
+      fs.closeSync(fd);
+      fs.unlinkSync(lockPath);
+    }
+  }
 };
 
 if (args[0] === "api" && args[1] === "user") {
   process.stdout.write("operator\\n");
 } else if (args.includes("graphql")) {
-  const state = load();
-  state.snapshots += 1;
-  save(state);
+  const state = withState((draft) => { draft.snapshots += 1; });
   const comments = [];
   if (state.threadBody) comments.push({
     databaseId: 101,
@@ -130,16 +153,14 @@ if (args[0] === "api" && args[1] === "user") {
   const chunks = [];
   process.stdin.on("data", (chunk) => chunks.push(chunk));
   process.stdin.on("end", () => {
-    const state = load();
     const target = args.find((arg) => /\\/comments\\/\\d+\\/replies$/.test(arg));
-    state.actions.push("replied to comment " + target.match(/comments\\/(\\d+)\\/replies$/)[1]);
-    save(state);
+    withState((draft) => {
+      draft.actions.push("replied to comment " + target.match(/comments\\/(\\d+)\\/replies$/)[1]);
+    });
     process.stdout.write("{}");
   });
 } else if (args.some((arg) => /repos\\/mission\\/control\\/pulls\\/\\d+$/.test(arg))) {
-  const state = load();
-  state.diffCalls += 1;
-  save(state);
+  const state = withState((draft) => { draft.diffCalls += 1; });
   if (state.diffTooLarge) {
     // Past run()'s 16MB maxBuffer, so fetchDiff reports this read as tooLarge.
     process.stdout.write("x".repeat(17 * 1024 * 1024));

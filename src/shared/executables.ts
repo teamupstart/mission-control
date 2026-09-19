@@ -41,6 +41,10 @@ export const EXECUTABLE_SOURCE_IDS = [
   "login-shell",
   "version-manager",
   "os-default",
+  // Ranks after every installed location, and must stay last: a package manager puts its
+  // `node_modules/.bin` first on PATH, which is right for a build and wrong for choosing an
+  // agent CLI. Searchable, not dropped - some tools live only there.
+  "project-local",
   "runtime",
 ] as const;
 
@@ -54,6 +58,7 @@ export const EXECUTABLE_SOURCE_LABELS: Record<ExecutableSourceId, string> = {
   "login-shell": "login shell",
   "version-manager": "version-manager location",
   "os-default": "operating-system default",
+  "project-local": "project-local node_modules",
   runtime: "current runtime",
 };
 

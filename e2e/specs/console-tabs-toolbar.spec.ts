@@ -157,6 +157,9 @@ test("the console detail's tab row carries the conversation's toolbar, and the p
   // The band they came from is gone: the conversation pane draws no strip of its own.
   await expect(detail.locator(".detail-conv .conv-launch")).toHaveCount(0);
 
+  // Delivery policy stays reachable beside the reply, without reclaiming a header band.
+  await expect(detail.locator(".compose-row").getByRole("combobox", { name: "Message delivery" })).toBeVisible();
+
   // The worktree path appears EXACTLY ONCE in the pane, in the `PATH`/`BRANCH` row. This is
   // the assertion that keeps the move from recreating the duplication the plan started from:
   // option 2 keeps that row, so a copy in the tab strip would be the second one.

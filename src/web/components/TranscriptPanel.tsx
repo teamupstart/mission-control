@@ -1107,8 +1107,8 @@ export function TranscriptPanel({
       ) : (
       <div className="transcript-compose" {...drop.dropProps}>
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
-        <MessageDeliveryChoice session={session} value={deliveryMode} onChange={setDeliveryMode} disabled={sending} />
         <div className="compose-row">
+          <MessageDeliveryChoice session={session} value={deliveryMode} onChange={setDeliveryMode} disabled={sending} />
           {/* Decorative, and marked as such: the box's accessible name stays its
               placeholder, which says what typing here does. A real `<label>` reading
               "mission (s) >" would replace that sentence with a prompt. The key is the

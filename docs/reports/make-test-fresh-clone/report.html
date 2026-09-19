@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>make test fresh-clone audit</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0d1117; --panel: #161b22; --panel2: #1d2633; --ink: #e6edf3; --muted: #9da7b3; --line: #303946; --green: #3fb950; --green-surface: #17351f; --amber: #d29922; --amber-surface: #3a2d12; --red: #ff7b72; --blue: #79c0ff; font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    @media (prefers-color-scheme: light) { :root { color-scheme: light; --bg: #f6f8fa; --panel: #fff; --panel2: #eef2f6; --ink: #1f2328; --muted: #59636e; --line: #d0d7de; --green: #1a7f37; --green-surface: #dafbe1; --amber: #9a6700; --amber-surface: #fff8c5; --red: #cf222e; --blue: #0969da; } }
+    * { box-sizing: border-box; } body { margin: 0; background: var(--bg); color: var(--ink); } main { max-width: 980px; margin: 0 auto; padding: 44px 24px 72px; } h1 { margin: 0 0 10px; font-size: 2.2rem; letter-spacing: -.03em; } h2 { margin: 34px 0 10px; font-size: 1.25rem; } p { max-width: 78ch; } .lede { color: var(--muted); font-size: 1.08rem; } .result { margin: 24px 0; padding: 20px 22px; border: 1px solid var(--green); border-radius: 12px; background: var(--green-surface); } .result strong { color: var(--green); } table { width: 100%; border-collapse: collapse; margin: 14px 0; background: var(--panel); } th, td { padding: 11px 13px; border: 1px solid var(--line); text-align: left; vertical-align: top; } th { background: var(--panel2); } code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } code { color: var(--blue); } pre { overflow-x: auto; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); white-space: pre-wrap; } .warn { border-left: 3px solid var(--amber); padding-left: 14px; } .small { color: var(--muted); font-size: .92rem; } a { color: var(--blue); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Fresh-clone <code>make test</code> audit</h1>
+    <p class="lede">Question: does a fresh Mission Control clone pass <code>make test</code> without relying on operator-specific environment variables or existing state?</p>
+
+    <div class="result"><strong>Finding: yes, with one test portability repair.</strong> The repair classifies <code>GET /api/environment/checks</code> as host-dependent in the route oracle. The existing checkout then passed the full target outside the macOS sandbox, and a separate clone passed under an isolated HOME, TMPDIR, and environment.</div>
+
+    <h2>Evidence</h2>
+    <table>
+      <thead><tr><th>Run</th><th>Result</th><th>Command / conditions</th></tr></thead>
+      <tbody>
+        <tr><td>Initial sandbox baseline</td><td>Broad failures</td><td><code>make test</code> under the restricted macOS sandbox. Failures included loopback listeners, native process identity, Herdr/tmux, Electron preload, and geometry. These were OS capability denials, including <code>listen EPERM</code>, not a representative fresh-clone result.</td></tr>
+        <tr><td>Root-cause reproduction</td><td>1 failure</td><td>Outside-sandbox isolated <code>test/route-surface-oracle.test.ts</code>: the oracle expected <code>ready:false</code> but the live UpstartClaw setup check returned <code>ready:true</code>.</td></tr>
+        <tr><td>Existing checkout after repair</td><td><strong>12,342 passed, 0 failed, 2 skipped</strong>; posttest <strong>26 passed, 0 failed</strong></td><td>Outside-sandbox <code>make test</code>. Total main-suite duration was 374.6 seconds.</td></tr>
+        <tr><td>Fresh clone, clean environment</td><td><strong>12,340 passed, 0 failed, 4 skipped</strong>; posttest <strong>26 passed, 0 failed</strong></td><td>Separate clone. Ran <code>env -i</code> with only isolated <code>HOME</code>, <code>TMPDIR</code>, and standard <code>PATH</code>. The Makefile installed dependencies into the fresh clone before testing.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Root cause and repair</h2>
+    <p><code>test/route-surface-oracle.test.ts</code> already normalized several machine-dependent routes to stable field names. It omitted <code>GET /api/environment/checks</code>, even though that route calls module-level environment probes and necessarily reports the current machine. The fix adds the route to <code>HOST_PROBING</code>; the documented regeneration command updates <code>test/fixtures/route-surface.json</code> from the machine-specific body to <code>200 fields{checks}</code>.</p>
+    <p>Changed files: <code>test/route-surface-oracle.test.ts</code> and <code>test/fixtures/route-surface.json</code>.</p>
+
+    <h2>Additional checks</h2>
+    <ul>
+      <li><code>npm run typecheck</code>: passed.</li>
+      <li><code>npm run lint</code>: passed with pre-existing warnings; no new warning was introduced by this change.</li>
+      <li>The isolated route-oracle test passed after regeneration.</li>
+    </ul>
+
+    <h2>Limits</h2>
+    <p class="warn">The clean clone used the local Node 24 installation and an already available network connection for dependency installation. It did not test a different Node major, an offline registry, or a non-macOS host. The sandbox baseline is not evidence that the product fails on a normal macOS host because the repository documents the need for outside-sandbox approval for these geometry and OS integration tests.</p>
+    <p class="small">Sources: <code>Makefile:126-146</code>, <code>test/route-surface-oracle.test.ts:64-79</code>, <code>test/fixtures/route-surface.json:31</code>, and the captured command logs from the runs above.</p>
+  </main>
+</body>
+</html>

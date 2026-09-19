@@ -87,8 +87,8 @@ change permission posture, interrupt a turn, and drop images directly into the c
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
 Every message follows one delivery policy, with nothing to choose before sending: it waits for the
-current turn, steers an embedded agent one minute after it was queued, and interrupts the turn one
-minute after that, keeping the other queued messages. Steer now and Interrupt and deliver are there
+current turn, steers an embedded agent one minute after it was queued, and interrupts the turn three
+minutes after it was queued, keeping the other queued messages. Steer now and Interrupt and deliver are there
 for anyone who will not wait. Queue age and blocking reasons stay visible, and acknowledged
 messages are never automatically replayed.
 

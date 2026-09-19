@@ -9246,8 +9246,19 @@ mark.find-hit.is-current {
 .pty-sendkey {
   flex: none;
   color: var(--dim);
-  font: 9.5px/1 var(--mono);
+  font: 9.5px/1.5 var(--mono);
   white-space: nowrap;
+}
+/* The composer's SECOND COLUMN in the terminal rendering, the same 244px the Observed
+   activity rail above it claims - so the composer reads as the same one row of two columns
+   the conversation does: box and Send to the log's right edge, keys under the rail. Pinned
+   rather than sized to its text, because a legend that grew with its content was exactly what
+   dragged Send inward off that edge; inside a fixed column the text wraps instead.
+   Below the container width where `.find-split` stacks, the rail stops being a column and the
+   same query hides this outright. */
+.transcript[data-view="terminal"] .pty-sendkey {
+  width: 244px;
+  white-space: normal;
 }
 
 /* The status line. `flex: none` and wrapping rather than clipping: this row carries the
@@ -34263,4 +34274,83 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 .tele-queue p {
   margin: 0 0 4px;
+}
+
+/* ---- the send box's full-size editor ----
+   The legend beside the box needs no rule of its own: both renderings print it through the
+   existing `.pty-sendkey`, which already supplies the type and the narrow-width hide, so
+   they can never disagree about either.
+
+   The dialog is the answer to a cramped box, so its whole job is height - but the footer is
+   the half that must survive, because "Stage in the send box" is how a pointer user finishes
+   the flow at all. So the textarea PREFERS 46vh and may shrink below it, rather than holding
+   a floor the head and foot then have to fit around: `height` sets the preference, `flex`
+   lets it give way, and the body scrolls if a viewport is short enough that even the small
+   floor does not fit. An earlier revision used `min-height: 46vh` with `overflow: hidden`,
+   which clipped the footer out of reach somewhere under a 430px-tall window. */
+.composer-editor {
+  display: flex;
+  flex-direction: column;
+  /* The PANEL carries the size, not the textarea inside it. Sizing the textarea was the
+     obvious move and it does not work: as a flex item inside a scroll container its `height`
+     stops driving the panel, so the dialog collapsed to whatever the content happened to
+     want - about 116px of writing area on every screen, which is the opposite of the point.
+     Given a height here, the body fills the panel and the textarea fills the body, and every
+     one of them shrinks together when the viewport is short. */
+  height: min(calc(100dvh - 96px), 760px);
+  max-height: calc(100dvh - 96px);
+}
+.composer-editor .modal-head,
+.composer-editor .modal-foot {
+  flex: 0 0 auto;
+}
+.composer-editor-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  max-height: none;
+  /* Scrolls rather than clips: the last resort on a viewport too short for even the floor
+     below, and the reason the footer cannot be pushed out of the panel. */
+  overflow: auto;
+}
+.composer-editor-input {
+  flex: 1 1 auto;
+  /* Out of the shared multiline contract, deliberately. `:where(textarea)` starts every
+     field at its rows, grows it with content, and caps it at five lines - right for a
+     composer sitting inline, wrong for the dialog whose entire purpose is to be bigger than
+     that. `field-sizing: content` would size this to the text rather than to the panel, and
+     the 5lh cap held it to about 116px. The previous `min-height: 46vh` was overriding that
+     cap by accident, which is why removing it collapsed the editor on every screen. */
+  field-sizing: auto;
+  max-height: none;
+  /* Fills the body and gives way with it. The floor is deliberately small: the footer
+     carries "Stage in the send box", which is the only pointer route out of this dialog, so
+     the textarea yields first and the body scrolls before anything reaches the footer. */
+  min-height: 72px;
+  resize: none;
+  font: 13px/1.5 var(--sans);
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.composer-editor-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.composer-editor-note {
+  flex: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+/* Mono, like every other key legend in this app, and dimmed: it is the footer's least
+   important thing and the two buttons beside it are its most. */
+.composer-editor-keys {
+  color: var(--dim);
+  font: 9.5px/1.4 var(--mono);
 }

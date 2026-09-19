@@ -1051,6 +1051,39 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Writing a longer message
+
+The reply box is two lines tall, which is the right shape for a reply and the wrong one for
+a correction with three numbered points, a spec, or a pasted stack trace with a question
+around it. <kbd>⌃</kbd><kbd>G</kbd>, from inside the box, opens what you have written in a
+full-size editor with room to read it.
+
+**It never sends.** <kbd>⌘</kbd><kbd>Enter</kbd> - or <kbd>⌃</kbd><kbd>Enter</kbd>, on a
+keyboard with no Command key - puts the text back in the reply box, unsent, with the cursor
+at the end, so the message you spent time on is still a draft you read over and deliver
+yourself, with the ordinary <kbd>Enter</kbd>, when you mean to.
+<kbd>Enter</kbd> inside the editor is a newline, which is the whole reason it commits on a
+chord. <kbd>Esc</kbd> or **Cancel** closes it and leaves the reply box holding exactly what
+it had. Press <kbd>⌃</kbd><kbd>G</kbd> again to keep working on the staged text.
+
+The keys are printed beside the box in the **terminal** rendering, which is the one with a
+prompt line to carry them. The chat rendering keeps its placeholder and no legend, because a
+legend there either takes width off the reply box or height off the transcript; look the
+chord up in **Settings → Keyboard** if you read conversations as chat. Attachments stay on
+the composer either way: the editor is text, and images you had dropped survive it untouched.
+
+The chord is rebindable in **Settings → Keyboard**, with one constraint no other shortcut
+has. This is the only action that fires while the cursor is already in a text field, so its
+key has to be one a message could never contain: a <kbd>⌘</kbd> or <kbd>⌃</kbd>
+combination, or a function key. The editor refuses a bare letter and says why, rather than
+accepting a binding that would open a dialog every time you typed that letter. It also
+refuses the text-editing commands, and <kbd>⌃</kbd><kbd>⌥</kbd> combinations, which are how
+Windows and Linux report <kbd>AltGr</kbd> and type a character on many layouts. The editing
+set is larger under <kbd>⌃</kbd> than under <kbd>⌘</kbd>: both cover copy, paste, cut, select
+all, undo and redo, and <kbd>⌃</kbd> also covers the caret and deletion commands macOS text
+fields inherit from emacs (<kbd>⌃</kbd><kbd>E</kbd>, <kbd>⌃</kbd><kbd>K</kbd>,
+<kbd>⌃</kbd><kbd>H</kbd>, <kbd>⌃</kbd><kbd>B</kbd>, <kbd>⌃</kbd><kbd>F</kbd> among them).
+
 ### Reading a session's whole conversation
 
 The Conversation tab opens on the session's **recent** turns, and scrolls back through the

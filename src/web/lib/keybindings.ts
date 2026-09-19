@@ -53,7 +53,8 @@ export type ActionId =
   | "scouts"
   | "review"
   | "delete"
-  | "lineDensity";
+  | "lineDensity"
+  | "composerEditor";
 
 export interface ActionDef {
   id: ActionId;
@@ -63,6 +64,15 @@ export interface ActionDef {
   defaultBinding: string;
   /** "global" fires anywhere on the grid; "selection" needs a selected card. */
   group: "global" | "selection";
+  /**
+   * Whether this action is dispatched by a text FIELD rather than by App, which returns
+   * before its action table whenever `isTypingTarget` is true. A field has no such guard,
+   * so a bare `z` bound to one would fire every time somebody typed the letter z.
+   *
+   * The constraint therefore travels with the action: `typingUnsafeChordReason` refuses an
+   * unsafe chord in the editor and on every read of the stored overrides.
+   */
+  firesWhileTyping?: boolean;
 }
 
 // Order here is the order shown in the settings panel.
@@ -254,6 +264,19 @@ export const ACTIONS: readonly ActionDef[] = [
     description: "Compose and send a message to the selected session.",
     defaultBinding: "s",
     group: "selection",
+  },
+  {
+    // After Send, because it is the same box. ⌃G rather than a bare letter is a requirement
+    // and not a taste: this is the registry's only `firesWhileTyping` action, so its chord
+    // must be one a textarea never receives as text, and ⌃G is not an editing key in a
+    // browser textarea on any of the three platforms.
+    id: "composerEditor",
+    label: "Expand the message box",
+    description:
+      "Open what you are writing in a full-size editor. ⌘Enter or ⌃Enter puts the result back in the send box without sending it.",
+    defaultBinding: "ctrl+g",
+    group: "selection",
+    firesWhileTyping: true,
   },
   {
     id: "terminal",
@@ -557,6 +580,133 @@ export function chordUsesFunctionKey(chord: string): boolean {
 }
 
 /**
+ * The letters that are a text-editing command under EITHER modifier: copy, paste, cut,
+ * select-all, undo, and redo (⌘⇧Z on macOS, ⌃Y on Windows and Linux).
+ *
+ * These are the chords a person uses ON a draft rather than instead of one, which makes
+ * them the opposite of safe inside a text field even though they carry a command modifier.
+ */
+const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "y", "z"]);
+
+/**
+ * What macOS text fields additionally bind to CONTROL, on top of the clipboard set.
+ *
+ * Cocoa's field editor ships the emacs movement and deletion commands, and a browser text
+ * field inherits every one: ⌃E jumps to the end of the line, ⌃K kills to it, ⌃H deletes
+ * backwards, ⌃B and ⌃F walk the caret, ⌃D deletes forward, ⌃N and ⌃P change line, ⌃T
+ * transposes, ⌃O opens a line, ⌃L recentres. Each carries a command modifier, so the
+ * clipboard set alone called them safe while `preventDefault` quietly took the command away
+ * from the one box a person edits in most.
+ *
+ * Refused on every platform rather than only on macOS. The binding is stored per machine but
+ * a config is not, and a rule that changed by platform would leave a chord that records
+ * cleanly on Linux and is silently dropped by `sanitize` on a Mac - a shortcut that works
+ * until it does not, with nothing on screen to explain it. The cost is a handful of ⌃
+ * letters on platforms that do not use them; `g`, `i`, `j`, `m`, `q`, `r`, `s`, `u` and `w`
+ * remain, and every ⌘ letter outside the clipboard set does too.
+ */
+const CONTROL_EDITING_KEYS = new Set([
+  ...CLIPBOARD_KEYS,
+  "b",
+  "d",
+  "e",
+  "f",
+  "h",
+  "k",
+  "l",
+  "n",
+  "o",
+  "p",
+  "t",
+]);
+
+/**
+ * True when a chord is a standard editing command rather than a shortcut a field can take.
+ *
+ * Split by modifier because the two carry different commands. ⌘ owns the clipboard and
+ * undo/redo, which is a short list, so ⌘E and ⌘B stay bindable. ⌃ owns that same list PLUS
+ * Cocoa's emacs movement set, which is long - see `CONTROL_EDITING_KEYS`.
+ */
+export function chordEditsText(chord: string): boolean {
+  const { mods, key } = parseChord(chord);
+  const k = key.toLowerCase();
+  if (mods.includes("cmd")) return CLIPBOARD_KEYS.has(k);
+  // Ctrl+Alt is AltGr rather than an editing command - ⌃⌥E types `€`, it does not jump to
+  // the end of a line. Leaving it here would answer the right refusal with the wrong reason.
+  if (mods.includes("alt")) return false;
+  if (mods.includes("ctrl")) return CONTROL_EDITING_KEYS.has(k);
+  return false;
+}
+
+/**
+ * True when a chord could actually be AltGr rather than the modifiers it appears to name.
+ *
+ * Windows and Linux report AltGr as Ctrl+Alt, and on a great many layouts that combination
+ * TYPES: AltGr+Q is `@` on German and Polish keyboards, AltGr+2 is `@` on French, AltGr+E is
+ * `€` on several more. Such a chord carries a command modifier, so the rule above would call
+ * it safe, and an action dispatched by the field would then swallow a character somebody was
+ * simply typing - in the exact layouts where they type it most.
+ *
+ * The browser cannot tell us which it was at the moment a chord is RECORDED, because a
+ * chord is a string rather than an event by then. So the whole Ctrl+Alt shape is refused for
+ * a `firesWhileTyping` action, at the cost of a combination macOS users could have had (⌃⌥ is
+ * not AltGr there). At DISPATCH the question is answerable exactly, and
+ * `composerEditorRequested` asks it through `getModifierState("AltGraph")`.
+ *
+ * Cmd present means it is not AltGr: no layout produces a character from ⌘ plus Ctrl+Alt.
+ */
+export function chordMayBeAltGraph(chord: string): boolean {
+  const { mods } = parseChord(chord);
+  if (mods.includes("cmd")) return false;
+  return mods.includes("ctrl") && mods.includes("alt");
+}
+
+/**
+ * True when a chord can be dispatched from inside a text field without eating typed text.
+ *
+ * The two shapes App's own typing guard already allows, named once so the registry's
+ * `firesWhileTyping` rule and its readers cannot drift apart: ⌘/⌃ is unambiguous
+ * mid-sentence, a function key produces no character. Anything else may just be typing.
+ *
+ * A command modifier is necessary and NOT sufficient, which is the part worth stating: ⌘V
+ * carries one and is Paste. An action dispatched by the field would match it, call
+ * `preventDefault`, and the paste would simply never happen - a broken clipboard in the one
+ * box people paste into most, with a shortcut list that looked perfectly valid. So the
+ * editing commands are excluded here rather than in the component, because every reader of
+ * this predicate wants the same answer.
+ *
+ * Scoped to `firesWhileTyping` actions through `typingUnsafeChordReason`, so this does not
+ * touch ⌃C for Interrupt: App dispatches that one itself, behind its own typing guard.
+ */
+export function chordSurvivesTyping(chord: string): boolean {
+  if (chordEditsText(chord)) return false;
+  if (chordMayBeAltGraph(chord)) return false;
+  return chordHasCommandModifier(chord) || chordUsesFunctionKey(chord);
+}
+
+/**
+ * Why a chord cannot be bound to THIS action, or null when it can. Distinct from
+ * `reservedChordReason`, which is about the chord alone: ⌃G and `z` are both bindable, and
+ * only one can go to an action that fires while the cursor is in a message.
+ */
+export function typingUnsafeChordReason(id: ActionId, chord: string): string | null {
+  if (!ACTION_BY_ID.get(id)?.firesWhileTyping) return null;
+  if (chordSurvivesTyping(chord)) return null;
+  // Named apart from the generic refusal: told that ⌘V "would be typed into the message",
+  // an operator would reasonably try ⌘C next and be refused again for a reason the sentence
+  // never mentioned.
+  if (chordEditsText(chord)) {
+    return `${formatChord(chord)} is a text-editing command. This shortcut fires from inside the send box, so binding it here would take copy, paste, cut, select all, undo or redo away from that box.`;
+  }
+  // Ahead of the generic sentence for the same reason: "would be typed into the message" is
+  // true of ⌃⌥Q and says nothing about why ⌃Q and ⌥Q are both fine on their own.
+  if (chordMayBeAltGraph(chord)) {
+    return `${formatChord(chord)} is how Windows and Linux report AltGr, which types a character on many layouts. This shortcut fires from inside the send box, so that character would open the editor instead of being typed.`;
+  }
+  return `${formatChord(chord)} would be typed into the message. This shortcut fires from inside the send box, so it needs ⌘ or ⌃ with a key, or a function key.`;
+}
+
+/**
  * Whether a keypress must be handed back to the browser because it is a copy in progress.
  *
  * The interrupt chord defaults to ⌃C, which on Windows and Linux - and so in the Electron
@@ -615,7 +765,13 @@ function sanitize(raw: Record<string, string>): Overrides {
   const clean: Overrides = {};
   for (const a of ACTIONS) {
     const v = raw[a.id];
-    if (typeof v === "string" && v && v !== a.defaultBinding && !isReservedChord(v)) {
+    if (
+      typeof v === "string"
+      && v
+      && v !== a.defaultBinding
+      && !isReservedChord(v)
+      && !typingUnsafeChordReason(a.id, v)
+    ) {
       clean[a.id] = v;
     }
   }
@@ -743,6 +899,10 @@ export function bindingValidationError(
   if (reserved) {
     return `${formatChord(chord)} is reserved for ${reserved}.`;
   }
+  // Ahead of the conflict check: told only that `z` collides with nothing, an operator
+  // would simply try `x`.
+  const unsafe = typingUnsafeChordReason(id, chord);
+  if (unsafe) return unsafe;
   const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
   if (!owner) return null;
   return `${formatChord(chord)} is already bound to ${ACTION_BY_ID.get(owner)?.label ?? owner}.`;

@@ -75,6 +75,10 @@ export const OVERLAY_IDS = {
   // app. Registered like any other confirm: while one is up the fleet's `k` and `r` must not
   // reach the session behind it, and a native sheet was invisible to that guard entirely.
   updateDialog: "update-dialog",
+  // The send box's full-size editor. Registered like any other modal even though it opens
+  // FROM a text field: the field it opens from is behind it, so while it is up the fleet's
+  // `k` and `r` must reach neither that field nor the session it belongs to.
+  composerEditor: "composer-editor",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
@@ -281,6 +285,29 @@ export function Overlay({
     if (!isTop) return;
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") {
+        // Mark it consumed BEFORE anything closes, and whether or not this overlay was
+        // willing to close: the press was addressed to the topmost layer, and a sealed one
+        // answering "no" is still the layer that answered.
+        //
+        // App's keydown handler is the reader. It listens on `window` too and stands down
+        // on `overlaysRef.current.anyOpen`, which is correct only while this overlay is
+        // still registered - and by the time App's listener runs, it may not be. Both
+        // listeners sit on the same target, so they fire in registration order, and App's
+        // effect re-subscribes whenever its deps move (`visible`, `selected`, and a dozen
+        // more). One `session_upsert` arriving while an overlay is open therefore moves
+        // App's listener BEHIND this one; this handler then closes the overlay, React
+        // flushes that synchronously for a discrete event, and App wakes to a registry
+        // that says nothing is open and peels back a layer of its own - deselecting the
+        // session behind the dialog the operator was reading.
+        //
+        // `preventDefault` rather than `stopImmediatePropagation` because App already
+        // honours it (`if (e.defaultPrevented) return`), which is this codebase's existing
+        // "somebody owned this keystroke" signal - the inline diff's file list uses the
+        // same one. Ordering then stops mattering in either direction.
+        //
+        // Not reachable for a non-top overlay: that case returns above, so a stacked
+        // dialog underneath never consumes a press meant for the layer above it.
+        e.preventDefault();
         if (!closable) return;
         // Closing can unregister this overlay before another window listener runs.
         // Mark the press as handled before App can act on the newly exposed session.

@@ -187,12 +187,25 @@ test("session Foreman pane keeps its place when the guide closes and links to th
   await capture(dashboard, "session-info-button");
   await info.click();
   await expectGuide(dashboard);
+  // A live session update can re-register the app's keyboard listener after the
+  // guide's listener. Escape must still belong only to the guide in that order.
+  const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as { id: string }[];
+  expect(sessions).toHaveLength(1);
+  const renamed = await fetch(`${daemon.baseURL}/api/sessions/${sessions[0]!.id}/rename`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Updated while reading Foreman guide" }),
+  });
+  expect(renamed.ok).toBe(true);
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row"))
+    .toContainText("Updated while reading Foreman guide");
   await capture(dashboard, "session-guide");
   // Neither the drawer nor the selected conversation should receive this Escape.
   await dashboard.keyboard.press("Escape");
   await expect(guide(dashboard)).toHaveCount(0);
   await expect(drawer).toBeVisible();
   await expect(info).toBeFocused();
+  await capture(dashboard, "session-guide-dismissed");
   await info.click();
   await profileLink(guide(dashboard)).click();
   await expect(dashboard).toHaveURL(/#\/library\/personas\/foreman$/);

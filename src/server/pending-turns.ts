@@ -457,28 +457,24 @@ export class PendingTurnManager {
     if (drainBoundary) {
       if (drainBoundary.sessionId !== session.id || session.state === "exited") {
         this.terminalDrainBoundaries.delete(key);
-      } else if (
-        session.stateConfirmed &&
-        session.state === "working" &&
-        (session.lastActivity ?? 0) >= drainBoundary.writeBoundaryAt
-      ) {
-        const observedAt = session.lastActivity ?? this.deps.now();
-        drainBoundary.activityObservedAt = Math.max(
-          drainBoundary.activityObservedAt ?? drainBoundary.writeBoundaryAt,
-          observedAt,
-        );
-        this.cancelIdleTimer(key);
-        return;
-      } else if (
-        drainBoundary.activityObservedAt !== null &&
-        session.stateConfirmed &&
-        session.state === "idle" &&
-        (session.lastActivity ?? 0) >= drainBoundary.activityObservedAt
-      ) {
-        this.terminalDrainBoundaries.delete(key);
       } else {
-        this.cancelIdleTimer(key);
-        return;
+        const observedAt = this.pickupActivityAt(session, drainBoundary.writeBoundaryAt);
+        if (observedAt !== null) {
+          drainBoundary.activityObservedAt = Math.max(
+            drainBoundary.activityObservedAt ?? drainBoundary.writeBoundaryAt, observedAt,
+          );
+        }
+        // One passive read can contain both the start and completion of a fast turn.
+        if (
+          drainBoundary.activityObservedAt !== null && session.stateConfirmed &&
+          session.state === "idle" &&
+          (session.lastActivity ?? 0) >= drainBoundary.activityObservedAt
+        ) {
+          this.terminalDrainBoundaries.delete(key);
+        } else {
+          this.cancelIdleTimer(key);
+          return;
+        }
       }
     }
     const candidate = this.pickup.get(key);
@@ -486,15 +482,9 @@ export class PendingTurnManager {
       candidate.ownershipUncertain = true;
       return;
     }
-    if (
-      candidate &&
-      candidate.sessionId === session.id &&
-      session.state === "working" &&
-      session.stateConfirmed &&
-      (session.lastActivity ?? 0) >= candidate.boundaryAt
-    ) {
+    const observedAt = candidate ? this.pickupActivityAt(session, candidate.boundaryAt) : null;
+    if (candidate && candidate.sessionId === session.id && observedAt !== null) {
       candidate.pickupObserved = true;
-      const observedAt = session.lastActivity ?? this.deps.now();
       candidate.pickupObservedAt = Math.max(
         candidate.pickupObservedAt ?? candidate.boundaryAt,
         observedAt,
@@ -510,6 +500,15 @@ export class PendingTurnManager {
       return;
     }
     this.scheduleDrain(key);
+  }
+
+  private pickupActivityAt(session: Session, boundaryAt: number): number | null {
+    if (!session.stateConfirmed) return null;
+    const startedAt = this.registry.passiveTurnStartedAt(session);
+    if (startedAt !== null && startedAt >= boundaryAt) return startedAt;
+    return session.state === "working" && (session.lastActivity ?? 0) >= boundaryAt
+      ? session.lastActivity
+      : null;
   }
 
   private moveConversationKey(sessionId: string, fromKey: string, toKey: string): void {
@@ -691,8 +690,9 @@ export class PendingTurnManager {
       return;
     }
     this.draining.add(key);
+    let turn: PendingTurn | null = null;
     try {
-      const turn = claimNextPendingTurn(key, this.deps.now(), next.turn);
+      turn = claimNextPendingTurn(key, this.deps.now(), next.turn);
       if (!turn) return;
       this.registry.refreshPendingTurns(key);
       if (next.action === "interrupt") {
@@ -708,13 +708,14 @@ export class PendingTurnManager {
       else await this.deliverTerminal(session, turn);
     } finally {
       this.draining.delete(key);
-      // A steer may leave state unchanged, or a new turn may report working before the
-      // handoff finishes. Wake eligible input without depending on another vendor event.
-      // Ordinary next-turn rows still require a new confirmed idle boundary.
+      // Steering may leave state unchanged, and a fast terminal turn may finish before
+      // injection returns. Wake eligible input after retirement without another event;
+      // a refused or uncertain delivery must never become a retry loop.
       const current = this.registry.sessionForNoteKey(key);
       const following = current ? this.nextDelivery(current) : null;
-      if (current && !current.pendingTurns.some((row) => row.id === next.turn.id) &&
-          following && (next.action === "steer" || following.action !== "idle")) {
+      const retiredId = turn?.id;
+      if (retiredId && current && !current.pendingTurns.some((row) => row.id === retiredId) &&
+          following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
       }
     }

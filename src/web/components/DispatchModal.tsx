@@ -2475,6 +2475,7 @@ function DispatchModal({
     <Overlay
       id={OVERLAY_IDS.dispatch}
       onClose={onClose}
+      ignoreBackdropDrag
       // Ensemble alone widens the dialog: a candidate lane holds four controls on one
       // line at 760 and clips at Single's width.
       className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}${

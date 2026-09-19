@@ -25521,15 +25521,23 @@ span.line-run-prov {
   min-width: 4.2em;
   text-align: right;
 }
-/* The jump keycap, first on the state line and so left of the state word.
-   Deliberately NOT restyled from the shared `.kb-hint` at rest: the whole gesture is "read the
-   row, press the number", and a key that had to be hovered to be read would be one you would
-   rather have clicked past. Brighter on the row under the cursor or on the selection, which is
-   the row the key is about to open - the same pairing the Board card draws. */
-.rail-row:hover .rail-state-line .kb-hint,
-.rail-row.selected .rail-state-line .kb-hint {
+/* Readable at rest, since the gesture is "read the row, press the number". A fixed hue and
+   never the row's `--tone-color`: the key belongs to the POSITION, so it must not change
+   colour when its row changes state. */
+.rail-state-line .kb-hint {
+  font-size: 10px;
+  font-weight: 700;
   color: var(--fg);
   border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
+}
+/* The row under the cursor or on the selection is the row this key is about to open, so it
+   gains a tint and a stronger edge. The COLOUR is already at full strength above, which is
+   the difference from the Board card: a card's keycap has a corner of its own to sit in, a
+   rail row's sits in a gap at the app's smallest type and has to be read at rest. */
+.rail-row:hover .rail-state-line .kb-hint,
+.rail-row.selected .rail-state-line .kb-hint {
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+  border-color: color-mix(in oklab, var(--fg) 58%, var(--border));
 }
 /* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
    recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */

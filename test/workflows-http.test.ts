@@ -4,12 +4,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import type { WorkflowRun, WorkflowRunDetail, WorkflowRunPage } from "../src/shared/workflow.ts";
+import { runNextMove } from "../src/web/workflows/run-actions.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflows-http-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
@@ -66,6 +69,111 @@ test("every workflow mutation uses shared parseBody schemas", async () => {
   assert.equal((await request(`/api/workflows/${valid.workflow.id}`, { method: "PATCH", body: JSON.stringify({ expectedDraftRevision: 1 }) })).status, 400);
   assert.equal((await request(`/api/workflows/${valid.workflow.id}/publish`, { method: "POST", body: "{}" })).status, 400);
   assert.equal((await request(`/api/workflows/${valid.workflow.id}`, { method: "DELETE", body: "{}" })).status, 400);
+});
+
+test("HTTP recovery capabilities track accepted retries, grants and cancellations", async () => {
+  const { request, store, registry } = fixture();
+  registry.applyDiscovery([{
+    syntheticId: "recovery-session", agent: "codex", name: "Recovery", nameSource: "process",
+    cwd: "/repo", gitBranch: "feature", gitRoot: "/repo", repoRoot: "/repo",
+    pid: 1, tty: "ttys-recovery", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
+  const valid = await seedValid(request);
+  const published = await (await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST", body: JSON.stringify({ expectedDraftRevision: 1 }),
+  })).json() as { version: { id: string } };
+  const binding = store.insertBinding({
+    id: "recovery-binding", workflowVersionId: published.version.id,
+    noteKey: noteKeyFor(registry.getSession("recovery-session")!),
+    sessionId: "recovery-session", sessionAgent: "codex", sessionName: "Recovery",
+    sessionCwd: "/repo", sessionRepoRoot: "/repo", triggerMode: "manual", deliveryMode: "preview",
+    maxRepairRounds: 5, now: 1,
+  });
+  store.createInitialSubmission({
+    id: "recovery-run", binding, intent: FIXTURE_RUN_INTENT,
+    triggerSource: "manual", triggerKey: "recovery-initial", now: 2,
+  }, {
+    id: "recovery-submission", triggerSource: "manual", triggerKey: "recovery-initial",
+    context: {}, evidence: {}, now: 2,
+  });
+  store.insertAttempt({
+    id: "superseded-error", submissionId: "recovery-submission", nodeId: "judge",
+    attempt: 1, state: "error", persona: null, inputFingerprint: "recovery-fingerprint",
+    error: "earlier provider failure", now: 2,
+  });
+  store.insertAttempt({
+    id: "another-error", submissionId: "recovery-submission", nodeId: "another-node",
+    attempt: 1, state: "error", persona: null, inputFingerprint: "another-fingerprint",
+    error: "another provider failure", now: 3,
+  });
+  store.insertAttempt({
+    id: "recovery-attempt", submissionId: "recovery-submission", nodeId: "judge",
+    attempt: 2, state: "error", persona: null, inputFingerprint: "recovery-fingerprint",
+    error: "provider unavailable", now: 4,
+  });
+  // A later historical error on another node must not hide the live retry target.
+  store.insertAttempt({
+    id: "resolved-error", submissionId: "recovery-submission", nodeId: "resolved-node",
+    attempt: 1, state: "error", persona: null, inputFingerprint: "resolved", now: 5,
+  });
+  store.insertAttempt({
+    id: "resolved-success", submissionId: "recovery-submission", nodeId: "resolved-node",
+    attempt: 2, state: "completed", persona: null, inputFingerprint: "resolved", now: 6,
+  });
+  store.setSubmissionState("recovery-submission", "failed", 7);
+  store.setRunState("recovery-run", "blocked", "infrastructure_error", null, 7);
+  const read = async () => await (await request("/api/workflow-runs/recovery-run")).json() as WorkflowRunDetail;
+  const detail = await read();
+  assert.equal(runNextMove(detail)?.kind, "retry");
+  const page = await (await request("/api/workflow-runs")).json() as WorkflowRunPage;
+  assert.deepEqual(page.items[0]!.recovery, detail.summary.recovery);
+  const exported = await (await request("/api/workflow-runs/recovery-run/export")).json() as { data: WorkflowRunDetail };
+  assert.deepEqual(exported.data.run.recovery, detail.summary.recovery);
+  const activeRefusal = await request("/api/workflow-bindings/recovery-binding/submit", {
+    method: "POST", body: JSON.stringify({ requestId: "active-recovery" }),
+  });
+  assert.equal(activeRefusal.status, 409);
+  const refused = await activeRefusal.json() as { code: string; current: WorkflowRun };
+  assert.equal(refused.code, "workflow_run_active");
+  assert.equal(refused.current.id, detail.run.id);
+  assert.deepEqual(refused.current.recovery, detail.summary.recovery);
+  for (const nodeAttemptId of ["resolved-error", "superseded-error"]) {
+    const staleRetry = await request("/api/workflow-runs/recovery-run/retry", {
+      method: "POST", body: JSON.stringify({ requestId: `retry-${nodeAttemptId}`, nodeAttemptId }),
+    });
+    assert.equal(staleRetry.status, 409, `historical attempt ${nodeAttemptId} must not authorize a retry`);
+    assert.equal(store.listAttempts("recovery-submission").length, 5);
+    assert.deepEqual((await read()).summary.recovery, detail.summary.recovery);
+  }
+  const retry = await request("/api/workflow-runs/recovery-run/retry", {
+    method: "POST", body: JSON.stringify({ requestId: "retry-recovery" }),
+  });
+  assert.equal(retry.status, 200);
+  const retried = await retry.json() as { run: WorkflowRun };
+  assert.ok(retried.run.recovery);
+  assert.ok(!retried.run.recovery.operations.includes("retry"));
+  assert.deepEqual(store.listEvents("recovery-run").find((event) =>
+    event.kind === "manual_infrastructure_retry")?.payload, {
+    requestId: "retry-recovery", nodeAttemptId: "recovery-attempt",
+    reactivatedNodeAttemptIds: ["recovery-attempt", "another-error"],
+  });
+
+  db.prepare("UPDATE workflow_submissions SET round = 6 WHERE id = 'recovery-submission'").run();
+  store.blockForRoundLimit(store.getRun("recovery-run")!, 6);
+  assert.equal(runNextMove(await read())?.kind, "grant-rounds");
+  const granted = await request("/api/workflow-runs/recovery-run/grant-rounds", {
+    method: "POST", body: JSON.stringify({ requestId: "grant-recovery", rounds: 2 }),
+  });
+  assert.equal(granted.status, 200);
+  assert.ok((await granted.json() as { run: WorkflowRun }).run.recovery);
+  assert.ok((await read()).summary.recovery?.operations.includes("cancel"));
+  const cancelled = await request("/api/workflow-runs/recovery-run/cancel", {
+    method: "POST", body: JSON.stringify({ requestId: "cancel-recovery" }),
+  });
+  assert.equal(cancelled.status, 200);
+  const cancelledRun = (await cancelled.json() as { run: WorkflowRun }).run;
+  assert.equal(cancelledRun.status, "cancelled");
+  assert.ok(!cancelledRun.recovery!.operations.includes("cancel"));
 });
 
 test("evidence readiness overrides require explicit risk acknowledgement", async () => {

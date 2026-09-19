@@ -848,6 +848,7 @@ test("run detail carries display provenance and never the opaque idempotency key
     "maxRepairRounds",
     "noteKey",
     "phase",
+    "recovery",
     "refusedDeliveryCount",
     // The repository this run reviews, and the third field on this list paid for
     // deliberately. One workflow run is one repository, and a multi-repo task's session

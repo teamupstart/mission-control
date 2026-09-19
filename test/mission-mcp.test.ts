@@ -24,6 +24,9 @@ import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-"));
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
+// Resolve a known nondefault port before imports, independent of the workflow's port.
+const daemonPort = 17317;
+process.env.MISSION_PORT = String(daemonPort);
 
 // A stand-in for the built bundle: only its EXISTENCE is checked, and pointing at a real
 // file keeps this test off `npm run build`.
@@ -48,7 +51,7 @@ const {
 } = await import("../src/server/mission-mcp.ts");
 const { PRODUCT_ISSUE_CLIENT_ENV } = await import("../src/shared/product-issues.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
-const { mcpServerPath } = await import("../src/server/config.ts");
+const { mcpServerPath, PORT } = await import("../src/server/config.ts");
 const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts");
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { CODEX_HOOK_EVENTS } = await import("../src/server/harness/codex/hooks.ts");
@@ -80,6 +83,7 @@ const AWKWARD = {
 // ---- the descriptor ------------------------------------------------------------------
 
 test("the descriptor points at the ONE resolved server path with an absolute runtime", async () => {
+  assert.equal(PORT, daemonPort);
   const d = await missionMcpDescriptor();
   assert.ok(d, "the bundle exists, so there is a way to launch it");
   assert.equal(d.serverName, "mission-control");
@@ -91,7 +95,7 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   );
   assert.notEqual(d.env.MISSION_HOME, join(home, "state"));
   assert.ok(statSync(d.env.MISSION_HOME!).isDirectory(), "the MCP child receives a disposable state home");
-  assert.equal(d.env.MISSION_PORT, "7317");
+  assert.equal(d.env.MISSION_PORT, String(daemonPort));
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);

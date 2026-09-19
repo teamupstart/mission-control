@@ -99,7 +99,8 @@ requires stable Herdr 0.8.2 or newer on protocol 20 or newer, and currently runs
 Linux. It uses the default local Herdr server only, and `HERDR_BIN` can point at a non-standard
 installation.
 Mission Control can create, discover, write, safely paste into, capture, focus, rename, close,
-detach from, and reattach to Herdr workspaces. See [Harnesses and terminal
+detach from, and reattach to Herdr workspaces. Discovery also recognizes an agent that replaces
+its pane's shell with `exec`, keeping Focus and input available. See [Harnesses and terminal
 backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
 
 Read more in [Sessions and conversations](docs/sessions.md) and

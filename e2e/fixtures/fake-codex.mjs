@@ -152,12 +152,14 @@ function recordResumePhase(phase) {
 /**
  * The rows `model/list` answers with, shaped as codex-cli 0.146.0 returns them.
  *
- * Deliberately the real six plus a hidden one. `gpt-5.4` and `gpt-5.4-mini` are the two
- * models a live Codex offers that Mission Control's shipped catalog does not, which is the
- * gap live discovery exists to close - so a spec that finds them in the picker has proved
- * the list came from here rather than from `MODEL_CATALOG`.
+ * Deliberately includes the current default plus two discovered-only fixtures and a hidden
+ * row. `gpt-5.4` and `gpt-5.4-mini` are the two
+ * models the discovery fixture offers that Mission Control's shipped catalog does not. That
+ * is the gap live discovery exists to close, so a spec that finds them in the picker has
+ * proved the list came from here rather than from `MODEL_CATALOG`.
  */
 const CATALOG_ROWS = [
+  ["gpt-6-astra", "GPT-6-Astra", "Our most capable model for complex, demanding work.", false],
   ["gpt-5.6-sol", "GPT-5.6-Sol", "Reliable agentic workhorse for everyday tasks.", false],
   ["gpt-5.6-terra", "GPT-5.6-Terra", "Balanced agentic coding model.", false],
   ["gpt-5.6-luna", "GPT-5.6-Luna", "Fast and affordable agentic coding model.", false],
@@ -184,7 +186,7 @@ const CATALOG_ROWS = [
   additionalSpeedTiers: [],
   serviceTiers: [],
   defaultServiceTier: null,
-  isDefault: id === "gpt-5.6-sol",
+  isDefault: id === "gpt-6-astra",
 }));
 
 /**

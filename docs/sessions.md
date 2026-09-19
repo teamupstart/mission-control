@@ -347,6 +347,11 @@ written returns the row to `queued`. If text may have landed but pickup cannot b
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
 
+For Codex terminal sessions, passive rollout reads retain the start of the newest turn even
+when it finishes between reads. A start at or after the message's write boundary confirms pickup;
+the matching idle completion releases the next queued message. A completion without its start,
+or a start from before delivery, does not confirm the message.
+
 The outbox is stored in SQLite under the native conversation id when Mission Control knows
 it, and otherwise under the discovered session id. It survives browser and daemon restarts.
 A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and
@@ -1739,7 +1744,7 @@ is exactly when the record starts being interesting.
 
 Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
 to a parent by cwd or timing because that relationship is not proven. The standard-price
-snapshot includes `gpt-6-astra`, all shipped Codex choices, and older OpenAI text/code
+snapshot includes all shipped Codex choices, including `gpt-6-astra`, and older OpenAI text/code
 models (GPT-5, GPT-4.1, GPT-4o, and o-series). The exact supported ids and rates live in
 `src/server/harness/codex/pricing.ts`, verified against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and the linked model reference pages on September 11, 2026. Astra includes cached input,

@@ -1,3 +1,4 @@
+import { projectWorkflowRecovery } from "../src/server/workflows/recovery.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -65,10 +66,22 @@ import { mkSchedule } from "./helpers/schedule-fixture.ts";
  * createElement, not JSX, because the runner's glob only matches .test.ts.
  */
 
-const run = (over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary => ({
-  ...LADDER_SUMMARY,
-  ...over,
-});
+const run = (over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary => {
+  const summary = { ...LADDER_SUMMARY, ...over };
+  summary.recovery = projectWorkflowRecovery({
+    status: summary.status, phase: summary.phase, bindingId: summary.bindingId,
+    bindingState: summary.sessionId ? "active" : "orphaned", sessionId: summary.sessionId,
+    external: Boolean(summary.externalSource), round: summary.round, maxRepairRounds: summary.maxRepairRounds,
+    latest: { mode: "full_workflow", status: "failed", triggerSource: "manual", triggerKey: "request" },
+    attempts: [{ state: "error" }], completionPolicy: { kind: "none" }, bindingHasOtherRun: false,
+    gate: summary.status === "waiting_for_new_head" ? {
+      prKey: "owner/repo#1", prUrl: null, targetHeadSha: null, failedHeadSha: null,
+      enteredAt: 1, lastObservedAt: null, observedHeadSha: null, reviewPosture: null,
+      waitReason: "findings", findingFingerprints: [],
+    } : null,
+  });
+  return summary;
+};
 
 const reviewDrawer = (
   runs: WorkflowRunSummary[],

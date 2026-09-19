@@ -2,6 +2,10 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import type { WorkflowRunDetail } from "../../src/shared/workflow.ts";
+import { mkdirSync } from "node:fs";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
  * The one derived next move, driven the way an operator drives it.
@@ -127,6 +131,65 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
   }
   return runId;
 }
+
+test("recovery controls follow daemon capabilities and fail closed for an unknown phase", async ({ dashboard, daemon }) => {
+  const runId = await seedFailedRun(dashboard, daemon);
+  const url = `${daemon.baseURL}/api/workflow-runs/${runId}`;
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  await expect(header.getByRole("button", { name: "Preview fresh evidence" })).toBeVisible();
+  await expect(header.getByRole("button", { name: "Cancel run" })).toBeVisible();
+
+  // Simulate a newer daemon withdrawing permissions without changing its explanatory phase.
+  await dashboard.route(url, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json() as WorkflowRunDetail;
+    data.summary.recovery = { ...data.summary.recovery!, operations: [], primary: null, triage: null };
+    data.run.recovery = data.summary.recovery;
+    await route.fulfill({ response, json: data });
+  });
+  await dashboard.reload();
+  await expect(header.getByRole("heading", { name: "E2E next move" })).toBeVisible();
+  await expect(header.locator("button.btn-primary")).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "Cancel run" })).toHaveCount(0);
+
+  await dashboard.unrouteAll({ behavior: "wait" });
+  // A new explanatory phase must not withdraw an operation explicitly offered by that daemon.
+  await dashboard.route(url, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json() as WorkflowRunDetail;
+    data.run.currentPhase = data.summary.phase = "a_new_daemon_phase";
+    await route.fulfill({ response, json: data });
+  });
+  await dashboard.reload();
+  await expect(header.getByRole("button", { name: "Preview fresh evidence" })).toBeVisible();
+  // SSE can request another detail while an assertion passes. Drain its handler before reload.
+  await dashboard.unrouteAll({ behavior: "wait" });
+
+  // Now the stored phase itself is unknown to the daemon. Its projection permits cancellation only.
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE workflow_runs SET status = 'blocked', current_phase = 'a_new_daemon_phase' WHERE id = ?",
+  ).run(runId));
+  await dashboard.reload();
+  await expect(header.getByText("This daemon does not recognize the run's phase.")).toBeVisible();
+  await expect(header.locator("button.btn-primary")).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "Cancel run" })).toBeVisible();
+  const read = await api<WorkflowRunDetail>(daemon, `/api/workflow-runs/${runId}`);
+  expect(read.summary.recovery?.operations).toEqual(["cancel"]);
+  expect(read.run.recovery).toEqual(read.summary.recovery);
+  const refused = await fetch(`${url}/resubmit`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ requestId: "unknown-phase-resubmit" }),
+  });
+  expect(refused.status).toBe(409);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const destination = artifactsDir("workflow-recovery-capabilities");
+    mkdirSync(destination, { recursive: true });
+    await header.screenshot({ path: `${destination}unknown-phase.png` });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/workflow-recovery-capabilities/unknown-phase.png");
+  }
+});
 
 test("the header offers one derived move, and it becomes the recovery for its own refusal", async ({
   dashboard,

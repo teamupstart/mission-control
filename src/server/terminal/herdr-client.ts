@@ -1,6 +1,8 @@
 import { spawn, type SpawnOptions } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
+import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 
@@ -221,6 +223,19 @@ const defaultDeps: HerdrClientDeps = {
 
 function failure<T>(error: string, outcomeUnknown = false, code?: string): HerdrResult<T> {
   return code ? { ok: false, error, outcomeUnknown, code } : { ok: false, error, outcomeUnknown };
+}
+
+/** The supported default server is local; relative paths have no shared resolution base. */
+function sameLocalCwd(requested: string, reported: string | null | undefined): boolean {
+  if (reported === requested) return true;
+  if (!reported || !isAbsolute(requested) || !isAbsolute(reported)) return false;
+  try {
+    // Herdr can report /private/var for a requested /var path, or resolve another symlink.
+    // Both paths must resolve: a missing/inaccessible path cannot establish equivalence.
+    return realpathSync(requested) === realpathSync(reported);
+  } catch {
+    return false;
+  }
 }
 
 export function asTerminal(result: HerdrResult<unknown>): TerminalResult {
@@ -862,7 +877,7 @@ export function createHerdrClient(
       params: { label: spec.label, cwd: spec.cwd, focus: spec.focus },
       schema: WorkspaceCreatedSchema.refine(
         ({ workspace, root_pane: rootPane }) =>
-          workspace.label === spec.label && rootPane.cwd === spec.cwd,
+          workspace.label === spec.label && sameLocalCwd(spec.cwd, rootPane.cwd),
         { message: "created workspace label or cwd did not match the request" },
       ),
       mutation: true,

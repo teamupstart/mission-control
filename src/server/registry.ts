@@ -109,6 +109,7 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
+import type { TerminalEnumeration } from "./terminal/enumerate.ts";
 import type { SpawnedHome } from "./terminal/home.ts";
 import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
@@ -989,6 +990,8 @@ export class Registry extends EventEmitter {
   private discoveredIdentity = new Map<string, { agentSessionId: string | null; transcriptPath: string | null }>();
   /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
   private sweptSessions = false;
+  /** Latest completed discovery input, also used when a task refreshes its session. */
+  private terminalInventory: readonly TerminalEnumeration[] = [];
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
   private inspections = new Map<string, InspectorInspection>();
   /**
@@ -2210,7 +2213,8 @@ export class Registry extends EventEmitter {
 
   // ---- passive discovery ----
 
-  applyDiscovery(discovered: DiscoveredSession[]): void {
+  applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
+    this.terminalInventory = terminals;
     const now = Date.now();
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
@@ -7248,6 +7252,15 @@ export class Registry extends EventEmitter {
     const paneId = task.terminalResourceId!.slice(`emulator:${backend}:`.length);
     const target = EMULATORS[backend].restoreTarget?.(paneId);
     if (!target) return observed;
+    const inventory = this.terminalInventory.find((entry) => entry.kind === "emulator" && entry.backend === backend);
+    if (inventory?.kind === "emulator" && inventory.panes !== null) {
+      const pane = inventory.panes.find((entry) => entry.paneId === paneId);
+      if (!pane) return observed.filter((h) => h.kind !== "emulator" || h.backend !== backend);
+      return [...observed.filter((h) => h.kind !== "emulator"), {
+        kind: "emulator", backend, paneId: pane.paneId, tabId: pane.tabId,
+        windowId: pane.windowId, tabTitle: pane.tabTitle, isActive: pane.isActive,
+      }];
+    }
     if (observed.some((h) => h.kind === "emulator" && h.backend === backend && h.paneId === paneId)) return observed;
     return [...observed.filter((h) => h.kind !== "emulator"), {
       kind: "emulator", backend, ...target, windowId: "", tabTitle: "", isActive: false,

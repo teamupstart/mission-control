@@ -219,7 +219,9 @@ and [harness-change contract](agent-guides/change-contracts.md#harness-changes).
 Every terminal adapter's `list` returns `TerminalInventory<T>`: an array for a completed
 inventory, including `[]` for confirmed emptiness, or `null` when the inventory is unavailable
 or malformed. `readInventory` preserves that distinction when an adapter throws. Discovery
-can omit unknown panes for that tick; home liveness and cleanup must retain uncertainty.
+passes the inventory snapshot alongside correlated sessions to Registry, including unavailable
+and empty results. Registry uses that same snapshot when a task refreshes its session.
+Home liveness and cleanup retain uncertainty.
 `homeAlive` returns `null` on unavailable inventory and only a completed inventory can
 establish that a recorded resource is absent. Legacy emulator records without an exact
 resource cannot establish absence through a mutable title. Unknown observations do not
@@ -237,8 +239,11 @@ Malformed proof is read as absent, and a new launch clears the previous binding.
 refresh and work-episode binding for dispatch, SDK handoff and explicit resume. It rechecks
 the task's state, session owner and recorded resource after verification before adopting.
 
-Registry restores an emulator handle only when that proof matches the bound session and
-recorded resource and the adapter declares `restoreTarget`. Ghostty and iTerm2 use stable
+Registry associates an enumerated emulator pane with its bound session by the proven UUID.
+A completed inventory that omits that UUID removes its handle. Without another usable handle,
+the composer is disabled and writes are refused even while the process survives. Unavailable or unobserved inventory
+allows restoration of the saved address, and only when the proof matches the bound session
+and recorded resource and the adapter declares `restoreTarget`. Ghostty and iTerm2 use stable
 UUID addresses; WezTerm declares this capability absent because its recyclable numeric IDs
 need incarnation policy. That policy and later backends' native verification remain in their
 own phases. No terminal ID encodings or append-only backend IDs change here.

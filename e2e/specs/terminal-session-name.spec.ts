@@ -106,6 +106,27 @@ test("a Ghostty dispatch keeps its task name through tab rewrites and daemon res
     await dashboard.screenshot({ path: "e2e/.artifacts/terminal-session-name/ghostty-dispatch-console.png" });
   }
 
+  // A completed empty inventory must retract the same address that a timeout retained.
+  // The process remains in discovery so this exercises reachability, not process eviction.
+  writeFileSync(`${statePath}.tmp`, JSON.stringify({ ...terminal, inventory: "absent" }));
+  renameSync(`${statePath}.tmp`, statePath);
+  await expect(dashboard.getByPlaceholder("No pane to send to")).toBeDisabled();
+  expect((await getSession())?.terminals).toEqual([]);
+  const absentNonce = "must-not-write-after-confirmed-absence";
+  const refused = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(running.sessionId!)}/send`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: absentNonce, submit: false, origin: "human" }),
+  });
+  expect(refused.ok).toBe(false);
+  expect(readFileSync(input, "utf8")).not.toContain(absentNonce);
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.screenshot({ path: "e2e/.artifacts/terminal-session-name/ghostty-confirmed-absence.png" });
+  }
+  writeFileSync(`${statePath}.tmp`, JSON.stringify(terminal));
+  renameSync(`${statePath}.tmp`, statePath);
+  await expect.poll(async () => (await getSession())?.terminals[0]?.paneId).toBe("fixture-surface");
+  await expect(dashboard.getByPlaceholder("No pane to send to")).toHaveCount(0);
+
   const layout = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }),
   });

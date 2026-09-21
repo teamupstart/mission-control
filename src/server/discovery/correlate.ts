@@ -410,7 +410,10 @@ export function correlate(
 }
 
 /** Convenience: gather + correlate in one call and add passive session annotations. */
-export async function discover(): Promise<DiscoveredSession[]> {
+export async function discover(): Promise<{
+  sessions: DiscoveredSession[];
+  terminals: TerminalEnumeration[];
+}> {
   const input = await gatherDiscoveryInput();
   const procCwds = await readProcCwds(representativeAgentPids(input.procs));
   const sessions = correlate(input, procCwds);
@@ -418,5 +421,5 @@ export async function discover(): Promise<DiscoveredSession[]> {
     annotateCodexRollouts(sessions),
     annotatePaneState(sessions),
   ]);
-  return sessions;
+  return { sessions, terminals: input.terminals };
 }

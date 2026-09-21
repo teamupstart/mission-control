@@ -9,11 +9,15 @@ import { join } from "node:path";
 import { belongsToLaunch, readLaunchProcess, LAUNCH_SCRIPT_FILE, LAUNCH_PID_FILE } from "../src/server/terminal/launch-process.ts";
 import type { Proc } from "../src/server/discovery/processes.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkTask, mkEmuHandle } from "./helpers/session-fixture.ts";
+import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
+import { canWriteTo, emulatorHandle } from "../src/shared/pane.ts";
+import { mkTask, mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-launch-identity-"));
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
+const { correlate } = await import("../src/server/discovery/correlate.ts");
+const { pollOnce } = await import("../src/server/discovery/poller.ts");
 const db = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -56,6 +60,63 @@ function discovered(id = "proc:ttys1:30:1000"): DiscoveredSession {
     cwd: "/fixture", gitRoot: null, repoRoot: null, gitBranch: null,
     pid: 30, tty: "ttys1", startedAt: 1000, terminals: [],
   };
+}
+
+test("completed inventory retracts a saved launch target through correlation and task refresh", () => {
+  for (const paneIds of [[], ["another-uuid"]]) {
+    const registry = new Registry();
+    const d = discovered(`proc:ttys1:30:${9000 + paneIds.length}`);
+    const task = mkTask({ id: `absent-launch-${paneIds.length}`, status: "running", sessionId: d.syntheticId,
+      homeBackend: "ghostty", terminalResourceId: "emulator:ghostty:absent-owned",
+      terminalLaunch: { resourceId: "emulator:ghostty:absent-owned", sessionId: d.syntheticId } });
+    registry.upsertTask(task);
+    registry.applyDiscovery([d]);
+    assert.equal(canWriteTo(registry.getSession(d.syntheticId)!), true);
+    const inventory: TerminalEnumeration[] = [{ kind: "emulator", backend: "ghostty", hostProcess: null,
+      panes: paneIds.map((paneId) => ({ paneId, tabId: "tab", windowId: "window", tabTitle: "unrelated",
+        windowTitle: "", isActive: true, tty: null, cwd: null })) }];
+    const sessions = correlate({ procs: [{ ...proc(30, 1, 9000 + paneIds.length), agent: "claude", agentNative: true }], terminals: inventory });
+    assert.equal(sessions[0]?.syntheticId, d.syntheticId);
+    registry.applyDiscovery(sessions, inventory);
+    assert.equal(canWriteTo(registry.getSession(d.syntheticId)!), false, "completed omission must disable writes");
+    registry.upsertTask({ ...task, homeName: "Edited task" });
+    assert.deepEqual(registry.getSession(d.syntheticId)?.terminals, [], "task refresh must not restore confirmed absence");
+    const restarted = new Registry();
+    restarted.applyDiscovery(sessions, inventory);
+    assert.deepEqual(restarted.getSession(d.syntheticId)?.terminals, [], "restart must honor completed inventory too");
+    const mux = mkMuxHandle();
+    registry.applyDiscovery([{ ...sessions[0]!, terminals: [mux] }], inventory);
+    assert.deepEqual(registry.getSession(d.syntheticId)?.terminals, [mux], "confirmed emulator absence preserves the inner multiplexer");
+    assert.equal(canWriteTo(registry.getSession(d.syntheticId)!), true);
+  }
+});
+
+for (const backend of ["ghostty", "iterm"] as const) {
+  test(`${backend} launch projection follows the poller's own backend inventory and recovers on presence`, async () => {
+    const registry = new Registry();
+    const d = discovered(`proc:inventory-${backend}:30:1000`);
+    const resourceId = `emulator:${backend}:inventory-owned`;
+    const task = mkTask({ id: `inventory-${backend}`, status: "running", sessionId: d.syntheticId,
+      homeBackend: backend, terminalResourceId: resourceId, terminalLaunch: { resourceId, sessionId: d.syntheticId } });
+    registry.upsertTask(task);
+    const pane = { paneId: "inventory-owned", tabId: "observed-tab", windowId: "observed-window",
+      tabTitle: "observed title", windowTitle: "", isActive: true, tty: null, cwd: null };
+    const poll = async (terminals: TerminalEnumeration[]) => {
+      await pollOnce(registry, async () => ({ sessions: [d], terminals }), () => {});
+      return registry.getSession(d.syntheticId)!;
+    };
+    const present: TerminalEnumeration = { kind: "emulator", backend, hostProcess: null, panes: [pane] };
+    assert.equal(emulatorHandle(await poll([present]))?.tabId, pane.tabId,
+      "positive UUID observation supplies its current handle even without a TTY join");
+    assert.equal((await poll([{ ...present, panes: null }])).terminals[0]?.paneId, pane.paneId);
+    const otherBackend = backend === "ghostty" ? "iterm" : "ghostty";
+    assert.equal((await poll([{ ...present, backend: otherBackend, panes: [] }])).terminals[0]?.paneId, pane.paneId,
+      "another backend's completed inventory cannot establish absence here");
+    assert.deepEqual((await poll([{ ...present, panes: [] }])).terminals, []);
+    registry.upsertTask({ ...task, homeName: "Refreshed" });
+    assert.deepEqual(registry.getSession(d.syntheticId)?.terminals, []);
+    assert.equal(emulatorHandle(await poll([present]))?.tabId, pane.tabId, "a new positive observation restores reachability");
+  });
 }
 
 test("a bound launch UUID survives inventory loss and a fresh Registry without borrowing cwd", () => {

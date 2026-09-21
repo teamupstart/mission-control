@@ -1913,6 +1913,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               homeName: launched.homeName ?? name,
               homeBackend: backend,
               terminalResourceId: launched.terminalResourceId ?? null,
+              launchProcess: launched.launchProcess,
             };
           },
         }
@@ -3734,10 +3735,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             // the resumed CLI is working in. Null means "could not tell", and only `false`
             // reclaims - see `TerminalLaunchOutcome.homeName` and `homeAlive`.
             homeName: result.homeName ?? null,
-            homeBackend: result.homeName ? backend : null,
-            terminalResourceId: null,
+            homeBackend: backend,
+            terminalResourceId: result.terminalResourceId ?? null,
+            terminalLaunch: null,
             updatedAt: Date.now(),
           });
+          if (result.ok && result.terminalResourceId?.startsWith("emulator:")) {
+            const home = { homeName: result.homeName ?? session.name, homeBackend: backend,
+              terminalResourceId: result.terminalResourceId, launchProcess: result.launchProcess };
+            const observed = await defaultHandoffDeps.waitForSessionAtCwd(workspaceRoot, 30_000);
+            if (observed) await registry.adoptTerminalLaunch(task.id, home, observed);
+          }
         }
       } else if (!result.ok) {
         agentResumeClaims.delete(session.id);

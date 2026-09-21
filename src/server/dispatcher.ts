@@ -1,3 +1,4 @@
+import { readLaunchProcess } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
@@ -50,7 +51,7 @@ import {
 } from "./telemetry/index.ts";
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
-import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type SpawnedHome } from "./terminal/home.ts";
+import { homeRecord, heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type SpawnedHome } from "./terminal/home.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -853,12 +854,20 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      this.patch(taskId, home);
+      this.patch(taskId, homeRecord(home));
       if (await this.abortIfSettled(taskId)) return;
 
-      const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
+      let discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
+      }
+      if (home.terminalResourceId?.startsWith("emulator:")) {
+        const adopted = await this.registry.adoptTerminalLaunch(taskId, home, discovered);
+        if (!adopted) {
+          throw new Error("could not verify the launched terminal's agent process; terminal preserved");
+        }
+        if (adopted.newlyBound) this.notifySessionBound(taskId);
+        discovered = this.requireLiveSession(adopted.session.id);
       }
       if (!this.registry.getTask(taskId)?.terminalResourceId) {
         this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
@@ -1534,7 +1543,7 @@ export class Dispatcher {
       command,
       args,
     );
-    this.patch(taskId, home);
+    this.patch(taskId, homeRecord(home));
     if (await this.abortIfSettled(taskId)) return;
 
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
@@ -2128,13 +2137,16 @@ export class Dispatcher {
     // restates the id it already had stays silent and the notification means "newly
     // bound" exactly once.
     if (cur.sessionId === null && typeof fields.sessionId === "string") {
-      // Never allowed to fail the launch. The listener renames a terminal home, which is
-      // cosmetic next to an agent that is already running with its worktree recorded.
-      try {
-        this.deps.onSessionBound?.(taskId);
-      } catch (err) {
-        console.error(`[dispatch] session-bound listener failed for ${taskId}:`, err);
-      }
+      this.notifySessionBound(taskId);
+    }
+  }
+
+  private notifySessionBound(taskId: string): void {
+    // Never let a cosmetic terminal rename fail an otherwise successful launch.
+    try {
+      this.deps.onSessionBound?.(taskId);
+    } catch (err) {
+      console.error(`[dispatch] session-bound listener failed for ${taskId}:`, err);
     }
   }
 }
@@ -2881,7 +2893,8 @@ export async function spawnUniquely(
   try {
     const first = await launchHome({ name, cwd, argv, sidePane: true }, undefined, terminalBackend);
     if (first.ok) {
-      return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId };
+      return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
+        launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
     }
     if (name === unique) throw new Error(first.error);
     const retry = await launchHome(
@@ -2890,7 +2903,8 @@ export async function spawnUniquely(
       terminalBackend,
     );
     if (retry.ok) {
-      return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId };
+      return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
+        launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
     }
     throw new Error(retry.error);
   } catch (error) {

@@ -1,7 +1,7 @@
 import type { Session } from "@shared/types.ts";
 import { resumeArgvFor, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
-import type { SpawnedHome } from "../terminal/home.ts";
+import { homeRecord, type SpawnedHome } from "../terminal/home.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 import { clearSdkSessionTask, restoreSdkSessionTask } from "./store.ts";
@@ -208,19 +208,12 @@ async function transfer(
         `${cwd} to continue the conversation yourself`,
     };
   }
-  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, ...home, updatedAt: Date.now() });
+  if (task) registry.upsertTask({ ...registry.getTask(task.id)!, ...homeRecord(home), updatedAt: Date.now() });
 
   // Rebind the task to whatever discovery finds in that checkout. Absence is not an error -
   // the home is open and the sweep will keep looking - so this reports what it got rather
   // than failing a handoff that has already happened.
-  const adopted = await deps.waitForSessionAtCwd(cwd, ADOPT_TIMEOUT_MS);
-  if (adopted && task && registry.getTask(task.id)?.sessionId === null) {
-    registry.upsertTask({
-      ...registry.getTask(task.id)!,
-      sessionId: adopted.id,
-      updatedAt: Date.now(),
-    });
-    registry.bindTaskToWorkEpisode(task.id, adopted.id);
-  }
-  return { ok: true, homeName: home.homeName, sessionId: adopted?.id ?? null };
+  const observed = await deps.waitForSessionAtCwd(cwd, ADOPT_TIMEOUT_MS);
+  const adopted = observed && await registry.adoptTerminalLaunch(task?.id ?? null, home, observed);
+  return { ok: true, homeName: home.homeName, sessionId: adopted?.session.id ?? null };
 }

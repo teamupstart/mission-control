@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { binDropEnv, binEnv, binUnsupportedReason, resolveBin } from "./bin.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import {
@@ -157,35 +158,25 @@ export function herdrMultiplexer(
     glyph: "▦",
     bin: HERDR_BIN,
 
-    // `[]` when the Herdr server is not running, cannot be reached, or answers with anything
-    // this adapter will not build a pane list from - the same contract tmux and cmux state in
-    // their own listers. Discovery sweeps every installed backend on a 1500ms tick, so a
-    // throw here is not a diagnostic: `enumerateTerminals` catches it and prints a stack
-    // trace forever on any machine where the herdr CLI is installed and its server is simply
-    // not up, which is the ordinary resting state of that machine. The state IS worth
-    // reporting, so it is reported where an operator can act on it and where it is said once:
-    // the Setup row for Herdr probes the server and offers to start it. See
-    // `herdrServerProbe` below.
-    list: async (): Promise<MuxPane[]> => {
-      if (unsupported()) return [];
+    // An unreachable or inconsistent snapshot cannot establish absence. Per-pane process
+    // lookup failures still retain the pane with an unknown pid.
+    list: async (): Promise<TerminalInventory<MuxPane>> => {
+      if (unsupported()) return null;
       const listed = await client.snapshotWithProcesses();
-      if (!listed.ok) return [];
+      if (!listed.ok) return null;
       const { snapshot, processes } = listed.value;
       const workspaces = uniqueBy(snapshot.workspaces, (workspace) => workspace.workspace_id);
       const tabs = uniqueBy(snapshot.tabs, (tab) => tab.tab_id);
       const panes = uniqueBy(snapshot.panes, (pane) => pane.pane_id);
-      if (!workspaces || !tabs || !panes) return [];
+      if (!workspaces || !tabs || !panes) return null;
 
       const out: MuxPane[] = [];
       for (const pane of snapshot.panes) {
         const workspace = workspaces.get(pane.workspace_id);
         const tab = tabs.get(pane.tab_id);
         const process = processes.get(pane.pane_id) ?? null;
-        // One pane that does not resolve is skipped; it is not a reason to report that this
-        // machine has no Herdr panes at all. `[]` still means exactly "no panes", and the
-        // `uniqueBy` checks above still produce it for a snapshot whose own identities are
-        // untrustworthy - see the note on the client's per-pane degradation.
-        if (!workspace || !tab || tab.workspace_id !== workspace.workspace_id) continue;
+        // A broken structural reference invalidates the inventory.
+        if (!workspace || !tab || tab.workspace_id !== workspace.workspace_id) return null;
         out.push({
           session: workspace.workspace_id,
           sessionName: workspace.label,

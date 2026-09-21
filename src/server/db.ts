@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
@@ -382,6 +383,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
+      terminal_launch TEXT,
       session_id    TEXT,
       -- Which recurring mission filed this task, and for which instant. All three NULL
       -- on every task a human dispatched, an MCP call created, or a task source swept -
@@ -3340,6 +3342,7 @@ function migrate(d: DatabaseSync): void {
   // start that happened to find one NULL row.
   repairBacklogRanks(d);
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
+  addColumn(d, "tasks", "terminal_launch", "TEXT");
   // The exact backend an explicitly configured dispatch used. Nullable with no backfill:
   // every historical row used Automatic, and preserving that answer keeps its existing
   // multi-backend liveness and cleanup policy intact.
@@ -4987,6 +4990,7 @@ interface TaskRow {
   home_name: string | null;
   home_backend: string | null;
   terminal_resource_id: string | null;
+  terminal_launch: string | null;
   session_id: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
@@ -5141,6 +5145,16 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
   return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
 }
 
+const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
+
+function parseTerminalLaunch(raw: string | null): Task["terminalLaunch"] {
+  if (!raw) return null;
+  try {
+    const parsed = TerminalLaunchSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
 /** Read a `tasks.labels` blob back as a clean string array; anything unusable is none. */
 function parseLabels(raw: string | null): string[] {
   if (!raw) return [];
@@ -5292,6 +5306,7 @@ function rowToTask(
     homeName: r.home_name,
     homeBackend: r.home_backend,
     terminalResourceId: r.terminal_resource_id,
+    terminalLaunch: parseTerminalLaunch(r.terminal_launch),
     sessionId: r.session_id,
     scheduleId: r.schedule_id,
     scheduleOccurrenceId: r.schedule_occurrence_id,
@@ -5342,11 +5357,11 @@ export function upsertTask(t: Task): string[] {
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
-         home_name, home_backend, terminal_resource_id, session_id,
+         home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5367,6 +5382,7 @@ export function upsertTask(t: Task): string[] {
          base_sha=excluded.base_sha, home_name=excluded.home_name,
          home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
+         terminal_launch=excluded.terminal_launch,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
@@ -5390,7 +5406,8 @@ export function upsertTask(t: Task): string[] {
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
-      t.homeName, t.homeBackend ?? null, t.terminalResourceId, t.sessionId,
+      t.homeName, t.homeBackend ?? null, t.terminalResourceId,
+      t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,

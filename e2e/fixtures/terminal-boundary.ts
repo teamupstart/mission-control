@@ -1,5 +1,6 @@
+import { LAUNCH_PID_FILE } from "../../src/server/terminal/launch-process.ts";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Proc } from "../../src/server/discovery/processes.ts";
 import type { TerminalDeps } from "../../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
@@ -13,10 +14,12 @@ export interface TerminalBoundaryState {
   tabTitle: string;
   argv: string[];
   startedAt: number;
+  inventory?: "unavailable" | "absent";
 }
 
 const GUI_PID = 900001;
 const AGENT_PID = 900002;
+const WRAPPER_PID = 900003;
 const TARGET = { paneId: "fixture-surface", tabId: "fixture-tab" };
 const ok = { ok: true, outcomeUnknown: false } as const;
 const statePath = (): string => join(process.env.MISSION_HOME!, "terminal-boundary.json");
@@ -32,7 +35,8 @@ export async function listProcesses(): Promise<Proc[]> {
   const base = { startRaw: String(state.startedAt), startMs: state.startedAt };
   return [
     { ...base, pid: GUI_PID, ppid: 1, tty: null, command: "ghostty", agent: null, agentNative: false },
-    { ...base, pid: AGENT_PID, ppid: GUI_PID, tty: "ttysfixture", command: "claude",
+    { ...base, pid: WRAPPER_PID, ppid: GUI_PID, tty: "ttysfixture", command: "-" + state.argv.join(" "), agent: null, agentNative: false },
+    { ...base, pid: AGENT_PID, ppid: WRAPPER_PID, tty: "ttysfixture", command: "claude",
       agent: "claude", agentNative: true },
   ];
 }
@@ -62,6 +66,7 @@ export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGh
         // Ghostty ignores the requested title. A fixture that echoed it would hide the bug.
         tabTitle: "shell reports the working directory", startedAt: Date.now(),
       };
+      writeFileSync(join(dirname(spec.argv[1]!), LAUNCH_PID_FILE), String(WRAPPER_PID));
       writeFileSync(`${statePath()}.tmp`, JSON.stringify(state));
       renameSync(`${statePath()}.tmp`, statePath());
       return { ...ok, target: TARGET };
@@ -69,6 +74,8 @@ export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGh
   };
   ghostty.list = async () => {
     const state = readState();
+    if (state?.inventory === "unavailable") return null;
+    if (state?.inventory === "absent") return [];
     return state ? [{ ...TARGET, windowId: "fixture-window", tabTitle: state.tabTitle,
       windowTitle: state.tabTitle, cwd: state.cwd, tty: null, isActive: true }] : [];
   };
@@ -77,7 +84,10 @@ export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGh
     return ok;
   };
   ghostty.write = {
-    text: async (_target, text) => record(text),
+    text: async (target, text) => {
+      if (target.paneId !== TARGET.paneId) throw new Error("wrong terminal recipient");
+      return record(text);
+    },
     keys: async (_target, keys) => record(keys.join(" ")),
     paste: async (_target, text) => ({ ...record(text), submitted: false }),
   };

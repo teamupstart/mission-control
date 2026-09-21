@@ -517,7 +517,7 @@ test("a name is spelled the backend's own way before anything is created under i
 
 // ---- Inspector follow-up on PR #269, round 2 ----
 
-test("an emulator launch reports NO durable home, because it produced none", async () => {
+test("an emulator launch preserves its native address without making a title its durable home", async () => {
   // The three-valued liveness contract, at the point where a value enters it. A tab title
   // is a label, not a resource: no backend enumerates it, so `heldHomeNames` can never
   // contain it and `homeAlive` reads it as `false`. `false` is the ONE value that lets
@@ -525,7 +525,7 @@ test("an emulator launch reports NO durable home, because it produced none", asy
   // means a restart deletes the checkout of an agent that is alive in that very tab.
   //
   // Null is the honest answer and maps to "could not tell", which reclaims nothing.
-  const emu = recordingEmu();
+  const emu = recordingEmu({ result: { ...OK, target: { paneId: "created-pane", tabId: "created-tab" } } });
   const outcome = await launchTerminal(
     "wezterm",
     SPEC,
@@ -533,6 +533,7 @@ test("an emulator launch reports NO durable home, because it produced none", asy
   );
   assert.equal(outcome.ok, true);
   assert.equal(outcome.homeName, null, "a tab title must never be persisted as a home");
+  assert.equal(outcome.terminalResourceId, "emulator:wezterm:created-pane");
   // The title still reaches the tab - it is a label, and that is all it ever was.
   assert.equal(emu.opened[0]?.title, PLAIN_NAMES.sanitize(SPEC.name));
 });

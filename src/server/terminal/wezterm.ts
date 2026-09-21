@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
@@ -94,19 +95,18 @@ export function weztermCwdToPath(cwd: string): string | null {
  * site, `weztermCwdToPath` at the one place that read a cwd. Doing them at the boundary is
  * what lets a caller hold a pane id without knowing whose it is.
  *
- * Returns [] for output that is not the JSON array we asked for, which is the same answer as
- * "wezterm isn't running": a caller has no more to do with a half-parsed pane list than with
- * none, and discovery must degrade silently on a machine with no wezterm at all.
+ * Malformed output is unknown inventory. A valid empty JSON array establishes absence.
  */
-export function parsePanes(stdout: string): EmulatorPane[] {
-  if (!stdout.trim()) return [];
+export function parsePanes(stdout: string): TerminalInventory<EmulatorPane> {
+  if (!stdout.trim()) return null;
   let raw: RawPane[];
   try {
     raw = JSON.parse(stdout) as RawPane[];
   } catch {
-    return [];
+    return null;
   }
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) return null;
+  if (raw.some((p) => !p || !Number.isSafeInteger(p.pane_id) || !Number.isSafeInteger(p.tab_id) || !Number.isSafeInteger(p.window_id))) return null;
   return raw.map((p) => ({
     paneId: String(p.pane_id),
     tabId: String(p.tab_id),
@@ -128,15 +128,14 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     toResult(await cli(args, opts), fail);
 
   /**
-   * Returns [] when wezterm isn't running or the CLI isn't reachable - the product works
-   * fine with tmux-only or bare terminals, so this must degrade silently.
+   * An unreachable CLI produces unknown inventory, never confirmed absence.
    *
    * Named rather than inlined on the interface because `spawn.tab` needs it too, and a
    * second `cli list` written there would be the one that forgets `--no-auto-start`.
    */
-  const list = async (): Promise<EmulatorPane[]> => {
+  const list = async (): Promise<TerminalInventory<EmulatorPane>> => {
     const res = await cli(["list", "--format", "json"]);
-    return res.code === 0 ? parsePanes(res.stdout) : [];
+    return res.code === 0 ? parsePanes(res.stdout) : null;
   };
 
   /**
@@ -214,6 +213,8 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       },
     },
 
+    restoreTarget: null,
+
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
         const result = await cli([
@@ -237,7 +238,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
         // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
         // and is what makes the returned target addressable - `focus` raises tabs, so a
         // target without one could not be brought forward by the caller that just made it.
-        const tab = (await list()).find((p) => p.paneId === String(paneId));
+        const tab = (await list())?.find((p) => p.paneId === String(paneId));
         return {
           ok: true,
           outcomeUnknown: false,

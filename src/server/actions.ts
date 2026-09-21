@@ -1,3 +1,4 @@
+import { readInventory } from "./terminal/inventory.ts";
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
@@ -2043,7 +2044,7 @@ async function hostTabs(
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
     if (!emulator.list) continue;
-    for (const pane of hostPanesFor(session, clients, await emulator.list())) {
+    for (const pane of hostPanesFor(session, clients, await readInventory(emulator.list) ?? [])) {
       tabs.push({ emulator, pane });
     }
   }

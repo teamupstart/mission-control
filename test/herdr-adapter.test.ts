@@ -154,6 +154,7 @@ test("list maps workspaces, tabs, panes, shell pids, and cwd fallback to stable 
   const fake = await fakeHerdrSocket(standardReply);
   try {
     const panes = await herdrMultiplexer(execStatus(fake.path)).list();
+  assert.ok(panes);
     assert.deepEqual(panes, [
       {
         session: "ws-api",
@@ -198,6 +199,7 @@ test("a stale pane process lookup keeps the pane visible with an unknown pid", a
   });
   try {
     const panes = await herdrMultiplexer(execStatus(fake.path)).list();
+  assert.ok(panes);
     assert.equal(panes.length, 2);
     assert.equal(panes.find((pane) => pane.paneId === "pane-api")?.panePid, null);
     assert.equal(panes.find((pane) => pane.paneId === "pane-web")?.panePid, 222);
@@ -228,6 +230,7 @@ test("a refused pane lookup costs that pane's pid, not every other pane", async 
   });
   try {
     const panes = await herdrMultiplexer(execStatus(fake.path)).list();
+  assert.ok(panes);
     assert.equal(panes.length, 2);
     assert.equal(panes.find((pane) => pane.paneId === "pane-api")?.panePid, null);
     assert.equal(panes.find((pane) => pane.paneId === "pane-web")?.panePid, 222);
@@ -260,7 +263,7 @@ test("a snapshot that cannot be trusted degrades to an empty pane list rather th
     }
   });
   try {
-    assert.deepEqual(await herdrMultiplexer(execStatus(fake.path)).list(), []);
+    assert.deepEqual(await herdrMultiplexer(execStatus(fake.path)).list(), null);
   } finally {
     await fake.close();
   }
@@ -268,7 +271,7 @@ test("a snapshot that cannot be trusted degrades to an empty pane list rather th
 
 // A pane whose workspace or tab is missing from the same snapshot is skipped for the same
 // reason: it is one pane's problem, and the other panes are still real.
-test("a pane whose workspace is absent from the snapshot is skipped, not fatal", async () => {
+test("a pane whose workspace is absent from the snapshot makes inventory unknown", async () => {
   const orphaned = {
     ...SNAPSHOT,
     snapshot: {
@@ -284,8 +287,7 @@ test("a pane whose workspace is absent from the snapshot is skipped, not fatal",
     else standardReply(request, socket);
   });
   try {
-    const panes = await herdrMultiplexer(execStatus(fake.path)).list();
-    assert.deepEqual(panes.map((pane) => pane.paneId), ["pane-api", "pane-web"]);
+    assert.equal(await herdrMultiplexer(execStatus(fake.path)).list(), null);
   } finally {
     await fake.close();
   }
@@ -305,7 +307,7 @@ test("a stopped Herdr server enumerates as no panes, with no socket attempt", as
       restart_needed: false,
     }));
   };
-  assert.deepEqual(await herdrMultiplexer(stopped).list(), []);
+  assert.deepEqual(await herdrMultiplexer(stopped).list(), null);
   assert.deepEqual(calls.map((call) => call.args), [["status", "server", "--json"]]);
 });
 
@@ -313,7 +315,7 @@ test("an unreadable Herdr status enumerates as no panes", async () => {
   const broken: TerminalExec = async () => ({
     stdout: "", stderr: "herdr: command failed", code: 1, outcomeUnknown: false, overflowed: false,
   });
-  assert.deepEqual(await herdrMultiplexer(broken).list(), []);
+  assert.deepEqual(await herdrMultiplexer(broken).list(), null);
 });
 
 test("the Herdr server probe reports the same three states the transport gates on", async () => {
@@ -843,7 +845,7 @@ test("host allowlist gates all operations and leaves an actionable disabled gene
       execCalls += 1;
       throw new Error("unsupported host must not run Herdr");
     });
-    assert.deepEqual(await mux.list(), []);
+    assert.deepEqual(await mux.list(), null);
     assert.equal((await mux.write.text({ session: "w", windowIndex: 1, paneId: "p" }, "x")).ok, false);
     assert.equal((await mux.sessions!.spawnDetached({ name: "x", cwd: "/x", select: true, argv: ["sh"], sidePane: false })).ok, false);
     assert.equal(execCalls, 0);

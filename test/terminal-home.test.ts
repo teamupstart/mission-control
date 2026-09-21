@@ -187,7 +187,7 @@ test("an explicit backend owns liveness even when another backend holds the same
   );
 
   assert.equal(await homeAlive("api", machine), true);
-  assert.equal(await homeAlive("api", machine, "wezterm"), false);
+  assert.equal(await homeAlive("api", machine, "wezterm"), null);
   assert.equal(await homeAlive("api", machine, "future-terminal"), null);
 });
 
@@ -341,7 +341,7 @@ test("cleanup without a captured identity never resolves a legacy name to a new 
   assert.equal(killed, false);
 });
 
-test("an emulator home is named by its TAB TITLE, which is what discovery reads back", async () => {
+test("legacy emulator titles allocate names but do not prove liveness", async () => {
   const emuOnly = deps(
     fakeMultiplexer(),
     fakeEmulator({
@@ -351,9 +351,10 @@ test("an emulator home is named by its TAB TITLE, which is what discovery reads 
     emulatorOnly,
   );
 
-  assert.equal(await homeAlive("api", emuOnly), true);
+  assert.equal((await heldHomeNames(emuOnly))?.has("api"), true);
+  assert.equal(await homeAlive("api", emuOnly), null);
   // An untitled tab is not a home anyone can name, so it contributes nothing.
-  assert.equal(await homeAlive("", emuOnly), false);
+  assert.equal(await homeAlive("", emuOnly), null);
 });
 
 test("emulator liveness follows its saved pane identity through duplicate and empty tab titles", async () => {
@@ -451,4 +452,24 @@ test("name rules come from the backend a dispatch would actually land on", async
   // with its own message, rather than three steps earlier at a name that came back empty.
   const none = homeNameRules(deps(fakeMultiplexer(), fakeEmulator(), () => false));
   assert.equal(none.sanitize("Fix the Bug"), "Fix the Bug");
+});
+
+test("emulator launch retains the returned pane identity for task persistence", async () => {
+  const result = await launchHome(SPEC, deps(fakeMultiplexer(), fakeEmulator({
+    spawn: { tab: async () => ({ ...OK, target: { paneId: "owned", tabId: "tab" } }) },
+  }), emulatorOnly));
+  assert.ok(result.ok);
+  assert.equal(result.resourceId, "emulator:wezterm:owned");
+});
+
+test("unavailable inventory is unknown but a successful empty inventory confirms absence", async () => {
+  const emu = fakeEmulator({
+    spawn: { tab: async () => ({ ...OK, target: null }) },
+    list: async () => { throw new Error("inventory unavailable"); },
+  });
+  const machine = deps(fakeMultiplexer(), emu, emulatorOnly);
+  assert.equal(await homeAlive("api", machine, "wezterm", "emulator:wezterm:owned"), null);
+  assert.equal(await heldHomeNames(machine, "wezterm"), null);
+  emu.list = async () => [];
+  assert.equal(await homeAlive("api", machine, "wezterm", "emulator:wezterm:owned"), false);
 });

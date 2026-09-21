@@ -108,3 +108,21 @@ test("presence is about the binary, not about the backend running", () => {
     assert.equal(typeof binPresent(spec), "boolean");
   }
 });
+
+test("the discovery sweep preserves unavailable inventory separately from a completed empty list", async () => {
+  const backend = EMULATORS.wezterm;
+  const original = { bin: backend.bin, list: backend.list };
+  backend.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
+  try {
+    for (const [list, expected] of [
+      [async () => null, null],
+      [async () => { throw new Error("refused"); }, null],
+      [async () => [], []],
+    ] as const) {
+      backend.list = list;
+      const result = (await enumerateTerminals()).find((entry) => entry.backend === "wezterm");
+      assert.ok(result);
+      assert.deepEqual(result.panes, expected);
+    }
+  } finally { Object.assign(backend, original); }
+});

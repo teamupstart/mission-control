@@ -80,6 +80,7 @@ test("the interface admits an emulator that can only be launched into", () => {
       tab: async () => ({ ok: true, outcomeUnknown: false, target: null }),
     },
     retitle: null,
+    restoreTarget: null,
     // A tab title it can stamp at spawn but never change: display text, with no grammar of
     // its own, said out loud rather than assumed by the caller stamping it.
     names: PLAIN_NAMES,

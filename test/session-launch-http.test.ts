@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildApp } from "../src/server/routes.ts";
-import type { Registry } from "../src/server/registry.ts";
+import { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
-import { mkSession, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkMuxHandle, mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
 import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
 
@@ -87,6 +87,7 @@ const UNCERTAIN_TASK = mkTask({
   sessionId: EXITED_UNCERTAIN.id,
 });
 const TASKS = new Map([[UNCERTAIN_TASK.id, UNCERTAIN_TASK]]);
+let adoptedSession: ReturnType<typeof mkSession> | null = null;
 
 // A real subscriber list, not a no-op: the resume claim is released on `session_remove`,
 // and a stub that swallowed the subscription would let that release rot untested.
@@ -106,6 +107,9 @@ const registry = {
       : { root: session?.cwd ?? null, view: session?.workspace ?? null, repoRoot: "/repo" };
   },
   upsertTask: (task: typeof UNCERTAIN_TASK) => TASKS.set(task.id, task),
+  waitForSessionAtCwd: async () => adoptedSession,
+  adoptTerminalLaunch: Registry.prototype.adoptTerminalLaunch,
+  bindTaskToWorkEpisode: () => {},
   subscribe: (fn: (e: { type: string; id: string }) => void) => {
     subscribers.push(fn);
     return () => {};
@@ -122,6 +126,10 @@ const app = buildApp({
   queues: {} as unknown as QueueManager,
   launchSessionTerminal: async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
+    if (spec.name === "verified-resume") {
+      return { ok: true, label: backend, homeName: null,
+        terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 };
+    }
     if (spec.name === EXITED_UNCERTAIN.name) {
       return {
         ok: false,
@@ -375,4 +383,27 @@ test("resuming through an emulator persists NO home, not the dead one", async ()
 
   TASKS.delete(task.id);
   SESSIONS.delete(session.id);
+});
+
+test("resume retains the spawned UUID and binds only a positively observed recipient", async () => {
+  for (const matches of [true, false]) {
+    const session = mkSession({ id: `ghostty-resume-${matches}`, name: "verified-resume", state: "exited" });
+    const task = mkTask({ id: `ghostty-task-${matches}`, sessionId: session.id, status: "running" });
+    adoptedSession = mkSession({ id: `adopted-${matches}`, terminals: matches
+      ? [mkEmuHandle({ backend: "ghostty", paneId: "resumed-uuid" })] : [] });
+    SESSIONS.set(session.id, session);
+    TASKS.set(task.id, task);
+    try {
+      assert.equal((await launch(session.id, { backend: "ghostty", payload: "agent" })).status, 200);
+      const after = TASKS.get(task.id)!;
+      assert.equal(after.terminalResourceId, "emulator:ghostty:resumed-uuid");
+      assert.equal(after.sessionId, matches ? adoptedSession.id : null);
+      assert.deepEqual(after.terminalLaunch, matches
+        ? { resourceId: after.terminalResourceId, sessionId: adoptedSession.id } : null);
+    } finally {
+      SESSIONS.delete(session.id);
+      TASKS.delete(task.id);
+      adoptedSession = null;
+    }
+  }
 });

@@ -109,14 +109,16 @@ test("presence is about the binary, not about the backend running", () => {
   }
 });
 
-test("the discovery sweep preserves unavailable inventory separately from a completed empty list", async () => {
+test("the discovery sweep preserves unavailable inventory and diagnoses unexpected exceptions", async (t) => {
   const backend = EMULATORS.wezterm;
   const original = { bin: backend.bin, list: backend.list };
+  const refused = new Error("refused");
+  const diagnostics = t.mock.method(console, "error", () => {});
   backend.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
   try {
     for (const [list, expected] of [
       [async () => null, null],
-      [async () => { throw new Error("refused"); }, null],
+      [async () => { throw refused; }, null],
       [async () => [], []],
     ] as const) {
       backend.list = list;
@@ -124,5 +126,8 @@ test("the discovery sweep preserves unavailable inventory separately from a comp
       assert.ok(result);
       assert.deepEqual(result.panes, expected);
     }
+    const failure = diagnostics.mock.calls.find((call) => call.arguments[1] === refused);
+    assert.ok(failure, "unexpected adapter exceptions must retain their diagnostic context");
+    assert.match(String(failure.arguments[0]), /wezterm.*inventory/);
   } finally { Object.assign(backend, original); }
 });

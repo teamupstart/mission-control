@@ -2044,7 +2044,7 @@ async function hostTabs(
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
     if (!emulator.list) continue;
-    for (const pane of hostPanesFor(session, clients, await readInventory(emulator.list) ?? [])) {
+    for (const pane of hostPanesFor(session, clients, await readInventory(id, emulator.list) ?? [])) {
       tabs.push({ emulator, pane });
     }
   }

@@ -83,7 +83,7 @@ export async function enumerateTerminals(
     const backend = MULTIPLEXERS[id];
     if (!binPresent(backend.bin)) continue;
     work.push(
-      readInventory(() => backend.list()).then((panes) => ({
+      readInventory(id, () => backend.list()).then((panes) => ({
         kind: "multiplexer" as const,
         backend: id,
         panes,
@@ -98,7 +98,7 @@ export async function enumerateTerminals(
     const hostProcess = backend.hostProcess;
     if (hostProcess && !hostIsRunning(hostProcess, procs)) continue;
     work.push(
-      readInventory(() => list()).then((panes) => ({
+      readInventory(id, () => list()).then((panes) => ({
         kind: "emulator" as const,
         backend: id,
         panes,

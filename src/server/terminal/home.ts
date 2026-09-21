@@ -164,7 +164,7 @@ export function homeBackends(
       // `sessionName` keyed, `session` valued - the two halves of "a name is not an address".
       // Never use this name lookup to authorize teardown.
       held: async () => {
-        const panes = await readInventory(() => backend.list());
+        const panes = await readInventory(id, () => backend.list());
         return panes === null ? null : new Map(panes.map((p) => [p.sessionName, p.session] as const));
       },
       open: (spec) =>
@@ -197,7 +197,7 @@ export function homeBackends(
       // carried anyway so the shape does not have to change when one does.
       held: list
         ? async () => {
-            const panes = await readInventory(list);
+            const panes = await readInventory(id, list);
             return panes === null ? null : new Map(panes.filter((p) => p.tabTitle).map((p) => [p.tabTitle, p.paneId] as const));
           }
         : null,
@@ -346,7 +346,7 @@ export async function homeAlive(
         return null;
       }
     }
-    return (await readInventory(() => backend.list!()))?.some((pane) =>
+    return (await readInventory(id, () => backend.list!()))?.some((pane) =>
       terminalResourceId({ ...pane, kind: "multiplexer", backend: id }) === resourceId,
     ) ?? null;
   }
@@ -355,7 +355,7 @@ export async function homeAlive(
     if (!id || (preferredBackend !== null && preferredBackend !== id)) return null;
     const backend = deps.emulators[id];
     if (!backend.list || binUnavailableReason(backend.bin, backend.label, deps)) return null;
-    return (await readInventory(() => backend.list!()))?.some((pane) =>
+    return (await readInventory(id, () => backend.list!()))?.some((pane) =>
       terminalResourceId({ ...pane, kind: "emulator", backend: id }) === resourceId,
     ) ?? null;
   }

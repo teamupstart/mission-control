@@ -218,7 +218,8 @@ and [harness-change contract](agent-guides/change-contracts.md#harness-changes).
 
 Every terminal adapter's `list` returns `TerminalInventory<T>`: an array for a completed
 inventory, including `[]` for confirmed emptiness, or `null` when the inventory is unavailable
-or malformed. `readInventory` preserves that distinction when an adapter throws. Discovery
+or malformed. `readInventory` preserves that distinction when an adapter throws and logs
+the backend and original exception at most once per backend per minute across its callers. Discovery
 passes the inventory snapshot alongside correlated sessions to Registry, including unavailable
 and empty results. Registry uses that same snapshot when a task refreshes its session.
 Home liveness and cleanup retain uncertainty.

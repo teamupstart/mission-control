@@ -222,6 +222,10 @@ or malformed. `readInventory` preserves that distinction when an adapter throws.
 passes the inventory snapshot alongside correlated sessions to Registry, including unavailable
 and empty results. Registry uses that same snapshot when a task refreshes its session.
 Home liveness and cleanup retain uncertainty.
+tmux's definitive empty-server or missing-socket diagnostics count as completed empty
+inventory even though the CLI exits nonzero. Timeouts, permission errors, partial output
+and unrecognized diagnostics remain unavailable. Saved exact tmux sessions also have their
+existing socket- and server-identity liveness check.
 `homeAlive` returns `null` on unavailable inventory and only a completed inventory can
 establish that a recorded resource is absent. Legacy emulator records without an exact
 resource cannot establish absence through a mutable title. Unknown observations do not

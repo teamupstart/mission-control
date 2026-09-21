@@ -412,10 +412,19 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     glyph: "▤",
     bin: TMUX_BIN,
 
-    // A failed query is unknown; a successful empty query confirms no panes.
+    // tmux reports an empty/stopped server with exit 1 rather than an empty stdout.
     list: async () => {
       const res = await tmux(["list-panes", "-a", "-F", PANE_FMT]);
-      return res.code === 0 ? parsePanes(res.stdout) : null;
+      if (res.outcomeUnknown || res.overflowed) return null;
+      if (res.code === 0) return parsePanes(res.stdout);
+      if (res.code !== 1 || res.stdout.trim() !== "") return null;
+      const error = res.stderr.trim();
+      // With no explicit target, tmux 3.7's current-target lookup fails only when
+      // there are no sessions from which list-panes -a could select a window.
+      return error === "no sessions" || error === "no current target" ||
+        /^no server running(?: on [^\r\n]+)?$/.test(error) ||
+        /^error connecting to [^\r\n]+ \(No such file or directory\)$/.test(error)
+        ? [] : null;
     },
 
     // Same contract: [] when tmux isn't running or nothing is attached.

@@ -165,6 +165,7 @@ export function sanitizeDiagnostic(value) {
     .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
     .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)<>\]]+/gi, "<url>")
+    .replace(/^\s*[\w.+-]+@(?=[\w.-]*[a-z])[\w-]+(?:\.[\w-]+)+:(?=\s)/gi, "<url>:")
     .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+:[^\s"'`)<>]+/gi, "<url>")
     .replace(/(^|[\s"'(=])\/(?:[^\s"'),]+\/?)+/g, "$1<path>")
     .slice(0, 500);

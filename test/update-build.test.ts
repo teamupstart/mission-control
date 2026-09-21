@@ -23,6 +23,7 @@ import {
   stageInstallArgs,
   stageScriptPath,
   stageUpdateBuild,
+  stagedBuildFailureDiagnostic,
   stagingUnsupported,
   updateChildEnvironment,
 } from "../src/main/update-build.ts";
@@ -301,13 +302,18 @@ test("unsupported is recognized from either flag, and never from an unrelated fa
   assert.equal(stagingUnsupported(""), false);
 });
 
-test("a build that fails, and one that reports no bundle, are both refused", async () => {
+test("a failed build surfaces a bounded diagnostic from its already-sanitized output", async () => {
   const failing = fakeClone(`
-console.error("npm error code ELIFECYCLE");
+process.stderr.write([
+  "${UPDATE_PROGRESS_MARKER} checkout",
+  "npm notice Authorization: Bearer gho_supersecrettoken1234",
+  "npm error request to https://deploy:hunter2@registry.internal.example.dev/pkg failed",
+  "npm error path /Users/someone/.mission-control/app-src/node_modules",
+  "\\u001b[31mgit@github.com: Permission denied (publickey).\\u001b[0m",
+  "fatal: Could not read from remote repository.",
+  "npm error command failed",
+].join("\\n") + "\\n");
 process.exitCode = 1;
-`);
-  const silent = fakeClone(`
-process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
 `);
   try {
     const failed = await stageUpdateBuild({
@@ -321,8 +327,146 @@ process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
     assert.equal(failed.ok, false);
     if (!failed.ok) {
       assert.equal(failed.reason, "failed");
-      assert.match(failed.message, /exit 1/);
+      assert.match(failed.message, /^The update build failed \(exit 1\)\.\nReason: /);
+      assert.match(failed.message, /Permission denied \(publickey\)/);
+      assert.match(failed.message, /Could not read from remote repository/);
+      assert.match(failed.message, /Check the update log for more detail and try again\.$/);
+      assert.doesNotMatch(
+        failed.message,
+        /gho_supersecrettoken1234|Bearer|hunter2|registry\.internal|github\.com|\/Users\/someone/,
+      );
+      const diagnostic = failed.message.match(/Reason: ([\s\S]+)\n\nCheck/)?.[1] ?? "";
+      assert.ok(diagnostic.length > 0);
+      assert.ok(diagnostic.length <= 400, `diagnostic was ${diagnostic.length} characters`);
+      assert.doesNotMatch(diagnostic, /mission-update-progress|command failed/);
+      assert.ok(!diagnostic.includes(String.fromCharCode(27)));
     }
+  } finally {
+    rmSync(failing, { recursive: true, force: true });
+  }
+});
+
+test("the staged-build diagnostic is general across updater tools and failure classes", () => {
+  const cases = [
+    "fatal: unable to access '<url>': The requested URL returned error: 403",
+    "npm error code E401 <url> - Unauthorized",
+    "electron-builder failed to download artifact: ETIMEDOUT",
+    "EACCES: permission denied, rename '<path>' -> '<path>'",
+    "request to <url> failed, reason: getaddrinfo ENOTFOUND",
+  ];
+  for (const line of cases) {
+    assert.equal(
+      stagedBuildFailureDiagnostic([line, "ordinary progress output", "done"]),
+      line,
+    );
+  }
+
+  const oversized = `npm error notarget ${"x".repeat(500)}`;
+  const diagnostic = stagedBuildFailureDiagnostic([oversized]);
+  assert.equal(diagnostic.length, 400);
+  assert.match(diagnostic, /^npm error notarget/);
+
+  const threeLongReasons = stagedBuildFailureDiagnostic(
+    cases.slice(0, 3).map((line) => `${line} ${"detail".repeat(100)}`),
+  );
+  assert.equal(threeLongReasons.split("\n").length, 3);
+  assert.ok(threeLongReasons.length <= 400);
+  assert.match(threeLongReasons, /^fatal:/);
+  assert.match(threeLongReasons, /\nnpm error code E401/);
+  assert.match(threeLongReasons, /\nelectron-builder failed/);
+});
+
+test("empty and boilerplate-only failed builds retain the generic fallback", async () => {
+  const empty = fakeClone("process.exitCode = 1;\n");
+  const boilerplate = fakeClone(`
+process.stdout.write([
+  "${UPDATE_PROGRESS_MARKER} verify",
+  "npm error code ELIFECYCLE",
+  "npm error command failed",
+  "npm error A complete log of this run can be found in: /Users/someone/.npm/_logs/build.log",
+].join("\\n") + "\\n");
+process.exitCode = 1;
+`);
+  try {
+    for (const clone of [empty, boilerplate]) {
+      const outcome = await stageUpdateBuild({
+        node: process.execPath,
+        sourceClone: clone,
+        targetTag: "v1.7.0",
+        signal: new AbortController().signal,
+        onStage: () => {},
+        log: () => {},
+      });
+      assert.deepEqual(outcome, {
+        ok: false,
+        reason: "failed",
+        message: "The update build failed (exit 1). Check the update log and try again.",
+      });
+    }
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+    rmSync(boilerplate, { recursive: true, force: true });
+  }
+});
+
+test("ordinary safe output from a failed build retains the generic fallback", async () => {
+  const clone = fakeClone(`
+process.stdout.write([
+  "Preparing source tree",
+  "Building application bundle",
+  "Done",
+].join("\\n") + "\\n");
+process.exitCode = 1;
+`);
+  try {
+    const outcome = await stageUpdateBuild({
+      node: process.execPath,
+      sourceClone: clone,
+      targetTag: "v1.7.0",
+      signal: new AbortController().signal,
+      onStage: () => {},
+      log: () => {},
+    });
+    assert.deepEqual(outcome, {
+      ok: false,
+      reason: "failed",
+      message: "The update build failed (exit 1). Check the update log and try again.",
+    });
+  } finally {
+    rmSync(clone, { recursive: true, force: true });
+  }
+});
+
+test("a child-process error is logged safely but remains generic in the outcome", async () => {
+  const clone = fakeClone("process.exitCode = 0;\n");
+  const logged: string[] = [];
+  try {
+    const outcome = await stageUpdateBuild({
+      node: "/Users/someone/private/missing-node",
+      sourceClone: clone,
+      targetTag: "v1.7.0",
+      signal: new AbortController().signal,
+      onStage: () => {},
+      log: (line) => logged.push(line),
+    });
+    assert.deepEqual(outcome, {
+      ok: false,
+      reason: "failed",
+      message: "The update could not be built. Check the update log and try again.",
+    });
+    assert.match(logged.join("\n"), /staged build process failed/);
+    assert.match(logged.join("\n"), /<path>/);
+    assert.doesNotMatch(logged.join("\n"), /\/Users\/someone/);
+  } finally {
+    rmSync(clone, { recursive: true, force: true });
+  }
+});
+
+test("a build that reports no bundle is refused", async () => {
+  const silent = fakeClone(`
+process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
+`);
+  try {
 
     const nothing = await stageUpdateBuild({
       node: process.execPath,
@@ -338,7 +482,6 @@ process.stdout.write("${UPDATE_PROGRESS_MARKER} verify\\n");
       assert.match(nothing.message, /without reporting an app to install/);
     }
   } finally {
-    rmSync(failing, { recursive: true, force: true });
     rmSync(silent, { recursive: true, force: true });
   }
 });

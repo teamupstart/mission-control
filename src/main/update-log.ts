@@ -54,6 +54,9 @@ export function sanitizeLogLine(line: string): string {
     // about a remote, and the path inside it is what mattered.
     .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)<>\]]+/gi, "<url>")
+    // The identity printed by an SSH client before a diagnostic, without a repository path:
+    // `git@host.example: Permission denied`. It identifies the same private host as a remote.
+    .replace(/^\s*[\w.+-]+@(?=[\w.-]*[a-z])[\w-]+(?:\.[\w-]+)+:(?=\s)/gi, "<url>:")
     // The scp-style git remote, which carries no scheme at all: `git@github.com:org/repo.git`.
     // Anchored on a dotted host followed by a colon and a path, so an ordinary `name@version`
     // and a bare email address are both left alone.

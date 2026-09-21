@@ -2894,6 +2894,7 @@ export async function spawnUniquely(
     const first = await launchHome({ name, cwd, argv, sidePane: true }, undefined, terminalBackend);
     if (first.ok) {
       return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
+        launchStateHome: first.backend.axis === "emulator" ? effectiveStateHome : undefined,
         launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
     }
     if (name === unique) throw new Error(first.error);
@@ -2904,6 +2905,7 @@ export async function spawnUniquely(
     );
     if (retry.ok) {
       return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
+        launchStateHome: retry.backend.axis === "emulator" ? effectiveStateHome : undefined,
         launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
     }
     throw new Error(retry.error);

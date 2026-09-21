@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { dirname } from "node:path";
 import { buildApp } from "../src/server/routes.ts";
 import { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -384,7 +385,8 @@ test("resuming through an emulator persists NO home, not the dead one", async ()
   SESSIONS.delete(session.id);
 });
 
-test("resume retains the spawned UUID and binds only a positively observed recipient", async () => {
+test("resume retains the spawned UUID and binds only a positively observed recipient", async (t) => {
+  const adoption = t.mock.method(registry, "adoptTerminalLaunch");
   for (const matches of [true, false]) {
     const session = mkSession({ id: `ghostty-resume-${matches}`, name: "verified-resume", state: "exited" });
     const task = mkTask({ id: `ghostty-task-${matches}`, sessionId: session.id, status: "running" });
@@ -394,6 +396,8 @@ test("resume retains the spawned UUID and binds only a positively observed recip
     TASKS.set(task.id, task);
     try {
       assert.equal((await launch(session.id, { backend: "ghostty", payload: "agent" })).status, 200);
+      assert.equal(adoption.mock.calls.at(-1)?.arguments[1].launchStateHome, dirname(launched.at(-1)!.argv[1]!),
+        "resume must retain the wrapper marker source until adoption");
       const after = TASKS.get(task.id)!;
       assert.equal(after.terminalResourceId, "emulator:ghostty:resumed-uuid");
       assert.equal(after.sessionId, matches ? adoptedSession.id : null);

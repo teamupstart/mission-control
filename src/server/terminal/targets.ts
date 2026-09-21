@@ -239,6 +239,8 @@ export interface TerminalLaunchOutcome {
   terminalResourceId?: string | null;
   /** Private launch observation used only to bind an adopted agent process. */
   launchProcess?: LaunchProcess | null;
+  /** Private marker source for adoption after a delayed wrapper starts. */
+  launchStateHome?: string;
   error?: string;
   status: number;
 }
@@ -267,7 +269,7 @@ export async function launchAgentTerminal(
     const result = await launcher(backend, { ...spec, argv });
     if (!result.ok && result.status !== 504) cleanupDisposableAgentStateHome(stateHome);
     return result.ok && result.terminalResourceId?.startsWith("emulator:")
-      ? { ...result, launchProcess: await readLaunchProcess(stateHome) } : result;
+      ? { ...result, launchStateHome: stateHome, launchProcess: await readLaunchProcess(stateHome) } : result;
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;

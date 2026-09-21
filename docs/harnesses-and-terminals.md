@@ -235,7 +235,10 @@ authorize worktree release.
 Emulator spawn results retain their pane address as `emulator:<backend>:<paneId>` in the
 existing task `terminalResourceId`. Before dispatch adopts an agent, it requires the exact
 observed pane or verifies the agent's process ancestry through the private launch wrapper,
-checking the wrapper command and both process start times. The resulting task
+checking the wrapper command and both process start times. If the initial wrapper lookup
+is too early, adoption reads the private launch marker after session readiness. A captured
+process identity still takes precedence over a later marker; the marker location is ephemeral
+and is never persisted on the task. The task's
 `terminalLaunch` pairs that resource with the exact process-lifetime session ID. It is stored
 in an additive nullable `tasks.terminal_launch` JSON column. Existing tasks migrate with no
 proof; an old resource selected by a cwd heuristic is not promoted into a verified binding.

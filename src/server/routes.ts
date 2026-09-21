@@ -1914,6 +1914,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               homeBackend: backend,
               terminalResourceId: launched.terminalResourceId ?? null,
               launchProcess: launched.launchProcess,
+              launchStateHome: launched.launchStateHome,
             };
           },
         }
@@ -3742,7 +3743,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           });
           if (result.ok && result.terminalResourceId?.startsWith("emulator:")) {
             const home = { homeName: result.homeName ?? session.name, homeBackend: backend,
-              terminalResourceId: result.terminalResourceId, launchProcess: result.launchProcess };
+              terminalResourceId: result.terminalResourceId, launchProcess: result.launchProcess,
+              launchStateHome: result.launchStateHome };
             const observed = await defaultHandoffDeps.waitForSessionAtCwd(workspaceRoot, 30_000);
             if (observed) await registry.adoptTerminalLaunch(task.id, home, observed);
           }

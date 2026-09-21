@@ -5,13 +5,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { belongsToLaunch, readLaunchProcess, LAUNCH_SCRIPT_FILE, LAUNCH_PID_FILE } from "../src/server/terminal/launch-process.ts";
 import type { Proc } from "../src/server/discovery/processes.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
 import { canWriteTo, emulatorHandle } from "../src/shared/pane.ts";
-import { mkTask, mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkTask, mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-launch-identity-"));
 process.env.MISSION_HOME = home;
@@ -41,6 +41,43 @@ test("the recorded wrapper is recognized with ordinary and login-shell argv0", a
       child.stdin!.end("done\n");
       await exited;
     }
+  }
+});
+
+test("adoption can verify a wrapper that starts after the initial launch lookup expires", async () => {
+  const { launchAgentTerminal } = await import("../src/server/terminal/targets.ts");
+  const { listProcesses } = await import("../src/server/discovery/processes.ts");
+  const { verifiesEmulatorLaunch } = await import("../src/server/terminal/launch-process.ts");
+  const { homeRecord } = await import("../src/server/terminal/home.ts");
+  let argv: readonly string[] = [];
+  const result = await launchAgentTerminal("ghostty", {
+    name: "delayed", cwd: home, argv: [process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.resume()"],
+  }, async (_backend, spec) => {
+    argv = spec.argv;
+    return { ok: true, status: 200, label: "fixture", homeName: "delayed", terminalResourceId: "emulator:ghostty:delayed-owned" };
+  });
+  assert.equal(result.launchProcess, null, "the terminal acknowledged spawn before starting the wrapper");
+  const child = spawn(argv[0]!, argv.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
+  const exited = once(child, "exit");
+  try {
+    await once(child.stdout!, "data");
+    const launch = await readLaunchProcess(dirname(argv[1]!));
+    assert.ok(launch);
+    const agent = (await listProcesses()).find((p) => p.ppid === launch.pid);
+    assert.ok(agent?.startMs);
+    const session = mkSession({ id: "delayed-session", pid: agent.pid, startedAt: agent.startMs, terminals: [] });
+    const spawned = { ...result, homeBackend: "ghostty" as const, homeName: "delayed", terminalResourceId: result.terminalResourceId! };
+    const adopted = await new Registry().adoptTerminalLaunch(null, spawned, session);
+    assert.ok(adopted, "a ready descendant must remain verifiable after the early lookup expired");
+    assert.equal(await verifiesEmulatorLaunch({ ...spawned, launchProcess: { ...launch, startMs: launch.startMs! - 1 } }, session), false,
+      "a previously captured identity cannot be replaced by a later marker");
+    assert.equal(await verifiesEmulatorLaunch(spawned, { ...session, startedAt: agent.startMs - 1 }), false,
+      "late marker lookup must still reject recycled agent lifetimes");
+    assert.deepEqual(Object.keys(homeRecord(spawned)).sort(), ["homeBackend", "homeName", "terminalLaunch", "terminalResourceId"],
+      "the private marker source must not become durable task state");
+  } finally {
+    child.stdin!.end();
+    await exited;
   }
 });
 

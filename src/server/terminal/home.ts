@@ -88,13 +88,15 @@ export interface HomeSpec {
 export interface SpawnedHome {
   /** Ephemeral positive process correlation; only the bound task session id is persisted. */
   launchProcess?: LaunchProcess | null;
+  /** Private marker source retained until session readiness if the wrapper starts late. */
+  launchStateHome?: string;
   homeName: string;
   homeBackend: TerminalBackendId;
   terminalResourceId: string | null;
 }
 
 /** Only these existing task fields are durable; launch observation is not task state. */
-export function homeRecord(home: SpawnedHome): Omit<SpawnedHome, "launchProcess"> & { terminalLaunch: null } {
+export function homeRecord(home: SpawnedHome): Pick<SpawnedHome, "homeName" | "homeBackend" | "terminalResourceId"> & { terminalLaunch: null } {
   return { homeName: home.homeName, homeBackend: home.homeBackend, terminalResourceId: home.terminalResourceId,
     terminalLaunch: null };
 }

@@ -50,8 +50,9 @@ export function belongsToLaunch(
 export async function verifiesEmulatorLaunch(home: SpawnedHome, session: Session): Promise<boolean> {
   if (!home.terminalResourceId?.startsWith("emulator:")) return true;
   if (terminalResourceIds(session).has(home.terminalResourceId)) return true;
-  if (!home.launchProcess) return false;
+  const launch = home.launchProcess ?? (home.launchStateHome ? await readLaunchProcess(home.launchStateHome) : null);
+  if (!launch) return false;
   // Process discovery depends on initialized harnesses, which themselves reach Registry.
   const { listProcesses } = await import("../discovery/processes.ts");
-  return belongsToLaunch(session, home.launchProcess, await listProcesses());
+  return belongsToLaunch(session, launch, await listProcesses());
 }

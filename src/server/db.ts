@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
@@ -5639,6 +5640,9 @@ function writeTaskDependencyRewrites(
   }
 }
 
+// Closed, code-owned status identifiers, shared with the in-memory lifecycle policy.
+const ACTIVE_TASK_STATUSES_SQL = ACTIVE_TASK_STATUSES.map((status) => `'${status}'`).join(",");
+
 function invalidateTaskOwnershipInTransaction(
   d: DatabaseSync,
   sessionId: string,
@@ -5666,9 +5670,9 @@ function invalidateTaskOwnershipInTransaction(
   d.prepare(
     `UPDATE tasks SET
        session_id = NULL,
-       status = CASE WHEN status IN ('dispatching', 'running') THEN 'cancelled' ELSE status END,
+       status = CASE WHEN status IN (${ACTIVE_TASK_STATUSES_SQL}) THEN 'cancelled' ELSE status END,
        completed_at = CASE
-         WHEN status IN ('dispatching', 'running') THEN COALESCE(completed_at, ?)
+         WHEN status IN (${ACTIVE_TASK_STATUSES_SQL}) THEN COALESCE(completed_at, ?)
          ELSE completed_at
        END,
        updated_at = MAX(updated_at, ?)
@@ -6480,7 +6484,8 @@ export function listTasks(): Task[] {
 export function loadActiveTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status IN ('backlog','dispatching','running') ORDER BY created_at ASC`,
+      `SELECT * FROM tasks WHERE status = 'backlog' OR status IN (${ACTIVE_TASK_STATUSES_SQL})
+       ORDER BY created_at ASC`,
     )
     .all() as unknown as TaskRow[];
   return rowsToTasks(rows);

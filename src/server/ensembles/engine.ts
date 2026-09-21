@@ -32,7 +32,8 @@ import {
   type EnsembleWorkflowHandoff,
   type RunnableEnsembleRun,
 } from "@shared/ensemble.ts";
-import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType, type TaskStatus, type ThinkingLevel } from "@shared/types.ts";
+import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { EnsembleSubmissionClaims } from "@shared/protocol.ts";
 import { EnsembleStore } from "./store.ts";
@@ -266,8 +267,8 @@ export interface EnsembleTaskGateway {
   sessionCostUsd(taskId: string): number | null;
 }
 
-/** The subset of `TaskStatus` the engine reacts to, named so the engine needs no task types. */
-export type TaskGatewayStatus = "backlog" | "dispatching" | "running" | "done" | "cancelled" | "failed";
+/** The gateway reports the shared task lifecycle without exposing the rest of a Task. */
+export type TaskGatewayStatus = TaskStatus;
 
 export interface EnsembleEngineDeps {
   store: EnsembleStore;
@@ -363,7 +364,7 @@ const OCCUPYING_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching",
 
 /** A member that can still be handed a submission. */
 const SUBMITTABLE_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching", "active"];
-const LIVE_TASK_STATUSES: readonly TaskGatewayStatus[] = ["backlog", "dispatching", "running"];
+const LIVE_TASK_STATUSES: readonly TaskGatewayStatus[] = ["backlog", ...ACTIVE_TASK_STATUSES];
 const DRIVER_KEYS_BY_KIND = {
   member: ["member_wave@1"],
   review: ["artifact_barrier@1", "comparative_review@1", "consensus_review@1", "panel_review@1"],

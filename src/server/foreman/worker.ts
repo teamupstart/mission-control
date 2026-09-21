@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
@@ -1382,7 +1383,7 @@ async function deliverShipRecovery(
     || !freshCfg.enabled
     || !freshCfg.keepShipTasksMoving
     || fresh.task?.id !== task.id
-    || !["running", "dispatching"].includes(fresh.task.status)
+    || !isActiveTask(fresh.task.status)
     || fresh.foremanInvite === null
     || !fresh.hooksSeen
     || !hasPane(fresh)
@@ -2430,7 +2431,7 @@ export async function processPromptedWrapup(
     if (
       cfg.keepShipTasksMoving
       && current.session.task && isShippingTaskKind(current.session.task.kind)
-      && ["running", "dispatching"].includes(current.session.task.status)
+      && isActiveTask(current.session.task.status)
     ) {
       const latestSessions = await client.sessions().catch(() => null);
       const latest = latestSessions

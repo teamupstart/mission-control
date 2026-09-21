@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { taskHoldsCleanupResources } from "@shared/task-repos.ts";
+import { isActiveTask } from "@shared/task-status.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -317,7 +318,7 @@ export function ReportPanel({
   // click can't take one down. Terminal tasks that still hold a tree are reclaimed
   // from Recent outcomes instead (single surface), so this is active tasks only.
   function cancelControl(task: TaskSummary): React.JSX.Element | null {
-    if (task.status !== "running" && task.status !== "dispatching") {
+    if (!isActiveTask(task.status)) {
       return null;
     }
     if (confirmCancel !== task.id) {
@@ -402,7 +403,7 @@ export function ReportPanel({
         <Section title="Working" tone="working" count={working.length} empty="No agents running.">
           {working.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={s.activity ?? ""}>
-              {s.task && (s.task.status === "running" || s.task.status === "dispatching") ? (
+              {s.task && isActiveTask(s.task.status) ? (
                 marking === s.task.id ? (
                   <span className="report-mark">
                     <input

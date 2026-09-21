@@ -204,6 +204,37 @@ test("launch adoption owns durable proof, episode binding and the first-bound no
     "the adoption operation, not a caller-built proof, survives missing inventory on restart");
 });
 
+test("a newly verified launch outranks older inventory without reviving an absent peer", async () => {
+  const registry = new Registry();
+  const fresh = { ...discovered("proc:fresh-launch:30:1000"),
+    terminals: [mkEmuHandle({ backend: "ghostty", paneId: "fresh-owned" })] };
+  const peer = discovered("proc:absent-peer:31:1000");
+  const peerTask = mkTask({ id: "absent-peer", status: "running", sessionId: peer.syntheticId,
+    homeBackend: "ghostty", terminalResourceId: "emulator:ghostty:peer-owned",
+    terminalLaunch: { resourceId: "emulator:ghostty:peer-owned", sessionId: peer.syntheticId } });
+  registry.upsertTask(peerTask);
+  const empty: TerminalEnumeration[] = [{ kind: "emulator", backend: "ghostty", hostProcess: null, panes: [] }];
+  registry.applyDiscovery([fresh, peer], empty);
+  const launched = { homeName: "Fresh launch", homeBackend: "ghostty" as const,
+    terminalResourceId: "emulator:ghostty:fresh-owned" };
+  const task = mkTask({ id: "fresh-launch", status: "dispatching", ...launched });
+  registry.upsertTask(task);
+  const published: boolean[] = [];
+  registry.subscribe((event) => {
+    if (event.type === "session_upsert" && event.session.id === fresh.syntheticId) published.push(canWriteTo(event.session));
+  });
+  const adopted = await registry.adoptTerminalLaunch(task.id, launched, registry.getSession(fresh.syntheticId)!);
+  assert.ok(adopted);
+  assert.equal(canWriteTo(adopted.session), true, "old inventory must not retract the newly verified target");
+  assert.equal(published.at(-1), true, "the first adoption event must already be writable");
+  registry.upsertTask({ ...peerTask, homeName: "Edited peer" });
+  assert.deepEqual(registry.getSession(peer.syntheticId)?.terminals, [], "invalidation must not cover every target on the backend");
+  registry.applyDiscovery([{ ...fresh, terminals: [] }, peer], empty);
+  assert.deepEqual(registry.getSession(fresh.syntheticId)?.terminals, [], "the next completed sweep can confirm absence");
+  registry.upsertTask({ ...registry.getTask(task.id)!, homeName: "Edited fresh task" });
+  assert.deepEqual(registry.getSession(fresh.syntheticId)?.terminals, [], "ordinary task refresh cannot renew launch freshness");
+});
+
 test("launch adoption refuses an unverified recipient without changing task or episode", async () => {
   const registry = new Registry();
   const d = discovered("proc:unverified-adoption:30:1000");

@@ -96,7 +96,7 @@ const emitSessionRemove = (id: string): void => {
   for (const fn of subscribers) fn({ type: "session_remove", id });
 };
 
-const registry = {
+const registry = Object.assign(new Registry(), {
   getSession: (id: string) => SESSIONS.get(id),
   listTasks: () => [...TASKS.values()],
   getTask: (id: string) => TASKS.get(id),
@@ -108,13 +108,12 @@ const registry = {
   },
   upsertTask: (task: typeof UNCERTAIN_TASK) => TASKS.set(task.id, task),
   waitForSessionAtCwd: async () => adoptedSession,
-  adoptTerminalLaunch: Registry.prototype.adoptTerminalLaunch,
   bindTaskToWorkEpisode: () => {},
   subscribe: (fn: (e: { type: string; id: string }) => void) => {
     subscribers.push(fn);
     return () => {};
   },
-} as unknown as Registry;
+}) as unknown as Registry;
 
 const launched: Array<{ backend: string; argv: readonly string[] }> = [];
 const app = buildApp({

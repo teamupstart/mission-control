@@ -584,6 +584,8 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
     provider: "git",
     branch: null,
     homeName: `launched-scout-${++seq}`,
+    // A legacy emulator title is unknown regardless of the host's tmux inventory.
+    homeBackend: "ghostty",
   });
   h.registry.upsertTask(task);
   bindSession(h, task, cwd);
@@ -626,6 +628,7 @@ test("terminal scout cleanup stops the agent before recovery scans the checkout"
       branch: null,
       status: "failed",
       homeName: `${action}-launched-scout-${++seq}`,
+      homeBackend: "ghostty",
     });
     h.registry.upsertTask(task);
     bindSession(h, task, cwd);

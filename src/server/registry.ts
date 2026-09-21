@@ -992,6 +992,8 @@ export class Registry extends EventEmitter {
   private sweptSessions = false;
   /** Latest completed discovery input, also used when a task refreshes its session. */
   private terminalInventory: readonly TerminalEnumeration[] = [];
+  /** Positive launch observations newer than the cached inventory, scoped to exact resources. */
+  private verifiedLaunchesSinceDiscovery = new Set<string>();
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
   private inspections = new Map<string, InspectorInspection>();
   /**
@@ -2215,6 +2217,7 @@ export class Registry extends EventEmitter {
 
   applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
     this.terminalInventory = terminals;
+    this.verifiedLaunchesSinceDiscovery.clear();
     const now = Date.now();
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
@@ -4533,6 +4536,9 @@ export class Registry extends EventEmitter {
           (task.sessionId !== null && task.sessionId !== observed.id) ||
           task.terminalResourceId !== home.terminalResourceId) return null;
       newlyBound = task.sessionId === null;
+      if (home.terminalResourceId?.startsWith("emulator:")) {
+        this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
+      }
       this.upsertTask({
         ...task,
         sessionId: observed.id,
@@ -7253,7 +7259,8 @@ export class Registry extends EventEmitter {
     const target = EMULATORS[backend].restoreTarget?.(paneId);
     if (!target) return observed;
     const inventory = this.terminalInventory.find((entry) => entry.kind === "emulator" && entry.backend === backend);
-    if (inventory?.kind === "emulator" && inventory.panes !== null) {
+    if (inventory?.kind === "emulator" && inventory.panes !== null &&
+        !this.verifiedLaunchesSinceDiscovery.has(task.terminalResourceId!)) {
       const pane = inventory.panes.find((entry) => entry.paneId === paneId);
       if (!pane) return observed.filter((h) => h.kind !== "emulator" || h.backend !== backend);
       return [...observed.filter((h) => h.kind !== "emulator"), {

@@ -242,6 +242,9 @@ Malformed proof is read as absent, and a new launch clears the previous binding.
 `Registry.adoptTerminalLaunch` owns verification, durable proof construction, task/session
 refresh and work-episode binding for dispatch, SDK handoff and explicit resume. It rechecks
 the task's state, session owner and recorded resource after verification before adopting.
+The adopted resource outranks the previously cached inventory until the next completed
+discovery sweep. This freshness exception applies only to that exact resource, so adopting
+a new pane does not restore a different pane whose absence was already confirmed.
 
 Registry associates an enumerated emulator pane with its bound session by the proven UUID.
 A completed inventory that omits that UUID removes its handle. Without another usable handle,

@@ -3,7 +3,7 @@ import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 
 /**
  * One policy, applied to every message, instead of a choice the operator has to make before
- * every send: wait for the current turn, steer into it after a minute, interrupt after two.
+ * every send: wait for the current turn, steer into it after a minute, interrupt after three.
  *
  * Both deadlines are measured from the moment the message was queued, never from the latest
  * output, so a turn that keeps talking cannot postpone them. A message still leaves the
@@ -11,7 +11,7 @@ import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
  * describes what happens to a message a running turn has kept waiting.
  */
 export const MESSAGE_STEER_AFTER_MS = 60_000;
-export const MESSAGE_INTERRUPT_AFTER_MS = 120_000;
+export const MESSAGE_INTERRUPT_AFTER_MS = 180_000;
 
 /**
  * Persisted identifiers: append only. A queued row carries `after-turn`, which now means the

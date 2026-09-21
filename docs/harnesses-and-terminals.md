@@ -248,6 +248,7 @@ discovery sweep. This freshness exception applies only to that exact resource, s
 a new pane does not restore a different pane whose absence was already confirmed.
 
 Registry associates an enumerated emulator pane with its bound session by the proven UUID.
+Launch projection replaces or removes only that backend's handle, preserving other backends.
 A completed inventory that omits that UUID removes its handle. Without another usable handle,
 the composer is disabled and writes are refused even while the process survives. Unavailable or unobserved inventory
 allows restoration of the saved address, and only when the proof matches the bound session

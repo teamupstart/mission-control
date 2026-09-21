@@ -92,6 +92,31 @@ test("completed inventory retracts a saved launch target through correlation and
 });
 
 for (const backend of ["ghostty", "iterm"] as const) {
+  test(`${backend} launch projection preserves handles from other backends`, () => {
+    const registry = new Registry();
+    const other = mkEmuHandle({ backend: backend === "ghostty" ? "iterm" : "ghostty", paneId: "other-owned" });
+    const survivors = [mkMuxHandle(), other];
+    const d = { ...discovered(`proc:projection-${backend}:30:1000`),
+      terminals: [...survivors, mkEmuHandle({ backend, paneId: "stale-owned" })] };
+    const resourceId = `emulator:${backend}:verified-owned`;
+    const task = mkTask({ id: `projection-${backend}`, status: "running", sessionId: d.syntheticId,
+      homeBackend: backend, terminalResourceId: resourceId, terminalLaunch: { resourceId, sessionId: d.syntheticId } });
+    registry.upsertTask(task);
+    const pane = { paneId: "verified-owned", tabId: "tab", windowId: "window", tabTitle: "fixture",
+      windowTitle: "", isActive: false, tty: null, cwd: null };
+    for (const panes of [[pane], null, []]) {
+      registry.applyDiscovery([d], [{ kind: "emulator", backend, hostProcess: null, panes }]);
+      const projected = registry.getSession(d.syntheticId)!.terminals;
+      registry.upsertTask({ ...task, homeName: "Refreshed" });
+      for (const handles of [projected, registry.getSession(d.syntheticId)!.terminals]) {
+        assert.deepEqual(handles.filter((h) => h.backend !== backend), survivors,
+          "launch projection must preserve other backends through discovery and task refresh");
+        assert.deepEqual(handles.filter((h) => h.backend === backend).map((h) => h.paneId),
+          panes?.length === 0 ? [] : [pane.paneId], "only the verified backend's stale handle is replaced or removed");
+      }
+    }
+  });
+
   test(`${backend} launch projection follows the poller's own backend inventory and recovers on presence`, async () => {
     const registry = new Registry();
     const d = discovered(`proc:inventory-${backend}:30:1000`);

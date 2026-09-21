@@ -7263,13 +7263,13 @@ export class Registry extends EventEmitter {
         !this.verifiedLaunchesSinceDiscovery.has(task.terminalResourceId!)) {
       const pane = inventory.panes.find((entry) => entry.paneId === paneId);
       if (!pane) return observed.filter((h) => h.kind !== "emulator" || h.backend !== backend);
-      return [...observed.filter((h) => h.kind !== "emulator"), {
+      return [...observed.filter((h) => h.kind !== "emulator" || h.backend !== backend), {
         kind: "emulator", backend, paneId: pane.paneId, tabId: pane.tabId,
         windowId: pane.windowId, tabTitle: pane.tabTitle, isActive: pane.isActive,
       }];
     }
     if (observed.some((h) => h.kind === "emulator" && h.backend === backend && h.paneId === paneId)) return observed;
-    return [...observed.filter((h) => h.kind !== "emulator"), {
+    return [...observed.filter((h) => h.kind !== "emulator" || h.backend !== backend), {
       kind: "emulator", backend, ...target, windowId: "", tabTitle: "", isActive: false,
     }];
   }

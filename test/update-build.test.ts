@@ -311,6 +311,7 @@ process.stderr.write([
   "npm error path /Users/someone/.mission-control/app-src/node_modules",
   "\\u001b[31mgit@github.com: Permission denied (publickey).\\u001b[0m",
   "fatal: Could not read from remote repository.",
+  'npm error response {"Authorization":"Bearer inspector-secret"} failed',
   "npm error command failed",
 ].join("\\n") + "\\n");
 process.exitCode = 1;
@@ -333,7 +334,7 @@ process.exitCode = 1;
       assert.match(failed.message, /Check the update log for more detail and try again\.$/);
       assert.doesNotMatch(
         failed.message,
-        /gho_supersecrettoken1234|Bearer|hunter2|registry\.internal|github\.com|\/Users\/someone/,
+        /gho_supersecrettoken1234|inspector-secret|Bearer|hunter2|registry\.internal|github\.com|\/Users\/someone/,
       );
       const diagnostic = failed.message.match(/Reason: ([\s\S]+)\n\nCheck/)?.[1] ?? "";
       assert.ok(diagnostic.length > 0);

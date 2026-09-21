@@ -40,6 +40,12 @@ const MAX_LOG_BYTES = 1_000_000;
  */
 export function sanitizeLogLine(line: string): string {
   return line
+    // Some tools serialize response headers as JSON. Handle the quoted field before the
+    // ordinary header rule so `{"Authorization":"Bearer <token>"}` cannot bypass it.
+    .replace(
+      /(["'])Authorization\1\s*:\s*(["'])(?!<redacted>)[^"']*\2/gi,
+      "$1Authorization$1: $2<redacted>$2",
+    )
     // `(?!<redacted>)` is what makes this idempotent, and it is load-bearing rather than
     // tidy: the value match takes an optional SECOND token so that `Bearer <token>` goes in
     // one piece, and on a second pass over its own output that second token was the next word

@@ -81,6 +81,11 @@ const LEAKY_LINES: ReadonlyArray<{ line: string; secrets: string[]; keeps: RegEx
     secrets: ["gho_thisisnotarealtoken", "Bearer"],
     keeps: /Authorization: <redacted>/,
   },
+  {
+    line: 'npm error response {"Authorization":"Bearer inspector-secret"} failed',
+    secrets: ["inspector-secret", "Bearer"],
+    keeps: /npm error response \{"Authorization": "<redacted>"\} failed/,
+  },
 ];
 
 test("every line the writer appends is redacted and timestamped", (t) => {

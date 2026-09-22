@@ -579,7 +579,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   let exited: { code: number | null; signal: string | null } | null = null;
   const daemonBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1"
     ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
-        REPO_ROOT, `${process.pid}-${Date.now()}`,
+        REPO_ROOT, `${process.pid}-${Date.now()}`, extraEnv.MC_E2E_WEZTERM_BOUNDARY === "1",
       )
     : join(REPO_ROOT, "dist/server/index.mjs");
 

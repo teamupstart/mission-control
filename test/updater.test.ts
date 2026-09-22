@@ -1179,11 +1179,17 @@ test("an installed version that cannot stage still applies through the detached 
 });
 
 test("a failed build reports itself and leaves the app running", async () => {
+  const message = [
+    "The update build failed (exit 1).",
+    "Reason: Permission denied (publickey).",
+    "",
+    "Check the update log for more detail and try again.",
+  ].join("\n");
   const f = fixture({
     stage: async () => ({
       ok: false,
       reason: "failed",
-      message: "The update build failed (exit 1). Check the update log and try again.",
+      message,
     }),
   });
   await f.controller.start();
@@ -1192,8 +1198,11 @@ test("a failed build reports itself and leaves the app running", async () => {
   assert.equal(await f.controller.apply(), false);
   const snapshot = f.controller.getSnapshot();
   assert.equal(snapshot.phase, "error");
-  if (snapshot.phase === "error") assert.match(snapshot.message, /exit 1/);
-  assert.ok(f.events.some((event) => event.startsWith("error-dialog:")));
+  if (snapshot.phase === "error") {
+    assert.equal(snapshot.message, message);
+    assert.equal(snapshot.retryable, true);
+  }
+  assert.ok(f.events.includes(`error-dialog:${message}`));
   assert.ok(!f.events.includes("quit"));
   f.controller.stop();
 });

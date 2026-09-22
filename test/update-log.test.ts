@@ -56,6 +56,12 @@ const LEAKY_LINES: ReadonlyArray<{ line: string; secrets: string[]; keeps: RegEx
     keeps: /remote: <url>/,
   },
   {
+    // What an SSH client prints when it cannot authenticate, without the repository path.
+    line: "git@github.com: Permission denied (publickey).",
+    secrets: ["github.com", "git@"],
+    keeps: /<url>: Permission denied \(publickey\)/,
+  },
+  {
     line: "git://legacy.example.com/repo.git is unreachable",
     secrets: ["legacy.example.com"],
     keeps: /<url> is unreachable/,
@@ -74,6 +80,11 @@ const LEAKY_LINES: ReadonlyArray<{ line: string; secrets: string[]; keeps: RegEx
     line: "npm notice Authorization: Bearer gho_thisisnotarealtoken",
     secrets: ["gho_thisisnotarealtoken", "Bearer"],
     keeps: /Authorization: <redacted>/,
+  },
+  {
+    line: 'npm error response {"Authorization":"Bearer inspector-secret"} failed',
+    secrets: ["inspector-secret", "Bearer"],
+    keeps: /npm error response \{"Authorization": "<redacted>"\} failed/,
   },
 ];
 

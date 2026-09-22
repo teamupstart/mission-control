@@ -584,6 +584,8 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
     provider: "git",
     branch: null,
     homeName: `launched-scout-${++seq}`,
+    // A legacy emulator title is unknown regardless of the host's tmux inventory.
+    homeBackend: "ghostty",
   });
   h.registry.upsertTask(task);
   bindSession(h, task, cwd);
@@ -605,7 +607,10 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
   );
 
   const cancelled = await controlled.cancel(task.id);
-  assert.equal(cancelled.ok, true, cancelled.error);
+  // The agent stop is observed, but this legacy fixture supplies no terminal identity.
+  // Archive its final bytes while retaining resources whose absence remains unknown.
+  assert.equal(cancelled.ok, false);
+  assert.match(cancelled.error ?? "", /terminal identity .* is unknown/);
   assert.equal(stopped, true);
   const job = h.scouts.captureJobsForTask(task.id)[0]!;
   assert.equal(job.status, "published");
@@ -623,6 +628,7 @@ test("terminal scout cleanup stops the agent before recovery scans the checkout"
       branch: null,
       status: "failed",
       homeName: `${action}-launched-scout-${++seq}`,
+      homeBackend: "ghostty",
     });
     h.registry.upsertTask(task);
     bindSession(h, task, cwd);
@@ -644,7 +650,8 @@ test("terminal scout cleanup stops the agent before recovery scans the checkout"
     );
 
     const result = await controlled[action](task.id);
-    assert.equal(result.ok, true, `${action}: ${result.error ?? "cleanup failed"}`);
+    assert.equal(result.ok, false, `${action} must retain the legacy terminal resource`);
+    assert.match(result.error ?? "", /terminal identity .* is unknown/);
     assert.equal(stopped, true, `${action} must quiesce the launched agent`);
     const job = h.scouts.captureJobsForTask(task.id)[0]!;
     assert.equal(job.status, "published");

@@ -93,13 +93,16 @@ screenshot; open the trace with `npx playwright show-trace`.
 `terminal-session-name.spec.ts` selects Ghostty and submits a dispatch through the dashboard.
 The task cuts a real worktree, opens a scripted terminal, passes through the real discovery
 correlator and Registry, and reaches the browser through the real SSE connection. The spec
-changes the terminal's reported title, waits until discovery observes it, and restarts the
-daemon before checking the retained name on the Board. It also checks that Rename is absent.
+changes the terminal's reported title, makes inventory unavailable, and restarts the
+daemon before checking the retained name on the Board and fresh input to the saved UUID.
+It also checks that Rename is absent and an external session sharing cwd with an unverified
+pane has a disabled composer. A separate browser flow continues an SDK task in Ghostty and
+sends fresh input through its newly bound launch UUID.
 
 This spec opts into `MC_E2E_TERMINAL_BOUNDARY=1`. `terminal-boundary-build.ts` builds the
 production daemon entry into a private, gitignored sibling of `dist/server/index.mjs`,
 replacing only process/cwd observations and terminal I/O. The fixture preserves Ghostty's
-real name rules, host-process correlation and capability nulls. Its spawn records the title
+real name rules, launch-process association and capability nulls. Its spawn records the title
 it was asked for but reports a different shell title; it never creates a Session or writes
 the name to the Registry, task store or SSE snapshot. All other terminal adapters are made
 unavailable, and discovery reads only the fixture's process table, so this spec cannot adopt

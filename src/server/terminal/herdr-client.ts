@@ -820,7 +820,7 @@ export function createHerdrClient(
           return failure("Herdr pane process identities did not match the snapshot");
         }
         // One pane's process lookup failing is that PANE's fact, not the snapshot's. It used
-        // to end the whole call, and `herdrMultiplexer.list()` turns any failure into `[]` -
+        // to end the whole call, and `herdrMultiplexer.list()` turns any failure into `null` -
         // so a single slow or refused pane made every Herdr card on the dashboard disappear
         // for that tick, on a machine where the other panes had answered perfectly well.
         // What genuinely invalidates the snapshot still fails the whole call above: a

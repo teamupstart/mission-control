@@ -69,6 +69,7 @@ export function fakeEmulator(over: Partial<TerminalEmulator> = {}): TerminalEmul
     capture: null,
     focus: null,
     spawn: null,
+    restoreTarget: null,
     retitle: null,
     names: PLAIN_NAMES,
     ...over,

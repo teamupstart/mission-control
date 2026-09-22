@@ -141,6 +141,7 @@ test("the task that was already there loads, as a single-repo task", () => {
   // answer from "it was cut at no commit". Every later rule reads it as unknown.
   assert.equal(t.baseSha, null);
   assert.equal(t.worktreeLeaseId, null);
+  assert.equal(t.terminalLaunch, null, "legacy targets carry no verified launch association");
   // An ARRAY on a row written before the table existed - the field a consumer iterates.
   assert.deepEqual(t.extraRepos, []);
   assert.deepEqual(

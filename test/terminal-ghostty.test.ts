@@ -194,6 +194,7 @@ test("surfaces parse with tty ALWAYS null, which is the finding and not an overs
     ["UUID-B", "tab-2", "win-2", "beta", "Beta Window", "", "0"].join(US) +
     RS;
   const panes = parseSurfaces(out);
+  assert.ok(panes);
   assert.equal(panes.length, 2);
   assert.deepEqual(panes[0], {
     paneId: "UUID-A",
@@ -212,23 +213,23 @@ test("surfaces parse with tty ALWAYS null, which is the finding and not an overs
   assert.equal(panes[1]?.isActive, false);
 });
 
-test("unparseable output enumerates as [], the same answer as 'not running'", () => {
+test("unparseable output is unknown while a successful empty result is absence", () => {
   // Matches `parsePanes` in wezterm.ts: a caller has no more to do with half a pane list than
   // with none, and discovery must degrade silently on a machine that is not running this.
   assert.deepEqual(parseSurfaces(""), []);
   assert.deepEqual(parseSurfaces("   "), []);
-  assert.deepEqual(parseSurfaces("some AppleScript error text"), []);
+  assert.deepEqual(parseSurfaces("some AppleScript error text"), null);
   // Short of the seven fields the script emits: the format changed, and guessing which field
   // is which would put a window title in a cwd.
-  assert.deepEqual(parseSurfaces(["UUID-A", "tab-1"].join(US) + RS), []);
+  assert.deepEqual(parseSurfaces(["UUID-A", "tab-1"].join(US) + RS), null);
 });
 
-test("a failed list is [] rather than an error a card could not act on", async () => {
+test("a failed list preserves unknown inventory", async () => {
   // Covers both states this must pass through quietly: Ghostty not running, and Automation
   // permission not granted (osascript exits non-zero with -1743). Neither is actionable from
   // a session card and both resolve themselves.
   const { exec } = recorder([stubRun({ stdout: "", stderr: "-1743", code: 1 })]);
-  assert.deepEqual(await ghosttyEmulator(exec).list!(), []);
+  assert.deepEqual(await ghosttyEmulator(exec).list!(), null);
 });
 
 test("spawn splits 'a window opened' from 'we can address it'", async () => {
@@ -316,4 +317,15 @@ test("focus raises the app and the surface, addressed by bundle id", async () =>
   assert.ok(script.includes(TARGET.paneId));
   // By bundle id, never by application NAME: a name resolves to whatever app is called that.
   assert.ok(script.includes('application id "com.mitchellh.ghostty"'));
+});
+
+test("failed or malformed inventory cannot prove an owned surface absent", async () => {
+  for (const result of [
+    { ...stubRun({ code: 1, stderr: "timed out", stdout: "" }), outcomeUnknown: true },
+    stubRun({ code: 1, stderr: "Not authorized to send Apple events (-1743)", stdout: "" }),
+    stubRun({ code: 0, stdout: "malformed record", stderr: "" }),
+  ]) {
+    assert.equal(await ghosttyEmulator(recorder([result]).exec).list!(), null);
+  }
+  assert.deepEqual(await ghosttyEmulator(recorder([stubRun({ code: 0, stdout: "", stderr: "" })]).exec).list!(), []);
 });

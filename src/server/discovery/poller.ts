@@ -34,8 +34,8 @@ export async function pollOnce(
   refresh: (registry: Registry) => void = refreshDriverGit,
 ): Promise<void> {
   try {
-    const sessions = await find();
-    registry.applyDiscovery(sessions);
+    const { sessions, terminals } = await find();
+    registry.applyDiscovery(sessions, terminals);
   } catch (err) {
     console.error("[poller] sweep failed:", err);
   }

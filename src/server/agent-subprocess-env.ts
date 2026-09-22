@@ -1,3 +1,4 @@
+import { LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE } from "./terminal/launch-process.ts";
 import {
   existsSync,
   mkdirSync,
@@ -32,7 +33,6 @@ const PANE_IDENTITY_ENV_NAMES = ["TMUX_PANE", "WEZTERM_PANE", "ITERM_SESSION_ID"
 
 const DISPOSABLE_STATE_ROOT = join(tmpdir(), "mission-control-agent-state");
 const LOOPBACK_TOKEN_FILE = "loopback-token";
-const TERMINAL_CLEANUP_WRAPPER = "launch-and-cleanup.sh";
 const liveDisposableStateHomes = new Set<string>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -202,6 +202,7 @@ function launchAndCleanupScript(env: Record<string, string>, argv: readonly stri
     `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
     ...Object.entries(env).map(([name, value]) => `export ${name}=${shellCommand([value])}`),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
+    `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
     shellCommand(argv),
     "",
   ].join("\n");
@@ -222,7 +223,7 @@ export function isolatedAgentArgv(
 ): string[] {
   const env = agentSubprocessEnv({}, { ...options, loopbackAccess: true });
   const stateHome = env.MISSION_HOME!;
-  const wrapper = join(stateHome, TERMINAL_CLEANUP_WRAPPER);
+  const wrapper = join(stateHome, LAUNCH_SCRIPT_FILE);
   try {
     writeFileSync(wrapper, launchAndCleanupScript(env, argv), { mode: 0o700 });
   } catch (error) {

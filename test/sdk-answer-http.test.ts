@@ -2,7 +2,7 @@ import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // What is at stake: an answer landing on a question nobody was asked.
 //
@@ -27,7 +27,7 @@ import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
-const { mkTask } = await import("./helpers/session-fixture.ts");
+const { mkTask, mkSession, mkEmuHandle } = await import("./helpers/session-fixture.ts");
 const { launchedArgv, launchedCommand } = await import("./helpers/isolated-launch.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
@@ -451,8 +451,9 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   assert.deepEqual(sessionEndingReasons("sdk:hand"), ["handoff"]);
 });
 
-test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async () => {
+test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async (t) => {
   const registry = new Registry();
+  const adoption = t.mock.method(registry, "adoptTerminalLaunch");
   seed(registry, null, "sdk:launch");
   const supervisor = fakeSupervisor();
   const launched: Array<{ backend: string; argv: readonly string[] }> = [];
@@ -461,12 +462,13 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
     supervisor,
     {
       spawn: async () => assert.fail("the selected backend must own the launch"),
-      waitForSessionAtCwd: async () => null,
+      waitForSessionAtCwd: async () => mkSession({ terminals: [mkEmuHandle({ backend: "ghostty", paneId: "handoff-owned" })] }),
       settleTask: () => assert.fail("a successful handoff settles nothing"),
     },
     async (backend, spec) => {
       launched.push({ backend, argv: spec.argv });
-      return { ok: true, label: "Ghostty", homeName: "Add a toggle", status: 200 };
+      return { ok: true, label: "Ghostty", homeName: "Add a toggle", status: 200,
+        terminalResourceId: "emulator:ghostty:handoff-owned" };
     },
   );
 
@@ -491,6 +493,8 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.deepEqual(supervisor.stopped, ["sdk:launch"]);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "ghostty");
+  assert.equal(adoption.mock.calls.at(-1)?.arguments[1].launchStateHome, dirname(launched[0]!.argv[1]!),
+    "handoff must retain the wrapper marker source until adoption");
   // Read out of the launch wrapper: what a backend receives is `/bin/sh <wrapper>`, and the
   // agent's own command line is the wrapper's last statement. See `launchedCommand`.
   assert.match(launchedCommand(launched[0]?.argv ?? []), /--resume/);

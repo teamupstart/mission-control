@@ -119,6 +119,8 @@ when changed, one independently reviewed pull request per repository.
 Per-harness settings choose whether dispatched sessions run on the Agent SDK or in a terminal.
 Terminal-backed harnesses can stay on Automatic selection or pin dispatches to tmux, Herdr, cmux,
 WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
+Ghostty dispatches retain their verified pane UUID across daemon restarts and inventory failures.
+External Ghostty sessions without a proven pane association remain visible with input disabled.
 
 Mission Control supports five kinds of work:
 

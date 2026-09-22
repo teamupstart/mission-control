@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { GHOSTTY_BIN } from "./bin.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
@@ -166,20 +167,20 @@ return out`;
  * Parse the enumeration script's output into normalized panes.
  *
  * `tty` is ALWAYS null, and that is this adapter's whole finding rather than an oversight -
- * see the header. `correlate.ts` pairs these against ttys hosted by the Ghostty GUI.
+ * see the header. Cwd does not identify an agent child's terminal.
  *
- * Returns [] for anything unparseable, matching `parsePanes` in `wezterm.ts`: a caller has
- * no more to do with half a pane list than with none, and discovery must degrade silently.
+ * A malformed record invalidates the complete observation. Only successful empty output
+ * proves that no surface was listed.
  */
-export function parseSurfaces(stdout: string): EmulatorPane[] {
+export function parseSurfaces(stdout: string): TerminalInventory<EmulatorPane> {
   const panes: EmulatorPane[] = [];
   for (const record of stdout.split(RS)) {
     if (!record.trim()) continue;
     const f = record.split(US);
     // Seven fields, or the script changed and we should not guess which is which.
-    if (f.length < 7) continue;
+    if (f.length !== 7) return null;
     const [paneId, tabId, windowId, tabTitle, windowTitle, cwd, active] = f;
-    if (!paneId) continue;
+    if (!paneId || !tabId || !windowId || !["0", "1"].includes(active?.trim() ?? "")) return null;
     panes.push({
       paneId,
       tabId: tabId ?? "",
@@ -285,15 +286,11 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       const r = await osa(listScript(), LIST_TIMEOUT_MS);
       // Non-zero covers the states this must degrade silently through: Ghostty not running,
       // and Automation permission not granted (osascript exits 1 with -1743). Neither is an
-      // error the operator can act on from a card, and both resolve themselves.
-      return r.code === 0 ? parseSurfaces(r.stdout) : [];
+      // permission to conclude that a previously owned surface has disappeared.
+      return r.code === 0 ? parseSurfaces(r.stdout) : null;
     },
 
-    /**
-     * The slot this adapter forced onto the interface. Ghostty's GUI process is the only
-     * thing that can tell us which tty one of its surfaces is on, and it tells us by being
-     * that tty's ancestor.
-     */
+    // Do not let passive Apple Events start a closed application.
     hostProcess: { commands: ["ghostty"] },
 
     write: {
@@ -330,6 +327,8 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
           "ghostty could not raise that surface",
         ),
     },
+
+    restoreTarget: (paneId) => paneId ? { paneId, tabId: "" } : null,
 
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {

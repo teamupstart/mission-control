@@ -1,4 +1,5 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -2258,6 +2259,8 @@ export class TaskManager {
       (task) =>
         task.sessionId === null &&
         task.worktreePath === session.cwd &&
+        (!task.terminalResourceId?.startsWith("emulator:") ||
+          terminalResourceIds(session).has(task.terminalResourceId)) &&
         task.status === "running",
     );
     if (candidates.length !== 1) return;

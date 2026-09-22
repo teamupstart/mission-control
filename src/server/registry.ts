@@ -1,3 +1,5 @@
+import { EMULATORS } from "./terminal/registry.ts";
+import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -107,6 +109,9 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
+import type { TerminalEnumeration } from "./terminal/enumerate.ts";
+import type { SpawnedHome } from "./terminal/home.ts";
+import { verifiesEmulatorLaunch } from "./terminal/launch-process.ts";
 import type {
   RuntimeMetaRead,
   SdkEvent,
@@ -985,6 +990,10 @@ export class Registry extends EventEmitter {
   private discoveredIdentity = new Map<string, { agentSessionId: string | null; transcriptPath: string | null }>();
   /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
   private sweptSessions = false;
+  /** Latest completed discovery input, also used when a task refreshes its session. */
+  private terminalInventory: readonly TerminalEnumeration[] = [];
+  /** Positive launch observations newer than the cached inventory, scoped to exact resources. */
+  private verifiedLaunchesSinceDiscovery = new Set<string>();
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
   private inspections = new Map<string, InspectorInspection>();
   /**
@@ -2206,7 +2215,9 @@ export class Registry extends EventEmitter {
 
   // ---- passive discovery ----
 
-  applyDiscovery(discovered: DiscoveredSession[]): void {
+  applyDiscovery(discovered: DiscoveredSession[], terminals: readonly TerminalEnumeration[] = []): void {
+    this.terminalInventory = terminals;
+    this.verifiedLaunchesSinceDiscovery.clear();
     const now = Date.now();
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
@@ -2342,6 +2353,7 @@ export class Registry extends EventEmitter {
     // First sight of this pane-backed session in this process, which is the one moment the
     // durable review half is worth a query - see `seedRetroFromReviews`. Before `base.retro`
     // is derived below, so the first payload this session emits already carries it.
+    d = { ...d, terminals: this.launchedEmulatorTerminals(d.syntheticId, d.terminals) };
     if (!prev) this.seedRetroFromReviews(d.syntheticId);
     // Read the stored binding ONCE, on first sight. After that the in-memory value
     // is the freshest truth - every rebinding goes through this process first - so
@@ -4506,6 +4518,37 @@ export class Registry extends EventEmitter {
         resolve(episode?.episodeId === episodeId);
       });
     });
+  }
+
+  /** Verify once, then persist and publish the task's matching launch binding together. */
+  async adoptTerminalLaunch(
+    taskId: string | null,
+    home: SpawnedHome,
+    observed: Session,
+  ): Promise<{ session: Session; newlyBound: boolean } | null> {
+    if (!await verifiesEmulatorLaunch(home, observed)) return null;
+    let newlyBound = false;
+    if (taskId) {
+      // Verification can await a process inventory. A settled, rebound or replaced launch
+      // must not inherit the proof of the launch that was observed before that wait.
+      const task = this.getTask(taskId);
+      if (!task || (task.status !== "running" && task.status !== "dispatching") ||
+          (task.sessionId !== null && task.sessionId !== observed.id) ||
+          task.terminalResourceId !== home.terminalResourceId) return null;
+      newlyBound = task.sessionId === null;
+      if (home.terminalResourceId?.startsWith("emulator:")) {
+        this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
+      }
+      this.upsertTask({
+        ...task,
+        sessionId: observed.id,
+        terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
+          ? { resourceId: home.terminalResourceId, sessionId: observed.id } : null,
+        updatedAt: Date.now(),
+      });
+      this.bindTaskToWorkEpisode(taskId, observed.id);
+    }
+    return { session: this.getSession(observed.id) ?? observed, newlyBound };
   }
 
   bindTaskToWorkEpisode(
@@ -7180,12 +7223,14 @@ export class Registry extends EventEmitter {
    * session id, not to a directory that may hold several agents.
    */
   private resyncSessionTask(id: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
+    const observed = this.sessions.get(id);
+    if (!observed) return;
+    const s = { ...observed, terminals: this.launchedEmulatorTerminals(id, observed.terminals) };
     const summary = this.taskSummaryFor(id, s.cwd);
     const workspace = this.workspaceFor(id, s.cwd, s.runtime);
     const name = this.emulatorDisplayName(s);
     if (
+      terminalsEqual(observed.terminals, s.terminals) &&
       s.name === name &&
       JSON.stringify(s.task) === JSON.stringify(summary) &&
       s.workspaceRoot === workspace.root &&
@@ -7194,6 +7239,39 @@ export class Registry extends EventEmitter {
     const next = { ...s, name, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
+  }
+
+  /**
+   * A task's exact process-lifetime session id can retain its launch address when inventory
+   * is unavailable. Never recover this association by cwd or mutable tab title.
+   */
+  private launchedEmulatorTerminals(sessionId: string, observed: Session["terminals"]): Session["terminals"] {
+    const owners = this.listTasks().filter((task) =>
+      task.sessionId === sessionId && task.terminalLaunch?.sessionId === sessionId &&
+      task.terminalLaunch.resourceId === task.terminalResourceId &&
+      task.terminalResourceId?.startsWith("emulator:"),
+    );
+    if (owners.length !== 1) return observed;
+    const task = owners[0]!;
+    const backend = EMULATOR_IDS.find((id) => task.terminalResourceId!.startsWith(`emulator:${id}:`));
+    if (!backend || (task.homeBackend !== null && task.homeBackend !== backend)) return observed;
+    const paneId = task.terminalResourceId!.slice(`emulator:${backend}:`.length);
+    const target = EMULATORS[backend].restoreTarget?.(paneId);
+    if (!target) return observed;
+    const inventory = this.terminalInventory.find((entry) => entry.kind === "emulator" && entry.backend === backend);
+    if (inventory?.kind === "emulator" && inventory.panes !== null &&
+        !this.verifiedLaunchesSinceDiscovery.has(task.terminalResourceId!)) {
+      const pane = inventory.panes.find((entry) => entry.paneId === paneId);
+      if (!pane) return observed.filter((h) => h.kind !== "emulator" || h.backend !== backend);
+      return [...observed.filter((h) => h.kind !== "emulator" || h.backend !== backend), {
+        kind: "emulator", backend, paneId: pane.paneId, tabId: pane.tabId,
+        windowId: pane.windowId, tabTitle: pane.tabTitle, isActive: pane.isActive,
+      }];
+    }
+    if (observed.some((h) => h.kind === "emulator" && h.backend === backend && h.paneId === paneId)) return observed;
+    return [...observed.filter((h) => h.kind !== "emulator" || h.backend !== backend), {
+      kind: "emulator", backend, ...target, windowId: "", tabTitle: "", isActive: false,
+    }];
   }
 
   /** A launch name belongs only to the task's bound session on its exact emulator resource. */

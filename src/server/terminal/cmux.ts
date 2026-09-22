@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin } from "./bin.ts";
@@ -194,14 +195,14 @@ function parseJson<T>(stdout: string): T | null {
  * was observed within, and browser surfaces hold no pty to displace one with (a browser
  * added to an already-broken workspace changed nothing).
  */
-export function parseTree(stdout: string, cwds: ReadonlyMap<string, string>): MuxPane[] {
+export function parseTree(stdout: string, cwds: ReadonlyMap<string, string>): TerminalInventory<MuxPane> {
   const tree = parseJson<{ windows?: TreeWindow[] }>(stdout);
-  if (!tree?.windows) return [];
+  if (!Array.isArray(tree?.windows)) return null;
   const panes: MuxPane[] = [];
   for (const win of tree.windows) {
     for (const ws of win.workspaces ?? []) {
       const session = ws.id;
-      if (!session) continue;
+      if (!session) return null;
       const surfaces = (ws.panes ?? []).flatMap((pane) =>
         // A cmux workspace can hold browser surfaces beside its terminals. They have a URL
         // where a terminal has a tty, so they are not panes anything here can address - and
@@ -328,7 +329,7 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
      */
     list: async () => {
       const tree = await cmux(["tree", "--all", "--json", "--id-format", "both"]);
-      if (tree.code !== 0) return [];
+      if (tree.code !== 0) return null;
       const refs = windowRefs(tree.stdout);
       const perWindow = await Promise.all(
         refs.map((ref) =>

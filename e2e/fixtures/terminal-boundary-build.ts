@@ -13,8 +13,8 @@ export async function buildTerminalBoundaryDaemon(root: string, id: string): Pro
     mainFields: ["module", "main"], alias: { "@shared": "./src/shared" },
     banner: { js: "import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);" },
     plugins: [{ name: "terminal-boundary", setup(plugin) {
-      plugin.onResolve({ filter: /^\.\/(processes|proc-cwd)\.ts$/ }, (args) =>
-        args.importer === join(root, "src/server/discovery/correlate.ts") ? { path: fixture } : undefined,
+      plugin.onResolve({ filter: /\/(processes|proc-cwd)\.ts$/ }, (args) =>
+        ["src/server/discovery/correlate.ts", "src/server/dispatcher.ts", "src/server/terminal/launch-process.ts"].some((path) => args.importer === join(root, path)) ? { path: fixture } : undefined,
       );
       plugin.onResolve({ filter: /^\.\/ghostty\.ts$/ }, (args) =>
         args.importer === join(root, "src/server/terminal/registry.ts") ? { path: fixture } : undefined,

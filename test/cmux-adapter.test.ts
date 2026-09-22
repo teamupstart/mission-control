@@ -85,6 +85,7 @@ test("cmux is registered and complete", () => {
 
 test("a session's name is not its address", () => {
   const panes = parseTree(CMUX_TREE, new Map());
+  assert.ok(panes);
   const probe = panes.find((p) => p.sessionName === "mc-probe");
   assert.ok(probe, "the captured tree holds a workspace titled mc-probe");
 
@@ -106,6 +107,7 @@ test("a session's name is not its address", () => {
 
 test("a tty is reported only where cmux attributes it correctly", () => {
   const panes = parseTree(CMUX_TREE, new Map());
+  assert.ok(panes);
 
   // The regression this exists for. In `mc-tty2` cmux reports `ttys032` for a process that
   // `ps` puts on `ttys031`, and null for the surface that owns `ttys032` - verified live,
@@ -129,6 +131,7 @@ test("a tty is reported only where cmux attributes it correctly", () => {
 
 test("browser surfaces are not panes", () => {
   const panes = parseTree(CMUX_TREE, new Map());
+  assert.ok(panes);
   // A cmux workspace can hold a browser beside its terminals. It has a url where a terminal
   // has a tty, and nothing in this product can type into one.
   assert.ok(CMUX_TREE.includes('"browser"'), "the capture contains a browser surface");
@@ -154,6 +157,7 @@ test("cwd is joined from the per-window sweep, which is why there is one per win
   assert.ok(merged.size > one.size, "the second window really does add workspaces");
 
   const panes = parseTree(CMUX_TREE, merged);
+  assert.ok(panes);
   assert.ok(
     panes.some((p) => p.cwd?.startsWith("/")),
     "a plain path, never a URL",
@@ -288,6 +292,7 @@ test("enumeration spans every cmux window", async () => {
     stubRun({ stdout: CMUX_WORKSPACES_WINDOW_2, stderr: "", code: 0 }),
   ]);
   const panes = await cmuxMultiplexer(rec.exec).list();
+  assert.ok(panes);
 
   // `--all`, not the default. `cmux tree` without it answers for one window, and so does
   // `workspace list` - the RPC spelling of the same mistake (`all` where the method wants
@@ -299,18 +304,18 @@ test("enumeration spans every cmux window", async () => {
   assert.ok(panes.length > 4);
 });
 
-test("an absent or unreachable cmux enumerates to nothing rather than throwing", async () => {
+test("an absent or unreachable cmux preserves unknown inventory", async () => {
   // The socket only exists while the app runs, and cmux ships refusing outside processes
   // (`socketControlMode: cmuxOnly`) - so "not running", "not permitted" and "not installed"
   // are all ordinary states for someone who simply does not use cmux, and discovery must
   // degrade silently through every one of them.
   const rec = recorder([stubRun({ stdout: "", stderr: "Socket not found", code: 1 })]);
-  assert.deepEqual(await cmuxMultiplexer(rec.exec).list(), []);
+  assert.deepEqual(await cmuxMultiplexer(rec.exec).list(), null);
   assert.equal(rec.calls.length, 1, "and does not go on to sweep directories it cannot have");
 
   // Garbage on stdout is the same answer, not a crash: this runs inside a `Promise.all` over
   // every backend, and one adapter throwing takes the whole sweep down.
-  assert.deepEqual(parseTree("not json at all", new Map()), []);
+  assert.deepEqual(parseTree("not json at all", new Map()), null);
   assert.deepEqual(windowRefs(""), []);
 });
 
@@ -437,7 +442,7 @@ test("a cmux pane correlates into a handle and binds like any other", async () =
   // an enumerated cmux pane is carried all the way to a driveable `BoundPane` without one
   // line of it naming a vendor. `handleOf` reads `backend` off the candidate, `innermostPane`
   // ranks by axis, and `bindPane` resolves the adapter from the registry.
-  const pane = parseTree(CMUX_TREE, new Map()).find((p) => p.tty)!;
+  const pane = parseTree(CMUX_TREE, new Map())!.find((p) => p.tty)!;
   const [session] = correlate({
     procs: [
       {

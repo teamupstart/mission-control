@@ -129,6 +129,64 @@ export function stagingUnsupported(output: string): boolean {
   return /unknown argument: --(?:stage-only|progress)(?![-\w])/.test(output);
 }
 
+const MAX_FAILURE_DIAGNOSTIC_LENGTH = 400;
+const MAX_FAILURE_DIAGNOSTIC_LINES = 3;
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
+  "g",
+);
+const FAILURE_SIGNAL_PATTERN =
+  /\b(?:fatal|error|failed|failure|permission denied|access denied|unauthorized|forbidden|not found|cannot|could not|unable|timed? ?out|timeout|refused|denied|unreachable|eacces|eperm|enoent|enospc|enotfound|econnreset|econnrefused|eai_again|etimedout|e401|e403)\b/i;
+
+function isFailureBoilerplate(line: string): boolean {
+  return (
+    /^##mission-update-(?:progress|staged)\b/.test(line) ||
+    /^npm (?:error|err!)\s+(?:command failed|command sh -c\b.*|code (?:elifecycle|\d+)|errno \d+|exit status \d+)$/i.test(
+      line,
+    ) ||
+    /^npm (?:error|err!)\s+a complete log of this run can be found in:/i.test(line) ||
+    /^(?:(?:error|fatal):\s*)?(?:command failed|process exited)(?: with (?:exit )?code)?\s*\d*\.?$/i.test(
+      line,
+    ) ||
+    /^\d{1,3}%$/.test(line)
+  );
+}
+
+/**
+ * Select the useful, safe tail of a staged child failure for the user-visible message.
+ *
+ * The caller supplies only lines already sanitized by `consume`. Terminal escapes are removed
+ * here and the result crosses the sanitizer once more afterward, because an escape sequence can
+ * otherwise split a token during the first pass and recreate it when the formatting is removed.
+ * Progress protocol lines and generic wrappers do not explain the failure, so they never crowd
+ * the recent git, npm, electron-builder, filesystem, or network diagnostic out of the summary.
+ */
+export function stagedBuildFailureDiagnostic(safeTail: readonly string[]): string {
+  const candidates = safeTail
+    .flatMap((line) => line.replace(ANSI_ESCAPE_PATTERN, "").split(/\r+/))
+    .map((line) => sanitizeLogLine(line).trim())
+    .filter((line) => line.length > 0 && !isFailureBoilerplate(line));
+  const useful = candidates.filter((line) => FAILURE_SIGNAL_PATTERN.test(line));
+  const selected = useful
+    .filter((line, index) => useful.lastIndexOf(line) === index)
+    .slice(-MAX_FAILURE_DIAGNOSTIC_LINES);
+  const lineLimit = Math.floor(
+    (MAX_FAILURE_DIAGNOSTIC_LENGTH - Math.max(0, selected.length - 1)) /
+      Math.max(1, selected.length),
+  );
+  return selected
+    .map((line) => (line.length <= lineLimit ? line : `${line.slice(0, lineLimit - 3)}...`))
+    .join("\n");
+}
+
+function stagedBuildFailureMessage(code: number | null, safeTail: readonly string[]): string {
+  const failure = `The update build failed (exit ${code ?? 1}).`;
+  const diagnostic = stagedBuildFailureDiagnostic(safeTail);
+  return diagnostic
+    ? `${failure}\nReason: ${diagnostic}\n\nCheck the update log for more detail and try again.`
+    : `${failure} Check the update log and try again.`;
+}
+
 /**
  * Run the staged build to completion, reporting each stage as the script reaches it.
  *
@@ -342,10 +400,13 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
         env: request.env ?? updateChildEnvironment(),
       });
     } catch (error) {
+      request.log(
+        `the staged build could not start: ${sanitizeLogLine(error instanceof Error ? error.message : String(error))}`,
+      );
       settle({
         ok: false,
         reason: "failed",
-        message: `The update could not be built: ${error instanceof Error ? error.message : String(error)}`,
+        message: "The update could not be built. Check the update log and try again.",
       });
       return;
     }
@@ -370,10 +431,11 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
     timer.unref?.();
 
     child.once("error", (error) => {
+      request.log(`the staged build process failed: ${sanitizeLogLine(error.message)}`);
       settle({
         ok: false,
         reason: "failed",
-        message: `The update could not be built: ${error.message}`,
+        message: "The update could not be built. Check the update log and try again.",
       });
     });
 
@@ -400,7 +462,7 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
         settle({
           ok: false,
           reason: "failed",
-          message: `The update build failed (exit ${code ?? 1}). Check the update log and try again.`,
+          message: stagedBuildFailureMessage(code, tail),
         });
         return;
       }

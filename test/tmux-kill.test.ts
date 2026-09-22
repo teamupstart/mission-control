@@ -58,7 +58,7 @@ class Fixture {
   has(name: string) { return this.raw(["has-session", "-t", `=${name}`]).status === 0; }
   paneExists(pane: string) { return this.raw(["display-message", "-p", "-t", pane, "#{pane_id}"]).stdout.trim() === pane; }
   async session(name: string, pane: string) {
-    const observed = (await tmuxMultiplexer().list()).find(p => p.paneId === pane && p.sessionName === name);
+    const observed = (await tmuxMultiplexer().list())?.find(p => p.paneId === pane && p.sessionName === name);
     assert.ok(observed);
     return mkSession({ pid: this.pid(pane), task: null, name,
       terminals: [mkMuxHandle(observed)] });

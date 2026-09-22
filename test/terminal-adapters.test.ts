@@ -368,7 +368,9 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
   // the only way it asserts anything on a machine with neither installed.
   const tmuxOut = [["api", "1", "agent", "%3", "42", "/dev/ttys028", "/w/api"].join(SEP), ""].join("\n");
   const tmux = recorder([stubRun({ stdout: tmuxOut, stderr: "", code: 0 })]);
-  const [muxPane] = await tmuxMultiplexer(tmux.exec).list();
+  const muxPanes = await tmuxMultiplexer(tmux.exec).list();
+  assert.ok(muxPanes);
+  const [muxPane] = muxPanes;
   assert.deepEqual(tmux.calls[0]!.args.slice(0, 3), ["list-panes", "-a", "-F"]);
   assert.equal(muxPane?.paneId, "%3");
   assert.equal(muxPane?.windowIndex, 1);
@@ -389,7 +391,9 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
     },
   ]);
   const wez = recorder([stubRun({ stdout: wezOut, stderr: "", code: 0 })]);
-  const [emuPane] = await weztermEmulator(wez.exec).list!();
+  const emuPanes = await weztermEmulator(wez.exec).list!();
+  assert.ok(emuPanes);
+  const [emuPane] = emuPanes;
   assert.deepEqual(wez.calls[0]!.args, ["cli", "--no-auto-start", "list", "--format", "json"]);
   // Numbers become strings, so a caller can hold a pane id without knowing whose it is.
   assert.equal(emuPane?.paneId, "5");
@@ -398,20 +402,36 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
   assert.equal(emuPane?.cwd, "/Users/me/w ork");
 });
 
-test("an absent or unparseable backend enumerates as empty, never as a throw", async () => {
+test("an unreadable or unparseable backend enumerates as unknown, never as a throw", async () => {
   // The silent-degradation contract discovery is built on: the product works fine on a
   // machine with neither backend installed, and a sweep that threw would take every card on
   // the machine down with it.
-  const dead = stubRun({ stdout: "", stderr: "no server running", code: 1 });
-  assert.deepEqual(await tmuxMultiplexer(recorder([dead]).exec).list(), []);
+  const dead = stubRun({ stdout: "", stderr: "Permission denied", code: 1 });
+  assert.deepEqual(await tmuxMultiplexer(recorder([dead]).exec).list(), null);
   assert.deepEqual(await tmuxMultiplexer(recorder([dead]).exec).clients!(), []);
-  assert.deepEqual(await weztermEmulator(recorder([dead]).exec).list!(), []);
+  assert.deepEqual(await weztermEmulator(recorder([dead]).exec).list!(), null);
 
   // Short lines and non-JSON are the same answer: a half-parsed pane is no more use than none.
-  assert.deepEqual(parsePanes(`\n  \napi${SEP}1\n`), []);
+  assert.deepEqual(parsePanes(`\n  \napi${SEP}1\n`), null);
   assert.deepEqual(parseClients("nosep\n"), []);
-  assert.deepEqual(parseEmulatorPanes("<html>not json</html>"), []);
-  assert.deepEqual(parseEmulatorPanes('{"panes":[]}'), [], "an object is not the array we asked for");
+  assert.deepEqual(parseEmulatorPanes("<html>not json</html>"), null);
+  assert.deepEqual(parseEmulatorPanes('{"panes":[]}'), null, "an object is not the array we asked for");
+});
+
+test("tmux inventory distinguishes an empty server from an unreadable query", async () => {
+  const empty = ["no sessions", "no current target", "no server running",
+    "no server running on /tmp/owned.sock", "error connecting to /tmp/owned.sock (No such file or directory)"];
+  for (const stderr of empty) {
+    const result = stubRun({ stdout: "", stderr: stderr + "\n", code: 1 });
+    assert.deepEqual(await tmuxMultiplexer(recorder([result]).exec).list(), [], stderr);
+    for (const interrupted of [{ outcomeUnknown: true }, { overflowed: true }, { stdout: "partial pane" }, { code: 2 }]) {
+      assert.equal(await tmuxMultiplexer(recorder([{ ...result, ...interrupted }]).exec).list(), null,
+        `${stderr}: ${JSON.stringify(interrupted)}`);
+    }
+  }
+  for (const stderr of ["error connecting to /tmp/owned.sock (Permission denied)", "no server running on /tmp/owned.sock\nPermission denied", "", "server exited unexpectedly"]) {
+    assert.equal(await tmuxMultiplexer(recorder([stubRun({ stdout: "", stderr, code: 1 })]).exec).list(), null, stderr);
+  }
 });
 
 test("a client with no tty is dropped rather than joined against every pane that has none", () => {
@@ -455,13 +475,13 @@ test("a field containing the separator drops its pane rather than misaddressing 
   // So the parse validates instead of trusting, and drops what it cannot vouch for. One pane
   // missing from the fleet is a visible absence; one pane misaddressed is an invisible wrong.
   const shifted = ["api", "1", `weird${SEP}name`, "%3", "42", "/dev/ttys028", "/w/api"].join(SEP);
-  assert.deepEqual(parsePanes(shifted), [], "a line whose pane id is not %<digits> is dropped");
+  assert.deepEqual(parsePanes(shifted), null, "a line whose pane id is not %<digits> is dropped");
 
   // And the control: the identical line without the collision parses, so the test above
   // fails for the collision rather than for the shape of the fixture.
   const clean = ["api", "1", "weird-name", "%3", "42", "/dev/ttys028", "/w/api"].join(SEP);
-  assert.equal(parsePanes(clean).length, 1);
-  assert.equal(parsePanes(clean)[0]!.paneId, "%3");
+  assert.equal(parsePanes(clean)!.length, 1);
+  assert.equal(parsePanes(clean)![0]!.paneId, "%3");
 });
 
 test("a backend drops its own environment pin, and only its own", async () => {

@@ -1,19 +1,6 @@
 import type { HostProcessSpec } from "./types.ts";
 
-/**
- * The process-table half of correlation: which backend is hosting a tty, when the backend
- * itself cannot say.
- *
- * Pure, and generic over every backend - this file names no vendor, exactly as
- * `discovery/pane-dialog.ts` holds the menu grammar while a harness supplies its own cursor
- * glyph. An adapter declares what its GUI is CALLED (`HostProcessSpec`); the walking of the
- * process tree is machinery, and machinery that lived in one adapter would be machinery the
- * second one reimplemented slightly differently.
- *
- * It works on a structural subset of `discovery/processes.ts`'s `Proc` rather than importing
- * it, so the terminal layer keeps no dependency on discovery. `Proc` satisfies `HostProc`
- * structurally, so the call site passes its rows straight through.
- */
+/** Pure process-name matching for the shared no-auto-launch enumeration gate. */
 
 /** The columns of a process row this matcher needs. `Proc` satisfies it structurally. */
 export interface HostProc {
@@ -24,9 +11,6 @@ export interface HostProc {
   /** Full argv as reported by ps. */
   command: string;
 }
-
-/** How far up a parent chain to walk before assuming the table is lying to us. */
-const MAX_DEPTH = 32;
 
 /**
  * The basename of argv0 - the only part of a command line this module is allowed to read.
@@ -65,43 +49,4 @@ export function isHostProcess(spec: HostProcessSpec, command: string): boolean {
  */
 export function hostIsRunning(spec: HostProcessSpec, procs: readonly HostProc[]): boolean {
   return procs.some((p) => isHostProcess(spec, p.command));
-}
-
-/**
- * Every tty whose process sits, at any depth, under this backend's GUI.
- *
- * The weaker half of the join, and the one that makes a pane with no tty addressable at all.
- * A surface's shell is a child of the emulator process, so ancestry answers "which backend
- * is this tty inside" even when the backend cannot answer "which of my panes is that".
- *
- * Note what it deliberately does NOT catch, because the omission is load-bearing rather than
- * a gap: a multiplexer server is reparented to init, so an agent inside a tmux session
- * hosted in a Ghostty window does not walk up to Ghostty. The multiplexer keeps that pane -
- * which is correct, it is the inner and more specific handle - and the two axes cannot end
- * up fighting over one tty.
- */
-export function ttysHostedBy(spec: HostProcessSpec, procs: readonly HostProc[]): Set<string> {
-  const byPid = new Map<number, HostProc>();
-  for (const p of procs) byPid.set(p.pid, p);
-
-  const hosts = new Set<number>();
-  for (const p of procs) if (isHostProcess(spec, p.command)) hosts.add(p.pid);
-  if (hosts.size === 0) return new Set();
-
-  const ttys = new Set<string>();
-  for (const p of procs) {
-    if (!p.tty) continue;
-    let cur: HostProc | undefined = p;
-    // A bounded walk, because a process table read non-atomically can hand back a pid whose
-    // parent has been recycled - and an unbounded loop over `ppid` would then hang the tick.
-    for (let depth = 0; cur && depth < MAX_DEPTH; depth++) {
-      if (hosts.has(cur.pid)) {
-        ttys.add(p.tty);
-        break;
-      }
-      if (cur.ppid === cur.pid || cur.ppid <= 1) break;
-      cur = byPid.get(cur.ppid);
-    }
-  }
-  return ttys;
 }

@@ -643,3 +643,21 @@ test("two sessions in one tmux session stay distinct (different panes/ttys)", ()
   assert.equal(results.length, 2);
   assert.notEqual(results[0]?.syntheticId, results[1]?.syntheticId);
 });
+
+test("a child cwd matching another Ghostty shell never authorizes input to that pane", () => {
+  const [session] = correlate({
+    procs: [
+      proc({ pid: 10, tty: "?", command: "/Applications/Ghostty.app/Contents/MacOS/ghostty", agent: null }),
+      proc({ pid: 20, ppid: 10, tty: "ttys1", command: "bash", agent: null }),
+      proc({ pid: 30, ppid: 20, tty: "ttys1" }),
+      proc({ pid: 40, ppid: 10, tty: "ttys2", command: "bash", agent: null }),
+    ],
+    terminals: [{ kind: "emulator", backend: "ghostty", hostProcess: { commands: ["ghostty"] }, panes: [
+      emuPane({ paneId: "agent", tty: null, tabTitle: "shell A", cwd: "/a" }),
+      emuPane({ paneId: "unrelated", tty: null, tabTitle: "shell B", cwd: "/b" }),
+    ] }],
+  }, new Map([[30, "/b"]]));
+  assert.ok(session);
+  assert.equal(session.cwd, "/b");
+  assert.equal(emulatorHandle(session), null, "refuse an unverified recipient");
+});

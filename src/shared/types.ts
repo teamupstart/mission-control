@@ -2190,6 +2190,8 @@ export interface Task {
   homeBackend?: string | null;
   /** Stable backend resource identity used to retain cleanup ownership across renames. */
   terminalResourceId: string | null;
+  /** Positive launch association, absent on legacy tasks whose target may have been guessed. */
+  terminalLaunch?: { resourceId: string; sessionId: string } | null;
   /**
    * The session this task is CURRENTLY EXECUTING ON, or null.
    *

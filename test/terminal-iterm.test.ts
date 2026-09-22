@@ -123,10 +123,10 @@ test("enumerates every window, tab, and session through one stdin script", async
 });
 
 test("rejects malformed records and normalizes missing optional fields", () => {
-  assert.deepEqual(parseItermSessions("not-a-record"), []);
-  assert.deepEqual(parseItermSessions(["bad id with spaces", "1", "2", "", "", "", "", "0"].join(US) + RS), []);
-  assert.deepEqual(parseItermSessions(["session", "1", "2", "", "", "", "", "x"].join(US) + RS), []);
-  assert.deepEqual(parseItermSessions(["session", "1", "2", "", "", "", "", "0"].join(US) + RS)[0], {
+  assert.deepEqual(parseItermSessions("not-a-record"), null);
+  assert.deepEqual(parseItermSessions(["bad id with spaces", "1", "2", "", "", "", "", "0"].join(US) + RS), null);
+  assert.deepEqual(parseItermSessions(["session", "1", "2", "", "", "", "", "x"].join(US) + RS), null);
+  assert.deepEqual(parseItermSessions(["session", "1", "2", "", "", "", "", "0"].join(US) + RS)![0], {
     paneId: "session",
     tabId: "1",
     windowId: "2",
@@ -150,7 +150,7 @@ test("list failures stay local to iTerm2", async () => {
     { stdout: "", stderr: "timed out", code: 1, outcomeUnknown: true, overflowed: false },
   ]) {
     const run = recorder([failure]);
-    assert.deepEqual(await itermEmulator(run.exec).list!(), []);
+    assert.deepEqual(await itermEmulator(run.exec).list!(), null);
   }
 });
 

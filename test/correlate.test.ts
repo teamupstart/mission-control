@@ -522,7 +522,7 @@ test("a session on one tty keeps a handle from EACH axis, not just the namer's",
     procs: [proc({ pid: 800, ppid: 50, tty: "ttysZ" })],
     terminals: terminals(
       [muxPane({ session: "inner", tty: "ttysZ", paneId: "%7" })],
-      [emuPane({ tty: "ttysZ", tabTitle: "Outer", paneId: "12", tabId: "4", windowId: "1", isActive: true })],
+      [emuPane({ tty: "ttysZ", tabTitle: "Outer", paneId: "12", tabId: "4", windowId: "1", isActive: true, incarnation: "mux-lifetime" })],
     ),
   };
   const [s] = correlate(input);
@@ -532,6 +532,7 @@ test("a session on one tty keeps a handle from EACH axis, not just the namer's",
     backend: "wezterm",
     paneId: "12",
     tabId: "4",
+    incarnation: "mux-lifetime",
     windowId: "1",
     tabTitle: "Outer",
     isActive: true,

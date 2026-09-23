@@ -1,6 +1,8 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
+import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
+import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
@@ -59,7 +61,10 @@ function recorder(results: RunResult[] = []) {
 const BUF = "harness-3";
 
 const MUX = { session: "api", windowIndex: 0, paneId: "%3" };
-const EMU = { paneId: "5", tabId: "2" };
+const socket = await weztermSocketFixture();
+after(() => socket.close());
+const EMU = { paneId: "5", tabId: "2", incarnation: socket.incarnation };
+const wezterm = (exec: TerminalExec) => weztermEmulator(socket.wrap(exec));
 
 test("a command round-trips through the shell encoding, apostrophes included", () => {
   // `shellWords` exists because two test layers that cannot import each other both have to
@@ -92,7 +97,7 @@ test("every key renders into each backend's own convention", async () => {
     const tmuxRendered = tmux.calls[0]!.args.at(-1)!;
 
     const wez = recorder();
-    await weztermEmulator(wez.exec).write!.keys(EMU, [key]);
+    await wezterm(wez.exec).write!.keys(EMU, [key]);
     // Read off STDIN, not argv. wezterm's payload moved there when `send-text` stopped
     // taking a trailing argument, and `args.at(-1)` kept "passing" against `--no-paste` -
     // a flag that is equal to no key name and different from every tmux rendering, so all
@@ -170,7 +175,7 @@ test("a payload never rides on argv, however big it gets", async () => {
   // positional argument is omitted.
   for (const literal of [true, false]) {
     const { calls, exec } = recorder();
-    const wez = weztermEmulator(exec);
+    const wez = wezterm(exec);
     await (literal ? wez.write!.text(EMU, big) : wez.write!.paste!(EMU, big));
 
     assert.equal(calls[0]!.input, big);
@@ -210,7 +215,7 @@ test("a body beginning with a dash is typed, not parsed as flags", async () => {
   }
 
   const wez = recorder();
-  await weztermEmulator(wez.exec).write!.paste!(EMU, body);
+  await wezterm(wez.exec).write!.paste!(EMU, body);
   assert.equal(wez.calls[0]!.input, body);
   assert.ok(!wez.calls[0]!.args.includes(body), "the body must not be a wezterm argument");
 
@@ -235,7 +240,7 @@ test("a body beginning with a dash is typed, not parsed as flags", async () => {
 
 test("wezterm sends escape sequences, and distinguishes typing from pasting", async () => {
   const { calls, exec } = recorder();
-  const wez = weztermEmulator(exec);
+  const wez = wezterm(exec);
 
   await wez.write!.keys(EMU, ["shift-tab"]);
   assert.deepEqual(calls[0]!.args, [
@@ -255,6 +260,37 @@ test("wezterm sends escape sequences, and distinguishes typing from pasting", as
   await wez.write!.paste!(EMU, "one\ntwo");
   assert.deepEqual(calls[1]!.args, ["cli", "--no-auto-start", "send-text", "--pane-id", "5"]);
   assert.equal(calls[1]!.input, "one\ntwo");
+});
+
+test("wezterm captures pane output with a current socket incarnation", async () => {
+  const output = "Current pane output\nReady for input\n";
+  const { calls, exec } = recorder([stubRun({ stdout: output, stderr: "", code: 0 })]);
+
+  assert.equal(await wezterm(exec).capture!(EMU), output);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["cli", "--no-auto-start", "get-text", "--pane-id", "5"],
+  ]);
+});
+
+test("wezterm focuses the tab then pane with a current socket incarnation", async () => {
+  const { calls, exec } = recorder();
+  const focus = wezterm(exec).focus;
+  assert.ok(focus?.granularity === "pane");
+
+  assert.deepEqual(await focus.raise(EMU), { ok: true, outcomeUnknown: false });
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["cli", "--no-auto-start", "activate-tab", "--tab-id", "2"],
+    ["cli", "--no-auto-start", "activate-pane", "--pane-id", "5"],
+  ]);
+});
+
+test("wezterm retitles the pane's tab with a current socket incarnation", async () => {
+  const { calls, exec } = recorder();
+
+  assert.deepEqual(await wezterm(exec).retitle!(EMU, "-current task"), { ok: true, outcomeUnknown: false });
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["cli", "--no-auto-start", "set-tab-title", "--pane-id", "5", "--", "-current task"],
+  ]);
 });
 
 test("a tmux write stops at the buffer it could not load", async () => {
@@ -391,7 +427,7 @@ test("each backend enumerates through its own adapter, and normalizes at that bo
     },
   ]);
   const wez = recorder([stubRun({ stdout: wezOut, stderr: "", code: 0 })]);
-  const emuPanes = await weztermEmulator(wez.exec).list!();
+  const emuPanes = await wezterm(wez.exec).list!();
   assert.ok(emuPanes);
   const [emuPane] = emuPanes;
   assert.deepEqual(wez.calls[0]!.args, ["cli", "--no-auto-start", "list", "--format", "json"]);
@@ -520,7 +556,7 @@ test("the env rule reaches every command, not just the spec", async () => {
     seen.push(opts?.env);
     return stubRun({ stdout: "", stderr: "", code: 0 });
   };
-  const wez = weztermEmulator(exec);
+  const wez = wezterm(exec);
   await wez.list!();
   await wez.write!.text(EMU, "hello");
   await wez.capture!(EMU);

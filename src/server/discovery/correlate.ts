@@ -260,6 +260,7 @@ function handleOf(c: TerminalCandidate): TerminalHandle {
     backend: c.backend,
     paneId: p.paneId,
     tabId: p.tabId,
+    ...(p.incarnation ? { incarnation: p.incarnation } : {}),
     windowId: p.windowId,
     tabTitle: p.tabTitle,
     isActive: p.isActive,

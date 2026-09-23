@@ -51,7 +51,9 @@ export function installTerminalBoundary(deps: TerminalDeps): void {
   for (const backend of [...Object.values(deps.multiplexers), ...Object.values(deps.emulators)]) {
     backend.bin = { env: null, candidates: [join(process.env.MISSION_HOME!, "missing-terminal")], dropEnv: [] };
   }
-  deps.emulators.ghostty = ghosttyEmulator();
+  if (process.env.MC_E2E_WEZTERM_BOUNDARY === "1") {
+    deps.emulators.wezterm.bin = { env: null, candidates: [process.execPath], dropEnv: [] };
+  } else deps.emulators.ghostty = ghosttyEmulator();
 }
 
 /** Pane writes build fresh adapters too, so every Ghostty factory call uses this boundary. */

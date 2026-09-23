@@ -1,4 +1,5 @@
 import { test, after } from "node:test";
+import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,9 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-emu-spawn-"));
 const FAKE = join(home, "fake-wezterm");
 const LOG = join(home, "calls.jsonl");
+const socket = await weztermSocketFixture();
+after(() => socket.close());
+process.env.FAKE_SOCKET = socket.path;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -36,7 +40,8 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({
   argv,
   // The inherited socket pins the CLI to a dead GUI's mux. Recorded so the strip is proven
   // in the only place it can be: the child's own environment.
-  sawSocket: process.env.WEZTERM_UNIX_SOCKET !== undefined,
+  socket: process.env.WEZTERM_UNIX_SOCKET ?? null,
+  sameInode: !process.env.WEZTERM_UNIX_SOCKET || fs.statSync(process.env.WEZTERM_UNIX_SOCKET).ino === fs.statSync(process.env.FAKE_SOCKET).ino,
 }) + "\\n");
 const sub = argv[2];
 if (sub === "spawn") {
@@ -45,6 +50,7 @@ if (sub === "spawn") {
   process.exit(0);
 }
 if (sub === "list") {
+  if (process.env.WEZTERM_LOG) process.stderr.write('TRACE wezterm_client::client > connect to Socket(' + JSON.stringify(process.env.FAKE_SOCKET) + ')');
   process.stdout.write(JSON.stringify([
     { window_id: 1, tab_id: 3, pane_id: 7, tab_title: "api", cwd: "file://host/w/api", tty_name: "/dev/ttys012", is_active: true },
   ]));
@@ -61,7 +67,8 @@ const { weztermEmulator } = await import("../src/server/terminal/wezterm.ts");
 
 interface Call {
   argv: string[];
-  sawSocket: boolean;
+  socket: string | null;
+  sameInode: boolean;
 }
 
 /** Run one spawn against the fake, returning the result and every call it made. */
@@ -97,13 +104,13 @@ test("a spawn that opened an addressable tab reports the pane AND its tab", asyn
   assert.equal(result.outcomeUnknown, false);
   // `focus` raises TABS, so a target carrying only the pane could not be brought forward by
   // the caller that just created it. The tab id is resolved, not assumed equal to the pane.
-  assert.deepEqual(result.target, { paneId: "7", tabId: "3" });
+  assert.deepEqual(result.target, { paneId: "7", tabId: "3", incarnation: socket.incarnation });
 
-  assert.deepEqual(calls[0]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
-  // Every call goes down the live default socket, which is what makes the id it returns
-  // addressable by the writes that follow.
+  assert.deepEqual(calls[1]!.argv, ["cli", "--no-auto-start", "spawn", "--", "tmux", "attach", "-t", "api"]);
+  // Default selection drops the inherited socket. Later calls share a pin to that
+  // exact inode, which is what makes the returned target safe to address.
   assert.ok(
-    calls.every((c) => !c.sawSocket),
+    calls[0]!.socket === null && calls.slice(1).every((c) => c.socket !== "/tmp/gui-sock-dead" && c.sameInode),
     "an inherited WEZTERM_UNIX_SOCKET must not reach any wezterm call",
   );
 });
@@ -124,6 +131,6 @@ test("a refused spawn is a failure, and says why", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "no wezterm mux is running");
   assert.equal(result.target, null);
-  // Nothing opened, so nothing is enumerated looking for it.
-  assert.equal(calls.length, 1);
+  // Default endpoint selection preceded the refused spawn; there is no post-spawn lookup.
+  assert.equal(calls.length, 2);
 });

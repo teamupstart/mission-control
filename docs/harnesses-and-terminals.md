@@ -267,6 +267,41 @@ multiplexer root-process ancestry continue to work unchanged. A verified dispatc
 session keeps its UUID during an inventory failure and after daemon restart, without a
 global timeout increase or a second session-removal path.
 
+### WezTerm mux lifetime and input safety
+
+WezTerm reuses numeric pane IDs after its native mux server restarts. A discovered
+`EmulatorTarget` therefore carries an optional `incarnation` alongside its pane and tab IDs.
+WezTerm requires that proof for text, paste, keys, capture, focus and retitle. A stale or
+legacy handle is refused until discovery supplies a current handle. Stable UUID backends
+need no incarnation field, and their restoration behavior is unchanged.
+
+The adapter first asks WezTerm to select its normal default endpoint with
+`--no-auto-start` and the inherited `WEZTERM_UNIX_SOCKET` removed. The CLI's socket trace
+locates that endpoint; its preliminary pane list does not establish target identity.
+The adapter then hard-links the socket and enumerates through that private alias. Its
+incarnation records device, inode and birth time. Every target operation repeats endpoint
+selection, pins the socket, compares the incarnation and keeps the link until the command
+finishes. A restart between validation and execution cannot redirect the alias to the new
+socket. The alias is no longer than the original socket basename, to preserve Unix socket
+path limits, and is removed in `finally`. A collision never overwrites another entry.
+
+Only the explicitly pinned alias is supplied to the command's environment through the
+fixed OS `env` executable. This does not restore inherited socket routing or permit auto
+start. Spawn, retitle and the returned target lookup share one pin, so a restart cannot
+turn a spawn result into a handle for a replacement pane. Unknown endpoint diagnostics,
+non-socket endpoints, unavailable birth time and failed hard links are unavailable
+inventory or refused operations, never confirmed emptiness or guessed identities.
+The diagnostic format is an upstream compatibility dependency; an incompatible version
+fails conservatively. Native verification used WezTerm 20240203-110809-5046fc22 on macOS.
+
+The incarnation is an observation on a live handle, not a new task storage format.
+Existing `terminalResourceId` values and Phase 5 launch-process proof remain compatible.
+WezTerm still declares `restoreTarget: null`: a saved numeric resource is not sufficient
+to recreate write authority after a daemon restart. Fresh discovery supplies that authority.
+Neither an unavailable observation nor a refused operation creates an eviction or cleanup
+path. Actions continue to own delivery policy; the adapter owns socket addressing.
+
+
 ## Dispatch-time model catalogs
 
 Every model picker that can affect a dispatch reads one browser catalog. The browser starts with

@@ -10,10 +10,12 @@ import {
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
+import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import type { Key, PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session } from "@shared/types.ts";
 import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
 
 // What is at stake: that a terminal backend which CANNOT do something refuses by
 // declaration, rather than doing nothing quietly or typing into the wrong pane.
@@ -41,11 +43,11 @@ const tmuxSession = (): Session =>
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
   }) as Session;
 
-const weztermSession = (): Session =>
+const weztermSession = (incarnation: string): Session =>
   ({
     id: "s2",
     agent: "claude",
-    terminals: [mkEmuHandle({ paneId: "7", tabId: "3", windowId: "0", tabTitle: "", isActive: true })],
+    terminals: [mkEmuHandle({ paneId: "7", tabId: "3", windowId: "0", tabTitle: "", isActive: true, incarnation })],
   }) as Session;
 
 /** A session hosted by BOTH: a tmux pane living inside a wezterm pane, the ordinary case. */
@@ -187,16 +189,16 @@ test("a pane in a mode is refused in the name of the backend that refused it", a
 // ---- through the real adapters ----
 
 /** The real adapter for whichever backend holds the session, on a recording subprocess. */
-function recorded(): { deps: InjectDeps & PaneDeps; argv: string[] } {
+function recorded(wrapExec = (exec: TerminalExec) => exec): { deps: InjectDeps & PaneDeps; argv: string[] } {
   const argv: string[] = [];
   return {
     argv,
     deps: {
       pane: (session) =>
-        bindSession(session, async (bin, args) => {
+        bindSession(session, wrapExec(async (bin, args) => {
           argv.push([bin, ...args].join(" "));
           return stubRun({ stdout: "", stderr: "", code: 0 });
-        }),
+        })),
       capture: async () => "",
       sleep: async () => {},
     },
@@ -219,7 +221,7 @@ test("a nested session is typed into at its innermost pane, never at the tab sho
   assert.ok(argv.some((a) => a.includes("paste-buffer")), "the multiplexer took the paste");
 });
 
-test("a prompt past tmux's command limit still reaches the composer", async () => {
+test("a prompt past tmux's command limit still reaches the composer", async (t) => {
   // The bug, from the end a dispatch experiences it. `injectPrompt` is what hands a task's
   // intent to its freshly launched agent, and for a prompt of any size it used to hand the
   // whole thing to `tmux set-buffer -b <buf> -- <text>`. tmux caps total command length far
@@ -233,18 +235,20 @@ test("a prompt past tmux's command limit still reaches the composer", async () =
   // the defect, differing only in where the ceiling sits.
   const prompt = `## Phase 1\n\n${"Implement the thing. ".repeat(3000)}`;
   assert.ok(prompt.length > 20_000, "the payload must be past the limit this is about");
+  const socket = await weztermSocketFixture();
+  t.after(() => socket.close());
 
   for (const [name, session] of [
     ["tmux", tmuxSession()],
-    ["wezterm", weztermSession()],
+    ["wezterm", weztermSession(socket.incarnation)],
   ] as const) {
     const spawned: { argv: string[]; input?: string }[] = [];
     const deps: InjectDeps & PaneDeps = {
       pane: (s) =>
-        bindSession(s, async (bin, args, opts) => {
+        bindSession(s, socket.wrap(async (bin, args, opts) => {
           spawned.push({ argv: [bin, ...args], input: opts?.input });
           return stubRun({ stdout: "", stderr: "", code: 0 });
-        }),
+        })),
       capture: async () => "",
       sleep: async () => {},
     };
@@ -269,11 +273,13 @@ test("a prompt past tmux's command limit still reaches the composer", async () =
   }
 });
 
-test("a backend with no mode concept is never probed for one", async () => {
+test("a backend with no mode concept is never probed for one", async (t) => {
   // A probe that always answers "not in a mode" and a backend that has no such state are
   // the same behaviour and different claims - and the first costs a subprocess per write.
-  const { deps, argv } = recorded();
-  const r = await injectPrompt(weztermSession(), "a\nb", deps);
+  const socket = await weztermSocketFixture();
+  t.after(() => socket.close());
+  const { deps, argv } = recorded(socket.wrap);
+  const r = await injectPrompt(weztermSession(socket.incarnation), "a\nb", deps);
 
   assert.equal(r.ok, true);
   assert.ok(

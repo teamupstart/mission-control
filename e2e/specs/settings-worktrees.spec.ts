@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
+import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -27,6 +28,78 @@ async function shoot(page: Page, name: string, fullPage = false): Promise<void> 
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage, animations: "disabled" });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-worktrees/${name}.png`);
+}
+
+for (const action of ["destroy", "prune"] as const) {
+  test(`${action} executes an idle slot after sibling process churn without refreshing`, async ({ dashboard, daemon }) => {
+    const acquire = async (label: string) => {
+      const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+        data: { repositoryPath: daemon.repo, label },
+      });
+      expect(response.status()).toBe(201);
+      return await response.json() as { path: string; leaseId: string };
+    };
+    const target = await acquire("idle cleanup target");
+    const sibling = await acquire("busy sibling");
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: target.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+    const inventory = async () => await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+    const occupants: ReturnType<typeof spawn>[] = [];
+    const addOccupant = async () => {
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd: sibling.path, stdio: "ignore",
+      });
+      occupants.push(child);
+      await once(child, "spawn");
+      await expect.poll(async () => (await inventory()).repositories.flatMap((pool) => pool.slots)
+        .find((slot) => slot.path === sibling.path)?.processes.count).toBe(occupants.length);
+    };
+    try {
+      await addOccupant();
+      await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+      const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+      const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+      if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+      const previewResponse = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/actions/preview"));
+      if (action === "destroy") {
+        await pool.locator(".wt-slot", { hasText: target.path }).getByRole("button", { name: /^Destroy$/ }).click();
+      } else {
+        await pool.getByRole("button", { name: "Preview safe prune" }).click();
+      }
+      const original = await (await previewResponse).json() as WorktreeActionPreview;
+      expect(original.affected.map((item) => item.path)).toEqual([target.path]);
+      const preview = dashboard.getByRole("dialog", { name: `${action} worktree preview` });
+      await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+      await expectContentClearsBorder(preview);
+
+      // Force a real occupancy change AFTER the token is minted. Holding both processes
+      // alive makes this deterministic, without racing a short-lived child against Git.
+      await addOccupant();
+      expect((await inventory()).revision).not.toBe(original.inventoryRevision);
+      await shoot(dashboard, `10-${action}-sibling-churn-preview`);
+      const executed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/actions/execute"));
+      await preview.getByRole("button", { name: "Execute" }).click();
+      expect((await executed).status()).toBe(200);
+      await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
+      await expect(pool.locator(".wt-slot", { hasText: target.path })).toHaveCount(0);
+      await expect(pool.locator(".wt-slot", { hasText: sibling.path })).toBeVisible();
+      expect(existsSync(target.path)).toBe(false);
+      expect(existsSync(sibling.path)).toBe(true);
+      const remaining = (await inventory()).repositories.flatMap((entry) => entry.slots);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]).toMatchObject({ path: sibling.path, state: "leased", processes: { count: 2 } });
+      await shoot(dashboard, `11-${action}-sibling-churn-complete`);
+    } finally {
+      await Promise.all(occupants.map(async (child) => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }));
+    }
+  });
 }
 
 test("Settings Worktrees configures, inventories, previews, blocks, launches, and stays bounded", async ({

@@ -1,6 +1,7 @@
 import type { TerminalInventory } from "./inventory.ts";
 import { normTty } from "../discovery/tty.ts";
-import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
+import { WEZTERM_BIN } from "./bin.ts";
+import { withWeztermSocket, type WeztermSocket } from "./wezterm-socket.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import type {
@@ -23,7 +24,7 @@ import type {
  *
  * Enumeration moved in first, then pane I/O, and the lifecycle item brought the last three -
  * focus, spawn and retitle - in from `discovery/wezterm.ts`, which is now gone. Everything
- * this backend does goes through `cli` below, which carries the two operational facts that
+ * this backend does goes through the socket boundary, which carries the operational facts that
  * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure when
  * no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
  * restarts (now the executable catalog's wezterm `dropEnv`).
@@ -120,23 +121,20 @@ export function parsePanes(stdout: string): TerminalInventory<EmulatorPane> {
 }
 
 export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
-  const bin = () => resolveBin(WEZTERM_BIN);
-  /** Every `wezterm cli` call: live default mux, no auto-start, inherited socket dropped. */
-  const cli = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
-    exec(bin(), ["cli", "--no-auto-start", ...args], { ...opts, env: binEnv(WEZTERM_BIN) });
-  const cmd = async (args: string[], fail: string, opts: { input?: string } = {}) =>
-    toResult(await cli(args, opts), fail);
+  const unavailable = () => ({
+    ok: false, outcomeUnknown: false,
+    error: "WezTerm pane identity is stale or unavailable; wait for fresh discovery",
+  });
+  const targetOperation = <T>(target: EmulatorTarget, operation: (socket: WeztermSocket) => Promise<T>) =>
+    target.incarnation ? withWeztermSocket(exec, target.incarnation, operation) : Promise.resolve(null);
+  const cmd = async (target: EmulatorTarget, args: string[], fail: string, opts: { input?: string } = {}) =>
+    await targetOperation(target, async (socket) => toResult(await socket.exec(args, opts), fail)) ?? unavailable();
 
-  /**
-   * An unreachable CLI produces unknown inventory, never confirmed absence.
-   *
-   * Named rather than inlined on the interface because `spawn.tab` needs it too, and a
-   * second `cli list` written there would be the one that forgets `--no-auto-start`.
-   */
-  const list = async (): Promise<TerminalInventory<EmulatorPane>> => {
-    const res = await cli(["list", "--format", "json"]);
-    return res.code === 0 ? parsePanes(res.stdout) : null;
-  };
+  /** Enumerate through the pinned endpoint; a failed observation is unknown inventory. */
+  const list = (): Promise<TerminalInventory<EmulatorPane>> => withWeztermSocket(exec, undefined, async (socket) => {
+    const res = await socket.exec(["list", "--format", "json"]);
+    return res.code === 0 ? parsePanes(res.stdout)?.map((pane) => ({ ...pane, incarnation: socket.incarnation })) ?? null : null;
+  });
 
   /**
    * Write `text` to a pane, literally or as a bracketed paste.
@@ -154,6 +152,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
    */
   const sendText = (target: EmulatorTarget, text: string, literal: boolean, fail: string) =>
     cmd(
+      target,
       // Omitting `--no-paste` is what makes wezterm send the text as a bracketed paste, so
       // the flag is the difference between typing and pasting rather than a formality.
       ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : [])],
@@ -168,8 +167,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
    * `--` ends flag parsing so a title like "-wip" is read as the title rather than as a flag
    * bundle. Shared by `retitle` and by `spawn`, which stamps the new tab on the way out.
    */
-  const setTabTitle = (paneId: string, title: string) =>
-    cmd(["set-tab-title", "--pane-id", paneId, "--", title], "wezterm set-tab-title failed");
+  const titleArgs = (paneId: string, title: string) => ["set-tab-title", "--pane-id", paneId, "--", title];
 
   return {
     id: "wezterm",
@@ -197,8 +195,8 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     },
 
     capture: async (t) => {
-      const r = await cli(["get-text", "--pane-id", t.paneId], { timeoutMs: CAPTURE_TIMEOUT_MS });
-      return r.code === 0 ? r.stdout : null;
+      const r = await targetOperation(t, (socket) => socket.exec(["get-text", "--pane-id", t.paneId], { timeoutMs: CAPTURE_TIMEOUT_MS }));
+      return r?.code === 0 ? r.stdout : null;
     },
 
     focus: {
@@ -206,48 +204,51 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       // The tab decides which pane the window shows; the pane decides which of that tab's
       // splits has the cursor. Both, in that order - raising the tab alone lands the human
       // on whichever split they left focused, which for a dispatched session is the shell.
-      raise: async (t) => {
-        const tab = await cmd(["activate-tab", "--tab-id", t.tabId], "wezterm activate-tab failed");
+      raise: async (t) => await targetOperation(t, async (socket) => {
+        const tab = toResult(await socket.exec(["activate-tab", "--tab-id", t.tabId]), "wezterm activate-tab failed");
         if (!tab.ok) return tab;
-        return cmd(["activate-pane", "--pane-id", t.paneId], "wezterm activate failed");
-      },
+        return toResult(await socket.exec(["activate-pane", "--pane-id", t.paneId]), "wezterm activate failed");
+      }) ?? unavailable(),
     },
 
     restoreTarget: null,
 
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
-        const result = await cli([
-          "spawn",
-          ...(spec.cwd ? ["--cwd", spec.cwd] : []),
-          "--",
-          ...spec.argv,
-        ]);
-        // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
-        // rather than answering may have died AFTER the compositor opened the tab, and
-        // reporting that as a clean failure is how the focus fallback opens a second one.
-        if (result.code !== 0) {
-          return { ...toResult(result, "wezterm could not open a tab"), target: null };
-        }
-        const paneId = Number(result.stdout.trim());
-        // Exit 0 with an unreadable id is the `SpawnResult` split doing its job: a tab
-        // opened, and nothing may be typed into it - including, note, the title, which is
-        // set through the pane.
-        if (!Number.isInteger(paneId)) return { ok: true, outcomeUnknown: false, target: null };
-        if (spec.title) await setTabTitle(String(paneId), spec.title);
-        // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
-        // and is what makes the returned target addressable - `focus` raises tabs, so a
-        // target without one could not be brought forward by the caller that just made it.
-        const tab = (await list())?.find((p) => p.paneId === String(paneId));
-        return {
-          ok: true,
-          outcomeUnknown: false,
-          target: tab ? { paneId: tab.paneId, tabId: tab.tabId } : null,
-        };
+        return await withWeztermSocket(exec, undefined, async (socket): Promise<SpawnResult> => {
+          const result = await socket.exec([
+            "spawn",
+            ...(spec.cwd ? ["--cwd", spec.cwd] : []),
+            "--",
+            ...spec.argv,
+          ]);
+          // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
+          // rather than answering may have died AFTER the compositor opened the tab, and
+          // reporting that as a clean failure is how the focus fallback opens a second one.
+          if (result.code !== 0) {
+            return { ...toResult(result, "wezterm could not open a tab"), target: null };
+          }
+          const paneId = Number(result.stdout.trim());
+          // Exit 0 with an unreadable id is the `SpawnResult` split doing its job: a tab
+          // opened, and nothing may be typed into it - including, note, the title, which is
+          // set through the pane.
+          if (!Number.isInteger(paneId)) return { ok: true, outcomeUnknown: false, target: null };
+          if (spec.title) await socket.exec(titleArgs(String(paneId), spec.title));
+          // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
+          // and is what makes the returned target addressable - `focus` raises tabs, so a
+          // target without one could not be brought forward by the caller that just made it.
+          const listed = await socket.exec(["list", "--format", "json"]);
+          const tab = listed.code === 0 ? parsePanes(listed.stdout)?.find((p) => p.paneId === String(paneId)) : null;
+          return {
+            ok: true,
+            outcomeUnknown: false,
+            target: tab ? { paneId: tab.paneId, tabId: tab.tabId, incarnation: socket.incarnation } : null,
+          };
+        }) ?? { ...unavailable(), target: null };
       },
     },
 
-    retitle: (t, title) => setTabTitle(t.paneId, title),
+    retitle: (t, title) => cmd(t, titleArgs(t.paneId, title), "wezterm set-tab-title failed"),
 
     // A wezterm tab title is display text: nothing parses it, so nothing constrains it
     // beyond what any name has to survive. Declared rather than assumed - see `NameRules`.

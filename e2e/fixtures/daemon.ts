@@ -447,6 +447,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // disposable home so a developer's installed apps cannot make the browser result differ
     // from CI. Specs that need one can still override it through `daemonEnv` below.
     WEZTERM_BIN: herdrEnabled ? bins.wezterm : join(home, "missing-wezterm"),
+    MC_E2E_WEZTERM_SOCKET: herdrEnabled ? join(home, "wez.sock") : undefined,
     GHOSTTY_BIN: join(home, "missing-ghostty"),
     ITERM_BIN: join(home, "missing-iterm"),
     // The keep-awake provider, redirected at a fake that records its argv. With the
@@ -579,9 +580,20 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   let exited: { code: number | null; signal: string | null } | null = null;
   const daemonBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1"
     ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
-        REPO_ROOT, `${process.pid}-${Date.now()}`,
+        REPO_ROOT, `${process.pid}-${Date.now()}`, extraEnv.MC_E2E_WEZTERM_BOUNDARY === "1",
       )
     : join(REPO_ROOT, "dist/server/index.mjs");
+
+  // Herdr's host CLI must expose a real socket identity to the WezTerm adapter. The
+  // fixture owns its lifetime; the fake CLI only connects and never starts a server.
+  const weztermSocket = herdrEnabled ? createServer((client) => client.end()) : null;
+  if (weztermSocket) {
+    await new Promise<void>((resolve, reject) => {
+      weztermSocket.once("error", reject);
+      weztermSocket.listen(isolatedEnv.MC_E2E_WEZTERM_SOCKET!, resolve);
+    });
+    weztermSocket.unref();
+  }
 
   /** Spawn the daemon bundle and wire its log and exit tracking to the shared state. */
   const spawnDaemon = (): ChildProcess => {
@@ -662,6 +674,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       if (!exited) child.kill("SIGKILL");
     }
     if (extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1") rmSync(daemonBundle, { force: true });
+    if (weztermSocket?.listening) {
+      await new Promise<void>((resolve) => weztermSocket.close(() => resolve()));
+    }
     /*
      * Retried, because the daemon is not the only writer under `home`.
      *

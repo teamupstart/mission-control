@@ -525,11 +525,27 @@ server.listen(socketPath);
 
 const FAKE_WEZTERM = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
+const { createConnection } = require("node:net");
 const { join } = require("node:path");
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
+}
+const args = process.argv.slice(2);
+if (args.includes("cli")) {
+  const socket = process.env.WEZTERM_UNIX_SOCKET || process.env.MC_E2E_WEZTERM_SOCKET;
+  if (!socket) process.exit(1);
+  const client = createConnection(socket);
+  client.once("error", () => { process.exitCode = 1; });
+  client.once("connect", () => {
+    if (process.env.WEZTERM_LOG === "wezterm_client::client=trace") {
+      process.stderr.write("TRACE wezterm_client::client > connect to Socket(" + JSON.stringify(socket) + ")\\n");
+    }
+    if (args.includes("list")) process.stdout.write("[]\\n");
+    if (args.includes("spawn")) process.stdout.write("0\\n");
+    client.end();
+  });
 }
 `;
 

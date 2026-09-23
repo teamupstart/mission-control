@@ -182,6 +182,8 @@ export interface MuxTarget {
 export interface EmulatorTarget {
   paneId: string;
   tabId: string;
+  /** Backend-observed lifetime of a recyclable address. Missing proof is not write authority. */
+  incarnation?: string;
 }
 
 /**

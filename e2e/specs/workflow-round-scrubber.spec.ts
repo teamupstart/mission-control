@@ -321,6 +321,9 @@ test("a round is one tile however many times it captured evidence", async ({
   // absent here.
   const why = dashboard.getByRole("button", { name: "Explain this round" });
   await expect(why).toBeVisible();
+  // WCAG 2.5.3: the accessible name leads with the visible text, so a speech-control user
+  // saying "click Why" reaches this control.
+  await expect(why).toHaveAccessibleName("Why? Explain this round");
   const disclosed = dashboard.locator(".wf-run-disclose-pop");
   await expect(disclosed).toBeHidden();
   await shoot(dashboard, dashboard.locator(".wf-run-rounds"), "02-evidence-selected");

@@ -3980,7 +3980,11 @@ export function WorkflowRunView({
               </span>
               <details className="wf-run-disclose" ref={contextDiscloseRef}>
                 <Tooltip label="Why this round reads the way it does">
-                  <summary role="button" aria-label="Explain this round">Why?</summary>
+                  {/* The accessible name leads with the visible text so "click Why" reaches
+                      it (WCAG 2.5.3). `role` is explicit because a bare `<summary>` is not
+                      exposed as a button by Chromium's computed tree: it resolves to the
+                      parent `<details>` as a group, with no addressable control inside. */}
+                  <summary role="button" aria-label="Why? Explain this round">Why?</summary>
                 </Tooltip>
                 <div className="wf-run-disclose-pop">
                   {roundContextView.sections.map((section) => (
@@ -3991,7 +3995,7 @@ export function WorkflowRunView({
                   ))}
                   {liveRoundSubmissionId && (
                     <Tooltip
-                      label={`Leave this snapshot and read ${roundContextView.liveLabel}, which is still running`}
+                      label={`Leave this snapshot and read ${roundContextView.liveLabel}, the newest in this run`}
                     >
                       <button
                         type="button"

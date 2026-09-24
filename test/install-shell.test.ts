@@ -20,8 +20,9 @@ function fixture(t: test.TestContext, fail = "") {
   const bin = join(directory, "bin");
   const scratch = join(directory, "temporary files");
   const state = join(directory, "state");
+  const home = join(directory, "User home ü");
   const apps = join(directory, "Applications with spaces");
-  for (const path of [bin, scratch, apps]) mkdirSync(path);
+  for (const path of [bin, scratch, apps, home]) mkdirSync(path);
   const log = join(directory, "commands.jsonl");
   const preload = join(directory, "architecture.mjs");
   writeFileSync(preload, 'Object.defineProperty(process, "arch", { value: "arm64" });\n');
@@ -85,6 +86,7 @@ else if (tool === "node") {
   }
   const env = {
     ...process.env,
+    HOME: home,
     PATH: `${bin}:/usr/bin:/bin`,
     TMPDIR: scratch,
     MISSION_HOME: state,
@@ -92,15 +94,27 @@ else if (tool === "node") {
     INSTALL_FAIL: fail,
     INSTALL_LOG: log,
   };
-  function run(args: string[] = [], input = shell) {
-    return spawnSync("/bin/bash", ["-s", "--", "--apps-dir", apps, ...args], {
+  function run(args: string[] = ["--apps-dir", apps], input = shell) {
+    return spawnSync("/bin/bash", ["-s", "--", ...args], {
       input, encoding: "utf8", cwd: directory, env, timeout: 30_000,
     });
   }
   function commands(): Array<{ tool: string; args: string[]; cwd: string }> {
     return readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   }
-  return { directory, scratch, state, apps, env, run, commands };
+  function seedReceipt(appsDir: string, installScope?: "user" | "system" | "custom") {
+    const receipt = {
+      schema: 1, repo: CANONICAL_REPO, releaseTag: "v1.2.3", installedVersion: "1.2.3",
+      installedCommit: commit, installedAt: "2026-09-24T00:00:00.000Z",
+      sourceClone: join(state, "app-src"), appPath: join(appsDir, "Mission Control.app"),
+      ...(installScope ? { installScope } : {}),
+    };
+    assert.equal(validateReceipt(receipt), null);
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, "install-receipt.json"), JSON.stringify(receipt));
+    return receipt;
+  }
+  return { directory, scratch, state, home, apps, env, run, commands, seedReceipt };
 }
 
 for (const prerequisite of ["macOS", "git", "node"]) {
@@ -203,7 +217,7 @@ for (const failure of ["bootstrap", "source", "release", "build", "version", "in
 
 test("Bash forwards quoted options, and temporary dry runs do not write install state", (t) => {
   const f = fixture(t);
-  const result = f.run(["--ref", "v2.3.4", "--dry-run", "--progress"]);
+  const result = f.run(["--apps-dir", f.apps, "--ref", "v2.3.4", "--dry-run", "--progress"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /v2.3.4 \(requested with --ref\)/);
   assert.match(result.stdout, /dry-run: nothing was changed/);
@@ -231,19 +245,68 @@ test("temporary sources cannot be requested for either half of a staged update",
   }
 });
 
-test("the first README code block installs without a caller checkout", (t) => {
+test("the first README code block creates ~/Applications and installs there without destination options", (t) => {
   const f = fixture(t);
   const readme = readFileSync(join(root, "README.md"), "utf8");
   const command = /```bash\n([^`]+)```/.exec(readme)?.[1]?.trim();
   assert.ok(command);
-  const result = spawnSync("/bin/bash", ["-c", `${command} --apps-dir "$INSTALL_APPS"`], {
-    env: { ...f.env, INSTALL_APPS: f.apps }, cwd: f.directory, encoding: "utf8", timeout: 30_000,
+  const personalApps = join(f.home, "Applications");
+  assert.equal(existsSync(personalApps), false);
+  const result = spawnSync("/bin/bash", ["-c", command], {
+    env: f.env, cwd: f.directory, encoding: "utf8", timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(readdirSync(f.scratch), []);
-  assert.ok(existsSync(join(f.apps, "Mission Control.app")));
+  assert.ok(existsSync(join(personalApps, "Mission Control.app/Contents/Info.plist")));
+  const receipt = JSON.parse(readFileSync(join(f.state, "install-receipt.json"), "utf8"));
+  assert.equal(validateReceipt(receipt), null);
+  assert.equal(receipt.appPath, join(personalApps, "Mission Control.app"));
+  assert.equal(receipt.installScope, "user");
+  assert.deepEqual(readdirSync(f.apps), []);
   assert.ok(f.commands().some(({ tool, args }) => tool === "curl" && args.includes(`https://raw.githubusercontent.com/${CANONICAL_REPO}/main/scripts/install.sh`)));
 });
+
+for (const scope of [undefined, "system"] as const) {
+  test(`Bash preserves an existing ${scope ? "explicit" : "legacy"} system receipt destination`, (t) => {
+    const f = fixture(t);
+    const before = f.seedReceipt("/Applications", scope);
+    // Never write to the host's system Applications folder, including in the failing case.
+    const result = f.run(["--dry-run"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(result.stdout.includes(`destination: ${before.appPath}  (${scope ?? "existing"})`), result.stdout);
+    assert.equal(existsSync(join(f.home, "Applications")), false, "dry-run does not create the destination");
+    assert.deepEqual(JSON.parse(readFileSync(join(f.state, "install-receipt.json"), "utf8")), before);
+  });
+}
+
+test("Bash reruns update the receipt's custom destination without creating a personal copy", (t) => {
+  const f = fixture(t);
+  const before = f.seedReceipt(f.apps, "custom");
+  mkdirSync(before.appPath);
+  writeFileSync(join(before.appPath, "original"), "previous version");
+  const result = f.run([]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const receipt = JSON.parse(readFileSync(join(f.state, "install-receipt.json"), "utf8"));
+  assert.equal(validateReceipt(receipt), null);
+  assert.equal(receipt.appPath, before.appPath);
+  assert.equal(receipt.installScope, "custom");
+  assert.ok(existsSync(join(receipt.appPath, "Contents/Info.plist")));
+  assert.equal(existsSync(join(receipt.appPath, "original")), false, "the existing app was replaced in place");
+  assert.equal(existsSync(join(f.home, "Applications")), false, "no second app copy was created");
+  assert.deepEqual(readdirSync(f.scratch), []);
+});
+
+for (const scope of ["user", "system"] as const) {
+  test(`Bash honors an explicit ${scope} scope`, (t) => {
+    const f = fixture(t);
+    const result = f.run(["--scope", scope, "--dry-run"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const apps = scope === "user" ? join(f.home, "Applications") : "/Applications";
+    assert.ok(result.stdout.includes(`destination: ${join(apps, "Mission Control.app")}  (${scope === "user" ? "personal" : "system"})`), result.stdout);
+    assert.equal(existsSync(f.state), false);
+    assert.equal(existsSync(join(f.home, "Applications")), false);
+  });
+}
 
 test("the README command propagates a failed download without creating install state", (t) => {
   const f = fixture(t, "download");

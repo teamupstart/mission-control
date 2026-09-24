@@ -43,7 +43,11 @@ source directories. The managed clone is a full checkout with its own
 `node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
 deleting it costs the next install a fresh clone and nothing else.
 
-The Bash entry point passes `--temporary-source`: its bootstrap checkout and build clone are
+The Bash entry point forwards destination options to the shared installer. A fresh install
+defaults to `~/Applications`; a rerun preserves the location in an existing receipt. Moving
+to another destination requires an explicit `--scope` or `--apps-dir` option.
+
+It also passes `--temporary-source`: its bootstrap checkout and build clone are
 temporary and removed on exit, including ordinary failure and interruption. It never deletes
 an existing `app-src` cache or the caller's checkout. Before installing the app, esbuild bundles
 the installer and its imported dependencies into one self-contained module under `installers/`
@@ -69,6 +73,11 @@ destination needs no administrator password at any point.
 
 | What you run | Destination | Recorded `installScope` |
 | --- | --- | --- |
+| Bash installer, no managed receipt or destination options | `~/Applications` | `user` |
+| Bash installer, receipt already present, no destination options | wherever the receipt says | whatever the receipt says, unchanged |
+| Bash installer with `--scope user` | `~/Applications` | `user` |
+| Bash installer with `--scope system` | `/Applications` | `system` |
+| Bash installer with `--apps-dir <dir>` | `<dir>`, which must already exist | `custom`, or preserved when it is the receipt's own directory |
 | `make install`, no managed receipt yet | `~/Applications` | `user` |
 | `make install`, receipt already present | wherever the receipt says | whatever the receipt says, unchanged |
 | `make install ARGS="--scope user"` | `~/Applications` | `user` |

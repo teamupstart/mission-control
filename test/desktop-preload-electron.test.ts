@@ -16,6 +16,14 @@ interface DesktopPreloadResult {
   hasDesktopClass: boolean;
   capability: string | null;
   preloadError: string | null;
+  authorization: {
+    withoutClick: boolean;
+    reclaimedCapability: string | null;
+    syntheticClick: boolean;
+    wrongCapability: boolean;
+    duringClick: boolean;
+    afterClick: boolean;
+  };
 }
 
 test("the sandboxed preload identifies the desktop shell before the dashboard paints", () => {
@@ -78,6 +86,14 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       "the preload lost the private product-report capability while entering its sandbox",
     );
+    assert.deepEqual(result.authorization, {
+      withoutClick: false,
+      reclaimedCapability: null,
+      syntheticClick: false,
+      wrongCapability: false,
+      duringClick: true,
+      afterClick: false,
+    }, "only a trusted click in progress with the private capability can arm a report");
   } finally {
     rmSync(dir, { force: true, recursive: true });
     rmSync(profile, { force: true, recursive: true });

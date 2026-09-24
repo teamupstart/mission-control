@@ -273,6 +273,9 @@ If the desktop bridge cannot authorize a click, the form says that nothing was p
 asks you to quit and reopen the desktop app. The draft stays in the form until then.
 A browser tab without the desktop bridge instead directs you to open the report in the desktop
 app; it never suggests restarting an app the tab is not connected to.
+GitHub CLI setup failures show the CLI's bounded diagnostic alongside the recovery instruction,
+including authentication errors and `gh auth login` guidance. Those local diagnostics are never
+included in the public report.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with

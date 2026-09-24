@@ -1,5 +1,6 @@
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "../workflows/commit-id.ts";
+import { isBareRepository } from "../util/git.ts";
 
 /**
  * Probing a repository's remote default branch, fail-closed.
@@ -137,8 +138,11 @@ export async function originConfigured(
 
 /** Bring `origin`'s refs up to date, or refuse. Never falls back to what is already local. */
 export async function fetchOrigin(root: string, execute: Run = run): Promise<RemoteProbe<void>> {
+  // `clone --bare` has no remote.origin.fetch mapping. Explicit remote-tracking refs
+  // also keep a mirror clone's fetch from rewriting branches held by linked worktrees.
+  const refspec = isBareRepository(root) ? ["--refmap=", "+refs/heads/*:refs/remotes/origin/*"] : [];
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
-    const fetched = await execute("git", ["-C", root, "fetch", "origin"], {
+    const fetched = await execute("git", ["-C", root, "fetch", "origin", ...refspec], {
       timeoutMs: NETWORK_TIMEOUT_MS,
     });
     if (!failed(fetched)) return { ok: true, value: undefined };
@@ -219,6 +223,14 @@ export async function currentRemoteDefaultSha(
         "the remote moved during the observation",
       outcomeUnknown: false,
     };
+  }
+  if (isBareRepository(root)) {
+    // Bare clones also lack origin/HEAD. Keep the verified default available to local
+    // worktree status/reset operations, including defaults other than main or master.
+    const remembered = await execute("git", ["-C", root, "symbolic-ref", "refs/remotes/origin/HEAD", ref], {
+      timeoutMs: LOCAL_TIMEOUT_MS,
+    });
+    if (failed(remembered)) return failure("record origin's default branch", remembered);
   }
   return { ok: true, value: advertised };
 }

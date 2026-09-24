@@ -334,7 +334,10 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
     dashboard.getByRole("group", { name: "Select evidence in round 1" })
       .locator(".wf-run-tray-chip"),
   ).toHaveCount(2);
-  await expect(dashboard.locator(".wf-run-notice"))
+  // The line says only the short fact; the sentence behind it is one click away.
+  await expect(dashboard.locator(".wf-run-context")).toContainText("no repair round spent");
+  await dashboard.getByRole("button", { name: "Explain this round" }).click();
+  await expect(dashboard.locator(".wf-run-disclose-pop"))
     .toContainText("does not spend a repair round");
   await shoot(dashboard, "08-completed-continuation");
 

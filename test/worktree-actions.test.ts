@@ -227,7 +227,9 @@ test("a changed slot version invalidates the preview before any action runs", as
   assert.equal(acquired.outcome, "acquired");
   if (acquired.outcome !== "acquired") return;
   const preview = await operations.preview({ action: "return", slotId: acquired.lease.slotId });
-  manager.store.updateObserved(acquired.lease.slotId, acquired.lease.baseSha, "new observation", Date.now());
+  // updateObserved changes diagnostics, not the slot version. Change only the version so
+  // this checks the target binding independently of the global inventory revision.
+  db.prepare("UPDATE worktree_slots SET version = version + 1 WHERE id = ?").run(acquired.lease.slotId);
   await assert.rejects(
     operations.execute(preview.token, []),
     (error: unknown) => error instanceof Error && /changed after preview/.test(error.message),

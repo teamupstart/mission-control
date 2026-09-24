@@ -419,8 +419,16 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
       const { result } = await preflightWith([...results]);
       assert.equal(result.ready, false);
       assert.equal(result.problems[0]?.code, code);
+      assert.ok(result.problems[0]?.message.includes(results.at(-1)!.stderr));
     });
   }
+  await t.test("authentication preserves the CLI's remediation after its hostname header", async () => {
+    const { result } = await preflightWith([
+      ok,
+      stubRun({ stdout: "", stderr: "github.com\n  Token is invalid. Run gh auth login -h github.com\n", code: 1 }),
+    ]);
+    assert.match(result.problems[0]?.message ?? "", /Token is invalid\. Run gh auth login -h github\.com/);
+  });
   await t.test("missing labels", async () => {
     const { result } = await preflightWith([
       ok,

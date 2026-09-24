@@ -87,15 +87,18 @@ test("scanRepos never descends into a repo (nested worktrees/vendored checkouts 
   }
 });
 
-test("scanRepos skips noise dirs and is depth-bounded", async () => {
+test("scanRepos reaches deeply nested repositories while skipping noise dirs", async () => {
   const root = makeWorkspace((r) => {
     makeRepo(join(r, "node_modules", "pkg")); // skipped dir - never entered
-    makeRepo(join(r, "a", "b", "c", "d", "deep")); // beyond MAX_DEPTH (3)
+    makeRepo(join(r, ...Array.from({ length: 20 }, (_, i) => `level-${i}`), "deep"));
     makeRepo(join(r, "shallow"));
   });
   try {
     const repos = await scanRepos([root]);
-    assert.deepEqual(repos, [join(root, "shallow")]);
+    assert.deepEqual(repos, [
+      join(root, ...Array.from({ length: 20 }, (_, i) => `level-${i}`), "deep"),
+      join(root, "shallow"),
+    ].sort());
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -103,6 +106,29 @@ test("scanRepos skips noise dirs and is depth-bounded", async () => {
 
 test("scanRepos tolerates a missing root", async () => {
   assert.deepEqual(await scanRepos(["/no/such/path/mission-test"]), []);
+});
+
+test("an explicit depth limit is inclusive and invalid limits do not hide repositories", async () => {
+  const root = makeWorkspace((r) => {
+    makeRepo(join(r, "org", "repo"));
+    makeRepo(join(r, "deeper", "team", "repo"));
+    makeRepo(join(r, ".hidden", "repo"));
+    symlinkSync(r, join(r, "loop"));
+  });
+  const previous = process.env.MISSION_REPOS_MAX_DEPTH;
+  try {
+    process.env.MISSION_REPOS_MAX_DEPTH = "2";
+    assert.deepEqual(await scanRepos([root]), [join(root, "org", "repo")]);
+    process.env.MISSION_REPOS_MAX_DEPTH = "0";
+    assert.deepEqual(await scanRepos([root]), []);
+    assert.deepEqual(await scanRepos([join(root, "org", "repo")]), [join(root, "org", "repo")]);
+    process.env.MISSION_REPOS_MAX_DEPTH = "invalid";
+    assert.deepEqual(await scanRepos([root]), [join(root, "deeper", "team", "repo"), join(root, "org", "repo")]);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_REPOS_MAX_DEPTH;
+    else process.env.MISSION_REPOS_MAX_DEPTH = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("an absent config key yields the four removable defaults", () => {

@@ -10,6 +10,7 @@
 // (src/server/registry.ts) deliberately excludes `lastActivity` from the SSE
 // change comparison, so a session going quiet emits no client event at all.
 
+import { isActiveTask } from "./task-status.ts";
 import type { Session } from "./types.ts";
 import { reportBucket } from "./session.ts";
 import { workflowRunParkedOnSession } from "./workflow.ts";
@@ -96,7 +97,7 @@ export interface Stall {
 /** Terminal task states - work that is over, however it ended. */
 function taskOpen(s: Session): boolean {
   const st = s.task?.status;
-  return st === "backlog" || st === "dispatching" || st === "running";
+  return st !== undefined && (st === "backlog" || isActiveTask(st));
 }
 
 /**

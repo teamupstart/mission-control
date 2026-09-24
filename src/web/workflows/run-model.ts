@@ -772,28 +772,130 @@ export function submissionRoundLabel(
   );
 }
 
+/** Both readings of one segment's provenance, long and short, from one classification. */
+export interface SegmentProvenance {
+  /** The full sentence, for the disclosure and for the scrubber's tooltips. */
+  sentence: string;
+  /** The same fact reduced to what the scrubber above it cannot already show. */
+  clause: string;
+}
+
 /**
  * What an evidence segment IS, for the reader who has just scrubbed onto one.
  *
- * The sentence an operator most needs is the one that says this is NOT a repair: a run whose
- * scrubber has grown a second entry looks exactly like a run that failed review, and the
- * difference - a spent repair round versus a free continuation - is the thing the whole
- * segment model exists to keep straight.
+ * The fact it exists to carry is that a second entry under one round is NOT a spent repair
+ * round. Both readings are returned together so a new case cannot be added to one of them
+ * and missed in the other.
  */
-export function segmentProvenanceSentence(round: RoundView): string | null {
+export function segmentProvenance(round: RoundView): SegmentProvenance | null {
   if (round.segment === 0) return null;
   if (round.verifiedShipping) {
-    return "Verified shipping completion. The pull request is open at the captured commit, "
-      + "its published content matches the content accepted by the prior review, and this "
-      + "continuation reached End without another evidence review.";
+    return {
+      sentence: "Verified shipping completion. The pull request is open at the captured commit, "
+        + "its published content matches the content accepted by the prior review, and this "
+        + "continuation reached End without another evidence review.",
+      // Shipping is not a refinement, so the repair-round clause would not apply.
+      clause: "verified shipping, no further review",
+    };
   }
   if (round.refinementReason === "evidence_preflight") {
-    return `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preflight gaps. This refinement does not spend a Persona repair round.`;
+    return {
+      sentence: `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preflight gaps. This refinement does not spend a Persona repair round.`,
+      clause: "no repair round spent",
+    };
   }
   const source = round.continuedFrom ?? "a session action";
-  return `Evidence ${round.segment + 1} of round ${round.round}, captured after ${source}`
-    + " finished. Continuing after an action does not spend a repair round, and only the"
-    + " stages after it run again.";
+  return {
+    sentence: `Evidence ${round.segment + 1} of round ${round.round}, captured after ${source}`
+      + " finished. Continuing after an action does not spend a repair round, and only the"
+      + " stages after it run again.",
+    clause: "no repair round spent",
+  };
+}
+
+/** The sentence alone, for the scrubber's tooltips. */
+export function segmentProvenanceSentence(round: RoundView): string | null {
+  return segmentProvenance(round)?.sentence ?? null;
+}
+
+/** One titled paragraph inside the round context disclosure. */
+export interface RoundContextSection {
+  /** The label printed over the paragraph. */
+  title: string;
+  /** The sentence printed under it. */
+  body: string;
+}
+
+/**
+ * Everything the round context line says, collapsed and expanded, from one derivation.
+ *
+ * `clauses` are what the pressed tile and chip do not already say; `sections` are the full
+ * sentences behind the disclosure. Null when there is nothing to say, and the line is then
+ * not rendered at all.
+ */
+export interface RoundContextView {
+  /** The viewed round is not the live one, so the page below it is a snapshot. */
+  snapshot: boolean;
+  /** The collapsed line's clauses, in reading order, after the `Snapshot` mark. */
+  clauses: readonly string[];
+  /** What the disclosure opens. Never empty when this view exists. */
+  sections: readonly RoundContextSection[];
+  /** Where the jump button goes, or null when the live round is already on screen. */
+  liveSubmissionId: string | null;
+  /** How to name that round on the button and in the clause. */
+  liveLabel: string | null;
+}
+
+/**
+ * What the reader is looking at, for the line under the scrubber and the popover it opens.
+ *
+ * Snapshot is decided here from the rounds rather than taken as an argument, so the line
+ * cannot disagree with the scrubber it sits under.
+ */
+export function roundContext(
+  rounds: readonly RoundView[],
+  viewedRound: RoundView | null,
+): RoundContextView | null {
+  if (!viewedRound) return null;
+  const latest = rounds.at(-1) ?? null;
+  const snapshot = latest !== null && latest.submissionId !== viewedRound.submissionId;
+  // Naming the round is enough only when the live one IS a different round. Two segments of
+  // the same round would otherwise read "Round 1 is live" to someone already on Round 1, and
+  // send them to a button that names where they are standing.
+  const liveLabel = !snapshot || !latest
+    ? null
+    : latest.round === viewedRound.round
+      ? evidenceChipLabel(latest)
+      : `Round ${latest.round}`;
+
+  const clauses: string[] = [];
+  const sections: RoundContextSection[] = [];
+
+  // Clauses and sections are pushed together so the popover's paragraphs stay in the order
+  // of the clauses they expand.
+  if (snapshot && liveLabel) {
+    clauses.push(`${liveLabel} is live`);
+    sections.push({
+      title: "This snapshot",
+      body: "The pipeline, verdicts and timeline are this round's. The Inspector gate,"
+        + " deliveries and every recovery action are always the live run's.",
+    });
+  }
+
+  const provenance = segmentProvenance(viewedRound);
+  if (provenance) {
+    clauses.push(provenance.clause);
+    sections.push({ title: "This evidence", body: provenance.sentence });
+  }
+
+  if (sections.length === 0) return null;
+  return {
+    snapshot,
+    clauses,
+    sections,
+    liveSubmissionId: snapshot && latest ? latest.submissionId : null,
+    liveLabel,
+  };
 }
 
 /** The Session terminus's chip: what this submission is doing right now. */

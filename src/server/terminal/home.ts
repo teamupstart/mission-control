@@ -327,11 +327,11 @@ export async function launchHome(
 }
 
 /**
- * Is the recorded home still open? An emulator's saved pane identity takes precedence
- * over its mutable tab title. `null` means nobody could tell, not that the home is gone.
+ * Is the recorded resource still open? A mutable title cannot establish identity on
+ * either axis. `null` means nobody could tell, not that the home is gone.
  */
 export async function homeAlive(
-  name: string,
+  _name: string,
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
   resourceId: string | null = null,
@@ -361,11 +361,9 @@ export async function homeAlive(
       terminalResourceId({ ...pane, kind: "emulator", backend: id }) === resourceId,
     ) ?? null;
   }
-  // Titles can change while the agent remains alive. A legacy emulator record has no
-  // identity with which to confirm its absence, even after a successful inventory.
-  if (resourceId || homeBackends(deps, preferredBackend).some((b) => b.axis === "emulator")) return null;
-  const held = await heldHomeNames(deps, preferredBackend);
-  return held === null ? null : held.has(name);
+  // Legacy homes on either axis have no identity with which to confirm absence. A
+  // title miss after rename must not undo killHome's refusal and release a live checkout.
+  return null;
 }
 
 /**

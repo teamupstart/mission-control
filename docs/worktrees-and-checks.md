@@ -5,6 +5,13 @@ agent's branch switch or edit lands under another's feet. Mission Control theref
 new task, Workflow check, and approved manual development session an isolated checkout through
 one daemon-owned native allocator.
 
+The owner may be an ordinary checkout or a bare clone. A bare clone owns its native pool
+through its physical Git directory, and tasks execute in linked working checkouts. The
+disposable Git fallback supports the same owners. Bare metadata named `.git` is still the
+owner itself, not its parent folder. For bare metadata named `.bare` or `.git`, pool and
+checkout names use the containing repository folder's name so working checkouts are not
+named like hidden metadata.
+
 One tree per session, with one exception. A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is dispatched
 with a worktree per attached repository. Each comes from that repository's native pool, or
@@ -36,6 +43,12 @@ checkout's cached `refs/remotes/origin/HEAD`, because a fetch does not refresh t
 server-side default-branch rename. When another fetch wins Git's remote-tracking-ref update race,
 Mission Control retries that known-safe local refusal up to two times. Authentication, network,
 timeout, overflow, and every other fetch failure still fail closed without an automatic retry.
+
+Bare clones are fetched into `refs/remotes/origin/*` explicitly, since `git clone --bare`
+does not create that fetch mapping. The same rule keeps mirror fetch configuration from
+rewriting local branches used by linked worktrees. Remote-default freshness checks remain
+the same as for ordinary clones, and the verified branch is recorded as `origin/HEAD` for
+local status and reset operations.
 
 An explicit pinned base bypasses all of this: it is verified to be a real full commit ID in that
 repository and used unchanged, with no fetch. A pin names one commit in one repository, so a
@@ -139,8 +152,9 @@ this order:
 All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
 risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit
 acknowledgement. Execution consumes the short-lived token once and observes the lease, task or
-check owner, processes, Git state, and slot version again. A changed fact refuses with a stale
-preview message. Unknown process occupancy is never acknowledgeable.
+check owner, processes, Git state, and slot version again. A changed target fact or affected set
+refuses with a stale preview message. Process churn in unrelated slots and inventory reconciliation
+timestamps do not invalidate an unchanged target. Unknown process occupancy is never acknowledgeable.
 
 The operations have deliberately narrow meanings:
 
@@ -162,6 +176,14 @@ The operations have deliberately narrow meanings:
   state.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
+
+Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
+checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
+`HALT`, `HALT.class`, `DONE`, `events.jsonl`, and `.pipeline/gates/<step>.json` (all files are
+under `.pipeline/`). Inspection leaves them in place. Safe removal cleans only those files,
+then asks Git to remove the worktree without force. Tracked changes, symlinks, and unknown
+untracked paths, including other files under `.pipeline/`, still block safe pruning. The
+merge, process, lease, and owner checks apply as usual.
 
 Inventory is an observation, not a second owner database. Open dashboards receive only a
 content-free change signal and fetch the bounded view again. They do not receive raw process

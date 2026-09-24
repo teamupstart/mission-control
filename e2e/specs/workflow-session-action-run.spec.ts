@@ -332,9 +332,13 @@ test("Live types the authored instruction once and resumes on a fresh child segm
     "evidence 1",
     "evidence 2",
   ]);
-  await expect(dashboard.locator(".wf-run-notice"))
-    .toContainText("does not spend a repair round");
-  await expect(dashboard.locator(".wf-run-notice")).toContainText(`captured after ${actionName}`);
+  // This round is the live one, so the line carries no snapshot mark.
+  await expect(dashboard.locator(".wf-run-context")).toContainText("no repair round spent");
+  await expect(dashboard.locator(".wf-run-context")).not.toContainText("Snapshot");
+  await dashboard.getByRole("button", { name: "Explain this round" }).click();
+  const explained = dashboard.locator(".wf-run-disclose-pop");
+  await expect(explained).toContainText("does not spend a repair round");
+  await expect(explained).toContainText(`captured after ${actionName}`);
 
   // The stage reports that it FINISHED, never that it passed - it judged nothing.
   const strip = dashboard.locator(".wf-pipeline-strip");

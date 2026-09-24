@@ -1,5 +1,20 @@
 # Mission Control
 
+Install the macOS app (Apple Silicon), without keeping a repository checkout:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' --
+```
+
+Requires Node.js 24+ with npm, Git, an authenticated GitHub CLI (`gh auth login`), and
+Xcode command line tools (`xcode-select --install`). Run as your own account, without `sudo`.
+The Bash installer builds the newest stable release and installs it in `~/Applications` on a
+new installation. Reruns preserve the destination recorded in an existing managed receipt.
+Pass `--scope user`, `--scope system`, or `--apps-dir <dir>` to choose a destination explicitly.
+Temporary checkouts and build files are removed; only a small updater installer is retained
+alongside the install receipt.
+See [installation details and options](docs/overview.md#desktop-app-macos).
+
 **Give yourself superpowers without the compromises.**
 
 Most software factories ask you to adopt their agent, terminal, workflow, and worldview.

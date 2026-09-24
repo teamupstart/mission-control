@@ -1,6 +1,7 @@
 import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { inTransaction } from "./db.ts";
+import { isActiveTask } from "@shared/task-status.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
@@ -1082,7 +1083,7 @@ export class TaskManager {
         undefined,
         (candidate) =>
           candidate.kind === "pipeline" &&
-          (candidate.status === "running" || candidate.status === "dispatching"),
+          isActiveTask(candidate.status),
       );
       if (!task || task.repoRoot !== link.repoRoot) return;
       this.adoptPipelineRun(task, link, { kind: "terminal", session });
@@ -1109,7 +1110,7 @@ export class TaskManager {
     if (!task) return { ok: false, status: 404, error: "no matching Pipeline task" };
     if (
       task.kind !== "pipeline" ||
-      (task.status !== "running" && task.status !== "dispatching")
+      !isActiveTask(task.status)
     ) {
       return { ok: false, status: 409, error: "this task is not an active Pipeline task" };
     }
@@ -1144,7 +1145,7 @@ export class TaskManager {
           (candidate) =>
             candidate.id === task.id &&
             candidate.kind === "pipeline" &&
-            (candidate.status === "running" || candidate.status === "dispatching"),
+            isActiveTask(candidate.status),
         );
         if (session.runtime !== "terminal" || owner?.id !== task.id || !session.pipeline) {
           return {
@@ -1214,7 +1215,7 @@ export class TaskManager {
       (candidate) =>
         candidate.id !== task.id &&
         candidate.kind === "pipeline" &&
-        (candidate.status === "running" || candidate.status === "dispatching") &&
+        isActiveTask(candidate.status) &&
         candidate.pipelineRun !== null &&
         pipelineRunKeyOf(candidate.pipelineRun) === targetKey,
     );
@@ -1256,7 +1257,7 @@ export class TaskManager {
     if (!task) return { ok: false, status: 404, error: "no matching Pipeline task" };
     if (
       task.kind !== "pipeline" ||
-      (task.status !== "running" && task.status !== "dispatching")
+      !isActiveTask(task.status)
     ) {
       return { ok: false, status: 409, error: "this task is not an active Pipeline task" };
     }
@@ -1291,7 +1292,7 @@ export class TaskManager {
       (candidate) =>
         candidate.id !== task.id &&
         candidate.kind === "pipeline" &&
-        (candidate.status === "running" || candidate.status === "dispatching") &&
+        isActiveTask(candidate.status) &&
         candidate.pipelineWorkspacePath === workspace,
     );
     if (owner) {
@@ -1326,7 +1327,7 @@ export class TaskManager {
     for (const task of this.registry.listTasks()) {
       if (
         task.kind !== "pipeline" ||
-        (task.status !== "running" && task.status !== "dispatching") ||
+        !isActiveTask(task.status) ||
         task.pipelineRun?.provider !== run.provider ||
         task.pipelineRun.repoRoot !== run.repoRoot ||
         task.pipelineRun.slug !== run.slug
@@ -1390,7 +1391,7 @@ export class TaskManager {
   private settleMergedTask(e: TaskPrMerged): void {
     try {
       const t = this.registry.getTask(e.taskId);
-      if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
+      if (!t || !isActiveTask(t.status)) return;
       if (providerOwnsTaskCompletion(t.kind)) return;
       const session = this.registry.getSession(e.sessionId);
       // The common ordering, and the one a `session_upsert` listener alone misses: the
@@ -2103,7 +2104,7 @@ export class TaskManager {
   private agentMayStillBeUndiscovered(t: Task): boolean {
     return (
       !this.completedInitialSessionSweep &&
-      (t.status === "running" || t.status === "dispatching")
+      isActiveTask(t.status)
     );
   }
 
@@ -2116,7 +2117,7 @@ export class TaskManager {
    */
   private agentIsStillHere(t: Task): boolean {
     return (
-      (t.status === "running" || t.status === "dispatching") &&
+      isActiveTask(t.status) &&
       t.sessionId !== null &&
       this.registry.getSession(t.sessionId) !== undefined
     );
@@ -2254,7 +2255,7 @@ export class TaskManager {
       tasks.some(
         (task) =>
           task.sessionId === session.id &&
-          (task.status === "running" || task.status === "dispatching"),
+          isActiveTask(task.status),
       )
     ) return;
     const candidates = tasks.filter(
@@ -2293,13 +2294,13 @@ export class TaskManager {
   private agentWentAway(t: Task): void {
     this.autoCompleted.delete(t.id);
     if (providerOwnsTaskCompletion(t.kind)) {
-      if (t.status === "running" || t.status === "dispatching") this.pipelineHostWentAway(t);
+      if (isActiveTask(t.status)) this.pipelineHostWentAway(t);
       else if (t.sessionId !== null) {
         this.registry.upsertTask({ ...t, sessionId: null, updatedAt: Date.now() });
       }
       return;
     }
-    if (t.status !== "running" && t.status !== "dispatching") return;
+    if (!isActiveTask(t.status)) return;
     // The agent is gone AND its work landed, which is the one combination that means the
     // task finished rather than merely stopped. This is the boundary a later prompt
     // cannot outrun: while an agent is still being given work it is still here, so
@@ -2379,7 +2380,7 @@ export class TaskManager {
   private settleAgentGone(taskId: string, scoutProblems: string[] | null): void {
     const t = this.registry.getTask(taskId);
     if (!t) return;
-    if (t.status !== "running" && t.status !== "dispatching") return;
+    if (!isActiveTask(t.status)) return;
     // The one telemetry call in this file, and it records a LIMIT rather than a result: this
     // row is about to be written `failed` because the agent went away, and a clean exit
     // cannot be distinguished from a crash. The marker is what makes the exported fact carry
@@ -2870,7 +2871,7 @@ export class TaskManager {
       }
       return { ok: true, task, sourceTaskId: relation.sourceTaskId, replayed: true };
     }
-    if (task.status !== "dispatching" && task.status !== "running") {
+    if (!isActiveTask(task.status)) {
       return {
         ok: false,
         status: 409,
@@ -2960,7 +2961,7 @@ export class TaskManager {
     // Only while the task is actually running on that session. A cancelled or completed task
     // is being torn down, and renaming its terminal home mid-teardown would point `killHome`
     // at a name that no longer exists.
-    if (task.status !== "dispatching" && task.status !== "running") return;
+    if (!isActiveTask(task.status)) return;
     const session = this.registry.getSession(task.sessionId);
     if (!session) return;
     try {
@@ -3707,7 +3708,7 @@ export class TaskManager {
       .find(
         (t) =>
           t.sessionId === sessionId &&
-          (t.status === "running" || t.status === "dispatching"),
+          isActiveTask(t.status),
       );
   }
 
@@ -5465,7 +5466,7 @@ export class TaskManager {
 
   /** `remove`'s body, once the cleanup reservation is held. */
   private async removeReserved(id: string, t: Task): Promise<Ok> {
-    if (t.status === "running" || t.status === "dispatching") {
+    if (isActiveTask(t.status)) {
       return { ok: false, error: "cancel the task before removing it" };
     }
     try {

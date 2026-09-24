@@ -149,6 +149,8 @@ export interface FakeGhProductScript {
   issueCreate: "created" | "partial" | "partial-no-url" | "refused" | "unknown";
   /** The labels `repos/<target>/labels` reports. Defaults to the full required set. */
   labels?: readonly string[];
+  /** CLI diagnostic returned by a failed product-report preflight. */
+  preflightError?: string;
 }
 
 export const FAKE_GH_PRODUCT_ISSUE_URL = "https://github.com/acme/public-issues/issues/4242";
@@ -296,6 +298,14 @@ if (dir) {
 }
 if (process.env.MC_E2E_CMUX_MODE === "unknown") {
   setInterval(() => {}, 1000);
+}
+// A legacy task has only its original title. A completed native inventory can still
+// contain its renamed home, so a title miss must not authorize checkout removal.
+if (argv[0] === "tree" && process.env.MC_E2E_CMUX_MODE === "renamed-home") {
+  process.stdout.write(JSON.stringify({ windows: [{ workspaces: [{
+    id: "1278A1C0-71C2-477C-8F11-718C14FCB74B", title: "Renamed legacy home",
+    panes: [{ surfaces: [{ id: "135BEA69-A106-4BF3-8D26-78B237DA52C4", type: "terminal", tty: null }] }],
+  }] }] }) + "\\n");
 }
 `;
 
@@ -635,7 +645,7 @@ const product = productScript();
 /** Fail exactly the scripted preflight question, the way the real CLI fails it. */
 function preflightRefusal(stage) {
   if (product.preflight !== stage) return false;
-  process.stderr.write(stage + " unavailable\\n");
+  process.stderr.write(product.preflightError || stage + " unavailable\\n");
   process.exit(1);
 }
 if (argv[0] === "--version") {

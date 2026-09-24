@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import type { RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -754,7 +755,7 @@ export class WorkflowManager {
           .listTasks()
           .find((candidate) =>
             candidate.sessionId === event.session.id
-            && (candidate.status === "dispatching" || candidate.status === "running"));
+            && isActiveTask(candidate.status));
         if (task) this.bindDispatchedTaskWorkflow(task);
       });
     }
@@ -891,7 +892,7 @@ export class WorkflowManager {
     if (
       !task.workflowId
       || !task.sessionId
-      || (task.status !== "dispatching" && task.status !== "running")
+      || !isActiveTask(task.status)
     ) return;
     const session = this.registry.getSession(task.sessionId);
     if (!session || session.state === "exited" || !session.agentSessionId) return;

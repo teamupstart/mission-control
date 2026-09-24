@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { canMessage } from "@shared/pane.ts";
 import { HARNESS_CAPABILITIES, skillLoadingAgents } from "@shared/harness-capabilities.ts";
 import { MEMORY_DIR } from "@shared/memory.ts";
@@ -291,7 +292,7 @@ async function startPostMergeRetro(
   const existingTask = existingRelation
     ? deps.tasks.getDurable(existingRelation.retroTaskId)
     : undefined;
-  if (existingTask && ["dispatching", "running", "done"].includes(existingTask.status)) {
+  if (existingTask && (isActiveTask(existingTask.status) || existingTask.status === "done")) {
     return { kind: "started", task: existingTask };
   }
   if (

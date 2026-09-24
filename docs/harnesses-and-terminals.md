@@ -228,9 +228,11 @@ inventory even though the CLI exits nonzero. Timeouts, permission errors, partia
 and unrecognized diagnostics remain unavailable. Saved exact tmux sessions also have their
 existing socket- and server-identity liveness check.
 `homeAlive` returns `null` on unavailable inventory and only a completed inventory can
-establish that a recorded resource is absent. Legacy emulator records without an exact
-resource cannot establish absence through a mutable title. Unknown observations do not
-authorize worktree release.
+establish that a recorded resource is absent. Legacy records on either axis without an exact
+resource return unknown, even after a completed inventory: a missing or reused title cannot
+identify the original home. This includes externally renamed cmux workspaces. Cleanup preserves
+their tracked resources for manual recovery rather than releasing a potentially live checkout.
+Unknown observations do not authorize worktree release.
 
 Emulator spawn results retain their pane address as `emulator:<backend>:<paneId>` in the
 existing task `terminalResourceId`. Before dispatch adopts an agent, it requires the exact

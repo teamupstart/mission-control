@@ -139,8 +139,9 @@ this order:
 All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
 risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit
 acknowledgement. Execution consumes the short-lived token once and observes the lease, task or
-check owner, processes, Git state, and slot version again. A changed fact refuses with a stale
-preview message. Unknown process occupancy is never acknowledgeable.
+check owner, processes, Git state, and slot version again. A changed target fact or affected set
+refuses with a stale preview message. Process churn in unrelated slots and inventory reconciliation
+timestamps do not invalidate an unchanged target. Unknown process occupancy is never acknowledgeable.
 
 The operations have deliberately narrow meanings:
 

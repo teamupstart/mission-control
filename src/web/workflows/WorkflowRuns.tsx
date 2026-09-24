@@ -3998,7 +3998,7 @@ export function WorkflowRunView({
                         className="wf-run-disclose-go"
                         onClick={() => selectRound(liveRoundSubmissionId)}
                       >
-                        {`Go to ${roundContextView.liveLabel}, the live round`}
+                        {`Go to ${roundContextView.liveLabel}`}
                       </button>
                     </Tooltip>
                   )}

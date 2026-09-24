@@ -431,13 +431,26 @@ test("a repair round holding several segments is labelled by evidence, never as 
 
   const stale = roundContext(rounds, rounds[0]!)!;
   assert.equal(stale.snapshot, true);
-  assert.deepEqual(stale.clauses, ["Round 1 is live"]);
+  // Both segments are round 1, so naming the round would point at where the reader already
+  // is. The live SEGMENT is what identifies the jump target here.
+  assert.deepEqual(stale.clauses, ["evidence 2 is live"]);
   assert.deepEqual(stale.sections.map((section) => section.title), ["This snapshot"]);
   assert.match(stale.sections[0]!.body, /Inspector gate, deliveries and every recovery action/);
   // The clause replaced it, so the popover never repeats it.
   assert.doesNotMatch(stale.sections[0]!.body, /Viewing an earlier round/);
   assert.equal(stale.liveSubmissionId, "sub-1");
-  assert.equal(stale.liveLabel, "Round 1");
+  assert.equal(stale.liveLabel, "evidence 2");
+});
+
+test("a snapshot names the round only when the live round is a different one", () => {
+  const first = submission({ id: "sub-0", round: 1, segment: 0 });
+  const repaired = submission({ id: "sub-1", round: 2, segment: 0 });
+  const rounds = runRounds(detail({ submissions: [first, repaired] }));
+
+  const acrossRounds = roundContext(rounds, rounds[0]!)!;
+  assert.deepEqual(acrossRounds.clauses, ["Round 2 is live"]);
+  assert.equal(acrossRounds.liveLabel, "Round 2");
+  assert.equal(acrossRounds.liveSubmissionId, "sub-1");
 });
 
 test("one classifier answers provenance long and short, so the two cannot drift", () => {

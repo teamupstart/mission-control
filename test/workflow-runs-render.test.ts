@@ -645,7 +645,7 @@ test("the round scrubber defaults to the latest round and scopes what it says", 
   assert.match(earlier, /wf-run-context-snapshot/);
   assert.match(earlier, /Round 2 is live/);
   assert.match(earlier, /Explain this round/);
-  assert.match(earlier, /Go to Round 2, the live round/);
+  assert.match(earlier, /Go to Round 2/);
   assert.doesNotMatch(earlier, /Viewing an earlier round/);
   // The join packet is that round's receipts, named as its stage rather than as a node id.
   assert.match(earlier, /1 of 2 reviewers reported/);

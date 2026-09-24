@@ -859,7 +859,14 @@ export function roundContext(
   if (!viewedRound) return null;
   const latest = rounds.at(-1) ?? null;
   const snapshot = latest !== null && latest.submissionId !== viewedRound.submissionId;
-  const liveLabel = snapshot && latest ? `Round ${latest.round}` : null;
+  // Naming the round is enough only when the live one IS a different round. Two segments of
+  // the same round would otherwise read "Round 1 is live" to someone already on Round 1, and
+  // send them to a button that names where they are standing.
+  const liveLabel = !snapshot || !latest
+    ? null
+    : latest.round === viewedRound.round
+      ? evidenceChipLabel(latest)
+      : `Round ${latest.round}`;
 
   const clauses: string[] = [];
   const sections: RoundContextSection[] = [];

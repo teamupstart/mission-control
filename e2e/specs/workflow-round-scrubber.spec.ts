@@ -356,7 +356,7 @@ test("a round is one tile however many times it captured evidence", async ({
   await why.click();
   await expect(disclosed).toBeVisible();
 
-  await disclosed.getByRole("button", { name: "Go to Round 3, the live round" }).click();
+  await disclosed.getByRole("button", { name: "Go to Round 3" }).click();
   await expect(tileOf(3)).toHaveAttribute("aria-pressed", "true");
   await expect(disclosed).toBeHidden();
   await expect(context).not.toContainText("Snapshot");

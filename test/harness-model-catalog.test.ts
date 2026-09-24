@@ -87,11 +87,7 @@ test("every harness explicitly owns shipped models and a discovery decision", ()
     assert.deepEqual(HARNESSES[agent].models.shipped, MODEL_CATALOG[agent]);
     assert.equal("discover" in HARNESSES[agent].models, true);
   }
-  // Claude is the one harness still on shipped rows, and deliberately so: its live rows
-  // are account-shaped aliases, two of which `ModelIdSchema` rejects, so adopting them is
-  // a persisted-vocabulary decision rather than a catalog refresh. See
-  // `docs/plans/claude-codex-live-model-catalog/plan.md`.
-  assert.equal(HARNESSES.claude.models.discover, null);
+  assert.equal(typeof HARNESSES.claude.models.discover, "function");
   assert.equal(typeof HARNESSES.codex.models.discover, "function");
   assert.equal(typeof HARNESSES.pi.models.discover, "function");
 });

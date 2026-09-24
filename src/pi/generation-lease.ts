@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { claimIsLive, processIdentity, processIsAlive } from "../../scripts/update-lock.mjs";
+import { locateExecutableSync } from "../server/executables/locator.ts";
 
 const LEASES = ".leases";
 const RETIRING = ".retiring";
@@ -18,9 +19,13 @@ export function writePiGenerationFile(path: string, contents: string): void {
 
 // A Pi process may change its title, so only compare its start time, not its argv.
 // A same-second PID reuse conservatively retains a generation until the replacement exits.
-const identity = (pid: number) => processIdentity(pid, target => execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(target)], {
-  encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"],
-}));
+const identity = (pid: number) => processIdentity(pid, target => {
+  const executable = locateExecutableSync("ps");
+  if (!executable) return "";
+  return execFileSync(executable.path, ["-o", "lstart=", "-p", String(target)], {
+    env: executable.env, encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"],
+  });
+});
 
 /** Pin the canonical generation for the whole Pi process, including session switches.
  * No timer or daemon connection is needed; killed processes are reclaimed by identity. */

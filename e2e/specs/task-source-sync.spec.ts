@@ -35,7 +35,14 @@ async function enable(page: Page, daemon: DaemonHandle) {
 }
 
 test("source updates preserve task identity, arrive over SSE, and resolve local conflicts",async({page,context,daemon})=>{
-  await configure(page,daemon); await sweep(page);
+  await configure(page,daemon);
+  const updates = page.getByRole("checkbox", { name: "Keep imported backlog tasks updated" });
+  const updateDescription = "Refresh imported details on each sweep while tasks have not started";
+  await expect(updates).toHaveAccessibleDescription(updateDescription);
+  await updates.hover();
+  await expect(page.locator(".tooltip")).toHaveText(updateDescription);
+  await page.mouse.move(0, 0);
+  await sweep(page);
   const [task] = await tasks(page,daemon); expect(task).toBeTruthy();
   await page.request.put(`${daemon.baseURL}/api/ui/config`,{data:{layout:"board"}});
   const board = await context.newPage(); await board.goto(`${daemon.baseURL}/#/fleet`);
@@ -55,8 +62,18 @@ test("source updates preserve task identity, arrive over SSE, and resolve local 
   const review = page.getByRole("article",{name:"Source update for acme/demo#17"});
   await expect(review.getByText("Operator's local notes",{exact:true})).toBeVisible();
   await expect(review.getByText(/A conflicting description/)).toBeVisible();
+  for (const [name, description] of [
+    ["Use source", "Apply the source values shown here and accept this source revision"],
+    ["Keep local", "Keep local values and accept this source revision"],
+  ] as const) {
+    const action = review.getByRole("button", { name, exact: true });
+    await expect(action).toHaveAccessibleDescription(description);
+    await action.hover();
+    await expect(page.locator(".tooltip")).toHaveText(description);
+  }
   if(process.env.MC_E2E_EVIDENCE) {
     const dir=artifactsDir("task-source-sync"); mkdirSync(dir,{recursive:true});
+    await page.screenshot({path:`${dir}conflict-review-tooltip.png`});
     await review.scrollIntoViewIfNeeded(); await page.mouse.move(0,0);
     await page.screenshot({path:`${dir}conflict-review.png`});
   }

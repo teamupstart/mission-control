@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { TaskSourceInstance } from "@shared/task-source.ts";
 import type { SourceContent, SourceSyncReview } from "@shared/task-source-sync.ts";
 import type { TaskSourcesState } from "../useTaskSources.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 function Content({ value, review }: { value: SourceContent; review: SourceSyncReview }) {
   return <>
@@ -25,8 +26,10 @@ export function TaskSourceSync({ src, state, onChange }: {
   }
   return <section className="ts-sync" aria-label="Imported task updates">
     <label className={`settings-toggle${src.keepUpdated ? " is-on" : ""}`}>
-      <input type="checkbox" checked={src.keepUpdated === true}
-        onChange={(event) => onChange({ ...src, keepUpdated: event.target.checked })} />
+      <Tooltip label="Refresh imported details on each sweep while tasks have not started">
+        <input type="checkbox" checked={src.keepUpdated === true}
+          onChange={(event) => onChange({ ...src, keepUpdated: event.target.checked })} />
+      </Tooltip>
       <span>Keep imported backlog tasks updated</span>
     </label>
     <p className="settings-hint">On each sweep, refresh imported details for tasks that have not started.
@@ -44,10 +47,14 @@ export function TaskSourceSync({ src, state, onChange }: {
           <div><h5>Source item</h5><Content value={review.remote} review={review} /></div>
         </div>
         <div className="ts-sync-actions">
-          <button className="btn" disabled={!src.keepUpdated || !!review.error || busy !== null}
-            onClick={() => void resolve(review, "source")}>Use source</button>
-          <button className="btn" disabled={!src.keepUpdated || !!review.error || busy !== null}
-            onClick={() => void resolve(review, "local")}>Keep local</button>
+          <Tooltip label="Apply the source values shown here and accept this source revision">
+            <button className="btn" disabled={!src.keepUpdated || !!review.error || busy !== null}
+              onClick={() => void resolve(review, "source")}>Use source</button>
+          </Tooltip>
+          <Tooltip label="Keep local values and accept this source revision">
+            <button className="btn" disabled={!src.keepUpdated || !!review.error || busy !== null}
+              onClick={() => void resolve(review, "local")}>Keep local</button>
+          </Tooltip>
         </div>
       </>}
     </article>)}

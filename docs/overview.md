@@ -181,6 +181,10 @@ so even an older installed release can prepare its next update. Requesting an up
 creates the normal updater-owned `app-src` cache. Existing caches and personal checkouts are
 left alone. Like any process, a forcibly killed installer cannot run its cleanup handlers.
 
+Bash installs into `~/Applications` by default on a new installation. Reruns preserve an
+existing receipt's system, personal, or custom destination. Pass `--scope user`,
+`--scope system`, or `--apps-dir <dir>` to choose a destination explicitly.
+
 The wrapper reports download failures as failures. Pass installer options after its final `--`,
 for example:
 

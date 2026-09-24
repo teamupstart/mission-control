@@ -21,6 +21,8 @@ main() {
   trap 'exit 143' TERM
 
   git clone --depth 1 https://github.com/teamupstart/mission-control.git "$mission_install_tmp/bootstrap"
+  # The shared installer defaults fresh installs to ~/Applications and preserves an
+  # existing receipt's destination. Forward explicit choices without injecting a scope.
   node "$mission_install_tmp/bootstrap/scripts/install-app.mjs" --temporary-source "$@"
 }
 

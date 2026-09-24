@@ -80,7 +80,7 @@ let authenticationExpired = false;
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
 // for default launches, but preserve a pinned model so browser specs can exercise the
 // production model-metadata resolver rather than a browser-side stub.
-const MODEL = argvValue("--model") ?? "claude-e2e-mock";
+let MODEL = argvValue("--model") ?? "claude-e2e-mock";
 
 /**
  * The reasoning effort this session is running at, written onto every assistant record the
@@ -1133,6 +1133,11 @@ rl.on("line", (line) => {
     if (frame.request?.subtype === "apply_flag_settings") {
       const level = frame.request?.settings?.effortLevel;
       if (typeof level === "string") effort = level;
+      ok(frame.request_id, {});
+      return;
+    }
+    if (frame.request?.subtype === "set_model") {
+      MODEL = frame.request.model;
       ok(frame.request_id, {});
       return;
     }

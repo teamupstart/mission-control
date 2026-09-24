@@ -64,6 +64,7 @@ test("a visible change emits", () => {
       },
     },
     { permissionMode: "plan" },
+    { configuredModel: "claude-sonnet-5" },
     { pendingReviews: 3 },
     { prUrl: "https://example.test/pr/1" },
     { prNumber: 1 },

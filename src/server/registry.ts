@@ -358,6 +358,7 @@ export const SDK_SESSION_ID_PREFIX = "sdk:";
  * guess.
  */
 export interface SdkSessionRegistration {
+  configuredModel?: string | null;
   /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
   id: string;
   agent: AgentType;
@@ -2603,6 +2604,7 @@ export class Registry extends EventEmitter {
       id: input.id,
       agent: input.agent,
       runtime: "sdk",
+      configuredModel: input.configuredModel ?? null,
       // Resolved below with note/goal. Ordinarily `"sdk"` with no stored row - Mission
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
       // the operator kicked Foreman out.
@@ -6010,6 +6012,15 @@ export class Registry extends EventEmitter {
     const next: Session = { ...s, meta, effortBaselineReady: true, pendingEffort };
     this.sessions.set(sessionId, next);
     if (changed) this.emitSession(next);
+  }
+
+  /** Publish only after the supervisor's driver and durable model write have succeeded. */
+  recordConfiguredModel(sessionId: string, model: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.runtime !== "sdk" || session.configuredModel === model) return;
+    const next = { ...session, configuredModel: model };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
   }
 
   /**
@@ -9449,6 +9460,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   meta: metaDisplayEqual,
   effortBaselineReady: byValue,
   pendingEffort: byValue,
+  configuredModel: byValue,
   // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
   // being written only by the ingest: a session that binds its agent session id LATE
   // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each

@@ -2085,6 +2085,7 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start({ ...START, model: "old-model", effort: "low" });
+    assert.equal(session.configuredModel, "old-model");
     // A binding is what makes the row resumable at all.
     first.push({
       kind: "bound",
@@ -2107,12 +2108,21 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     assert.equal(row.permissionMode, "acceptEdits");
     assert.equal(row.effort, "xhigh");
     assert.equal(row.model, "new-model");
+    assert.equal(registry.getSession(session.id)?.configuredModel, "new-model");
+    assert.equal(registry.getSession(session.id)?.meta?.modelId, "old-model", "selection does not rewrite the running turn");
+    first.setModel = async () => { throw new Error("model unavailable"); };
+    await assert.rejects(supervisor.setModel(session.id, "refused-model"), /model unavailable/);
+    assert.equal(getSdkSession(session.id)?.model, "new-model");
+    assert.equal(registry.getSession(session.id)?.configuredModel, "new-model");
+    await assert.rejects(supervisor.setModel(session.id, "gpt-6-astra"), /not available/);
 
     // Now the restart, for real: a new process is a fresh supervisor AND a fresh registry
     // over the same store, which is the only thing that survives. Reusing the old registry
     // would hit the duplicate-registration refusal and prove nothing about restore.
     await supervisor.stopAll(50);
-    await new SdkSupervisor(new Registry()).restore();
+    const restoredRegistry = new Registry();
+    await new SdkSupervisor(restoredRegistry).restore();
+    assert.equal(restoredRegistry.getSession(session.id)?.configuredModel, "new-model");
     const relaunch = fake.calls.at(-1)!;
     assert.equal(relaunch.resume, "agent-x", "the same conversation, not a new one");
     assert.equal(relaunch.permissionMode, "acceptEdits");

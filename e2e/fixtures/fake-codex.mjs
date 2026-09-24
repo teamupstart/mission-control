@@ -428,13 +428,13 @@ function appendRollout(type, message) {
  * never gets a second one. Written at the top of each turn, from the effort that turn was
  * STARTED with - `turn/steer` carries no effort, so a steered follow-up leaves this alone.
  */
-function appendTurnContext(effort) {
+function appendTurnContext(effort, model) {
   appendFileSync(
     rolloutPath,
     `${JSON.stringify({
       timestamp: new Date().toISOString(),
       type: "turn_context",
-      payload: { cwd: process.cwd(), model: MODEL, effort, summary: "auto" },
+      payload: { cwd: process.cwd(), model, effort, summary: "auto" },
     })}\n`,
   );
 }
@@ -544,13 +544,13 @@ const textOf = (input) =>
     .map((part) => part.text)
     .join("\n");
 
-function runTurn(turnId, input, effort) {
+function runTurn(turnId, input, effort, model) {
   const prompt = textOf(input);
 
   // Ahead of the user message, as Codex writes it: the turn's context is established
   // before its first item. `effort` is what THIS turn was started with, so a level chosen
   // while the previous turn was running first appears here.
-  if (RECORDED_EFFORT) appendTurnContext(effort ?? RECORDED_EFFORT);
+  if (RECORDED_EFFORT) appendTurnContext(effort ?? RECORDED_EFFORT, model);
   appendRollout("user_message", prompt);
   notify("turn/started", { threadId: THREAD_ID, turn: turnOf(turnId, "inProgress") });
   notify("thread/status/changed", {
@@ -793,7 +793,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // real server cannot invert these two; neither may this.
       respond(id, { turn: turnOf(turnId, "inProgress") });
       const effort = params?.effort ?? null;
-      setImmediate(() => runTurn(turnId, params?.input, effort));
+      setImmediate(() => runTurn(turnId, params?.input, effort, params?.model ?? MODEL));
       return;
     }
     case "turn/steer": {

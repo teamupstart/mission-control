@@ -876,6 +876,14 @@ meter, Mission Control applies each recognized model's default window: Fable 5, 
 and Sonnet 4.6+ use 1M, while Opus/Sonnet 4.5 and Haiku 4.5 use 200k. An explicit window
 reported by Claude remains authoritative.
 
+For a live **Agent SDK** session, click the model badge in the Console detail or Board card
+to open a dropdown, just like the effort picker. Choose a model from that harness's shared
+model catalog. The choice applies to this session only and survives a daemon restart;
+it does not change dispatch defaults. Until the conversation reports the selected model,
+the badge marks it **selected**. A response already underway can still report its previous model.
+If the driver refuses the change, the dropdown shows the error and keeps the previous
+selection. Terminal sessions and stopped sessions keep a read-only model badge.
+
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
 selected model and choose one for that session. A successful change uses the harness's

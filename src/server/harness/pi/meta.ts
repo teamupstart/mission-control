@@ -52,6 +52,12 @@ function contextTokensFromUsage(usage: Record<string, unknown>): number | null {
   return total > 0 ? total : null;
 }
 
+/** Preserve the same provider-qualified identity Pi's catalog and SDK controls use. */
+function reportedModelId(model: unknown, provider: unknown): string | null {
+  if (typeof model !== "string" || !model) return null;
+  return typeof provider === "string" && provider ? `${provider}/${model}` : model;
+}
+
 /**
  * The model id + context tokens off the newest assistant `message` record, falling back to a
  * bare `model_change` for the id. Null when neither is found.
@@ -75,14 +81,14 @@ function latestModelAndTokens(
       // Skip an errored/aborted turn: pi writes it with an `errorMessage` and a zeroed
       // `usage`, which is not the session's real context and would blank the meter if read.
       if (typeof m.errorMessage === "string") continue;
-      const modelId = typeof m.model === "string" ? m.model : null;
+      const modelId = reportedModelId(m.model, m.provider);
       const usage = m.usage as Record<string, unknown> | undefined;
       const tokens = usage ? contextTokensFromUsage(usage) : null;
       if (modelId || tokens !== null) return { modelId, tokens };
     } else if (o.type === "model_change" && modelFromChange === null) {
       // Remember the newest declared model as a fallback, but keep scanning for a message
       // record whose usage also carries the live token count.
-      if (typeof o.modelId === "string") modelFromChange = o.modelId;
+      modelFromChange = reportedModelId(o.modelId, o.provider);
     }
   }
   return modelFromChange ? { modelId: modelFromChange, tokens: null } : null;

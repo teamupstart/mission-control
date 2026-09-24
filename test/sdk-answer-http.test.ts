@@ -135,6 +135,7 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
   const stopped: string[] = [];
   const modes: string[] = [];
   const efforts: string[] = [];
+  const models: string[] = [];
   // A real claim set, not a stub: the concurrency test below is only meaningful if the
   // fake refuses a second handoff the way the supervisor does.
   const handingOff = new Set<string>();
@@ -144,6 +145,7 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     stopped,
     modes,
     efforts,
+    models,
     /** Let a test say the driver has already gone, which is what refuses a REPEAT. */
     killDriver: () => (live = false),
     handleFor() {
@@ -175,12 +177,16 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     async setEffort(id: string, effort: string) {
       efforts.push(`${id}:${effort}`);
     },
+    async setModel(id: string, model: string) {
+      models.push(`${id}:${model}`);
+    },
     taskLiveness: () => null,
   } as unknown as SdkSupervisor & {
     answered: typeof answered;
     stopped: string[];
     modes: string[];
     efforts: string[];
+    models: string[];
     /** Say the driver has gone, so the live-driver preflight refuses the next handoff. */
     killDriver: () => void;
   };
@@ -656,6 +662,45 @@ test("a late terminal successor rebinds an unbound running task by its worktree"
     } as never,
   ]);
   assert.equal(registry.getTask("task-late")?.sessionId, "proc:late:9:1");
+});
+
+test("model changes validate the request and reach only live SDK sessions", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:model");
+  const supervisor = fakeSupervisor();
+  const app = mkApp(registry, supervisor);
+  const change = (body: unknown, id = "sdk:model") => app.request(`/api/sessions/${id}/model`, {
+    method: "POST", headers: HEADERS, body: JSON.stringify(body),
+  });
+  for (const model of ["", "--flag", "with spaces", "x".repeat(81), null, 42]) {
+    assert.equal((await change({ model })).status, 400);
+  }
+  assert.equal((await change({ model: "claude-sonnet-5" }, "sdk:missing")).status, 404);
+  assert.deepEqual(supervisor.models, []);
+  assert.equal((await change({ model: "claude-sonnet-5" })).status, 200);
+  assert.deepEqual(supervisor.models, ["sdk:model:claude-sonnet-5"]);
+  registry.markSessionStopping("sdk:model");
+  assert.equal((await change({ model: "claude-opus-5" })).status, 409);
+  registry.applyDiscovery([{
+    syntheticId: "proc:model:9:1", agent: "claude", pid: 9, tty: "model", cwd: "/wt/model",
+    name: "terminal", nameSource: "process", terminals: [], startedAt: 1,
+  } as never]);
+  assert.equal((await change({ model: "claude-opus-5" }, "proc:model:9:1")).status, 409);
+  assert.deepEqual(supervisor.models, ["sdk:model:claude-sonnet-5"]);
+});
+
+test("a refused model change returns the driver error without changing the projection", async (t) => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:model-refused");
+  registry.recordConfiguredModel("sdk:model-refused", "claude-opus-5");
+  const supervisor = fakeSupervisor();
+  t.mock.method(supervisor, "setModel", async () => { throw new Error("model unavailable"); });
+  const result = await mkApp(registry, supervisor).request("/api/sessions/sdk:model-refused/model", {
+    method: "POST", headers: HEADERS, body: JSON.stringify({ model: "claude-sonnet-5" }),
+  });
+  assert.equal(result.status, 409);
+  assert.deepEqual(await result.json(), { ok: false, error: "model unavailable" });
+  assert.equal(registry.getSession("sdk:model-refused")?.configuredModel, "claude-opus-5");
 });
 
 test("kill and mode controls use the embedded driver", async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
   AgentType,
   PermissionMode,
@@ -557,6 +558,7 @@ export class SdkSupervisor {
     });
     const session = this.registry.registerSdkSession({
       ...registration,
+      configuredModel: durable.model,
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
@@ -736,11 +738,16 @@ export class SdkSupervisor {
    */
   setModel(id: string, model: string): Promise<void> {
     return this.serialize(id, async (handle) => {
+      const session = this.registry.getSession(id);
+      if (!session || modelBelongsToAnotherHarness(session.agent, model)) {
+        throw new Error("this model is not available for this session's harness");
+      }
       if (!handle.setModel) {
         throw new Error("this session's embedded driver cannot change model");
       }
       await handle.setModel(model);
       setSdkSessionModel(id, model);
+      this.registry.recordConfiguredModel(id, model);
     });
   }
 

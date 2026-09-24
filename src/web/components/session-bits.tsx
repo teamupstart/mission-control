@@ -29,6 +29,7 @@ import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
 import { EffortPicker, EffortReading } from "./EffortPicker.tsx";
+import { ModelPicker } from "./ModelPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 import {
@@ -1906,14 +1907,14 @@ export function RuntimeMetaRow({
       : `${meta.contextPct}% of the context window used`;
   return (
     <span className="card-runtime">
-      {hasModel && (
+      {hasModel && (session ? <ModelPicker key={session.id} session={session} /> : (
         <Tooltip label={meta.modelId ? `Model: ${meta.modelId}` : `Model: ${meta.model}`}>
           <span className="rt-pill rt-model">
             {meta.model}
             {meta.longContext && <span className="rt-1m">1M</span>}
           </span>
         </Tooltip>
-      )}
+      ))}
       {hasEffort &&
         (session ? (
           <EffortPicker session={session} />

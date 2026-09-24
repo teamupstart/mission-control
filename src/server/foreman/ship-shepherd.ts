@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { settledIdle } from "@shared/session.ts";
@@ -127,7 +128,7 @@ function decideShipRecovery(
   const { session: s, queue, now } = input;
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
-  if (!task || !isShippingTaskKind(task.kind) || !["running", "dispatching"].includes(task.status)) {
+  if (!task || !isShippingTaskKind(task.kind) || !isActiveTask(task.status)) {
     return skip("no running managed task is bound");
   }
   if (s.foremanInvite === null) return skip("Foreman is not invited into this session");

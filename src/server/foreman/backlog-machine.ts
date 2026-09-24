@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
@@ -123,8 +124,8 @@ export interface BacklogTickInput {
 function inFlightTasks(tasks: Task[], sessions: Session[]): number {
   const live = new Set(sessions.filter((s) => s.state !== "exited").map((s) => s.id));
   return tasks.filter((t) => {
+    if (!isActiveTask(t.status)) return false;
     if (t.status === "dispatching") return true;
-    if (t.status !== "running") return false;
     // Bound to an agent: in flight only while that agent is still one of ours.
     if (t.sessionId !== null) return live.has(t.sessionId);
     // Not bound yet, but we cut it a session - the window before discovery finds it.
@@ -226,7 +227,7 @@ export function agentIsFree(
   if (cfg.respectOpenPrs && s.prState === "open") return false;
   if (!foremanAllowlisted(s.cwd, s.repoRoot, cfg.allowlist)) return false;
   return !tasks.some(
-    (t) => t.sessionId === s.id && (t.status === "running" || t.status === "dispatching"),
+    (t) => t.sessionId === s.id && isActiveTask(t.status),
   );
 }
 

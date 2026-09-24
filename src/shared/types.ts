@@ -1884,13 +1884,16 @@ export const DEFAULT_TASK_KIND = TASK_KINDS[0];
  * new worktree + agent per task. The UI has always said "backlog"; the word here
  * matches it so "queue" only ever means the session work queue.
  */
-export type TaskStatus =
-  | "backlog"
-  | "dispatching"
-  | "running"
-  | "done"
-  | "cancelled"
-  | "failed";
+// Persisted vocabulary, append-only. Define each new status's activity in task-status.ts.
+export const TASK_STATUSES = [
+  "backlog",
+  "dispatching",
+  "running",
+  "done",
+  "cancelled",
+  "failed",
+] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /**
  * How a task's isolated worktree was provisioned - decides how it is torn down.

@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
@@ -3702,7 +3703,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           .find(
             (candidate) =>
               candidate.sessionId === session.id &&
-              (candidate.status === "running" || candidate.status === "dispatching"),
+              isActiveTask(candidate.status),
           ) ?? null;
       if (task) {
         if (session.runtime === "sdk") clearSdkSessionTask(session.id);
@@ -6106,7 +6107,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       || !task
       || session.task?.id !== task.id
       || !isShippingTaskKind(task.kind)
-      || !["running", "dispatching"].includes(task.status)
+      || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
     }

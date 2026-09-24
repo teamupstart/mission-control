@@ -90,7 +90,7 @@ import { reportBucket } from "@shared/session.ts";
 import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
-import { isTerminalTask } from "@shared/task-status.ts";
+import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
@@ -3805,7 +3805,7 @@ export class Registry extends EventEmitter {
     if (
       !task ||
       task.kind !== "pipeline" ||
-      (task.status !== "running" && task.status !== "dispatching") ||
+      !isActiveTask(task.status) ||
       !task.pipelineCommissionId ||
       !task.pipelineRun
     ) {
@@ -4011,7 +4011,7 @@ export class Registry extends EventEmitter {
     for (const taskId of invalidatedTaskIds) {
       const task = updates.get(taskId) ?? this.tasks.get(taskId);
       if (task?.sessionId === sessionId) {
-        const active = task.status === "dispatching" || task.status === "running";
+        const active = isActiveTask(task.status);
         updates.set(taskId, {
           ...task,
           sessionId: null,
@@ -6844,7 +6844,7 @@ export class Registry extends EventEmitter {
     for (const t of this.tasks.values()) {
       if (t.sessionId !== sessionId) continue;
       if (t.status === "backlog" || t.status === "cancelled") continue;
-      if (t.status === "running" || t.status === "dispatching") return t;
+      if (isActiveTask(t.status)) return t;
       if (!bound || t.updatedAt > bound.updatedAt) bound = t;
     }
     if (bound) return bound;
@@ -6853,7 +6853,7 @@ export class Registry extends EventEmitter {
       const commissionedTask = commission ? this.tasks.get(commission.taskId) : undefined;
       if (
         commissionedTask &&
-        (commissionedTask.status === "running" || commissionedTask.status === "dispatching")
+        isActiveTask(commissionedTask.status)
       ) {
         return commissionedTask;
       }
@@ -9170,8 +9170,7 @@ export function summarizeQueue(
  */
 export function completableByMerge(status: Task["status"]): boolean {
   return (
-    status === "running" ||
-    status === "dispatching" ||
+    isActiveTask(status) ||
     status === "failed" ||
     status === "cancelled"
   );

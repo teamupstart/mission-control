@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { readLaunchProcess } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -1347,7 +1348,7 @@ export class Dispatcher {
         (candidate) =>
           candidate.id !== taskId &&
           candidate.kind === "pipeline" &&
-          (candidate.status === "running" || candidate.status === "dispatching") &&
+          isActiveTask(candidate.status) &&
           candidate.pipelineRun !== null &&
           pipelineRunKeyOf(candidate.pipelineRun) === runKey,
       );

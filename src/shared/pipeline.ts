@@ -1,8 +1,9 @@
+import { isActiveTask } from "./task-status.ts";
 import { z } from "zod";
 
 import { capabilitiesFor, supportsSdkSkillInvocation } from "./harness-capabilities.ts";
 import type { LlmSpendRole } from "./llm-spend.ts";
-import type { AgentType } from "./types.ts";
+import type { AgentType, TaskStatus } from "./types.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 
 // Pipelines: what Mission Control knows about a gated SDLC engine it does not own.
@@ -965,7 +966,7 @@ export interface PipelineCommissionAttention {
 /** One daemon-independent attention reading shared by every Pipeline surface. */
 export function pipelineCommissionAttention(
   commission: PipelineCommission,
-  task: { status: string; repoRoot: string | null } | null,
+  task: { status: TaskStatus; repoRoot: string | null } | null,
   linkedRun: PipelineRun | null,
   workspace: PipelineWorkspaceView | null = null,
 ): PipelineCommissionAttention | null {
@@ -994,7 +995,7 @@ export function pipelineCommissionAttention(
   if (task?.status === "done" && (!linkedRun || linkedRun.group !== "processed")) {
     return { kind: "status_drift", priority: 0, title: "Task completed before Pipeline", detail: "Mission Control marks the task done while the provider lifecycle is not completion-compatible." };
   }
-  if (["running", "dispatching"].includes(task?.status ?? "") && commission.lifecycle === "cancelled") {
+  if (task && isActiveTask(task.status) && commission.lifecycle === "cancelled") {
     return { kind: "status_drift", priority: 0, title: "Cancelled Pipeline still marked active", detail: "The task remains active after the provider commission was cancelled." };
   }
   if (commission.readiness?.permitted === false) {
@@ -1029,7 +1030,7 @@ export interface PipelineCommissionAttentionEntry {
  */
 export function pipelineCommissionAttentionEntries(input: {
   commissions?: readonly PipelineCommission[];
-  tasks?: readonly { id: string; status: string; repoRoot: string | null }[];
+  tasks?: readonly { id: string; status: TaskStatus; repoRoot: string | null }[];
   runs?: readonly PipelineRun[];
   sessions?: readonly {
     task?: { id: string } | null;

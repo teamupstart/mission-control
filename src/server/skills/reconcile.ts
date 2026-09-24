@@ -24,6 +24,7 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
 import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
+import { publishSymlinkNoReplace } from "../symlink-publication.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -811,16 +812,24 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
             out.linked.push(spec.linkName);
           } finally { rmSync(stage, { recursive: true, force: true }); }
         } else {
-          // Creating directly refuses an intervening file instead of overwriting it.
-          symlinkSync(target, path, "file");
-          const published = lstatSync(path);
-          try { onPublished?.(); }
-          catch (error) {
-            if (isPublishedExtensionLink(path, published, target)) unlinkSync(path);
-            throw error;
-          }
-          out.changed = true;
-          out.linked.push(spec.linkName);
+          // Capture identity privately, then expose that same inode without replacing
+          // any intervening entry. Keep the private link until commit/rollback finishes.
+          const stage = mkdtempSync(join(dir, ".mission-extension-"));
+          try {
+            const staged = join(stage, spec.linkName);
+            symlinkSync(target, staged, "file");
+            const published = lstatSync(staged);
+            publishSymlinkNoReplace(staged, path);
+            try {
+              if (!isPublishedExtensionLink(path, published, target)) throw new Error("Pi extension entry changed during publication");
+              onPublished?.();
+            } catch (error) {
+              if (isPublishedExtensionLink(path, published, target)) unlinkSync(path);
+              throw error;
+            }
+            out.changed = true;
+            out.linked.push(spec.linkName);
+          } finally { rmSync(stage, { recursive: true, force: true }); }
         }
       } else if (entry) {
         unlinkSync(path);

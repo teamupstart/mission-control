@@ -27,7 +27,10 @@ The publisher copies into a private directory on the same filesystem as
 `~/.mission-control/integrations/pi/<buildId>/`, verifies the manifest, loads the copied
 extension in a bounded child, and completes a real initialize/tools-list handshake against
 its copied bridge. Only then does it publish the generation and atomically replace
-`~/.pi/agent/extensions/mission-control.js`. Fresh-link creation refuses an intervening entry.
+`~/.pi/agent/extensions/mission-control.js`. Fresh publication captures a private symlink's
+identity before exposing it, uses `linkat` without following the symlink to atomically refuse
+an occupied destination, and rechecks that identity and target before committing enabled intent.
+The primitive ships in the existing native state-lock addon; no external utility is required.
 Replacement rechecks ownership and entry identity immediately before rename.
 
 `pi-extension.json` stores machine-local enabled intent, independently of skills and SQLite.

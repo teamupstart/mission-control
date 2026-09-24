@@ -16,6 +16,9 @@ import { piMetadataSource, piBridgeSource, writePiIntegration } from "./helpers/
 import { verifyPiIntegration } from "../src/server/extensions/pi-artifact.ts";
 import { buildPiExtension } from "../scripts/build-pi-extension.ts";
 import { piGenerationPath, piIntegrationRoot, isManagedPiExtensionTarget } from "../src/server/extensions/pi-paths.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+ensureNativeStateLockAddon();
 
 const root = mkdtempSync(join(tmpdir(), "pi-publisher-"));
 const previous = { ...process.env };

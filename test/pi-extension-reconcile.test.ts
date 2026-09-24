@@ -137,6 +137,62 @@ test("real files, directories, foreign links and unknown dangling links are neve
   }
 });
 
+test("fresh publication refuses an entry arriving while its link is still private", (t) => {
+  const symlink = fs.symlinkSync;
+  let arrival: fs.Stats | undefined;
+  const fault = t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => {
+    symlink(...args);
+    if (String(args[1]).includes("/.mission-extension-")) {
+      writeFileSync(link, "concurrent operator file");
+      arrival = lstatSync(link);
+    }
+  });
+  syncBuiltinESMExports();
+  const commit = t.mock.fn();
+  try {
+    const result = reconcileExtensionLink(true, target, commit);
+    assert.ok(arrival);
+    assert.deepEqual(result.blocked, [spec.linkName]);
+    assert.equal(commit.mock.callCount(), 0);
+    assert.equal(lstatSync(link).ino, arrival.ino);
+    assert.equal(readFileSync(link, "utf8"), "concurrent operator file");
+    assert.deepEqual(readdirSync(dir), [spec.linkName]);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+});
+
+for (const replacement of ["file", "foreign-link", "same-target-link"] as const) {
+  for (const commitFails of [false, true]) {
+    test(`fresh publication does not adopt a concurrent ${replacement} before ${commitFails ? "failing" : "successful"} intent commit`, (t) => {
+      mkdirSync(dir);
+      const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator code");
+      const stat = fs.lstatSync;
+      let concurrent: fs.Stats | undefined;
+      const fault = t.mock.method(fs, "lstatSync", (...args: Parameters<typeof fs.lstatSync>) => {
+        if (String(args[0]) === link && !concurrent && stat(link, { throwIfNoEntry: false })) {
+          fs.renameSync(link, join(dir, "displaced.js"));
+          if (replacement === "file") writeFileSync(link, "operator code");
+          else symlinkSync(replacement === "same-target-link" ? target : foreign, link);
+          concurrent = stat(link);
+        }
+        return Reflect.apply(stat, fs, args);
+      });
+      syncBuiltinESMExports();
+      const commit = t.mock.fn(() => { if (commitFails) throw new Error("intent commit failed"); });
+      try {
+        const result = reconcileExtensionLink(true, target, commit);
+        assert.ok(concurrent, "replacement arrived before the first public-path identity read");
+        assert.equal(commit.mock.callCount(), 0, "a replacement cannot authorize enabled intent");
+        assert.deepEqual(result.blocked, [spec.linkName]);
+        assert.equal(result.changed, false);
+        assert.equal(stat(link).ino, concurrent.ino, "the replacement is not removed or overwritten");
+        if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator code");
+        else assert.equal(readlinkSync(link), replacement === "same-target-link" ? target : foreign);
+        assert.equal(readdirSync(dir).some(name => name.startsWith(".mission-extension-")), false);
+      } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+    });
+  }
+}
+
 for (const previous of [false, true]) {
   for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
     test(`failed ${previous ? "replacement" : "fresh"} publication preserves a concurrent ${replacement}`, () => {

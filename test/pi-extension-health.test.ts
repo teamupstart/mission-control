@@ -12,6 +12,9 @@ import { ENVIRONMENT_CHECK_IDS } from "../src/shared/environment-checks.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig } from "../src/server/extensions/config.ts";
 import { installPiExtensionFromSetup } from "../src/server/setup/pi-extension.ts";
 import { piMetadataSource, piBridgeSource, sealPiIntegration, writePiIntegration } from "./helpers/pi-integration.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+ensureNativeStateLockAddon();
 
 const root = mkdtempSync(join(tmpdir(), "pi-health-"));
 const previous = { ...process.env };

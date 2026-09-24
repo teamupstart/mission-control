@@ -156,3 +156,31 @@ for (const state of ["absent", "live", "unknown"] as const) {
     }
   });
 }
+
+test("a renamed legacy cmux home keeps its worktree when cleanup has no captured identity", async () => {
+  const repo = join(home, "legacy-cmux-repo");
+  const worktree = join(home, "legacy-cmux-worktree");
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]);
+  execFileSync("git", ["-C", repo, "worktree", "add", "-qb", "legacy-task", worktree]);
+  writeFileSync(join(worktree, "unfinished.txt"), "keep this work\n");
+  const original = MULTIPLEXERS.cmux;
+  MULTIPLEXERS.cmux = fakeMultiplexer({
+    id: "cmux",
+    bin: { env: null, candidates: [process.execPath], dropEnv: [] },
+    list: async () => [muxPane({ session: "owned-uuid", sessionName: "renamed" })],
+    sessions: {
+      ...original.sessions!,
+      kill: async () => { throw new Error("no identity authorizes a close"); },
+    },
+  });
+  try {
+    await assert.rejects(teardownWorktree({
+      repoRoot: repo, worktreePath: worktree, branch: "legacy-task", provider: "git",
+      homeName: "original", homeBackend: "cmux", terminalResourceId: null,
+    }), /identity.*unknown.*worktree preserved/);
+    assert.equal(existsSync(join(worktree, "unfinished.txt")), true);
+  } finally {
+    MULTIPLEXERS.cmux = original;
+  }
+});

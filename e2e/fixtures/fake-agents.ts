@@ -299,6 +299,14 @@ if (dir) {
 if (process.env.MC_E2E_CMUX_MODE === "unknown") {
   setInterval(() => {}, 1000);
 }
+// A legacy task has only its original title. A completed native inventory can still
+// contain its renamed home, so a title miss must not authorize checkout removal.
+if (argv[0] === "tree" && process.env.MC_E2E_CMUX_MODE === "renamed-home") {
+  process.stdout.write(JSON.stringify({ windows: [{ workspaces: [{
+    id: "1278A1C0-71C2-477C-8F11-718C14FCB74B", title: "Renamed legacy home",
+    panes: [{ surfaces: [{ id: "135BEA69-A106-4BF3-8D26-78B237DA52C4", type: "terminal", tty: null }] }],
+  }] }] }) + "\\n");
+}
 `;
 
 /**

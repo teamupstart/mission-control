@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -1163,6 +1163,9 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
   // these are properties of the launch that no amount of DOM inspection could reach.
   const dir = join(daemon.recordDir, "claude");
   const read = (): Invocation[] => recordsIn<Invocation>(dir);
+  const taskWorktrees = join(daemon.home, "worktree-pools") + sep;
+  const isDispatchedSession = (record: Invocation) =>
+    record.cwd.startsWith(taskWorktrees) && record.argv.includes("--input-format");
 
   // POLLED, not read once. The card appears as soon as the daemon registers the session,
   // which is BEFORE the child process it launched has run far enough to write anything -
@@ -1177,7 +1180,7 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
     .poll(() => read().map((r) => (
       r.argv.includes("--setting-sources=")
         ? "headless-sdk"
-        : r.argv.includes("--input-format")
+        : isDispatchedSession(r)
           ? "session-sdk"
           : "other"
     )).sort(), {
@@ -1192,9 +1195,7 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
   );
   expect(oneShot?.entrypoint).toBe("sdk-ts");
 
-  const record = records.find(
-    (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
-  );
+  const record = records.find(isDispatchedSession);
   expect(record).toBeDefined();
   if (!record) return;
 

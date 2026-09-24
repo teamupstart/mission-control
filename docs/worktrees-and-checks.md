@@ -8,7 +8,9 @@ one daemon-owned native allocator.
 The owner may be an ordinary checkout or a bare clone. A bare clone owns its native pool
 through its physical Git directory, and tasks execute in linked working checkouts. The
 disposable Git fallback supports the same owners. Bare metadata named `.git` is still the
-owner itself, not its parent folder.
+owner itself, not its parent folder. For bare metadata named `.bare` or `.git`, pool and
+checkout names use the containing repository folder's name so working checkouts are not
+named like hidden metadata.
 
 One tree per session, with one exception. A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is dispatched

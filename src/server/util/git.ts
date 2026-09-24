@@ -7,7 +7,38 @@ import { locateExecutableSync } from "../executables/locator.ts";
 
 const bareConfigCache = new Map<string, { source: string; bare: boolean }>();
 
-/** Let Git parse its own boolean syntax, including quoted values and included files. */
+/** Recognize only plain config syntax; null delegates every other form to Git. */
+function literalBareConfig(source: string): boolean | null {
+  const normalized = source.replace(/\r\n/g, "\n");
+  if (/[^\t\n\x20-\x7e]/.test(normalized)) return null;
+  let inSection = false;
+  let inCore = false;
+  let bare: boolean | undefined;
+  for (const raw of normalized.split("\n")) {
+    const line = raw.split(/[;#]/, 1)[0]!.trim();
+    if (!line) continue;
+    const section = /^\[([a-z][a-z0-9-]*)(?:[ \t]+"([^"\\]*)")?\]$/i.exec(line);
+    if (section) {
+      const name = section[1]!.toLowerCase();
+      if (name === "include" || name === "includeif") return null;
+      inSection = true;
+      inCore = name === "core" && section[2] === undefined;
+      continue;
+    }
+    const entry = /^([a-z][a-z0-9-]*)(?:[ \t]*=[ \t]*([^"\\]*))?$/i.exec(line);
+    if (!inSection || !entry) return null;
+    if (inCore && entry[1]!.toLowerCase() === "bare") {
+      // Git owns duplicate precedence and alternate boolean spellings, including
+      // implicit/empty values. Never accept the first match before reading the rest.
+      const value = entry[2] ?? "";
+      if (bare !== undefined || !/^(true|false)$/i.test(value)) return null;
+      bare = value.toLowerCase() === "true";
+    }
+  }
+  return bare ?? false;
+}
+
+/** Keep ordinary checkouts cheap; Git parses quoted, included, or unsupported configs. */
 function bareGitDirectory(dir: string): boolean | null {
   let source: string;
   try {
@@ -15,6 +46,8 @@ function bareGitDirectory(dir: string): boolean | null {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null;
   }
+  const literal = literalBareConfig(source);
+  if (literal !== null) return literal;
   // Ordinary configs are stable across discovery ticks. Both include and includeIf can
   // change independently, so Git re-reads them rather than trusting the parent's cache.
   const cacheable = !/^\s*\[\s*include/im.test(source);
@@ -150,7 +183,7 @@ export interface WorktreeRepositoryIdentity {
   mainCheckoutRoot: string;
   /** Physical Git common directory. This, and only this, is native pool identity. */
   gitCommonDirectory: string;
-  /** Human-readable repository name, derived from the main checkout directory. */
+  /** Checkout name; hidden bare metadata uses its containing repository directory. */
   repositoryName: string;
   /** Stable native pool directory under WORKTREE_POOLS_DIR. */
   poolPath: string;
@@ -173,8 +206,11 @@ export function worktreeRepositoryIdentity(
   const common = realPath(commonDir(found.gitDir));
   const mainCheckoutRoot = mainRepoRoot(cwd);
   if (!mainCheckoutRoot) return null;
-  if (!isBareRepository(common) && realPath(join(mainCheckoutRoot, ".git")) !== common) return null;
-  const repositoryName = basename(mainCheckoutRoot);
+  const bare = isBareRepository(common);
+  if (!bare && realPath(join(mainCheckoutRoot, ".git")) !== common) return null;
+  const leaf = basename(mainCheckoutRoot);
+  const repositoryName = bare && (leaf === ".bare" || leaf === ".git")
+    ? basename(dirname(mainCheckoutRoot)) : leaf;
   if (!repositoryName) return null;
   const digest = createHash("sha256").update(common).digest("hex").slice(0, 16);
   // The leaf need not exist yet, but its state-directory parent does. Physicalize that

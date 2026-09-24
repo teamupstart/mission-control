@@ -127,6 +127,34 @@ test("bare config detection agrees with Git on literals, overrides, unsupported 
   }
 });
 
+test("unknown nested bare metadata never inherits the enclosing checkout's identity", () => {
+  const { root, clone, origin } = mkOriginAndClone("mission-bare-unknown-boundary-");
+  try {
+    for (const leaf of ["repo.git", ".bare", ".git"]) {
+      const bare = join(clone, "nested", leaf);
+      execFileSync("git", ["clone", "--bare", "-q", origin, bare]);
+      const linked = join(root, `linked-${leaf}`);
+      gitIn(bare, "worktree", "add", "--detach", linked, "HEAD");
+      const paths = [bare, join(bare, "objects"), linked];
+      for (const path of paths) assert.equal(gitInfo(path).repoRoot, bare);
+      writeFileSync(join(bare, "config"), "[core]\n bare = invalid\n");
+      for (const reason of ["invalid config", "unreadable config"]) {
+        if (reason === "unreadable config") {
+          rmSync(join(bare, "config"));
+          mkdirSync(join(bare, "config"));
+        }
+        for (const path of paths) {
+          assert.equal(mainRepoRoot(path), null, `${leaf}: ${reason}`);
+          assert.equal(gitInfo(path).repoRoot, null, `${leaf}: ${reason}`);
+          assert.equal(worktreeRepositoryIdentity(path), null, `${leaf}: ${reason}`);
+        }
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const [cloneOption, layout] of [["--bare", "repo.git"], ["--mirror", "repo.git"], ["--bare", "container/.bare"], ["--bare", "container/.git"]] as const) {
   test(`${cloneOption} clone at ${layout} provisions and returns worktrees without rewriting local branches`, async () => {
     const { root, origin } = mkOriginAndClone("mission-bare-provision-");

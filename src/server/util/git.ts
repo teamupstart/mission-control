@@ -71,16 +71,22 @@ function bareGitDirectory(dir: string): boolean | null {
   return bare;
 }
 
+/** Preserve unknown metadata/config state so ownership walks cannot cross it. */
+function bareRepositoryStatus(dir: string): boolean | null {
+  try {
+    if (!statSync(join(dir, "HEAD")).isFile()
+      || !statSync(join(dir, "objects")).isDirectory()
+      || !statSync(join(dir, "refs")).isDirectory()) return false;
+    return bareGitDirectory(dir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? false : null;
+  }
+}
+
 /** A bare repository is Git metadata at the root, not a name ending in .git. */
 export function isBareRepository(dir: string): boolean {
-  try {
-    return statSync(join(dir, "HEAD")).isFile()
-      && statSync(join(dir, "objects")).isDirectory()
-      && statSync(join(dir, "refs")).isDirectory()
-      && bareGitDirectory(dir) === true;
-  } catch {
-    return false;
-  }
+  return bareRepositoryStatus(dir) === true;
 }
 
 export interface GitInfo {
@@ -149,7 +155,7 @@ export function gitInfo(cwd: string | null): GitInfo {
  * still owns itself; the name alone cannot prove that its parent is a checkout.
  */
 function mainRootFromCommonDir(common: string): string | null {
-  if (basename(common) !== ".git") return common;
+  if (basename(common) !== ".git") return bareRepositoryStatus(common) === null ? null : common;
   const bare = bareGitDirectory(common);
   return bare === null ? null : bare ? common : dirname(common);
 }
@@ -235,7 +241,9 @@ export function worktreeRepositoryIdentity(
 function resolveGitDir(cwd: string): { gitDir: string; root: string } | null {
   let dir = cwd;
   for (;;) {
-    if (isBareRepository(dir)) return { gitDir: dir, root: dir };
+    const bare = bareRepositoryStatus(dir);
+    if (bare === null) return null;
+    if (bare) return { gitDir: dir, root: dir };
     const dotGit = join(dir, ".git");
     let isDir: boolean;
     try {

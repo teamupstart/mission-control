@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { arch as hostArch, platform as hostPlatform } from "node:os";
 import { isAbsolute, relative } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import {
   ProductIssueRequestSchema,
 } from "@shared/protocol.ts";
@@ -387,6 +388,7 @@ export class ProductIssueService {
           ? "The GitHub CLI availability check did not report back; try again"
           : "GitHub CLI is unavailable; install gh and run `gh auth login`",
         attachments,
+        version,
       );
     }
     if (this.attachments.enabled && !supportsProductIssueAttachments(version.stdout)) {
@@ -404,6 +406,7 @@ export class ProductIssueService {
           ? "GitHub authentication could not be checked; try again"
           : "GitHub CLI is not authenticated; run `gh auth login`",
         attachments,
+        auth,
       );
     }
 
@@ -420,6 +423,7 @@ export class ProductIssueService {
           ? `The target repository ${target.repo} could not be checked; try again`
           : `GitHub CLI cannot reach ${target.repo}; verify that the repository exists and is accessible`,
         attachments,
+        repository,
       );
     }
 
@@ -441,6 +445,7 @@ export class ProductIssueService {
           ? `Labels in ${target.repo} could not be checked; try again`
           : `GitHub CLI could not list labels in ${target.repo}`,
         attachments,
+        labels,
       );
     }
     let names: Set<string>;
@@ -814,12 +819,18 @@ export class ProductIssueService {
     code: ProductIssuePreflight["problems"][number]["code"],
     message: string,
     attachments: ProductIssueAttachmentState = this.attachmentState(),
+    diagnostic?: RunResult,
   ): ProductIssuePreflight {
+    // Local recovery details only. These never enter the public report body. Keep
+    // multiple lines because gh auth status starts with a hostname before the error.
+    const detail = diagnostic
+      ? stripVTControlCharacters(diagnostic.stderr.trim() || diagnostic.stdout.trim()).slice(0, 1_000)
+      : "";
     return {
       ready: false,
       target,
       attachments,
-      problems: [{ code, message }],
+      problems: [{ code, message: detail ? `${message}. GitHub CLI: ${detail}` : message }],
     };
   }
 

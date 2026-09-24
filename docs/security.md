@@ -57,7 +57,9 @@ trusted native click before it uses the capability with the current preview's re
 draft identity. Synthetic clicks, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
-dashboard web contents and only while the browser reports an active user gesture. It shows no
+dashboard web contents, with the preload requiring a trusted click still in dispatch.
+A held press remains valid even if Chromium's transient user activation expires before release;
+synthetic clicks and calls after dispatch ends remain refused. It shows no
 second dialog. The daemon then asks
 the shell to consume that exact request id and draft identity over the private utility-process
 port. An authorization is short-lived and single-use, so another loopback process can preview and

@@ -17,6 +17,13 @@ interface ProductIssueAuthorizationInput {
 // former Node implementation intended.
 const productIssueAuthorizationCapability = globalThis.crypto.randomUUID();
 let productIssueAuthorizationClaimed = false;
+// Transient user activation starts on mouse-down and can expire before a held press
+// produces its trusted click. Keep the actual dispatch instead: its eventPhase returns
+// to NONE afterward, so a past gesture cannot authorize a later script call either.
+let productIssueClick: MouseEvent | null = null;
+window.addEventListener("click", (event) => {
+  productIssueClick = event;
+}, true);
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
@@ -38,7 +45,8 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     if (
       !productIssueAuthorizationClaimed ||
       capability !== productIssueAuthorizationCapability ||
-      navigator.userActivation?.isActive !== true
+      productIssueClick?.isTrusted !== true ||
+      productIssueClick.eventPhase === Event.NONE
     ) return false;
     return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
   },

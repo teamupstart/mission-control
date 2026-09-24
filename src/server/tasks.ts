@@ -1,3 +1,6 @@
+import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
+import { saveSourceSync } from "./task-sources/sync-store.ts";
+import { inTransaction } from "./db.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
@@ -3598,6 +3601,35 @@ export class TaskManager {
     return { ok: true, task: next };
   }
 
+  /** Apply only source-owned content, atomically with its accepted comparison baseline. */
+  async applySourceContent(
+    id: string,
+    source: TaskSourceRef,
+    expected: SourceContent,
+    content: SourceContent,
+    persist: () => void,
+    stillCurrent: () => boolean,
+  ): Promise<Ok> {
+    await this.titling.get(id);
+    const task = this.registry.getTask(id);
+    if (!task || !canRefreshSourceTask(task) || this.assigningTasks.has(id)
+      || taskWorkEpisodeForTask(id) || historicalTaskWorkEpisodeBindingsForTask(id).length > 0) {
+      return { ok: false, error: "the task has started, is being assigned, or is no longer in the backlog" };
+    }
+    if (task.source?.sourceId !== source.sourceId || task.source.externalId !== source.externalId
+      || !sameSourceContent(task, expected) || !stillCurrent()) {
+      return { ok: false, error: "the task or source changed; sweep again before applying this update" };
+    }
+    const changed = !sameSourceContent(task, content);
+    const next = { ...task, ...content, updatedAt: Date.now() };
+    const displaced = inTransaction(() => {
+      persist();
+      return changed ? dbUpsertTask(next) : [];
+    });
+    if (changed) this.registry.publishPersistedTask(next, displaced);
+    return { ok: true };
+  }
+
   /**
    * Link a backlog task to the external item that was just created FOR it.
    *
@@ -3649,6 +3681,11 @@ export class TaskManager {
     // the registry emits `task_upsert` - so the dashboard learns of the link over the
     // stream that already exists, and this feature adds no `ServerEvent`.
     this.registry.upsertTask(task);
+    saveSourceSync(task.id, ref.sourceId, {
+      origin: "pushed", externalId: ref.externalId,
+      defaults: { priority: task.priority, labels: task.labels },
+      baseline: null, pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
+    });
     return { ok: true, task };
   }
 

@@ -1,3 +1,4 @@
+import { refreshSourceTasks } from "./sync.ts";
 import type { SweepReport, TaskSourceInstance, TaskSourceStatus } from "@shared/task-source.ts";
 import { countTaskSourceSeen } from "../db.ts";
 import { envVar } from "../config.ts";
@@ -17,9 +18,8 @@ import { preflightSource, sweepSource } from "./index.ts";
 // It does not need the gate the skills reload loop needs (`settledIdle` + a pane read +
 // `withPaneLock`; see "The daemon is no longer strictly reactive" in the README) because
 // it never types. It writes backlog rows and nothing else: no worktree is cut, no
-// keystroke is sent, and the worst a broken source can do is file junk into a list a
-// human then reads and deletes. The moment a source can type, that whole argument has to
-// be redone.
+// keystroke is sent. Optional content refresh compares against a durable import baseline
+// and preserves local edits. The moment a source can type, that boundary must be reviewed.
 
 /** How often the loop wakes to ask which sources are due. Not the sweep interval. */
 const TICK_MS = Math.max(5_000, Number(envVar("TASK_SOURCE_TICK_MS") ?? 30_000));
@@ -81,9 +81,11 @@ export function noteTaskSourceConfigChange(
   before: TaskSourceInstance[],
   next: TaskSourceInstance[],
 ): void {
-  const wasEnabled = new Map(before.map((s) => [s.id, s.enabled]));
-  for (const src of next) {
-    if (wasEnabled.get(src.id) === true && !src.enabled) observeEnabled(src);
+  const nextById = new Map(next.map((s) => [s.id, s]));
+  for (const src of before) {
+    const replacement = nextById.get(src.id);
+    if (JSON.stringify(src) !== JSON.stringify(replacement)) entryFor(src.id).healthGeneration++;
+    if (replacement && src.enabled && !replacement.enabled) observeEnabled(replacement);
   }
 }
 
@@ -140,6 +142,11 @@ export async function sweepOnce(
   try {
     const result = await sweepSource(inst, contextFor(inst, controller.signal));
     const report = await ingestSweep(inst, result, tasks);
+    if (inst.keepUpdated) {
+      report.sync = await refreshSourceTasks(inst, result, tasks, contextFor(inst, controller.signal),
+        () => entry.healthGeneration === healthGeneration
+          && JSON.stringify(getTaskSourcesConfig().sources.find((s) => s.id === inst.id)) === JSON.stringify(inst));
+    }
     if (entry.healthGeneration === healthGeneration) {
       entry.lastSweepAt = Date.now();
       entry.lastFiled = report.filed;

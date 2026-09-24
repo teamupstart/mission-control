@@ -27,6 +27,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["DELETE", "/api/tasks/:id", "task.delete", "tasks"],
   ["PUT", "/api/task-sources/config", "task.sources_configure", "tasks"],
   ["POST", "/api/task-sources/:id/sweep", "task.import", "tasks"],
+  ["POST", "/api/task-sources/:id/sync/:taskId/resolve", "task.edit", "tasks"],
   ["POST", "/api/task-sources/:id/preflight", "task.source_check", "tasks"],
   ["DELETE", "/api/task-sources/:id/seen", "task.source_reset", "tasks"],
   ["POST", "/api/task-sources/:id/writeback/retry", "task.writeback_retry", "tasks"],

@@ -1956,6 +1956,10 @@ export const api = {
   /** Sweep one source now. The report says what it filed, skipped and dropped. */
   sweepTaskSource: (id: string) =>
     post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),
+  resolveTaskSourceSync: (id: string, taskId: string, version: string, choice: "source" | "local") =>
+    post<ActionResult & { view: TaskSourcesView }>(
+      `/api/task-sources/${encodeURIComponent(id)}/sync/${encodeURIComponent(taskId)}/resolve`, { version, choice },
+    ),
   /** "Is this actually going to work?" - the question an empty sweep cannot answer. */
   preflightTaskSource: (id: string) =>
     post<ActionResult & { problem: string | null }>(

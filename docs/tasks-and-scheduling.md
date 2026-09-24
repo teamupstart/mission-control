@@ -19,3 +19,27 @@ like another client. This keeps task and queue persistence within the daemon bou
 Read [Dispatch, backlog, and task sources](dispatch-and-backlog.md), [Recurring missions](recurring-missions.md),
 and [Work queues and backlog autopilot](work-queues.md) for user-facing behavior. The
 binding and cleanup rules remain in the [tasks and worktrees contract](agent-guides/architecture.md#tasks-and-worktrees).
+
+## Task-source content refresh
+
+The daemon's existing task-source sweeper drives discovery and optional refresh on the same
+cadence. `TaskSourceInstance.keepUpdated` defaults to false. The provider registry owns
+`readLinked`, which reads known issue identities outside discovery filters; adapters still
+return candidates and never write the database.
+
+`task-sources/ingest.ts` records import provenance and a normalized content baseline alongside
+creation. `task-sources/sync.ts` selects at most 25 eligible linked tasks by last attempt, performs
+three-way content comparison, and prepares adoption or conflict reviews. The pure policy lives
+in `shared/task-source-sync.ts`. `task_source_sync` holds task-linked history and is cleaned up
+with the task; `task_source_seen` independently preserves deletion suppression. Pushed tasks are
+marked as excluded, and legacy links require explicit adoption.
+
+`TaskManager.applySourceContent` waits for titling, checks live task content, assignment and
+execution eligibility, then commits the task and its baseline together. Registry publishes the
+already-persisted task after commit through the existing task event. Source generation and
+content checks refuse changes overtaken by configuration, another review, local edits, or a
+launch. Recorded work episodes also exclude a rescheduled task from automatic rewriting.
+
+The existing source view exposes persisted reviews; the versioned resolution route rechecks
+source ownership and the exact local/source values shown before applying either choice. No new
+worker, scheduler, event channel or browser polling loop is introduced.

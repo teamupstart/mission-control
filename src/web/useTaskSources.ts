@@ -27,6 +27,7 @@ function whyItFailed(error: string | undefined): string {
 }
 
 export interface TaskSourcesState {
+  resolveSync: (id: string, taskId: string, version: string, choice: "source" | "local") => Promise<boolean>;
   view: TaskSourcesView | null;
   /** Write the whole set. Applied optimistically, reverted if the server refuses. */
   save: (sources: TaskSourceInstance[]) => Promise<boolean>;
@@ -296,7 +297,22 @@ export function useTaskSources(): TaskSourcesState {
     [applyWriteResult, refresh],
   );
 
+  const resolveSync = useCallback(async (id: string, taskId: string, version: string, choice: "source" | "local") => {
+    const seq = editSeq.current;
+    const gen = writeGen.current;
+    const res = await api.resolveTaskSourceSync(id, taskId, version, choice);
+    if (!res.ok) {
+      setError(whyItFailed(res.error));
+      await refresh();
+      return false;
+    }
+    setError(null);
+    applyWriteResult(res.view, seq, gen);
+    return true;
+  }, [applyWriteResult, refresh]);
+
   return {
+    resolveSync,
     view,
     save,
     sweep,

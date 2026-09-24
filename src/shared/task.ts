@@ -249,8 +249,12 @@ export function taskKindAllowsBacklog(kind: TaskKind): boolean {
  * resource-free row stranded.
  */
 export function dispatchHasNoProvisionedResources(task: Task): boolean {
+  return task.status === "dispatching" && taskHasNoProvisionedResources(task);
+}
+
+/** Resource ownership, independently of the task lifecycle state. */
+export function taskHasNoProvisionedResources(task: Task): boolean {
   return (
-    task.status === "dispatching" &&
     task.pipelineRun === null &&
     task.worktreePath === null &&
     task.provider === null &&

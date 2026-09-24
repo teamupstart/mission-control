@@ -51,6 +51,7 @@ done
 start=\${paginate%%:*}
 limit=\${paginate##*:}
 if [ -n "$FAKE_JIRA_CALLS" ]; then echo "$paginate" >> "$FAKE_JIRA_CALLS"; fi
+if [ -n "$FAKE_JIRA_ARGS" ]; then printf '%s\\n' "$@" >> "$FAKE_JIRA_ARGS"; fi
 
 case "$FAKE_JIRA_MODE" in
   unauthorized)
@@ -121,6 +122,7 @@ function machine(opts: {
   total?: string;
   /** A file the fake appends each requested `start:limit` window to. */
   calls?: string;
+  args?: string;
   /** Hosts the REST rung may authenticate to beyond Jira Cloud. */
   allowedHosts?: string;
 }): void {
@@ -132,6 +134,7 @@ function machine(opts: {
     ["FAKE_JIRA_MODE", opts.mode],
     ["FAKE_JIRA_TOTAL", opts.total],
     ["FAKE_JIRA_CALLS", opts.calls],
+    ["FAKE_JIRA_ARGS", opts.args],
     ["JIRA_ALLOWED_HOSTS", opts.allowedHosts],
   ] as const) {
     if (value === undefined) delete process.env[key];
@@ -238,6 +241,18 @@ test("a working CLI preflights clean, and its sweep files what it found", async 
   assert.equal(swept.items[0]!.title, "Fix the thing");
   assert.equal(swept.items[0]!.priority, "blocker", "Highest maps onto Blocker");
   assert.equal(swept.items[0]!.repoRoot, home, "filed against the source's repo, like any candidate");
+});
+
+test("linked Jira refresh executes an explicit key query even with empty discovery JQL", async () => {
+  const args = join(home, "linked-args.txt");
+  machine({ cli: true, args });
+  const result = await jira.readLinked(cfg({ jql: "" }), [{
+    sourceId: ctx.sourceId, externalId: "MC-1", url: "https://acme.atlassian.net/browse/MC-1",
+  }], ctx);
+  assert.equal(result.error, null);
+  assert.equal(result.items[0]!.ref.externalId, "MC-1");
+  assert.equal(result.items[0]!.title, "Fix the thing");
+  assert.ok(callsIn(args).includes('key in ("MC-1")'));
 });
 
 // jira-cli exits NON-ZERO when the filter matched nothing. A healthy, up-to-date source

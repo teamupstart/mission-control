@@ -1,3 +1,4 @@
+import { TaskSourceSync } from "./TaskSourceSync.tsx";
 import { useEffect, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -983,6 +984,7 @@ export function SourceCard({
           write-back block below, which takes its kind's own settings from the SAME branch
           rather than opening a second one. */}
       {kindFields.sweep}
+      <TaskSourceSync src={src} state={state} onChange={onChange} />
 
       <div className="ts-defaults">
         <p className="settings-group-label">What a swept task looks like</p>
@@ -1145,6 +1147,8 @@ export function SourceCard({
                 if (!r) return { say: "The sweep could not run.", problem: true };
                 if (r.error) return { say: r.error, problem: true };
                 const bits = [`filed ${r.filed}`, `${r.alreadySeen} already filed`];
+                if (r.sync) bits.push(`${r.sync.updated} updated`, `${r.sync.unchanged} unchanged`,
+                  `${r.sync.conflicted} need review`, `${r.sync.skipped} not refreshed`);
                 if (r.overCap > 0) bits.push(`${r.overCap} left for the next sweep`);
                 if (r.refused.length > 0) bits.push(`${r.refused.length} refused`);
                 // A refusal is a problem even though the sweep itself worked: those rows
@@ -1495,6 +1499,7 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       enabled: false,
       repoRoot: res.repoRoot,
       intervalMs: DEFAULT_SWEEP_INTERVAL_MS,
+      keepUpdated: false,
       defaults: {
         kind: "ship",
         // Inherit, not Claude. A source the operator never opened a picker on has not chosen

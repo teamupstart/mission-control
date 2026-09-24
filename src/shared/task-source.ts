@@ -374,6 +374,8 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
    */
   preflight(config: C, ctx: SweepContext): Promise<string | null>;
   sweep(config: C, ctx: SweepContext): Promise<SweepResult>;
+  /** Read existing links independently of discovery filters. At most 25 per call. */
+  readLinked(config: C, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult>;
   /**
    * File one of our tasks as an item in the external system, and report what was created.
    *
@@ -666,6 +668,8 @@ const TaskSourceInstanceBase = z.object({
     .positive()
     .default(DEFAULT_SWEEP_INTERVAL_MS)
     .transform(clampSweepInterval),
+  /** Refresh imported backlog content; never changes scheduling or writes upstream. */
+  keepUpdated: z.boolean().default(false),
   defaults: TaskSourceDefaultsSchema.default({}),
   maxPerSweep: z.number().int().min(1).max(MAX_PER_SWEEP_CEILING).default(DEFAULT_MAX_PER_SWEEP),
   /**
@@ -772,6 +776,7 @@ export interface TaskSourceWritebackStatus {
 
 /** The whole Task sources panel in one read: what is configured, and how it is doing. */
 export interface TaskSourcesView {
+  sync?: import("./task-source-sync.ts").SourceSyncReview[];
   sources: TaskSourceInstance[];
   status: TaskSourceStatus[];
   /**
@@ -789,6 +794,7 @@ export interface TaskSourcesView {
 
 /** What one sweep did, reported back to whoever asked for it. */
 export interface SweepReport {
+  sync?: import("./task-source-sync.ts").SourceSyncCounts;
   sourceId: string;
   /** Tasks actually created. */
   filed: number;

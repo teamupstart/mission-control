@@ -101,6 +101,7 @@ function ghSource(id: string): TaskSourceInstance {
     label: "issues",
     enabled: true,
     repoRoot: home,
+    keepUpdated: false,
     intervalMs: 900_000,
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,

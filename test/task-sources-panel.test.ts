@@ -63,6 +63,7 @@ function mkState(view: TaskSourcesView | null): TaskSourcesState {
     preflight: async () => null,
     forget: async () => {},
     retryWriteback: async () => 0,
+    resolveSync: async () => true,
     discardWriteback: async () => 0,
     error: null,
   };

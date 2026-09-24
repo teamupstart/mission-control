@@ -4,6 +4,7 @@ import type {
   SweepResult,
   TaskCandidate,
   TaskSourceImpl,
+  TaskSourceRef,
   WritebackNotice,
   WritebackResult,
 } from "@shared/task-source.ts";
@@ -2124,6 +2125,21 @@ async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<Writeb
   return restResolve(cfg, rungs.rest, target.key, wanted);
 }
 
+/** Fixed keys bypass discovery JQL, but never move a link onto another Jira site. */
+export function linkedJiraConfig(cfg: JiraConfig, refs: TaskSourceRef[]): JiraConfig {
+  for (const ref of refs) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(ref.externalId)
+      || new URL(ref.url ?? "").host !== siteHost(cfg.site)) {
+      throw new Error("a linked Jira item has an invalid key or belongs to another site");
+    }
+  }
+  return { ...cfg, jql: `key in (${refs.map((ref) => `"${ref.externalId}"`).join(",")})`, limit: Math.max(1, refs.length) };
+}
+async function readLinked(cfg: JiraConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult> {
+  if (!refs.length) return { items: [], error: null };
+  return sweep(linkedJiraConfig(cfg, refs), ctx);
+}
+
 export const jira: TaskSourceImpl<JiraConfig> = {
   // Spread rather than restated: the kind, the name, the blurb and the success sentence are
   // the half the settings panel renders in the browser, and it cannot import this file. The
@@ -2132,6 +2148,7 @@ export const jira: TaskSourceImpl<JiraConfig> = {
   configSchema: JiraConfigSchema,
   preflight,
   sweep,
+  readLinked,
   // Present because the kind's `canAnnotate` / `canResolve` say so - the contract test holds
   // the two together in both directions, so neither half may land without the other.
   annotate,

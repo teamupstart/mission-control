@@ -85,6 +85,8 @@ export interface DaemonHandle {
    * at spawn time - the fake reads one env var, and a spec cannot add one afterwards.
    */
   ghPrsPath: string;
+  /** Scripted issue discovery and linked reads for task-source specs. */
+  ghIssuesPath: string;
   /**
    * Where a spec scripts the fake `gh`'s product-report behavior, for THIS daemon.
    *
@@ -492,6 +494,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.
     MC_E2E_GH_PRS: ghPullRequestsPath(home),
+    MC_E2E_GH_ISSUES: join(home, "gh-issues.json"),
     // Where that fake reads its scripted product-report behavior from. Set for every daemon
     // so a spec only has to write the file; absent content is the working default, which is
     // what every spec that never opens the Feedback form already expects.
@@ -775,6 +778,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     secondRepo,
     twinRepos,
     ghPrsPath: ghPullRequestsPath(home),
+    ghIssuesPath: join(home, "gh-issues.json"),
     ghProductPath: ghProductScriptPath(home),
     ghWritebackPath: ghWritebackScriptPath(home),
     productAuthorizationPath: productAuthorizationScriptPath(home),

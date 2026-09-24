@@ -704,8 +704,16 @@ if (argv[0] === "--version") {
 } else if (command.startsWith("pr list")) {
   const here = scriptedPrs().filter((pr) => pr.cwd === process.cwd());
   process.stdout.write(JSON.stringify(here) + "\\n");
-} else if (command.startsWith("issue list")) {
-  process.stdout.write("[]\\n");
+} else if (command.startsWith("issue list") || command.startsWith("issue view")) {
+  let items = [];
+  try { items = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_ISSUES, "utf8")); } catch {}
+  if (command.startsWith("issue list")) {
+    process.stdout.write(JSON.stringify(items.filter((item) => item.discoverable !== false)) + "\\n");
+  } else {
+    const item = items.find((item) => item.url === argv[2]);
+    if (!item) { process.stderr.write("issue not found\\n"); process.exitCode = 1; }
+    else process.stdout.write(JSON.stringify(item) + "\\n");
+  }
 }
 `;
 

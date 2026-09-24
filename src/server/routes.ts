@@ -1,3 +1,5 @@
+import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
+import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
@@ -6670,6 +6672,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return {
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
+      sync: sourceSyncReviews(cfg.sources),
       // Derived from the ledger on every read, unlike `status`, which is process-local: a
       // sweep's outcome is re-established by sweeping again, while an owed write-back is a
       // fact that survived a restart, so its counts come from the table that survived with
@@ -6683,6 +6686,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   };
 
   app.get("/api/task-sources/config", (c) => c.json(taskSourcesView()));
+
+  app.post("/api/task-sources/:id/sync/:taskId/resolve", async (c) => {
+    const parsed = await parseBody(c, ResolveSourceSyncSchema);
+    if (!parsed.ok) return parsed.res;
+    const inst = taskSourceById(c.req.param("id"));
+    if (!inst) return c.json({ error: "no such task source" }, 404);
+    const result = await resolveSourceSync(inst, c.req.param("taskId"), parsed.data.version, parsed.data.choice, tasks);
+    if (!result.ok) return c.json(result, 409);
+    return c.json({ ok: true, view: taskSourcesView() });
+  });
 
   /**
    * Replace the configured set.

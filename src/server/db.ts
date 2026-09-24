@@ -1506,6 +1506,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       PRIMARY KEY (source_id, external_id)
     );
 
+    -- Task-linked content history, separate from deletion suppression in task_source_seen.
+    CREATE TABLE IF NOT EXISTS task_source_sync (
+      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_source_sync_source ON task_source_sync(source_id);
+
     -- One owed write-back to an external item: a comment to post, an issue to close.
     --
     -- A LEDGER rather than a listener, and three facts force that. The two places a
@@ -6478,6 +6486,7 @@ export function deleteTask(id: string): void {
     // table would then only ever grow, and `listOrphanedTaskWorktreeRetentionIds` would be
     // cleaning up after this function forever instead of after genuine surprises.
     d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
     if (ownsTransaction) d.exec("COMMIT");
   } catch (error) {
@@ -6490,6 +6499,15 @@ export function listTasks(): Task[] {
   const rows = openDb()
     .prepare(`SELECT * FROM tasks ORDER BY created_at DESC`)
     .all() as unknown as TaskRow[];
+  return rowsToTasks(rows);
+}
+
+/** Source-linked backlog tasks with no recorded execution, including legacy imports. */
+export function listTaskSourceBacklog(sourceId: string): Task[] {
+  const rows = openDb().prepare(`SELECT * FROM tasks WHERE source_id = ? AND status = 'backlog'
+    AND NOT EXISTS (SELECT 1 FROM task_work_episode_bindings WHERE task_id = tasks.id)
+    AND NOT EXISTS (SELECT 1 FROM historical_task_work_episode_bindings WHERE task_id = tasks.id)`)
+    .all(sourceId) as unknown as TaskRow[];
   return rowsToTasks(rows);
 }
 

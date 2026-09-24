@@ -1045,7 +1045,8 @@ turning it on is consent. Per source:
 | **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
-| **Sweep now** | run it once, right now, and see what it filed |
+| **Sweep now** | run it once, right now, and see what it filed and refreshed |
+| **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 | **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
@@ -1427,9 +1428,45 @@ The way back is deliberate: **Forget seen items** on that source clears its ledg
 next sweep files everything again. Removing a source clears it too, so re-adding one
 doesn't leave it permanently silent.
 
-One thing a source deliberately does not do: it does not **re-sync** an item that changes
-upstream. A sweep files new work; it does not reconcile old work, which would have to decide
-what happens when a human has edited the task since. The only write that leaves this machine
-is the one you ask for by name - [Push a task to GitHub](#push-a-task-to-github) - and it
-creates an item, once, and then leaves it alone. Closing an issue when its task is marked
-done is the same reconciliation problem in the other direction, and is not a feature.
+### Keeping imported backlog tasks updated
+
+Turn **Keep imported backlog tasks updated** on for a source to refresh the tasks it already
+filed. It uses the existing sweep schedule, and **Sweep now** performs the same refresh even
+when the schedule is paused. Leaving the setting off preserves import-only behavior.
+
+The same task keeps its ID and backlog position. The source can update its title and generated
+intent together, mapped priority, and copied labels where the provider offers them. Agent,
+model, task kind, workflow, dependencies, repositories, backlog position and autopilot eligibility
+remain local. Source defaults are captured when an item is imported; changing those defaults
+does not rewrite previously imported tasks. The existing description limit still applies:
+GitHub and Jira carry at most 4,000 characters of the issue description into the intent.
+
+A saved import baseline lets Mission Control distinguish a remote change from an operator edit.
+When both changed the same fields, the source editor shows **Local task** and **Source item**.
+**Use source** accepts the source's conflicting fields; **Keep local** keeps the local values and
+acknowledges that source revision. Another remote edit to those fields can require another review.
+Independent, nonconflicting fields can still update. A review that changed while it was open is
+refused so an old click cannot overwrite newer work.
+
+Tasks imported before this feature have no baseline or reliable import-versus-push provenance.
+Sweep once, then review each older task before adopting it. Newly pushed tasks are excluded from
+automatic inbound updates. Turning the setting off retains existing baselines and reviews, but
+prevents applying them until updates are enabled again.
+
+Refresh reads linked issues independently of the discovery filter, including closed GitHub issues
+or Jira items outside the source's JQL. Each sweep checks at most 25 eligible tasks, oldest checked
+first, separately from its new-task cap. Large backlogs therefore take several sweeps. GitHub reads
+the linked issue URL; Jira queries validated keys on the same site, using the source's selected
+query method. The UpstartClaw method can perform an additional read-only agent query for these
+linked items. Failures and inaccessible items are shown alongside the task, and retried on later
+sweeps. A moved issue identity or changed Jira site is reported rather than substituted silently.
+
+Started, assigned and provisioned tasks are not rewritten, including tasks with recorded work
+history that were later returned to the backlog. Deletion suppression remains in the seen ledger.
+Several backlog tasks linked to the same source item are reported as ambiguous; remove the
+unwanted copies before refreshing. Neither a missing result nor a remote closure deletes or
+completes a task here. Sync is content refresh, not remote-status mirroring, and it never injects
+new instructions into a running agent.
+
+[Writing back](#writing-back-to-the-source) is separate: its optional notices and resolution
+publish task progress upstream. Enabling inbound updates enables none of those switches.

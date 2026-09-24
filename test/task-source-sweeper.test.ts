@@ -40,6 +40,7 @@ function source(id: string, enabled: boolean): TaskSourceInstance {
     label: "issues",
     enabled,
     repoRoot: home,
+    keepUpdated: false,
     intervalMs: 900_000,
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,

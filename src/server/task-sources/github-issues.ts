@@ -7,6 +7,7 @@ import type {
   SweepResult,
   TaskCandidate,
   TaskSourceImpl,
+  TaskSourceRef,
   WritebackContext,
   WritebackNotice,
   WritebackResult,
@@ -535,6 +536,31 @@ async function resolve(
   return writebackResultFrom(res, `closed as ${ghCloseReason(cfg.closeReason)}`);
 }
 
+/** A linked issue remains readable after closure or leaving the source's search filter. */
+export function ghLinkedIssueArgs(ref: TaskSourceRef): string[] {
+  const url = new URL(ref.url ?? "");
+  if (url.protocol !== "https:" || url.username || url.password
+    || !/\/issues\/\d+$/.test(url.pathname) || externalIdFor(url.href) !== ref.externalId) {
+    throw new Error("the linked GitHub issue has no valid issue identity");
+  }
+  return ["issue", "view", url.href, "--json", JSON_FIELDS];
+}
+async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult> {
+  const items: TaskCandidate[] = [];
+  const errors: string[] = [];
+  for (const ref of refs) {
+    if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
+    try {
+      const res = await run(ghBin(), ghLinkedIssueArgs(ref), { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
+      if (res.code !== 0) { errors.push(`${ref.externalId}: ${res.stderr.trim().slice(0, 300) || "issue could not be read"}`); continue; }
+      const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);
+      if (candidate?.ref.externalId === ref.externalId) items.push(candidate);
+      else errors.push(`${ref.externalId}: issue identity changed or content was unreadable`);
+    } catch (error) { errors.push(`${ref.externalId}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  return { items, error: errors.length ? errors.join("; ") : null };
+}
+
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   // Spread rather than restated: the kind, the name and the blurb are the half the
   // settings panel renders in the browser, and it cannot import this file. The schema is
@@ -543,6 +569,7 @@ export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   configSchema: GithubIssuesConfigSchema,
   preflight,
   sweep,
+  readLinked,
   // Present because the kind's `canPush` says so - the contract test holds the two
   // together in both directions.
   push,

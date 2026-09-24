@@ -272,7 +272,10 @@ for (const scope of [undefined, "system"] as const) {
     const before = f.seedReceipt("/Applications", scope);
     // Never write to the host's system Applications folder, including in the failing case.
     const result = f.run(["--dry-run"]);
-    assert.equal(result.status, 0, result.stdout + result.stderr);
+    // Linux CI has no system Applications folder; even a dry-run validates its destination.
+    const systemAppsExist = existsSync("/Applications");
+    assert.equal(result.status, systemAppsExist ? 0 : 1, result.stdout + result.stderr);
+    if (!systemAppsExist) assert.match(result.stderr, /\/Applications does not exist/);
     assert.ok(result.stdout.includes(`destination: ${before.appPath}  (${scope ?? "existing"})`), result.stdout);
     assert.equal(existsSync(join(f.home, "Applications")), false, "dry-run does not create the destination");
     assert.deepEqual(JSON.parse(readFileSync(join(f.state, "install-receipt.json"), "utf8")), before);
@@ -300,8 +303,10 @@ for (const scope of ["user", "system"] as const) {
   test(`Bash honors an explicit ${scope} scope`, (t) => {
     const f = fixture(t);
     const result = f.run(["--scope", scope, "--dry-run"]);
-    assert.equal(result.status, 0, result.stdout + result.stderr);
     const apps = scope === "user" ? join(f.home, "Applications") : "/Applications";
+    const missingSystemDir = scope === "system" && !existsSync(apps);
+    assert.equal(result.status, missingSystemDir ? 1 : 0, result.stdout + result.stderr);
+    if (missingSystemDir) assert.match(result.stderr, /\/Applications does not exist/);
     assert.ok(result.stdout.includes(`destination: ${join(apps, "Mission Control.app")}  (${scope === "user" ? "personal" : "system"})`), result.stdout);
     assert.equal(existsSync(f.state), false);
     assert.equal(existsSync(join(f.home, "Applications")), false);

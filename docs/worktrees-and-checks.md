@@ -5,6 +5,11 @@ agent's branch switch or edit lands under another's feet. Mission Control theref
 new task, Workflow check, and approved manual development session an isolated checkout through
 one daemon-owned native allocator.
 
+The owner may be an ordinary checkout or a bare clone. A bare clone owns its native pool
+through its physical Git directory, and tasks execute in linked working checkouts. The
+disposable Git fallback supports the same owners. Bare metadata named `.git` is still the
+owner itself, not its parent folder.
+
 One tree per session, with one exception. A
 [multi-repo task](dispatch-and-backlog.md#attaching-more-than-one-repository) is dispatched
 with a worktree per attached repository. Each comes from that repository's native pool, or
@@ -36,6 +41,12 @@ checkout's cached `refs/remotes/origin/HEAD`, because a fetch does not refresh t
 server-side default-branch rename. When another fetch wins Git's remote-tracking-ref update race,
 Mission Control retries that known-safe local refusal up to two times. Authentication, network,
 timeout, overflow, and every other fetch failure still fail closed without an automatic retry.
+
+Bare clones are fetched into `refs/remotes/origin/*` explicitly, since `git clone --bare`
+does not create that fetch mapping. The same rule keeps mirror fetch configuration from
+rewriting local branches used by linked worktrees. Remote-default freshness checks remain
+the same as for ordinary clones, and the verified branch is recorded as `origin/HEAD` for
+local status and reset operations.
 
 An explicit pinned base bypasses all of this: it is verified to be a real full commit ID in that
 repository and used unchanged, with no fetch. A pin names one commit in one repository, so a

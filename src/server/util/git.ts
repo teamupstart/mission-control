@@ -1,15 +1,62 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { WORKTREE_POOLS_DIR } from "../config.ts";
+import { locateExecutableSync } from "../executables/locator.ts";
+
+const bareConfigCache = new Map<string, { source: string; bare: boolean }>();
+
+/** Let Git parse its own boolean syntax, including quoted values and included files. */
+function bareGitDirectory(dir: string): boolean | null {
+  let source: string;
+  try {
+    source = readFileSync(join(dir, "config"), "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null;
+  }
+  // Ordinary configs are stable across discovery ticks. Includes can change independently,
+  // so those are always re-read by Git instead of trusting the parent file's cached value.
+  const cacheable = !/^\s*\[\s*include/im.test(source);
+  const cached = bareConfigCache.get(dir);
+  if (cacheable && cached?.source === source) return cached.bare;
+  const executable = locateExecutableSync("git");
+  if (!executable) return null;
+  const result = spawnSync(executable.path, [
+    `--git-dir=${dir}`, "config", "--file", join(dir, "config"), "--includes",
+    "--type=bool", "--get", "core.bare",
+  ], { encoding: "utf8", env: executable.env, timeout: 4_000, maxBuffer: 64 * 1024 });
+  if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) return null;
+  const value = result.stdout.trim();
+  if (result.status === 0 && value !== "true" && value !== "false") return null;
+  if (result.status === 1 && (value || result.stderr.trim())) return null;
+  const bare = value === "true";
+  if (cacheable) {
+    if (bareConfigCache.size >= 256) bareConfigCache.delete(bareConfigCache.keys().next().value!);
+    bareConfigCache.set(dir, { source, bare });
+  }
+  return bare;
+}
+
+/** A bare repository is Git metadata at the root, not a name ending in .git. */
+export function isBareRepository(dir: string): boolean {
+  try {
+    return statSync(join(dir, "HEAD")).isFile()
+      && statSync(join(dir, "objects")).isDirectory()
+      && statSync(join(dir, "refs")).isDirectory()
+      && bareGitDirectory(dir) === true;
+  } catch {
+    return false;
+  }
+}
 
 export interface GitInfo {
   branch: string | null;
   /**
    * The worktree root (the dir holding `.git`), resolved through symlinks so it
    * compares equal to git's own `rev-parse --show-toplevel`. Null when the dir
-   * isn't in a repo. Lets callers tell "same checkout" from "same branch, other
-   * worktree" without shelling out per session.
+   * isn't in a working checkout (including bare repositories). Distinguishes the
+   * same checkout from the same branch in another worktree.
    */
   root: string | null;
   /**
@@ -29,8 +76,8 @@ export interface GitInfo {
 }
 
 /**
- * Read git info for a directory by walking up to the repo root - pure
- * filesystem, no subprocess, cheap enough to run for every session every poll.
+ * Read git info by walking up to the repo root, with Git's config parsing cached
+ * between configuration changes.
  * Returns the branch (or null when detached) and the checkout/repository roots.
  *
  * Handles linked worktrees (and submodules), where `.git` is a FILE pointing at
@@ -49,10 +96,12 @@ export function gitInfo(cwd: string | null): GitInfo {
     return none;
   }
   const common = commonDir(found.gitDir);
+  const owner = mainRootFromCommonDir(common);
   return {
     branch: branchFromHead(head),
-    root: realPath(found.root),
-    repoRoot: realPath(mainRootFromCommonDir(common)),
+    root: isBareRepository(common) && realPath(found.gitDir) === realPath(common)
+      ? null : realPath(found.root),
+    repoRoot: owner ? realPath(owner) : null,
   };
 }
 
@@ -63,11 +112,13 @@ export function gitInfo(cwd: string | null): GitInfo {
  * root that every linked worktree shares. A BARE repo has no worktree at all and
  * its common dir is the repo itself (`/srv/repo.git`) - taking the parent there
  * would name the directory that merely CONTAINS the repo, which for an allowlist
- * would silently clear every sibling repo next to it. So the parent is only taken
- * when the common dir is actually a `.git`.
+ * would silently clear every sibling repo next to it. A bare directory named `.git`
+ * still owns itself; the name alone cannot prove that its parent is a checkout.
  */
-function mainRootFromCommonDir(common: string): string {
-  return basename(common) === ".git" ? dirname(common) : common;
+function mainRootFromCommonDir(common: string): string | null {
+  if (basename(common) !== ".git") return common;
+  const bare = bareGitDirectory(common);
+  return bare === null ? null : bare ? common : dirname(common);
 }
 
 /**
@@ -79,26 +130,23 @@ function mainRootFromCommonDir(common: string): string {
  * reaper has to walk from any tree back to that owner. The commondir pointer is
  * exactly that link: `<main-root>/.git`, so the main root is its parent.
  *
- * Returns null for a bare repo and for a dir outside a repo. That null is where
- * this parts ways with `gitInfo().repoRoot`, which names the bare repo itself so
- * an allowlist can still match it: naming a pool owner we can't hand a worktree
- * back to would be a guess, and this feeds a destructive return. Pure filesystem,
- * like the rest of this module - no subprocess.
+ * A bare owner is its Git directory, even when that directory is named `.git`.
+ * Relocated non-bare metadata still has no provable owning checkout and returns null.
  */
 export function mainRepoRoot(cwd: string | null): string | null {
   if (!cwd) return null;
   const found = resolveGitDir(cwd);
   if (!found) return null;
   const common = commonDir(found.gitDir);
-  // A normal clone's common dir is `<root>/.git`; anything else (a bare repo, a
-  // relocated git dir) has no worktree we can name, so don't guess one.
-  if (basename(common) !== ".git") return null;
+  if (isBareRepository(common)) return realPath(common);
+  // Non-bare metadata outside `<root>/.git` has no main checkout we can prove.
+  if (basename(common) !== ".git" || bareGitDirectory(common) !== false) return null;
   return realPath(dirname(common));
 }
 
 /** Canonical identity used by the daemon-owned native worktree allocator. */
 export interface WorktreeRepositoryIdentity {
-  /** Physical root of the main checkout that owns the linked-worktree family. */
+  /** Physical main checkout or bare repository owning the linked-worktree family. */
   mainCheckoutRoot: string;
   /** Physical Git common directory. This, and only this, is native pool identity. */
   gitCommonDirectory: string;
@@ -109,12 +157,11 @@ export interface WorktreeRepositoryIdentity {
 }
 
 /**
- * Resolve a path to a provable non-bare main checkout and its physical Git common dir.
+ * Resolve a path to a provable repository owner and its physical Git common dir.
  *
  * A main checkout and every linked worktree resolve identically. Separate clones of one
- * remote do not, because their common directories differ. Bare and relocated-Git-dir
- * repositories return null: neither has the ordinary `<main>/.git` ownership relationship
- * required before the allocator may create or remove linked worktrees.
+ * remote do not, because their common directories differ. Bare owners use the common
+ * directory itself. Relocated non-bare metadata still returns null.
  */
 export function worktreeRepositoryIdentity(
   cwd: string | null,
@@ -124,10 +171,9 @@ export function worktreeRepositoryIdentity(
   const found = resolveGitDir(cwd);
   if (!found) return null;
   const common = realPath(commonDir(found.gitDir));
-  if (basename(common) !== ".git") return null;
-  const mainCheckoutRoot = realPath(dirname(common));
-  const mainDotGit = realPath(join(mainCheckoutRoot, ".git"));
-  if (mainDotGit !== common) return null;
+  const mainCheckoutRoot = mainRepoRoot(cwd);
+  if (!mainCheckoutRoot) return null;
+  if (!isBareRepository(common) && realPath(join(mainCheckoutRoot, ".git")) !== common) return null;
   const repositoryName = basename(mainCheckoutRoot);
   if (!repositoryName) return null;
   const digest = createHash("sha256").update(common).digest("hex").slice(0, 16);
@@ -152,7 +198,8 @@ export function worktreeRepositoryIdentity(
  */
 function resolveGitDir(cwd: string): { gitDir: string; root: string } | null {
   let dir = cwd;
-  for (let i = 0; i < 40; i++) {
+  for (;;) {
+    if (isBareRepository(dir)) return { gitDir: dir, root: dir };
     const dotGit = join(dir, ".git");
     let isDir: boolean;
     try {
@@ -175,7 +222,6 @@ function resolveGitDir(cwd: string): { gitDir: string; root: string } | null {
     }
     return null;
   }
-  return null;
 }
 
 /** Physical path, so a root compares equal to git's `rev-parse --show-toplevel`. */

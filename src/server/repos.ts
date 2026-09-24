@@ -3,7 +3,7 @@ import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
-import { mainRepoRoot } from "./util/git.ts";
+import { isBareRepository, mainRepoRoot } from "./util/git.ts";
 import { indexedDirectories } from "./repo-index-config.ts";
 
 /**
@@ -15,9 +15,13 @@ import { indexedDirectories } from "./repo-index-config.ts";
 
 /** Cache the scan briefly so the endpoint stays cheap under the UI's polling. */
 const CACHE_TTL_MS = Number(envVar("REPOS_CACHE_MS") ?? 30_000);
-/** How deep below a workspace root to look before giving up (repos may be nested a
- *  couple of folders down, e.g. `~/workspace/org/repo`). */
-const MAX_DEPTH = Number(envVar("REPOS_MAX_DEPTH") ?? 3);
+/** Scan all nesting levels unless the operator explicitly limits traversal. */
+function maximumDepth(): number {
+  const value = envVar("REPOS_MAX_DEPTH");
+  if (value === undefined || !value.trim()) return Infinity;
+  const depth = Number(value);
+  return Number.isSafeInteger(depth) && depth >= 0 ? depth : Infinity;
+}
 /** Directories that never contain a repo we'd want and would only slow the walk. */
 const SKIP = new Set(["node_modules", "dist", "build", "target", "vendor", ".next", "coverage"]);
 
@@ -47,33 +51,49 @@ export function reposCacheScannedAt(): number | null {
  * a repo: record it and stop - we never descend into a repo, so nested worktrees
  * and vendored checkouts don't pollute the list.
  */
-async function scan(dir: string, depth: number, out: Set<string>): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return; // unreadable / vanished mid-walk - skip quietly
+async function scan(root: string, out: Set<string>, maxDepth: number): Promise<void> {
+  const pending = [{ dir: root, depth: 0 }];
+  // An iterative walk keeps both open directory reads and the call stack bounded even
+  // when an indexed directory contains thousands of deeply nested folders.
+  while (pending.length) {
+    const { dir, depth } = pending.pop()!;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    if (isBareRepository(dir)) {
+      out.add(dir);
+      continue;
+    }
+    if (entries.some((e) => e.name === ".git")) {
+      const metadata = join(dir, ".git");
+      out.add(isBareRepository(metadata) ? metadata : dir);
+      continue;
+    }
+    if (depth >= maxDepth) continue;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || SKIP.has(entry.name)) continue;
+      // A common bare-clone layout keeps metadata in .bare beside its worktrees.
+      // Do not open other hidden folders or follow descendant symlinks.
+      if (entry.name.startsWith(".") && entry.name !== ".bare") continue;
+      const child = join(dir, entry.name);
+      if (entry.name === ".bare" && !isBareRepository(child)) continue;
+      pending.push({ dir: child, depth: depth + 1 });
+    }
   }
-  if (entries.some((e) => e.name === ".git")) {
-    out.add(dir);
-    return;
-  }
-  if (depth >= MAX_DEPTH) return;
-  await Promise.all(
-    entries
-      .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !SKIP.has(e.name))
-      .map((e) => scan(join(dir, e.name), depth + 1, out)),
-  );
 }
 
 /** Scan the given roots for git repos, deduped and sorted. Uncached (see listRepos). */
 export async function scanRepos(roots: string[]): Promise<string[]> {
   const out = new Set<string>();
+  const maxDepth = maximumDepth();
   await Promise.all(
     roots.map(async (root) => {
       // Resolve symlinked roots so recorded paths match a repo's real top-level.
       const real = await realpath(root).catch(() => root);
-      await scan(real, 0, out);
+      await scan(real, out, maxDepth);
     }),
   );
   return [...out].sort();
@@ -119,16 +139,20 @@ export async function listRepos(): Promise<string[]> {
  * so before this the two sides of the same question disagreed: an agent cleared the
  * allowlist while the task it filed from that very checkout did not.
  *
- * The walk-back is `mainRepoRoot`, which returns null rather than guessing for a bare
- * repo, a submodule or a relocated git dir. Those fall back to the top-level git itself
- * reported, which is what this returned for every input before - so nothing that
- * resolved yesterday stops resolving, it only stops naming a throwaway directory.
+ * Bare owners use their Git directory. Submodules and relocated non-bare metadata
+ * still fall back to the working tree reported by Git; task validation refuses those.
  */
 export async function resolveRepoRoot(p: string): Promise<string | null> {
   if (!existsSync(p)) return null;
   const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
+  if (r.outcomeUnknown || r.overflowed) return null;
   const top = r.stdout.trim();
-  if (r.code !== 0 || !top) return null;
+  if (r.code !== 0 || !top) {
+    const bare = await run("git", ["-C", p, "rev-parse", "--is-bare-repository", "--absolute-git-dir"]);
+    if (bare.code !== 0 || bare.outcomeUnknown || bare.overflowed) return null;
+    const [kind, dir] = bare.stdout.trim().split("\n");
+    return kind === "true" && dir && isBareRepository(dir) ? realpathSync(dir) : null;
+  }
   const owner = mainRepoRoot(top);
   if (owner) return owner;
   try {

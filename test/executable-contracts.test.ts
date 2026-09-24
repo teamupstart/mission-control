@@ -111,6 +111,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],
+  "src/server/util/git.ts": [
+    { operation: "spawnSync", command: "executable.path", contract: "locator-result", reason: "bounded Git config parser for synchronous repository identity, cached for configs without includes" },
+  ],
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
   ],

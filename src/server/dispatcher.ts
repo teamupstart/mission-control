@@ -2352,7 +2352,7 @@ export async function provisionWorktree(
   slot = 0,
   manager?: WorktreeManager,
 ): Promise<ProvisionedWorktree> {
-  const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
+  const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree", "--is-bare-repository"], {
     timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
   });
   // Asked BEFORE `code`, because a killed child and a git that answered "no" are the same
@@ -2360,7 +2360,7 @@ export async function provisionWorktree(
   if (check.outcomeUnknown) {
     throw gitNeverAnswered(`whether ${repoRoot} is a git repository`, check);
   }
-  if (check.code !== 0 || check.stdout.trim() !== "true") {
+  if (check.code !== 0 || check.overflowed || !check.stdout.trim().split("\n").includes("true")) {
     throw new Error(`${repoRoot} is not a git repository`);
   }
 

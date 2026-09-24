@@ -105,7 +105,8 @@ export function RepositoriesPanel({ state }: { state: RepoIndexState }): React.J
       <div className="settings-section-head">
         <h3>{environment ? "Directories indexed now" : "Indexed directories"}</h3>
         <p className="settings-hint">
-          Found up to three levels down. Mission Control never descends into a checkout.
+          Finds checkouts and bare repositories at any depth unless limited by MISSION_REPOS_MAX_DEPTH.
+          Mission Control stops at repository boundaries and skips dependency folders.
         </p>
       </div>
 

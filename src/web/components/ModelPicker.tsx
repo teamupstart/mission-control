@@ -15,7 +15,8 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
   const reported = session.meta?.modelId ?? null;
   const selected = session.configuredModel ?? reported;
   const catalog = resolve(session.agent, selected);
-  const pending = Boolean(selected && selected !== reported);
+  // Claude's observed id can include a context marker absent from catalog selections.
+  const pending = Boolean(selected && selected.replace(/\[1m\]$/i, "") !== reported?.replace(/\[1m\]$/i, ""));
   const label = pending
     ? catalog.choices.find((choice) => choice.id === selected)?.label ?? selected
     : session.meta?.model ?? selected;
@@ -60,7 +61,7 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
   }
 
   async function choose(model: string): Promise<void> {
-    if (model === selected && !error) return close();
+    if (model === selected && !error && !pending) return close();
     // Disabling a focused option sends focus to the page. Keep Escape with this menu,
     // including after a refusal, so it cannot close the underlying session detail.
     popRef.current?.focus({ preventScroll: true });
@@ -90,7 +91,6 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
         onClick={(event) => {
           event.stopPropagation();
           place();
-          setError(null);
           setOpen((value) => !value);
         }}
       >{reading}<span className="mode-caret" aria-hidden>⌄</span></button>
@@ -115,6 +115,7 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
             const items = [...(popRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)') ?? [])];
             const current = items.indexOf(document.activeElement as HTMLButtonElement);
             const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+              : current === -1 ? (event.key === "ArrowDown" ? 0 : items.length - 1)
               : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
             items[index]?.focus();
           }

@@ -44,17 +44,24 @@ test("configured SDK models stay selected until metadata confirms them in Consol
   }));
   for (const layout of ["console", "board"] as const) {
     expect((await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout } })).ok()).toBe(true);
-    for (const modelId of [undefined, null, "claude-sonnet-5", "claude-opus-5"] as const) {
-      session.meta = modelId === undefined ? null : meta({ modelId, model: "Opus 5", longContext: false });
+    for (const [modelId, pending] of [
+      [undefined, true], [null, true], ["claude-sonnet-5", true], ["claude-opus-5", false],
+      ["claude-opus-5[1m]", false], ["claude-opus-5[1M]", false], ["claude-sonnet-5[1m]", true],
+    ] as const) {
+      const longContext = Boolean(modelId?.includes("["));
+      session.meta = modelId === undefined ? null : meta({ modelId, model: "Opus 5", longContext });
       await dashboard.reload();
       if (layout === "console") await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
       const chip = dashboard.locator(layout === "console" ? ".console-detail" : ".tile").getByRole("button", { name: /^Model:/ });
-      const pending = modelId !== "claude-opus-5";
       await expect(chip).toHaveAccessibleName(`Model: claude-opus-5${pending ? ". Selected for future responses" : ""}. Change model for this session`);
       await expect(chip.locator(".rt-think-next")).toHaveCount(pending ? 1 : 0);
+      await expect(chip.locator(".rt-1m")).toHaveCount(!pending && longContext ? 1 : 0);
       if (modelId === undefined && process.env.MC_E2E_EVIDENCE) {
         mkdirSync(artifactsDir("model-chip-sdk"), { recursive: true });
         await dashboard.screenshot({ path: `${artifactsDir("model-chip-sdk")}metadata-pending-${layout}.png` });
+      }
+      if (modelId === "claude-opus-5[1M]" && process.env.MC_E2E_EVIDENCE) {
+        await dashboard.screenshot({ path: `${artifactsDir("model-chip-sdk")}confirmed-long-context-${layout}.png` });
       }
       await chip.click();
       const menu = dashboard.getByRole("menu", { name: "Session model" });
@@ -114,6 +121,11 @@ for (const { agent, initial, next } of cases) {
     await chip.click();
     await option(next).click();
     await expect(menu.getByRole("alert")).toHaveText("model unavailable");
+    await expect(menu).toBeFocused();
+    await dashboard.keyboard.press("ArrowUp");
+    await expect(menu.getByRole("menuitemradio").last()).toBeFocused();
+    await dashboard.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitemradio").first()).toBeFocused();
     await expect(option(initial)).toHaveAttribute("aria-checked", "true");
     expect((await live()).configuredModel).toBe(initial);
     await dashboard.unroute(endpoint);
@@ -141,9 +153,22 @@ for (const { agent, initial, next } of cases) {
       await option(next).click();
       await expect(menu.getByRole("alert")).toContainText("could not be saved");
       await expect(option(next)).toHaveAttribute("aria-checked", "true");
+      await dashboard.keyboard.press("Escape");
+      await dashboard.reload();
+      await row.click();
+      await chip.click();
+      await expect(menu.getByRole("alert")).toHaveCount(0);
       await option(next).click();
       await expect(menu.getByRole("alert")).toContainText("A restart may use the previous model");
       await expect(option(next)).toHaveAttribute("aria-checked", "true");
+      await dashboard.keyboard.press("Escape");
+      await chip.click();
+      await expect(menu.getByRole("alert")).toContainText("A restart may use the previous model");
+      if (process.env.MC_E2E_EVIDENCE) {
+        mkdirSync(artifactsDir("model-chip-sdk"), { recursive: true });
+        await dashboard.mouse.move(0, 0);
+        await dashboard.screenshot({ path: `${artifactsDir("model-chip-sdk")}retry-reopened-selection.png` });
+      }
       await option(next).click();
       await expect(menu).toBeHidden();
       expect(attempts).toBe(3);
@@ -179,6 +204,10 @@ for (const { agent, initial, next } of cases) {
     await expect.poll(async () => (await live()).meta?.modelId).toBe(next);
     await expect(chip).toHaveAccessibleName(`Model: ${next}. Change model for this session`);
     await expect(row.locator(".rail-state")).toHaveText("idle");
+    if (agent === "claude") {
+      // Switching models must not reassign the first turn's cumulative usage to the second.
+      await expect(dashboard.getByRole("button", { name: /^Spend - / })).toContainText("≈$5.00");
+    }
     expect(await (await dashboard.request.get(`${daemon.baseURL}/api/harnesses/config`)).json()).toEqual(defaults);
 
     expect((await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } })).ok()).toBe(true);

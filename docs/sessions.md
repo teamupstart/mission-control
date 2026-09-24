@@ -880,12 +880,15 @@ For a live **Agent SDK** session, click the model badge in the Console detail or
 to open a dropdown, just like the effort picker. Choose a model from that harness's shared
 model catalog. The choice applies to this session only and survives a daemon restart;
 it does not change dispatch defaults. Until the conversation reports the selected model,
-the badge marks it **selected**, including while runtime metadata is absent. A response already underway can still report its previous model.
+the badge marks it **selected**, including while runtime metadata is absent. Claude's `[1m]`
+context marker does not make an otherwise matching model pending. A response already underway
+can still report its previous model; rebinding does not replace the saved selection.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
 selection. If saving an accepted change fails, Mission Control restores the previously saved model,
 including after repeated failed attempts.
 If restoration is also unavailable, the dropdown shows the accepted runtime choice and warns
-that it was not saved and a restart may revert it. Retry that selection to save it.
+that it was not saved and a restart may revert it. Retry that selection to save it, including
+after closing and reopening the dropdown.
 Terminal sessions and stopped sessions keep a read-only model badge.
 
 When Mission Control can safely read and write the live session, its thinking badge is

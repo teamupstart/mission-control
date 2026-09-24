@@ -2101,6 +2101,10 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     await supervisor.setModel(session.id, "new-model");
     assert.deepEqual(accepted, ["mode:acceptEdits", "effort:xhigh", "model:new-model"]);
 
+    // A late binding still describes the old turn, not the configured restart model.
+    first.push({ kind: "bound", agentSessionId: "agent-rebound", transcriptPath: null, modelId: "old-model", pid: null });
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-rebound");
+
     // The driver accepted first, and only then was the row written - so a change the live
     // session refused (Codex refuses a sandbox its thread cannot move to) never becomes a
     // promise a restart would keep.
@@ -2124,7 +2128,7 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     await new SdkSupervisor(restoredRegistry).restore();
     assert.equal(restoredRegistry.getSession(session.id)?.configuredModel, "new-model");
     const relaunch = fake.calls.at(-1)!;
-    assert.equal(relaunch.resume, "agent-x", "the same conversation, not a new one");
+    assert.equal(relaunch.resume, "agent-rebound", "the latest conversation binding");
     assert.equal(relaunch.permissionMode, "acceptEdits");
     assert.equal(relaunch.effort, "xhigh");
     assert.equal(relaunch.model, "new-model");

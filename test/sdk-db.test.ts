@@ -152,7 +152,7 @@ test("a row round-trips, and the id is upserted rather than duplicated", () => {
 
   recordSdkSessionBinding("sdk:aaa", "agent-xyz", "actual-model", 6_000);
   assert.equal(getSdkSession("sdk:aaa")?.agentSessionId, "agent-xyz");
-  assert.equal(getSdkSession("sdk:aaa")?.model, "actual-model");
+  assert.equal(getSdkSession("sdk:aaa")?.model, "claude-opus-5", "binding does not replace an explicit launch selection");
   assert.equal(getSdkSession("sdk:aaa")?.status, "running");
 
   // A resume after a restart is the SAME session continuing, so it must land on the same

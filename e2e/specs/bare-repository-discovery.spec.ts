@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -11,8 +11,11 @@ test("deep bare and ordinary clones appear in Settings and can be added to Trust
   mkdirSync(deep, { recursive: true });
   const bare = join(deep, "bare-project.git");
   const ordinary = join(deep, "deep-project");
+  const invalidBare = join(deep, "unknown-container", ".git");
   execFileSync("git", ["clone", "--bare", "-q", daemon.repo, bare]);
   execFileSync("git", ["clone", "-q", daemon.repo, ordinary]);
+  execFileSync("git", ["clone", "--bare", "-q", daemon.repo, invalidBare]);
+  writeFileSync(join(invalidBare, "config"), "[core]\n bare = invalid\n");
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/repositories`);
   await dashboard.getByRole("button", { name: "Rescan now" }).click();
@@ -27,6 +30,8 @@ test("deep bare and ordinary clones appear in Settings and can be added to Trust
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
   const input = dashboard.getByRole("combobox", { name: /search repos or type a path/i });
+  await input.fill("unknown-container");
+  await expect(dashboard.getByRole("option", { name: /unknown-container/ })).toHaveCount(0);
   for (const name of ["bare-project.git", "deep-project"]) {
     await input.fill(name);
     await dashboard.getByRole("option", { name: new RegExp(name.replaceAll(".", "\\.")) }).click();

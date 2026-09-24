@@ -72,7 +72,7 @@ function bareGitDirectory(dir: string): boolean | null {
 }
 
 /** Preserve unknown metadata/config state so ownership walks cannot cross it. */
-function bareRepositoryStatus(dir: string): boolean | null {
+export function bareRepositoryStatus(dir: string): boolean | null {
   try {
     if (!statSync(join(dir, "HEAD")).isFile()
       || !statSync(join(dir, "objects")).isDirectory()

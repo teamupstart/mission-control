@@ -155,6 +155,32 @@ test("unknown nested bare metadata never inherits the enclosing checkout's ident
   }
 });
 
+test("discovery skips unknown bare boundaries without offering their containers or metadata contents", async () => {
+  const { root, origin } = mkOriginAndClone("mission-bare-unknown-discovery-");
+  try {
+    for (const leaf of [".git", ".bare", "repo.git"]) {
+      const indexed = join(root, `indexed-${leaf}`);
+      const bare = join(indexed, "container", leaf);
+      execFileSync("git", ["init", "--bare", "-q", bare]);
+      const visible = join(indexed, "ordinary");
+      execFileSync("git", ["clone", "-q", origin, visible]);
+      assert.deepEqual(await scanRepos([indexed]), [bare, visible].sort());
+      mkdirSync(join(bare, "objects", "nested", ".git"), { recursive: true });
+      writeFileSync(join(bare, "config"), "[core]\n bare = invalid\n");
+      for (const reason of ["invalid config", "unreadable config"]) {
+        if (reason === "unreadable config") {
+          rmSync(join(bare, "config"));
+          mkdirSync(join(bare, "config"));
+        }
+        assert.deepEqual(await scanRepos([indexed]), [visible], `${leaf}: ${reason}`);
+        assert.deepEqual(await scanRepos([bare]), [], `${leaf}: ${reason}, indexed directly`);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const [cloneOption, layout] of [["--bare", "repo.git"], ["--mirror", "repo.git"], ["--bare", "container/.bare"], ["--bare", "container/.git"]] as const) {
   test(`${cloneOption} clone at ${layout} provisions and returns worktrees without rewriting local branches`, async () => {
     const { root, origin } = mkOriginAndClone("mission-bare-provision-");

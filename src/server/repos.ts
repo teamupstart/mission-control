@@ -3,7 +3,7 @@ import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { envVar } from "./config.ts";
 import { run } from "./util/exec.ts";
-import { isBareRepository, mainRepoRoot } from "./util/git.ts";
+import { bareRepositoryStatus, isBareRepository, mainRepoRoot } from "./util/git.ts";
 import { indexedDirectories } from "./repo-index-config.ts";
 
 /**
@@ -63,13 +63,16 @@ async function scan(root: string, out: Set<string>, maxDepth: number): Promise<v
     } catch {
       continue;
     }
-    if (isBareRepository(dir)) {
+    const bare = bareRepositoryStatus(dir);
+    if (bare === null) continue;
+    if (bare) {
       out.add(dir);
       continue;
     }
     if (entries.some((e) => e.name === ".git")) {
       const metadata = join(dir, ".git");
-      out.add(isBareRepository(metadata) ? metadata : dir);
+      const metadataBare = bareRepositoryStatus(metadata);
+      if (metadataBare !== null) out.add(metadataBare ? metadata : dir);
       continue;
     }
     if (depth >= maxDepth) continue;

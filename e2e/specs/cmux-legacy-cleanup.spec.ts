@@ -9,7 +9,7 @@ import type { Task } from "../../src/shared/types.ts";
 
 test.use({ daemonEnv: { MC_E2E_CMUX_MODE: "renamed-home" } });
 
-test("Clean up preserves a legacy cmux task's checkout when its home was renamed", async ({ dashboard, daemon }) => {
+test("repeated Clean up preserves a legacy cmux task's checkout when its home was renamed", async ({ dashboard, daemon }) => {
   const title = "Legacy cmux work to preserve";
   const filed = await fetch(`${daemon.baseURL}/api/tasks`, {
     method: "POST", headers: { "content-type": "application/json" },
@@ -37,13 +37,20 @@ test("Clean up preserves a legacy cmux task's checkout when its home was renamed
   const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
   await expectContentClearsBorder(sitrep);
   const row = sitrep.locator(".report-row", { hasText: title });
-  await row.getByRole("button", { name: "Clean up" }).click();
-  const response = dashboard.waitForResponse(r => r.url().endsWith(`/api/tasks/${id}/reclaim`) && r.request().method() === "POST");
-  await row.getByRole("button", { name: "Clean up" }).click();
-  const rejected = await response;
-  expect(rejected.ok()).toBe(false);
-  expect((await rejected.json()).error).toMatch(/terminal identity.*unknown/);
-  await expect(row.getByRole("button", { name: "Clean up" })).toBeVisible();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Each attempt has an arming click and a confirming click. Only confirmation
+    // sends the request, and it must settle before the next attempt starts.
+    await row.getByRole("button", { name: "Clean up" }).click();
+    const confirmation = row.getByText("reclaim worktree & stop agent?");
+    await expect(confirmation).toBeVisible();
+    const response = dashboard.waitForResponse(r => r.url().endsWith(`/api/tasks/${id}/reclaim`) && r.request().method() === "POST");
+    await row.getByRole("button", { name: "Clean up" }).click();
+    const rejected = await response;
+    expect(rejected.ok()).toBe(false);
+    expect((await rejected.json()).error).toMatch(/terminal identity.*unknown/);
+    await expect(confirmation).toBeHidden();
+    await expect(row.getByRole("button", { name: "Clean up" })).toBeVisible();
+  }
   const current = (await (await fetch(`${daemon.baseURL}/api/tasks`)).json() as Task[]).find(t => t.id === id)!;
   expect(current.worktreePath).toBe(worktree);
   expect(current.homeName).toBe("Original home");

@@ -388,17 +388,33 @@ test("a round is one tile however many times it captured evidence", async ({
     nodes.map((node) => Math.round(node.getBoundingClientRect().width)));
   expect(new Set(widths).size, `chips should share one width, got ${widths.join(",")}`).toBe(1);
 
-  // Last, because it resizes the viewport the assertions above measured in.
-  await dashboard.setViewportSize({ width: 900, height: 720 });
-  await tileOf(2).click();
-  await chips.nth(6).click();
-  const narrowWhy = dashboard.getByRole("button", { name: "Explain this round" });
-  await narrowWhy.click();
-  const narrowPop = dashboard.locator(".wf-run-disclose-pop");
-  await expect(narrowPop).toBeVisible();
-  const popBox = (await narrowPop.boundingBox())!;
-  expect(popBox.x, "the popover should not open off the left edge").toBeGreaterThanOrEqual(0);
-  expect(popBox.x + popBox.width, "the popover should not overflow the viewport")
-    .toBeLessThanOrEqual(900);
-  await expect(narrowPop).toContainText("does not spend a Persona repair round");
+  // Last, because it resizes the viewport the assertions above measured in. Phone width is
+  // included because the panel is wider than the control that opens it, so a viewport narrow
+  // enough to leave no room to its right is where it would spill.
+  //
+  // Both lines are checked, because they are different lengths and only the SHORT one is at
+  // risk: the long snapshot line wraps at phone width and puts `Why?` back at the left edge,
+  // while the live round's line stays on one row with `Why?` partway across it.
+  for (const width of [900, 390]) {
+    await dashboard.setViewportSize({ width, height: 844 });
+    for (const select of [
+      async () => { await tileOf(2).click(); await chips.nth(6).click(); },
+      async () => { await tileOf(3).click(); },
+    ]) {
+      await select();
+      const narrowWhy = dashboard.getByRole("button", { name: "Explain this round" });
+      await narrowWhy.click();
+      const narrowPop = dashboard.locator(".wf-run-disclose-pop");
+      await expect(narrowPop).toBeVisible();
+      const popBox = (await narrowPop.boundingBox())!;
+      const line = (await dashboard.locator(".wf-run-context").boundingBox())!;
+      const where = `${width}px, line ${Math.round(line.width)}px wide`;
+      expect(popBox.x, `${where}: the popover should not open off the left edge`)
+        .toBeGreaterThanOrEqual(0);
+      expect(popBox.x + popBox.width, `${where}: the popover should not overflow the viewport`)
+        .toBeLessThanOrEqual(width);
+      await expect(narrowPop).toContainText("does not spend a Persona repair round");
+      await narrowWhy.click();
+    }
+  }
 });

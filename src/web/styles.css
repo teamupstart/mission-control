@@ -2078,6 +2078,7 @@ button.wf-run-version:focus-visible {
 /* Deliberately not a panel and not `--attention`: nothing this line says is actionable, and
    that colour means "this needs you" everywhere else. Only `Snapshot` below keeps it. */
 .wf-run-context {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2098,9 +2099,11 @@ button.wf-run-version:focus-visible {
 .wf-run-context-sep { color: var(--border); }
 .wf-run-context-snapshot { color: var(--attention); }
 
-/* Relative on the `<details>` rather than the line, so the popover anchors to the control
-   that opened it and stays put when the line wraps. */
-.wf-run-disclose { position: relative; }
+/* NOT the popover's containing block: that is the line above, so the panel always starts at
+   the line's left edge. Anchored to this control instead, it inherited whatever horizontal
+   position the control happened to have, and a `Why?` partway across an unwrapped line put
+   the panel past the right edge of a narrow viewport. */
+.wf-run-disclose { display: inline-flex; }
 
 .wf-run-disclose > summary {
   display: inline-flex;
@@ -2132,7 +2135,8 @@ button.wf-run-version:focus-visible {
   color: var(--fg);
 }
 
-/* Above the pipeline, which it overlaps when it opens. */
+/* Above the pipeline, which it overlaps when it opens. `left` and `top` resolve against
+   `.wf-run-context`, so the panel cannot start further right than the line does. */
 .wf-run-disclose-pop {
   position: absolute;
   top: calc(100% + 6px);

@@ -54,6 +54,7 @@ for (const { agent, initial, next } of cases) {
 
     await chip.click();
     await expect(option(initial)).toHaveAttribute("aria-checked", "true");
+    await expect(option(initial)).toHaveAccessibleDescription(/^Set this session's model to /);
     await dashboard.keyboard.press("ArrowDown");
     await expect(menu.locator('[role="menuitemradio"]:focus')).toHaveCount(1);
     await dashboard.keyboard.press("Escape");

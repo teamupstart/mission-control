@@ -121,8 +121,8 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
         }}
       >
         <p className="mode-pop-note">Applies to future responses in this session. Responses already underway may still report the previous model.</p>
-        {catalog.choices.map((choice) => <button
-          key={choice.id}
+        {catalog.choices.map((choice) => <Tooltip key={choice.id} label={`Set this session's model to ${choice.label}`}>
+        <button
           role="menuitemradio"
           aria-checked={choice.id === selected}
           className={`mode-opt${choice.id === selected ? " active" : ""}`}
@@ -135,7 +135,8 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
           </span>
           {busy === choice.id && <span className="mode-opt-spin" aria-label="changing" />}
           {choice.id === selected && busy === null && <span className="mode-opt-check" aria-hidden>✓</span>}
-        </button>)}
+        </button>
+        </Tooltip>)}
         {error && <p className="mode-pop-err" role="alert">{error}</p>}
       </div>, document.body,
     )}

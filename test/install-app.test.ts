@@ -379,6 +379,7 @@ test("install arguments parse, and an unknown one stops the install", () => {
       ref: "v1.2.3",
       fromOrigin: true,
       dryRun: true,
+      temporarySource: false,
       appsDir: null,
       scope: null,
       progress: false,

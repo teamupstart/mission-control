@@ -76,8 +76,10 @@ shipped default**. Clearing a field means "fall back", never "run with no model"
 and is not recorded anywhere. The panel prints which of the three won, because an environment
 variable set in the daemon's shell outranks the box and would otherwise be invisible from the
 browser. Each field is a select backed by the same browser model catalog as dispatch. Codex and Pi
-discover their rows from the installation and account Mission Control will actually launch; Claude
-remains on its shipped static rows. A value saved by another version or through configuration
+discover their rows from the installation and account Mission Control will actually launch. Claude
+also discovers its models through a no-turn SDK handshake, resolving family aliases to stable model
+ids and leaving account defaults and modes out of the picker. Shipped Claude choices remain visible
+with a note when the account does not report them. A value saved by another version or through configuration
 remains selected as **not currently reported** instead of being dropped, so catalog loading or
 failure cannot rewrite the configured model.
 

@@ -1139,6 +1139,20 @@ rl.on("line", (line) => {
     // Every other subtype gets a success. `get_usage` arrives repeatedly (once per init and
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
+    if (frame.request?.subtype === "initialize") {
+      ok(frame.request_id, {
+        commands: [], agents: [], output_style: "default", available_output_styles: [],
+        account: {},
+        models: [
+          { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Account default" },
+          { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Newest Opus", supportsEffort: true },
+          { value: "claude-opus-5", resolvedModel: "claude-opus-5", displayName: "Opus 5", description: "Previous Opus", supportsEffort: true },
+          { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5", description: "Sonnet", supportsEffort: true },
+          { value: "opusplan", resolvedModel: "claude-sonnet-5", displayName: "Opus Plan Mode", description: "Mode, not a model" },
+        ],
+      });
+      return;
+    }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
     return;
   }

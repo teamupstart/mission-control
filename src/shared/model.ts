@@ -124,9 +124,8 @@ export interface ShippedHarnessModelChoice extends ModelChoice {
 /**
  * The models each harness offers, best-first.
  *
- * This is the shipped, synchronous catalog. It remains the source for Claude and Codex,
- * and is the immediate/failure fallback for Pi while its configured installation is
- * queried through the daemon. Keeping the small fallback in shared code lets existing
+ * This is the shipped, synchronous catalog and the immediate/failure fallback while
+ * each configured installation is queried through the daemon. Keeping it in shared code lets existing
  * render paths stay synchronous and keeps a missing or older Pi binary from blocking
  * dispatch. Browser pickers merge stored values through their catalog resolver;
  * synchronous callers can use `modelChoicesFor` for the same shipped-only behavior.

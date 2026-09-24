@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -270,20 +270,19 @@ test("a model changed in Settings reaches the very next dispatch's command line"
   await expect(dialog).toBeHidden();
 
   const dir = join(daemon.recordDir, "claude");
-  const read = (): { argv: string[] }[] => recordsIn<{ argv: string[] }>(dir);
+  const read = (): { argv: string[]; cwd: string }[] => recordsIn<{ argv: string[]; cwd: string }>(dir);
+  const taskWorktrees = join(daemon.home, "worktree-pools") + sep;
+  const isDispatchedSession = (record: { argv: string[]; cwd: string }) =>
+    record.cwd.startsWith(taskWorktrees) && record.argv.includes("--input-format");
 
   // Polled: the card registers before the child has run far enough to write its record.
   await expect
-    .poll(() => read().some(
-      (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
-    ), {
+    .poll(() => read().some(isDispatchedSession), {
       message: "the SDK session should have launched the fake",
     })
     .toBe(true);
 
-  const session = read().find(
-    (r) => r.argv.includes("--input-format") && !r.argv.includes("--setting-sources="),
-  );
+  const session = read().find(isDispatchedSession);
   expect(
     session?.argv[session.argv.indexOf("--model") + 1],
     "the dispatch should run on the model saved moments earlier, with no daemon restart",

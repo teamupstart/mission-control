@@ -108,6 +108,25 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
   }) as unknown as ClaudeSdkQuery;
 }
 
+/** A no-turn catalog probe uses the same pinned CLI and SDK transport as a session. */
+export async function startClaudeModelQuery(params: {
+  prompt: AsyncIterable<import("./sdk-types.ts").ClaudeSdkUserMessage>;
+  options: {
+    cwd: string;
+    pathToClaudeCodeExecutable: string;
+    env: Record<string, string | undefined>;
+    settingSources: ("user" | "project" | "local")[];
+    tools: string[];
+    abortController: AbortController;
+  };
+}): Promise<{ supportedModels(): Promise<unknown> }> {
+  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+  type VendorQuery = ReturnType<typeof query>;
+  type CatalogControl = Pick<VendorQuery, "supportedModels">;
+  const started = await startQuery(params);
+  return started as ClaudeSdkQuery & CatalogControl;
+}
+
 /** What the shipped driver uses. Tests replace the whole object. */
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
   query: startQuery,

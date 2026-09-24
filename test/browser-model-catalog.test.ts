@@ -236,10 +236,21 @@ test("a discovering harness reports its degraded catalog even when it groups not
     true,
   );
 
-  // Claude does not discover, so it has nothing to report and offers no retry. Flipping
-  // `discoversModels` for Claude is what would break this, which is the same edit that
-  // would resurrect the defect above.
+  // A shipped response has no discovery problem to report, even for a discovering harness.
   assert.equal(modelCatalogNoticeContent(snapshot(codexFellBack), "claude"), null);
+
+  const claudeFellBack: HarnessModelCatalogs = {
+    ...shippedModelCatalogs(),
+    claude: {
+      choices: [...shippedModelCatalogs().claude.choices],
+      source: "fallback",
+      refreshedAt: null,
+      problem: "timeout",
+    },
+  };
+  const claude = modelCatalogNoticeContent(snapshot(claudeFellBack), "claude");
+  assert.equal(claude?.retry, true);
+  assert.match(claude?.message ?? "", /^Showing built-in Claude Code models because/);
 });
 
 test("bounded degraded notices expose retry without leaking discovery output", () => {

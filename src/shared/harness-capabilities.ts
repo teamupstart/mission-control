@@ -568,12 +568,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // `claude --resume <id>`. Already shipping - this is the argv the embedded handoff
     // has spawned since the first driver landed.
     resumes: true,
-    // Claude's SDK does report a live list, but it is account-shaped aliases, two of which
-    // `ModelIdSchema` rejects for their long-context marker and one of which is a MODE
-    // rather than a model. Adopting it is a persisted-vocabulary decision, so it is
-    // deliberately deferred: see `docs/plans/claude-codex-live-model-catalog/plan.md`.
-    discoversModels: false,
-    modelProviderSignIn: null,
+    // The SDK's account-shaped rows are mapped to safe resolved model ids by the
+    // Claude harness probe. Modes and moving aliases never become persisted choices.
+    discoversModels: true,
+    modelProviderSignIn:
+      "Claude only lists models available to its signed-in account. If you are signed out, run claude auth login in a terminal and try again.",
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It

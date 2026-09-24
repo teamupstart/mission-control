@@ -24,6 +24,7 @@ import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
 import { claudeControl } from "./claude/control.ts";
 import { claudeSdk } from "./claude/sdk.ts";
+import { discoverClaudeModels } from "./claude/model-catalog.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 import { codexTui } from "./codex/tui.ts";
 import { codexDetect } from "./codex/detect.ts";
@@ -101,7 +102,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: claudeHooks,
     detect: claudeDetect,
     bin: claudeBin,
-    models: { shipped: MODEL_CATALOG.claude, discover: null },
+    models: {
+      shipped: MODEL_CATALOG.claude,
+      discover: (signal) => discoverClaudeModels(signal),
+    },
     tui: claudeTui,
     control: claudeControl,
     // The `@anthropic-ai/claude-agent-sdk` adapter. Non-null here and `"sdk"` in

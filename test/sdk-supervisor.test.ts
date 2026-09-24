@@ -2136,12 +2136,13 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
 for (const scenario of ["restored", "rollback refused", "previous unknown"] as const) {
   test(`a model persistence failure is compensated or disclosed: ${scenario}`, async () => {
     const previous = scenario === "previous unknown" ? null : "old-model";
+    let rollbackUnavailable = scenario === "rollback refused";
     let liveModel = previous;
     const changes: string[] = [];
     const first = fakeHandle();
     first.setModel = async (model) => {
       changes.push(model);
-      if (scenario === "rollback refused" && model === previous) throw new Error("rollback unavailable");
+      if (rollbackUnavailable && model === previous) throw new Error("rollback unavailable");
       liveModel = model;
     };
     const handles = [first, fakeHandle()];
@@ -2167,6 +2168,21 @@ for (const scenario of ["restored", "rollback refused", "previous unknown"] as c
       assert.equal(registry.getSession(session.id)?.configuredModel, expected);
       assert.deepEqual(changes, previous ? ["new-model", previous] : ["new-model"]);
       assert.equal(published.includes("new-model"), scenario !== "restored", "only a partial acceptance publishes the new model");
+      // A retry must still compensate to what restart will load, even though the
+      // published runtime selection now contains the unsaved model.
+      await assert.rejects(supervisor.setModel(session.id, "new-model"), scenario === "restored"
+        ? /could not be saved.*previous model was restored/i
+        : /changed.*could not be saved.*restart/i);
+      assert.equal(getSdkSession(session.id)?.model, previous);
+      assert.equal(liveModel, expected);
+      assert.equal(registry.getSession(session.id)?.configuredModel, expected);
+      assert.deepEqual(changes, previous ? ["new-model", previous, "new-model", previous] : ["new-model", "new-model"]);
+      if (scenario === "rollback refused") {
+        rollbackUnavailable = false;
+        await assert.rejects(supervisor.setModel(session.id, "new-model"), /previous model was restored/i);
+        assert.equal(liveModel, previous);
+        assert.equal(registry.getSession(session.id)?.configuredModel, previous, "successful recovery replaces the previously published unsaved choice");
+      }
       openDb().exec("DROP TRIGGER reject_model_write");
       await supervisor.stopAll(50);
       await new SdkSupervisor(new Registry()).restore();

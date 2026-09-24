@@ -37,6 +37,7 @@ import {
   createDisposableAgentStateHome,
 } from "../agent-subprocess-env.ts";
 import {
+  getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
   sdkSessionIsLive,
@@ -745,21 +746,26 @@ export class SdkSupervisor {
       if (!handle.setModel) {
         throw new Error("this session's embedded driver cannot change model");
       }
-      const previous = session.configuredModel ?? session.meta?.modelId;
+      // A prior partial acceptance may have published an unsaved runtime choice.
+      // Only the durable row tells us which model a restart can actually restore.
+      const durable = getSdkSession(id);
+      if (!durable) throw new Error("this session has no saved model configuration");
+      const previous = durable.model;
       await handle.setModel(model);
       try {
         setSdkSessionModel(id, model);
       } catch (cause) {
         // Keep compensation inside the session's control queue, before another turn
         // can use a model whose persistence failed. A failed rollback is not a refusal.
-        let restored = false;
+        let restored: string | null = null;
         if (previous) {
           try {
             await handle.setModel(previous);
-            restored = true;
+            restored = previous;
           } catch { /* Publish the accepted runtime choice below instead of claiming rollback. */ }
         }
         if (restored) {
+          this.registry.recordConfiguredModel(id, restored);
           throw new Error("The model change could not be saved. The previous model was restored.", { cause });
         }
         this.registry.recordConfiguredModel(id, model);

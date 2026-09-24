@@ -882,7 +882,8 @@ model catalog. The choice applies to this session only and survives a daemon res
 it does not change dispatch defaults. Until the conversation reports the selected model,
 the badge marks it **selected**, including while runtime metadata is absent. A response already underway can still report its previous model.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
-selection. If saving an accepted change fails, Mission Control restores the previous model.
+selection. If saving an accepted change fails, Mission Control restores the previously saved model,
+including after repeated failed attempts.
 If restoration is also unavailable, the dropdown shows the accepted runtime choice and warns
 that it was not saved and a restart may revert it. Retry that selection to save it.
 Terminal sessions and stopped sessions keep a read-only model badge.

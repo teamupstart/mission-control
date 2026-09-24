@@ -130,7 +130,7 @@ for (const { agent, initial, next } of cases) {
       await dashboard.route(endpoint, async (route) => {
         const response = await route.fetch();
         expect(response.ok()).toBe(true);
-        if (++attempts === 1) await route.fulfill({
+        if (++attempts <= 2) await route.fulfill({
           status: 409, contentType: "application/json", body: JSON.stringify({
             ok: false, error: "The model changed in this session but could not be saved. A restart may use the previous model. Retry the selection to save it.",
           }),
@@ -142,8 +142,11 @@ for (const { agent, initial, next } of cases) {
       await expect(menu.getByRole("alert")).toContainText("could not be saved");
       await expect(option(next)).toHaveAttribute("aria-checked", "true");
       await option(next).click();
+      await expect(menu.getByRole("alert")).toContainText("A restart may use the previous model");
+      await expect(option(next)).toHaveAttribute("aria-checked", "true");
+      await option(next).click();
       await expect(menu).toBeHidden();
-      expect(attempts).toBe(2);
+      expect(attempts).toBe(3);
       await dashboard.unroute(endpoint);
       await chip.click();
       await option(initial).click();

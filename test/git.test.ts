@@ -156,11 +156,11 @@ test("two clones of one remote never share native pool identity", () => {
   assert.equal(gitIn(clone, "remote", "get-url", "origin"), gitIn(second, "remote", "get-url", "origin"));
 });
 
-test("native identity refuses a bare repository", () => {
+test("native identity uses a bare repository itself as its owner", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-bare-")));
   const bare = join(root, "repo.git");
   execFileSync("git", ["init", "-q", "--bare", bare]);
-  assert.equal(worktreeRepositoryIdentity(bare, join(root, "pools")), null);
+  assert.equal(worktreeRepositoryIdentity(bare, join(root, "pools"))?.mainCheckoutRoot, bare);
 });
 
 test("the native pool marker is discoverable from a checkout path without SQLite", async () => {

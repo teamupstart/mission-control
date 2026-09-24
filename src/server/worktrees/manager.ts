@@ -478,7 +478,7 @@ export class WorktreeManager {
     }
     const identity = this.identity(input.repositoryPath);
     if (!identity) {
-      return { outcome: "notAcquired", reason: "repository is bare or its ownership cannot be proven" };
+      return { outcome: "notAcquired", reason: "repository ownership cannot be proven" };
     }
     let policy: WorktreePolicy;
     try {

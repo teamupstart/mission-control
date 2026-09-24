@@ -1878,7 +1878,7 @@ export function RuntimeMetaRow({
   session,
   omit = EMPTY_OMIT,
 }: {
-  meta: SessionMeta;
+  meta: SessionMeta | null;
   session?: Session;
   /**
    * Parts this HOST does not want, which is not the same question as whether the fact is
@@ -1893,21 +1893,21 @@ export function RuntimeMetaRow({
    */
   omit?: ReadonlySet<RuntimeMetaPart>;
 }): React.JSX.Element | null {
-  const hasModel = Boolean(meta.model) && !omit.has("model");
-  const hasEffort = Boolean(meta.thinkingLevel || meta.nativeEffort) && !omit.has("effort");
-  const hasCtx = meta.contextPct != null && !omit.has("context");
+  const hasModel = Boolean(meta?.model || session?.configuredModel) && !omit.has("model");
+  const hasEffort = Boolean(meta?.thinkingLevel || meta?.nativeEffort) && !omit.has("effort");
+  const hasCtx = meta?.contextPct != null && !omit.has("context");
   // Nothing LEFT to draw, which now covers both "the session has not reported it" and
   // "this host asked for it to be left out". An empty `.card-runtime` would still take its
   // flex gap on the row, so the early return has to widen with the prop.
   if (!hasModel && !hasEffort && !hasCtx) return null;
-  const tone = contextTone(meta.contextPct);
+  const tone = contextTone(meta?.contextPct ?? null);
   const ctxTitle =
-    meta.contextTokens != null && meta.contextWindow != null
+    meta?.contextTokens != null && meta.contextWindow != null
       ? `${compactTokens(meta.contextTokens)} / ${compactTokens(meta.contextWindow)} tokens in context`
-      : `${meta.contextPct}% of the context window used`;
+      : `${meta?.contextPct}% of the context window used`;
   return (
     <span className="card-runtime">
-      {hasModel && (session ? <ModelPicker key={session.id} session={session} /> : (
+      {hasModel && (session ? <ModelPicker key={session.id} session={session} /> : meta && (
         <Tooltip label={meta.modelId ? `Model: ${meta.modelId}` : `Model: ${meta.model}`}>
           <span className="rt-pill rt-model">
             {meta.model}
@@ -1915,7 +1915,7 @@ export function RuntimeMetaRow({
           </span>
         </Tooltip>
       ))}
-      {hasEffort &&
+      {hasEffort && meta &&
         (session ? (
           <EffortPicker session={session} />
         ) : (
@@ -1929,7 +1929,7 @@ export function RuntimeMetaRow({
             </span>
           </Tooltip>
         ))}
-      {hasCtx && (
+      {hasCtx && meta && (
         <Tooltip label={ctxTitle}>
           <span className={`rt-ctx rt-ctx-${tone}`}>
             <span className="rt-meter" aria-hidden>

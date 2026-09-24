@@ -745,8 +745,26 @@ export class SdkSupervisor {
       if (!handle.setModel) {
         throw new Error("this session's embedded driver cannot change model");
       }
+      const previous = session.configuredModel ?? session.meta?.modelId;
       await handle.setModel(model);
-      setSdkSessionModel(id, model);
+      try {
+        setSdkSessionModel(id, model);
+      } catch (cause) {
+        // Keep compensation inside the session's control queue, before another turn
+        // can use a model whose persistence failed. A failed rollback is not a refusal.
+        let restored = false;
+        if (previous) {
+          try {
+            await handle.setModel(previous);
+            restored = true;
+          } catch { /* Publish the accepted runtime choice below instead of claiming rollback. */ }
+        }
+        if (restored) {
+          throw new Error("The model change could not be saved. The previous model was restored.", { cause });
+        }
+        this.registry.recordConfiguredModel(id, model);
+        throw new Error("The model changed in this session but could not be saved, and the previous model could not be restored. A restart may use the previous model. Retry the selection to save it.", { cause });
+      }
       this.registry.recordConfiguredModel(id, model);
     });
   }

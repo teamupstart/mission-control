@@ -2132,3 +2132,48 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     fake.restore();
   }
 });
+
+for (const scenario of ["restored", "rollback refused", "previous unknown"] as const) {
+  test(`a model persistence failure is compensated or disclosed: ${scenario}`, async () => {
+    const previous = scenario === "previous unknown" ? null : "old-model";
+    let liveModel = previous;
+    const changes: string[] = [];
+    const first = fakeHandle();
+    first.setModel = async (model) => {
+      changes.push(model);
+      if (scenario === "rollback refused" && model === previous) throw new Error("rollback unavailable");
+      liveModel = model;
+    };
+    const handles = [first, fakeHandle()];
+    const fake = withFakeDriver(async () => handles.shift()!);
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    try {
+      const session = await supervisor.start({ ...START, model: previous });
+      first.push({ kind: "bound", agentSessionId: "model-write-failure", transcriptPath: null, modelId: previous, pid: null });
+      await waitFor(() => getSdkSession(session.id)?.agentSessionId === "model-write-failure");
+      const published: string[] = [];
+      registry.subscribe((event) => {
+        if (event.type === "session_upsert" && event.session.configuredModel) published.push(event.session.configuredModel);
+      });
+      openDb().exec(`CREATE TEMP TRIGGER reject_model_write BEFORE UPDATE OF model ON sdk_sessions
+        WHEN NEW.model = 'new-model' BEGIN SELECT RAISE(FAIL, 'disk full'); END;`);
+      await assert.rejects(supervisor.setModel(session.id, "new-model"), scenario === "restored"
+        ? /could not be saved.*previous model was restored/i
+        : /changed.*could not be saved.*restart/i);
+      assert.equal(getSdkSession(session.id)?.model, previous, "the failed write leaves the restart model intact");
+      const expected = scenario === "restored" ? previous : "new-model";
+      assert.equal(liveModel, expected, "driver and visible selection must agree after the failed write");
+      assert.equal(registry.getSession(session.id)?.configuredModel, expected);
+      assert.deepEqual(changes, previous ? ["new-model", previous] : ["new-model"]);
+      assert.equal(published.includes("new-model"), scenario !== "restored", "only a partial acceptance publishes the new model");
+      openDb().exec("DROP TRIGGER reject_model_write");
+      await supervisor.stopAll(50);
+      await new SdkSupervisor(new Registry()).restore();
+      assert.equal(fake.calls.at(-1)?.model, previous, "restart matches compensation, or the explicit partial-acceptance warning");
+    } finally {
+      openDb().exec("DROP TRIGGER IF EXISTS reject_model_write");
+      fake.restore();
+    }
+  });
+}

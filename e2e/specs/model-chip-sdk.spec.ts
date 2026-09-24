@@ -4,6 +4,7 @@ import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { meta, mkSession } from "../../test/helpers/session-fixture.ts";
 
 test.use({ actionTimeout: 15_000, daemonEnv: {
   MC_E2E_CODEX_EFFORT: "medium",
@@ -17,6 +18,51 @@ const cases = [
   { agent: "codex", initial: "gpt-6-astra", next: "gpt-5.6-sol" },
   { agent: "pi", initial: "amazon-bedrock/deepseek.v3.2", next: "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0" },
 ] as const;
+
+test("configured SDK models stay selected until metadata confirms them in Console and Board", async ({ dashboard, daemon }) => {
+  const stream = await fetch(`${daemon.baseURL}/events`);
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE closed before its snapshot");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  const snapshot = JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+  const session = mkSession({
+    id: "sdk:awaiting-model", name: "Awaiting model confirmation", runtime: "sdk", agent: "claude",
+    cwd: daemon.repo, repoRoot: daemon.repo, gitRoot: daemon.repo,
+    configuredModel: "claude-opus-5", meta: null,
+  });
+  await dashboard.route("**/events", (route) => route.fulfill({
+    contentType: "text/event-stream", body: `data: ${JSON.stringify({ ...snapshot, sessions: [session] })}\n\n`,
+  }));
+  for (const layout of ["console", "board"] as const) {
+    expect((await dashboard.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout } })).ok()).toBe(true);
+    for (const modelId of [undefined, null, "claude-sonnet-5", "claude-opus-5"] as const) {
+      session.meta = modelId === undefined ? null : meta({ modelId, model: "Opus 5", longContext: false });
+      await dashboard.reload();
+      if (layout === "console") await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+      const chip = dashboard.locator(layout === "console" ? ".console-detail" : ".tile").getByRole("button", { name: /^Model:/ });
+      const pending = modelId !== "claude-opus-5";
+      await expect(chip).toHaveAccessibleName(`Model: claude-opus-5${pending ? ". Selected for future responses" : ""}. Change model for this session`);
+      await expect(chip.locator(".rt-think-next")).toHaveCount(pending ? 1 : 0);
+      if (modelId === undefined && process.env.MC_E2E_EVIDENCE) {
+        mkdirSync(artifactsDir("model-chip-sdk"), { recursive: true });
+        await dashboard.screenshot({ path: `${artifactsDir("model-chip-sdk")}metadata-pending-${layout}.png` });
+      }
+      await chip.click();
+      const menu = dashboard.getByRole("menu", { name: "Session model" });
+      await expect(menu.getByRole("menuitemradio").filter({ has: dashboard.getByText("claude-opus-5", { exact: true }) })).toHaveAttribute("aria-checked", "true");
+      await dashboard.keyboard.press("Escape");
+    }
+  }
+});
 
 for (const { agent, initial, next } of cases) {
   test(`${agent} SDK model dropdown changes the next turn and stays selected across views`, async ({ dashboard, daemon }) => {
@@ -76,6 +122,33 @@ for (const { agent, initial, next } of cases) {
     await expect(menu).toBeHidden();
     await expect(detail).toBeVisible();
     await expect(chip).toBeFocused();
+
+    if (agent === "claude") {
+      // The supervisor tests inject the database fault. Here, preserve the real accepted
+      // selection/SSE and substitute its partial-acceptance response to exercise recovery.
+      let attempts = 0;
+      await dashboard.route(endpoint, async (route) => {
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        if (++attempts === 1) await route.fulfill({
+          status: 409, contentType: "application/json", body: JSON.stringify({
+            ok: false, error: "The model changed in this session but could not be saved. A restart may use the previous model. Retry the selection to save it.",
+          }),
+        });
+        else await route.fulfill({ response });
+      });
+      await chip.click();
+      await option(next).click();
+      await expect(menu.getByRole("alert")).toContainText("could not be saved");
+      await expect(option(next)).toHaveAttribute("aria-checked", "true");
+      await option(next).click();
+      await expect(menu).toBeHidden();
+      expect(attempts).toBe(2);
+      await dashboard.unroute(endpoint);
+      await chip.click();
+      await option(initial).click();
+      await expect(menu).toBeHidden();
+    }
 
     if (agent === "codex") {
       const composer = detail.getByPlaceholder(/^Reply to this session/);

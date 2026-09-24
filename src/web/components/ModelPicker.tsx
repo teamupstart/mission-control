@@ -15,7 +15,7 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
   const reported = session.meta?.modelId ?? null;
   const selected = session.configuredModel ?? reported;
   const catalog = resolve(session.agent, selected);
-  const pending = Boolean(selected && reported && selected !== reported);
+  const pending = Boolean(selected && selected !== reported);
   const label = pending
     ? catalog.choices.find((choice) => choice.id === selected)?.label ?? selected
     : session.meta?.model ?? selected;
@@ -60,7 +60,7 @@ export function ModelPicker({ session }: { session: Session }): React.JSX.Elemen
   }
 
   async function choose(model: string): Promise<void> {
-    if (model === selected) return close();
+    if (model === selected && !error) return close();
     // Disabling a focused option sends focus to the page. Keep Escape with this menu,
     // including after a refusal, so it cannot close the underlying session detail.
     popRef.current?.focus({ preventScroll: true });

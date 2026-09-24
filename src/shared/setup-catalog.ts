@@ -515,9 +515,9 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     requirement: "required",
     enables: "A broken Pi extension can silently lose Mission Control integration or prevent every Pi session from starting.",
     remedy: {
-      kind: "command",
-      argv: ["npm", "run", "install-pi-extension"],
-      note: "Build first with npm run build in a durable Mission Control clone, then run this installer. For a desktop install, update or reinstall the integration from a durable app installation. This row never repairs it automatically.",
+      kind: "link",
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/pi-extension.md",
+      label: "Pi integration help",
     },
   },
   "upstartclaw-core-setup": {

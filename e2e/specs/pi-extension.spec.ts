@@ -32,7 +32,7 @@ test("hand-run Pi loads the extension, blocks on a dashboard answer and reports 
   const agentDir = join(dir, "agent"); mkdirSync(agentDir);
   const session = `mc-pi-proof-${process.pid}-${Date.now()}`;
   const log = join(dir, "pi.log");
-  const extensionPath = resolve("dist/pi-extension/index.js");
+  const extensionPath = resolve("dist/pi-integration/extension.js");
   const livePi = process.env.MC_E2E_LIVE_PI;
   let requests = 0;
   const payloads: unknown[] = [];

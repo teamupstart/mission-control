@@ -137,7 +137,7 @@ test("the setup install schema refuses malformed shape and unknown ids before la
   assert.deepEqual(calls, []);
 });
 
-test("Pi first-install route refuses an existing extension without repair or terminal launch", async () => {
+test("Pi install route preserves a foreign extension without repair or terminal launch", async () => {
   const previous = process.env.PI_EXTENSIONS_DIR;
   const extensions = mkdtempSync(join(home, "pi-route-"));
   const entry = join(extensions, "mission-control.js");
@@ -150,7 +150,7 @@ test("Pi first-install route refuses an existing extension without repair or ter
     const body = await response.json() as { ok: boolean; id: string; detail: string };
     assert.equal(body.ok, false);
     assert.equal(body.id, "pi-integration");
-    assert.match(body.detail, /manual installer instructions/);
+    assert.match(body.detail, /Move the foreign entry before installing from Setup/);
     assert.equal(readFileSync(entry, "utf8"), "existing operator extension");
     assert.deepEqual(calls, []);
   } finally {

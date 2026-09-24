@@ -1,48 +1,68 @@
 # Pi's Mission Control extension
 
-`npm run build` produces `dist/pi-extension/index.js`. The daemon installs it as a single
-machine-wide symlink, `~/.pi/agent/extensions/mission-control.js`, when explicitly enabled.
-Fresh hand-run Pi sessions discover it without `-e` and report their Pi session ID and transcript
-path through authenticated hook ingest. Building alone installs nothing.
+Install from **Settings > Setup > Agent extensions > Install Pi integration**. If a
+Mission Control-owned installation is unhealthy, the same page offers **Repair Pi integration**.
+Desktop installation needs no clone, npm, tsx, terminal, package manager, or network download.
+Start a fresh Pi session after installation or repair so it loads the current extension.
 
-Installation commands, API usage, disabling, and custom Pi homes are documented in the
-[README's Pi session integration section](../README.md#pi-session-integration).
+`npm run build` produces a deployable `dist/pi-integration/` directory containing
+`extension.js`, `mcp-server.mjs`, and `manifest.json`. Building installs nothing.
+Setup, the configuration API, the installed CLI and enabled daemon startup all use the same
+publisher. Source development uses that contract too.
 
-The resolver is the skills resolver: `PI_EXTENSIONS_DIR` first, then `pi-extensions` under an
-explicit `MISSION_HOME` (including supported legacy aliases), then the real home above. An
-isolated daemon therefore never reconciles the machine-wide install against its empty config.
+```mermaid
+flowchart LR
+  App[App bundled integration] --> Copy[Private staging in state home]
+  Copy --> Verify[Verify hashes, child import, tools/list]
+  Verify --> Generation[Retained content-addressed generation]
+  Generation --> Link[Atomic Pi discovery link]
+  Link --> Intent[Commit enabled intent]
+  Link --> Pi[Fresh Pi session]
+  Pi --> Bridge[Generation-relative MCP child]
+```
 
-`getPiExtensionConfig()` is the single persisted-intent reader. Intent lives in the
-`pi-extension.json` file under the resolved Mission Control state home, defaults off when absent,
-and is independent of skills. Writes publish atomically; malformed intent is refused. The writer
-shares `src/server/state/isolation.ts` with the database, without importing the database module. This
-machine-local installation state is excluded from portable settings backups:
-restoring another installation must not opt this machine into loading executable code. A blocked
-write returns HTTP 409 with the persisted intent and reconciliation problems; off remains durable
-even if a foreign file prevents removal. Startup reconciles that same intent and logs problems.
+## Ownership and publication
 
-Real files and directories are never replaced or removed. A symlink is recognized only if its
-target is the configured artifact or contains the extension's `missionControlBuild` marker.
-This permits repointing a previous checkout's built extension while preserving unrelated links.
-Repointing stages a replacement symlink on the same filesystem and publishes it by atomic rename;
-a creation or publication failure preserves the prior working link.
-An unknown dangling link is refused because its ownership cannot be established. Uninstall of
-this checkout's own dangling link still works. No extension or Pi settings file is rewritten.
+The publisher copies into a private directory on the same filesystem as
+`~/.mission-control/integrations/pi/<buildId>/`, verifies the manifest, loads the copied
+extension in a bounded child, and completes a real initialize/tools-list handshake against
+its copied bridge. Only then does it publish the generation and atomically replace
+`~/.pi/agent/extensions/mission-control.js`. Fresh-link creation refuses an intervening entry.
+Replacement rechecks ownership and entry identity immediately before rename.
 
-Hook teardown also calls the extension reconciler, even if no Claude hooks remain. Like skill
-teardown, it does not change persisted intent. Plain hook installation never opts Pi in.
+`pi-extension.json` stores machine-local enabled intent, independently of skills and SQLite.
+Unknown or malformed intent is refused. Enable stages intent before publication and commits it
+only after the link is published; a failed intent commit restores the previous link. Failed
+copy, verification or link publication preserves the previous installation. Disable persists
+off even if a foreign entry prevents removal. This state is excluded from portable backups.
+An operation queue and a process-identity lock serialize startup, Setup and standalone CLI
+writers. Crashed process claims are reclaimed by the existing installer lock protocol.
 
-Implementation choices for Phase 5: a separate machine-local intent file replaces the proposed
-reuse of the skills blob, because skills and executable integration are independently enabled.
-The file also permits a standalone install while an older daemon owns SQLite, without replacing
-the running app or bypassing database ownership. The CLI, backend configuration API, and Setup
-supply explicit installation entry points. Ownership recognition is stricter than the skill name-prefix rule, so an arbitrary symlink at the reserved
-name is preserved. Unknown dangling links are reported rather than guessed to be ours. The health
-check uses `capabilitiesFor("pi").extensions`, `extensionsDirFor`, `linkName`, and the exported
-intent reader; it reports staleness without repairing the link.
+When enabled, startup publishes the current app generation, including after updates. Artifact
+bytes remain immutable. After a successful publication, cleanup keeps the current and one
+previous publication, plus the newest damaged backup from repair. Older generations
+are retained only while a Pi process holds a lease on them. The extension records that lease
+at import time beside its canonical bundle, so isolated agent homes and session switches do
+not lose protection. Process exit releases the lease; after a crash, the next successful
+publication reclaims it using the process identity. Unreadable or unknown leases fail closed.
+Cleanup failures defer reclamation until a later publication and never undo a successful install.
+Failed publication or intent commit does not run cleanup. No health read prunes files.
+
+Real files, directories and foreign or unknown links at Pi's reserved extension name are never
+replaced or removed. Owned links include managed generation paths, readable legacy targets
+with the `missionControlBuild` marker, and dangling legacy `dist/pi-extension/index.js` targets.
+A foreign entry requires its owner to move it before Setup can install. Health reads never
+repair anything; only explicit install/repair and enabled startup publish.
+
+The destination resolver is shared with skills: `PI_EXTENSIONS_DIR` first, then `pi-extensions`
+under an explicit `MISSION_HOME` (including supported legacy aliases), then Pi's default home.
+For a custom `PI_CODING_AGENT_DIR`, set `PI_EXTENSIONS_DIR` to that home's `extensions` directory.
+An isolated daemon never reconciles a real machine's Pi directory against its own empty intent.
+Hook teardown removes only owned links without changing intent; plain hook installation never
+enables Pi integration.
 
 The extension starts one Node MCP child per active Pi session. It discovers every published tool
-from `dist/mcp/server.mjs`, passes its JSON Schema directly to Pi, and forwards execution over
+from the generation's `mcp-server.mjs`, passes its JSON Schema directly to Pi, and forwards execution over
 stdio. A tool error throws so Pi sees a failed tool call. Blocking questions wait for the operator;
 Pi's abort signal cancels the MCP request. Shutdown and session switches close the old child.
 Tool adapters belong to the extension and resolve the current session's child when called.
@@ -79,96 +99,70 @@ alone. Hook and statusline failures are silent and bounded to 800 ms per request
 has a 15-second handshake budget, a 1 MiB frame bound, a 20-page list bound, and a two-second
 child termination grace. Tools have no human-answer timeout.
 
-## Build and downstream contracts
+## Artifact and health contracts
 
-The artifact is self-contained and must retain its `.js` suffix: Pi does not discover `.mjs`
-extensions. The builder stages privately on the target filesystem and atomically renames the
-complete file. A failed build leaves the prior artifact intact; concurrent builders never expose
-an incomplete file.
+The extension keeps its `.js` suffix because Pi's automatic discovery does not load `.mjs`.
+It resolves its own canonical real path at import time and resolves `mcp-server.mjs` beside it.
+That path stays bound to the generation even when an app update repoints the discovery link.
+No absolute build path or credential is embedded.
 
-`piExtensionPath()` owns the output path and honors `MISSION_PI_EXTENSION`. Configured and
-explicit build targets must end in `.js`; other suffixes are rejected before any filesystem writes.
-The artifact exports
-`missionControlBuild`, containing a deterministic SHA-256 `version` and the absolute
-`mcpServerPath` resolved at build time. `MISSION_MCP_SERVER` overrides the baked path at runtime.
-No token is baked; clients read credentials when sending requests. The staleness check
-inspects both paths and the marker, without repairing either. The installer must link to the
-artifact without relocating it.
+The protocol-1 manifest contains `buildId` and the SHA-256 of each JavaScript artifact. The
+build ID is SHA-256 over the fixed-order JSON representation of protocol and artifact hashes.
+It depends on bytes and protocol, never the checkout location. Identical source and locked
+dependencies produce identical artifacts in different directories. The builder publishes
+complete files with the manifest last; a racing installer refuses any inconsistent snapshot.
 
-## Health and Setup
+`piExtensionPath()` resolves the bundled extension and honors `MISSION_PI_EXTENSION`.
+Build destinations must use `extension.js` within a deployable directory. `missionControlBuild`
+exports the manifest build ID as `version` and the canonical sibling `mcpServerPath`.
+`MISSION_MCP_SERVER` remains an explicit runtime override. Publication always tests the copied
+bridge; installed health also probes an override when present.
 
-`environment/pi-extension.ts` is the authoritative installed-and-current reading for Setup
-and the Mission tools dispatch guard. No entry and no persisted intent is silent but unavailable;
-an enabled integration whose entry vanished warns. A dangling link explains that Pi reports
-nothing. A bundle that fails its bounded child import warns that every Pi session may refuse
-to start. A missing baked MCP path identifies the tools half as broken even if lifecycle reports
-continue. A missing or mismatched build marker and a bridge missing any `MISSION_MCP_TOOLS`
-name both warn. Healthy installations produce no environment row.
+`extensions/pi-candidate.ts` owns artifact validation and bounded child probes for both the
+publisher and health inspection, without importing enabled intent or environment reporting.
+`extensions/pi-paths.ts` owns managed generation paths used by publication and link ownership.
+`environment/pi-extension.ts` supplies Setup and the Mission tools dispatch guard. Absence
+without intent is silent but unavailable. Enabled absence, dangling links, permission failures,
+load errors, malformed manifests, changed hashes, stale build IDs and missing required tools
+all report unavailable. Every generation is hash-verified before its extension is imported.
+Legacy bundles without a manifest remain diagnosable but cannot pass the current health contract.
 
-Extension imports resolve canonical paths and run outside the daemon with a three-second
-SIGKILL timeout and a 16 KiB output cap. Output is not repeated to the operator. The MCP probe
-reuses the existing initialize/tools-list handshake and its bounds, with an isolated environment
-that does not merge the daemon's credentials back in. Both probes use `agentSubprocessEnv` and
-clean up their disposable homes. Permission errors on the path probe are not called absence,
-and cannot grant dispatch availability. Failure to inspect the extension entry, resolve its link
-(including a cycle or inaccessible target), or inspect its baked MCP bundle warns with manual
-recovery guidance rather than disappearing from Setup. The baked-bundle warning identifies the
-tools half as unavailable even when lifecycle reports still work. These reports refine the proposed
-phase's silence on non-absence errors: the failure must remain visible without claiming the target
-is missing or repairing it. Only proven absence with no persisted intent stays silent.
-Re-check reads again without requiring a daemon restart.
+Imports execute outside the daemon, using canonical paths, a three-second SIGKILL deadline and
+16 KiB output cap. The real MCP probe uses the existing bounded handshake. Both children have
+isolated state and scrubbed credentials, and their output is not repeated in user diagnostics.
+Dispatch caches only completed readings for at most thirty seconds. Link, artifact, manifest,
+reference, intent and environment identities invalidate the cache; Setup Re-check bypasses it.
 
-Phase 6 implementation choices: the first-install action is a strict `id: "pi-integration"`
-case on `/api/setup/install`, with no browser-supplied command, path, or terminal. It uses
-Phase 5's intent writer and installer, after the same health reader verifies the candidate.
-It refuses an enabled integration or any existing entry, rechecks absence before writing, and
-refuses a pooled source. It is presented separately from the required warning row, rather than
-adding a permanently missing dependency row for a machine that never opted in. The shared
-snapshot carries only whether first installation is available. These choices preserve the
-approved report-only boundary. Pi installation conflicts return HTTP 409, while operational
-preflight or publication failures return HTTP 500. A rejected candidate is explicitly described
-as not installed. The action requires JSON and a loopback Origin when supplied; the separate
-loopback Host guard remains in force.
+## Installed CLI and source development
 
-Dispatch reuses completed health readings for at most 30 seconds. Canonical link targets,
-file identity, permissions, size, modification/change times, reference and baked/overridden MCP
-bundles, persisted intent, and environment changes invalidate the reading. Setup Re-check always
-performs a new inspection and invalidates dispatch's cache. Changes inside a bridge dependency
-that leave these identities unchanged may take up to 30 seconds to reach dispatch.
+Setup is the primary desktop entry point. The app also ships a self-contained installer at
+`Contents/Resources/app/dist/pi-installer/index.mjs`. It runs from any directory using the
+installed Electron runtime, without Node, npm or tsx installed separately:
 
-After intent has been persisted, publication or post-install verification failures retain that
-intent and report manual recovery. This follows Phase 5's durable-intent contract. Automatic
-rollback would require an installer-owned transaction receipt identifying exactly which link
-this attempt published; the existing reconciliation result does not supply that ownership.
-Calling the general disable operation here could remove a link replaced concurrently.
+```sh
+app="$HOME/Applications/Mission Control.app"
+ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Mission Control" \
+  "$app/Contents/Resources/app/dist/pi-installer/index.mjs"
+```
 
-The report checks the baked MCP path and then probes the configured override, when present,
-because the extension honors that override. A missing build marker is reported as stale rather
-than a load failure. These refine the proposed route without changing Phase 5's installer.
+Add `--uninstall` to disable and remove the owned link. It publishes the app's bundled generation,
+not a clone's build. Developers can use `npm run build` and `npm run install-pi-extension` from
+a source checkout; that command uses the exact same publisher, ownership and health checks.
+The configuration API remains `GET`/`PUT /api/extensions/pi/config` with `{ "enabled": boolean }`.
 
 ## Verification
 
-Focused source tests cover MCP errors, cancellation and bounded failure, lifecycle normalization,
-PR attribution, native effort, hand-run identity, and concurrent/failed publication. Bundle smoke
-loads the actual `.js` and checks its metadata and settlement subscription.
+Focused tests cover reproducibility across two source roots, relocation after source deletion,
+manifest refusal, copied-byte corruption, ownership, atomic replacement, intent rollback,
+retention, failed publication, concurrent intent changes and bounded health/cache behavior.
+Bundle smoke checks the real artifacts. `e2e/specs/pi-extension-setup.spec.ts` covers first
+install, owned repair, foreign refusal, rejected candidates and a real Pi terminal dispatch
+using only a local deterministic provider. Other Pi runtime specs use the same new artifact.
 
-`e2e/specs/pi-extension.spec.ts` drives a test-owned tmux pane through passive discovery and
-loads the actual built extension through the Pi fake. The operator answers `request_input` in
-the browser, and the spec checks settlement, model, effort, context and cost. The same spec can
-exercise the installed Pi with `MC_E2E_LIVE_PI=/absolute/path/to/pi`; only its local deterministic
-provider is used. `node scripts/check-pi-extension.mjs /absolute/path/to/pi` separately proves
-`.js` symlink auto-discovery and baked-path tool registration without a daemon. Both use isolated
-homes and no external model calls.
-
-Implementation differences from the proposed phase route: Pi's tool-end event has no arguments,
-so the extension retains active bash commands until their matching end event. The transcript
-locator needed to consume and validate reported paths. Native effort needed a separate display
-field rather than a picker-union change. Statusline readings accompany lifecycle events as well
-as selection/turn events, allowing an initial discovery race to heal on the next activity.
-
-`test/pi-extension-health.test.ts` exercises the report taxonomy, bounded child execution,
-credential cleanup, directory agreement, tool drift, immediate recovery, and first-install
-refusals. `e2e/specs/pi-extension-setup.spec.ts` covers first install, required warning rows,
-manual recovery, and a real Pi terminal plan dispatch through the guard and installed symlink,
-using a deterministic loopback provider. The managed SDK path still has its pre-existing MCP-client requirement;
-changing that runtime is outside this phase.
+`node scripts/check-pi-extension.mjs /absolute/path/to/pi [extension.js]` verifies Pi's native
+`.js` symlink discovery and all Mission Control tool registrations without a model prompt.
+On Apple Silicon macOS, `node scripts/check-pi-desktop-install.mjs` exercises the standard Bash
+installer with a local working-tree snapshot and cached locked dependencies as its retrieval
+inputs. Compilation, Electron packaging, managed app swap, source removal, Setup browser action,
+installed CLI, and fresh Pi discovery are real. It uses only disposable homes and captures
+screenshots/logs under `.evidence/pi-integration/desktop/`; those artifacts are never committed.

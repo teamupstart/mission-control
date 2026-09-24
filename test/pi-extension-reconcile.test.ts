@@ -1,3 +1,4 @@
+import { writePiIntegration } from "./helpers/pi-integration.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -14,7 +15,7 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-extension-reconcile-"));
 process.env.MISSION_HOME = home;
 delete process.env.PI_EXTENSIONS_DIR;
-const target = join(home, "build", "index.js");
+const target = join(home, "build", "extension.js");
 process.env.MISSION_PI_EXTENSION = target;
 const spec = capabilitiesFor("pi").extensions!;
 const dir = join(home, spec.isolatedDirName);
@@ -30,7 +31,7 @@ beforeEach(() => {
   delete process.env.PI_EXTENSIONS_DIR;
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(home, "build"), { recursive: true });
-  writeFileSync(target, "export const missionControlBuild = {};\n");
+  writePiIntegration(join(home, "build"));
 });
 
 test("extension resolver uses the shared override, isolated home, real home order", () => {
@@ -84,7 +85,7 @@ for (const operation of ["symlinkSync", "renameSync"] as const) {
     try {
       // Persist intent before injecting rename failure into link publication only.
       writeFileSync(join(home, "pi-extension.json"), '{"enabled":true}\n');
-      const result = reconcilePiExtension();
+      const result = reconcileExtensionLink(true);
       assert.equal(fault.mock.callCount(), 1, "the replacement reached the failing operation");
       assert.equal(result.changed, false);
       assert.deepEqual(result.linked, []);
@@ -100,7 +101,7 @@ for (const operation of ["symlinkSync", "renameSync"] as const) {
       fault.mock.restore();
       syncBuiltinESMExports();
     }
-    const retried = reconcilePiExtension();
+    const retried = reconcileExtensionLink(true);
     assert.deepEqual(retried.blocked, []);
     assert.equal(retried.changed, true);
     assert.equal(readlinkSync(link), target);
@@ -142,7 +143,7 @@ test("the build output layout the reconciler recognizes is the one this build wr
   const previous = process.env.MISSION_PI_EXTENSION;
   delete process.env.MISSION_PI_EXTENSION;
   try {
-    assert.equal(piExtensionPath().endsWith(`/${PI_EXTENSION_OUTPUT.join("/")}`), true, piExtensionPath());
+    assert.equal(piExtensionPath().endsWith("/dist/pi-integration/extension.js"), true, piExtensionPath());
     // Assigning an absent value back would restore it as the string "undefined", which
     // every later test in this worker would then resolve as a real override.
   } finally { if (previous === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = previous; }
@@ -174,6 +175,10 @@ test("missing build cannot replace a working link, and off removes our dangling 
   rmSync(target);
   assert.equal(reconcileExtensionLink(true).blocked.length, 1);
   assert.equal(lstatSync(link).isSymbolicLink(), true);
+  // An arbitrary deleted output is no longer provenance; only the legacy layout or
+  // the managed generation namespace can authorize dangling-link removal.
+  assert.equal(uninstallExtensionLink().changed, false);
+  rmSync(link); symlinkSync(join(home, "deleted", ...PI_EXTENSION_OUTPUT), link);
   assert.equal(uninstallExtensionLink().changed, true);
 });
 
@@ -205,8 +210,8 @@ test("reconciliation reports a filesystem error without mutating the installed l
 });
 
 for (const operation of ["writeFileSync", "renameSync"] as const) {
-  test(`failed intent publication ${operation} preserves persisted intent and cleans staging`, (t) => {
-    applyPiExtensionConfig({ enabled: true });
+  test(`failed intent publication ${operation} preserves persisted intent and cleans staging`, async (t) => {
+    await applyPiExtensionConfig({ enabled: true });
     const intentFile = join(home, "pi-extension.json");
     const priorIntent = readFileSync(intentFile, "utf8");
     const priorIntentInode = lstatSync(intentFile).ino;
@@ -214,8 +219,10 @@ for (const operation of ["writeFileSync", "renameSync"] as const) {
     const priorEntries = readdirSync(home).sort();
     const failure = Object.assign(new Error("injected intent publication failure"), { code: "EIO" });
     const originalWrite = fs.writeFileSync;
+    const originalOperation = fs[operation];
     const fault = t.mock.method(fs, operation, (...args: unknown[]) => {
       const staged = String(args[0]);
+      if (!staged.endsWith("/intent.json")) return Reflect.apply(originalOperation, fs, args);
       assert.ok(staged.startsWith(join(home, ".pi-extension-")), "fault targets private staging");
       assert.ok(staged.endsWith("/intent.json"));
       if (operation === "writeFileSync") {
@@ -229,19 +236,19 @@ for (const operation of ["writeFileSync", "renameSync"] as const) {
     });
     syncBuiltinESMExports();
     try {
-      assert.throws(() => applyPiExtensionConfig({ enabled: false }), (error) => error === failure);
-      assert.equal(fault.mock.callCount(), 1);
+      await assert.rejects(applyPiExtensionConfig({ enabled: false }), (error) => error === failure);
+      assert.ok(fault.mock.callCount() >= 1);
       assert.equal(readFileSync(intentFile, "utf8"), priorIntent);
       assert.equal(lstatSync(intentFile).ino, priorIntentInode);
       assert.deepEqual(getPiExtensionConfig(), { enabled: true });
       assert.deepEqual(readdirSync(home).sort(), priorEntries, "staged files and directory are removed");
       assert.equal(lstatSync(link).ino, priorLinkInode, "failed persistence never reaches link teardown");
-      assert.equal(readlinkSync(link), target);
+      assert.ok(readlinkSync(link).startsWith(join(home, "integrations", "pi")));
     } finally {
       fault.mock.restore();
       syncBuiltinESMExports();
     }
-    assert.deepEqual(applyPiExtensionConfig({ enabled: false }).config, { enabled: false });
+    assert.deepEqual((await applyPiExtensionConfig({ enabled: false })).config, { enabled: false });
     assert.deepEqual(getPiExtensionConfig(), { enabled: false });
     assert.equal(existsSync(link), false, "retry publishes intent and reconciles normally");
   });
@@ -271,17 +278,17 @@ test("API GET returns default and persisted intent; PUT validates and reports fo
   assert.deepEqual(await disabled.json(), { enabled: false });
   closeDb();
   assert.equal(getPiExtensionConfig().enabled, false);
-  assert.equal(reconcilePiExtension().changed, false);
+  assert.equal((await reconcilePiExtension()).changed, false);
   assert.equal(existsSync(link), false);
   writeFileSync(link, "operator");
   assert.equal((await put({ enabled: true })).status, 409);
-  assert.equal(getPiExtensionConfig().enabled, true, "blocked intent remains readable for Phase 6");
+  assert.equal(getPiExtensionConfig().enabled, false, "failed publication never enables intent");
   assert.equal(readFileSync(link, "utf8"), "operator");
   assert.equal((await put({ enabled: false })).status, 409);
   assert.equal(getPiExtensionConfig().enabled, false, "blocked removal cannot resurrect on restart");
 });
 
-test("standalone install persists the same intent without opening SQLite", () => {
+test("standalone install persists the same intent without opening SQLite", async () => {
   const run = (args: string[] = []) => execFileSync(process.execPath,
     ["--import", "tsx", "scripts/install-pi-extension.ts", ...args],
     { env: process.env, encoding: "utf8" });
@@ -301,12 +308,12 @@ test("standalone install persists the same intent without opening SQLite", () =>
   assert.deepEqual(JSON.parse(readFileSync(join(isolated, "pi-extension.json"), "utf8")), { enabled: true });
   run();
   assert.equal(getPiExtensionConfig().enabled, true);
-  assert.equal(readlinkSync(link), target);
-  assert.equal(reconcilePiExtension().changed, false);
+  assert.ok(readlinkSync(link).startsWith(join(home, "integrations", "pi")));
+  assert.equal((await reconcilePiExtension()).changed, false);
   run(["--uninstall"]);
   assert.equal(getPiExtensionConfig().enabled, false);
   assert.equal(existsSync(link), false);
-  assert.equal(reconcilePiExtension().changed, false);
+  assert.equal((await reconcilePiExtension()).changed, false);
   assert.throws(() => run(["--invalid"]));
 });
 
@@ -327,22 +334,22 @@ test("intent writer reuses the state guard before touching an operator state hom
   } finally { process.env.MISSION_HOME = previous; }
 });
 
-test("an accepted intent write cannot exempt a frozen database path from isolation", () => {
+test("an accepted intent write cannot exempt a frozen database path from isolation", async () => {
   const previous = process.env.MISSION_HOME;
   process.env.MISSION_HOME = join(home, "other-state");
   try {
-    assert.deepEqual(applyPiExtensionConfig({ enabled: false }).config, { enabled: false });
+    assert.deepEqual((await applyPiExtensionConfig({ enabled: false })).config, { enabled: false });
     assert.throws(openDb, /refusing to open .*frozen against a different state dir/);
   } finally { process.env.MISSION_HOME = previous; }
 });
 
-test("malformed installation intent is never overwritten or interpreted as off", () => {
+test("malformed installation intent is never overwritten or interpreted as off", async () => {
   const file = join(home, "pi-extension.json");
   const prior = readFileSync(file, "utf8");
   writeFileSync(file, "operator data");
   try {
     assert.throws(getPiExtensionConfig);
-    assert.throws(reconcilePiExtension);
+    await assert.rejects(reconcilePiExtension());
     assert.throws(() => execFileSync(process.execPath,
       ["--import", "tsx", "scripts/install-pi-extension.ts"], { env: process.env, stdio: "pipe" }));
     assert.equal(readFileSync(file, "utf8"), "operator data");
@@ -497,3 +504,31 @@ for (const clockAdvanceMs of [0, 17 * 60_000]) {
     }
   });
 }
+
+test("daemon startup upgrades an enabled legacy link to its bundled generation and retains the old files", async () => {
+  const isolated = join(home, "startup-upgrade");
+  const extensions = join(isolated, spec.isolatedDirName);
+  mkdirSync(extensions, { recursive: true });
+  const old = join(isolated, "legacy", "extension.js");
+  writePiIntegration(join(isolated, "legacy"));
+  const installed = join(extensions, spec.linkName); symlinkSync(old, installed);
+  writeFileSync(join(isolated, "pi-extension.json"), '{"enabled":true}');
+  const server = createServer(); server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  await new Promise<void>(done => server.close(() => done()));
+  const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
+    env: { ...process.env, MISSION_HOME: isolated, MISSION_PORT: String(address.port), MISSION_POLL_MS: "0", MISSION_SCOUT_RECONCILE_MS: "0" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = ""; child.stdout.on("data", c => output += c); child.stderr.on("data", c => output += c);
+  try {
+    await waitForListening(child, () => output);
+    const published = readlinkSync(installed);
+    assert.ok(published.startsWith(join(isolated, "integrations", "pi")), output);
+    assert.notEqual(published, old); assert.ok(existsSync(old));
+    assert.ok(existsSync(join(isolated, "legacy", "mcp-server.mjs")));
+    assert.deepEqual(JSON.parse(readFileSync(join(isolated, "pi-extension.json"), "utf8")), { enabled: true });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const done = once(child, "exit"); child.kill("SIGTERM"); await done; }
+  }
+});

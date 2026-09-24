@@ -6429,7 +6429,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/extensions/pi/config", async (c) => {
     const parsed = await parseBody(c, PiExtensionConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const result = applyPiExtensionConfig(parsed.data);
+    const result = await applyPiExtensionConfig(parsed.data);
     return c.json(result, result.blocked.length ? 409 : 200);
   });
 

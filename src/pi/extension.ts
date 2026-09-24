@@ -1,18 +1,25 @@
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BASE_URL, envVar, readClientToken, MISSION_AGENT_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import { postHookEvent } from "@shared/hook-bridge.mjs";
 import type { PiApi, PiContext, PiEvent } from "./api.ts";
 import { hookBody, PI_EVENTS, statusBody } from "./event-map.ts";
 import { McpClient } from "./mcp-client.ts";
 import { adaptTool } from "./tool-adapter.ts";
+import { holdPiGeneration } from "./generation-lease.ts";
 
-declare const __MISSION_MCP_SERVER__: string;
-declare const __MISSION_PI_BUILD__: string;
+declare const __MISSION_PI_PACKAGED__: boolean;
 
-/** Public build metadata for Phase 6's read-only drift check. No credential is baked. */
+// Resolve once, before an app update can repoint Pi's discovery link. Existing Pi
+// processes keep their generation, including when they start a new MCP child later.
+const integrationDir = dirname(realpathSync(fileURLToPath(import.meta.url)));
 export const missionControlBuild = {
-  version: typeof __MISSION_PI_BUILD__ === "undefined" ? "source" : __MISSION_PI_BUILD__,
-  mcpServerPath: typeof __MISSION_MCP_SERVER__ === "undefined" ? "" : __MISSION_MCP_SERVER__,
+  version: typeof __MISSION_PI_PACKAGED__ === "undefined" ? "source"
+    : JSON.parse(readFileSync(join(integrationDir, "manifest.json"), "utf8")).buildId as string,
+  mcpServerPath: join(integrationDir, "mcp-server.mjs"),
 };
+if (typeof __MISSION_PI_PACKAGED__ !== "undefined") holdPiGeneration(integrationDir, missionControlBuild.version);
 
 async function daemonRequest(path: string, body?: unknown): Promise<unknown> {
   try {

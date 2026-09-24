@@ -25,11 +25,11 @@ test("configured and explicit non-.js targets are rejected before touching the d
     process.env.MISSION_PI_EXTENSION = join(dir, "absent", "index.mjs");
     await assert.rejects(buildPiExtension(), /must end in \.js/);
     assert.deepEqual(await readdir(dir), [], "rejection does not create the parent directory");
-    process.env.MISSION_PI_EXTENSION = join(dir, "custom.js");
+    process.env.MISSION_PI_EXTENSION = join(dir, "extension.js");
     assert.equal(piExtensionPath(), process.env.MISSION_PI_EXTENSION);
     await buildPiExtension();
     assert.match(await readFile(process.env.MISSION_PI_EXTENSION, "utf8"), /missionControlBuild/);
-    assert.deepEqual(await readdir(dir), ["custom.js"]);
+    assert.deepEqual(await readdir(dir), ["extension.js", "manifest.json", "mcp-server.mjs"]);
   } finally {
     if (prior === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = prior;
     await rm(dir, { recursive: true, force: true });
@@ -38,7 +38,7 @@ test("configured and explicit non-.js targets are rejected before touching the d
 
 test("concurrent publishers expose only the old or complete .js bundle", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-publish-"));
-  const output = join(dir, "index.js");
+  const output = join(dir, "extension.js");
   await writeFile(output, "previous");
   const samples: string[] = [];
   const poll = setInterval(() => { void readFile(output, "utf8").then((text) => samples.push(text)); }, 1);
@@ -49,7 +49,7 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
     assert.match(final, /mcpServerPath/);
     assert.ok(samples.length > 0);
     assert.ok(samples.every((text) => text === "previous" || text === final));
-    assert.deepEqual(await readdir(dir), ["index.js"]);
+    assert.deepEqual(await readdir(dir), ["extension.js", "manifest.json", "mcp-server.mjs"]);
     // Failed resolution leaves the existing artifact untouched.
     const cwd = process.cwd();
     try { process.chdir(dir); await assert.rejects(buildPiExtension(output)); }

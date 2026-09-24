@@ -370,35 +370,23 @@ Work Queue automation. Select an `amazon-bedrock/*` model after signing in throu
 Terminal Pi remains outside Work Queue. See [managed Pi sessions](docs/sessions.md#what-a-managed-pi-session-does-differently).
 
 The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
-attributed usage for hand-run Pi sessions. For a first installation, open **Settings > Setup >
-Agent extensions > Install Pi integration**. You can also enable it from a durable built checkout:
+attributed usage for hand-run Pi sessions. Open **Settings > Setup > Agent extensions >
+Install Pi integration**. An owned unhealthy installation offers **Repair Pi integration**.
+Desktop users need no clone, npm command or terminal.
 
-```sh
-npm run build
-npm run install-pi-extension
-```
+Installation copies the app's verified integration into
+`~/.mission-control/integrations/pi/<buildId>/` and atomically points
+`~/.pi/agent/extensions/mission-control.js` at it. Start a fresh Pi session normally; it loads
+the extension without `-e`. When enabled, daemon startup and app updates publish the current
+bundled generation automatically. Previous generations remain available to running sessions.
+Foreign files, directories and unknown links are left untouched.
 
-This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.js` and leaves
-the integration enabled. Start a fresh Pi session normally; it loads the extension without
-being launched through Mission Control or passing `-e`. Building alone installs nothing.
-Keep the built checkout available because the installed link points to its extension artifact.
-If that installation later moves or is removed, an app bundle dragged to another folder or a
-checkout deleted, the link it left behind is dangling and Pi silently loads nothing. The next
-daemon start, or a run of the installer above, repoints it at the current build. A link
-written by anything other than Mission Control is still never replaced or removed.
-The standalone installer also works when the running app predates the configuration API.
-
-Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP
-tools. Pi itself says nothing about a dangling link; a bundle that throws while loading can
-prevent every Pi session from starting. The warning is report-only and offers a copyable manual
-installer command. Rebuild and run it from a durable clone, then press **Re-check**. Setup
-never repairs an existing integration.
-
-To disable the integration and remove its managed link durably:
-
-```sh
-npm run install-pi-extension -- --uninstall
-```
+Setup checks manifests, artifact hashes, loadability, current build identity and real MCP tool
+discovery. Failed publication preserves the previous installation. **Re-check** refreshes health;
+**Repair Pi integration** explicitly republishes an owned installation. The app also ships an
+[installed CLI](docs/pi-extension.md#installed-cli-and-source-development) that works from any
+directory without a clone. Source developers can use `npm run build` followed by
+`npm run install-pi-extension`, using the same publisher.
 
 A daemon with Pi extension configuration support also accepts HTTP requests:
 

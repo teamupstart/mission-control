@@ -38,13 +38,14 @@ extension row offers **Install Pi integration** on a first install. After both c
 **Re-check**, then choose Agent SDK under **Settings → Harnesses**. If either prerequisite is
 missing or unhealthy, that runtime option remains disabled.
 
-The **Agent extensions** family offers **Install Pi integration** only when its persisted
-intent is off and no extension entry exists. This action verifies the bundle in a bounded,
-child process before installing the integration, and refuses pooled checkouts.
-A successful installation asks you to start a fresh Pi session. Existing or broken integrations
-have no install or repair button: their **Pi extension** warning supplies a manual installer
-command, with durable-clone and desktop guidance. The warning disappears after a healthy
-**Re-check**. A machine that never installed Pi integration has no required Pi warning.
+The **Agent extensions** family offers **Install Pi integration** on first use and
+**Repair Pi integration** for an owned unhealthy installation. The app copies its bundled
+integration into its state home, verifies hashes, loads it in a bounded child, and checks real
+MCP tool discovery before publishing Pi's link. No clone, npm command or terminal is required.
+Start a fresh Pi session afterward. Enabled integration updates reconcile on daemon startup;
+old generations remain available to running sessions. Foreign entries stay untouched and need
+their owner to move them. **Re-check** reports current health without changing files. A machine
+that never installed Pi integration has no required Pi warning.
 
 When the UpstartClaw core plugin is installed, this family also keeps an **UpstartClaw core
 setup** row visible. A completed setup reads **Ready**; missing, unfinished, malformed, or

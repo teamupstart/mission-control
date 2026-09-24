@@ -88,7 +88,7 @@ test(`real Pi through Herdr receives a dashboard follow-up after interrupt${rest
   const launch = join(dir, "launch.sh");
   const command = [bin, resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
     "--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates",
-    "--no-themes", "--no-approve", "-e", resolve("dist/pi-extension/index.js"),
+    "--no-themes", "--no-approve", "-e", resolve("dist/pi-integration/extension.js"),
     "-e", providerFile, "--provider", "mission-test", "--model", "pi-probe"];
   writeFileSync(launch, `#!/bin/sh\nunset MISSION_SESSION_ID MISSION_AGENT_SESSION_ID CLAUDE_SESSION_ID MISSION_API_TOKEN_FILE FLEET_HOME HARNESS_HOME\n${Object.entries(env).map(([key, value]) => `export ${key}=${quote(value)}`).join("\n")}\nexec ${command.map(quote).join(" ")}\n`);
   const name = `Pi through Herdr interrupt proof ${process.pid}`;

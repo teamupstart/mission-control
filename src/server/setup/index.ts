@@ -438,7 +438,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   return {
     rows,
     piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
-    piExtensionInstallAvailable: deps.canInstallPiExtension?.() ?? false,
+    piExtensionInstallAvailable: (deps.canInstallPiExtension?.() ?? false) && environment.find((check) => check.id === "pi-extension")?.ready !== true,
     piExtensionReady:
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),

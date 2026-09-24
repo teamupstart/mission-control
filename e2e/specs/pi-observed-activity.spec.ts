@@ -91,7 +91,7 @@ test("a real Pi session's commands reach the conversation and the Activity rail"
     const launch = join(dir, "launch.sh");
     const cli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
     const command = [bin, cli, "--offline", "--no-extensions", "--no-skills", "--no-context-files",
-      "--no-prompt-templates", "--no-themes", "--no-approve", "-e", resolve("dist/pi-extension/index.js"),
+      "--no-prompt-templates", "--no-themes", "--no-approve", "-e", resolve("dist/pi-integration/extension.js"),
       "-e", providerFile, "--provider", "mission-test", "--model", "pi-probe"];
     writeFileSync(launch, `#!/bin/sh\nunset MISSION_SESSION_ID MISSION_AGENT_SESSION_ID CLAUDE_SESSION_ID MISSION_API_TOKEN_FILE FLEET_HOME HARNESS_HOME\n${Object.entries(env).map(([key, value]) => `export ${key}=${quote(value)}`).join("\n")}\nexec ${command.map(quote).join(" ")}\n`);
 

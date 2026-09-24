@@ -444,14 +444,14 @@ function PiExtensionInstall({ available, warning, onInstalled }: { available: bo
   };
   if (!available && (!detail || warning)) return <></>;
   return (
-    <article className="setup-row" aria-label="Install Pi integration">
+    <article className="setup-row" aria-label={warning ? "Repair Pi integration" : "Install Pi integration"}>
       <div className="setup-row-main">
         <div className="setup-row-title"><strong>Pi integration</strong></div>
         <p className="setup-impact">Connect new Pi sessions to Mission Control tools and lifecycle reporting.</p>
         {available && (
           <Tooltip label="Install the Mission Control extension for new Pi sessions on this machine">
             <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void install()}>
-              {busy ? "Installing..." : "Install Pi integration"}
+              {busy ? "Installing..." : warning ? "Repair Pi integration" : "Install Pi integration"}
             </button>
           </Tooltip>
         )}

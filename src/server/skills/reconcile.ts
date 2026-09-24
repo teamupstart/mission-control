@@ -16,12 +16,13 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
-import { envVar } from "@shared/harness-runtime.mjs";
+import { envVar, stateDir } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { SkillsSpec, ExtensionsSpec } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
+import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -731,8 +732,10 @@ function danglingMissionOutput(error: unknown, target: string): boolean {
  * extension, and an unknown dangling link is still refused. Reading the marker
  * establishes ownership only; this is not a health/staleness probe.
  */
-function ownsExtensionTarget(target: string, desired: string): boolean {
-  if (target === desired) return true;
+function ownsExtensionTarget(target: string): boolean {
+  // Managed generations remain ours even when damaged or deleted. Only the exact
+  // state-owned namespace qualifies, never an arbitrary link with a familiar basename.
+  if (isManagedPiExtensionTarget(target)) return true;
   try {
     return statSync(target).isFile() && readFileSync(target, "utf8").includes("missionControlBuild");
   } catch (error) {
@@ -740,16 +743,26 @@ function ownsExtensionTarget(target: string, desired: string): boolean {
   }
 }
 
+/** Read-only ownership gate shared by Setup and publication. */
+export function canReconcileExtensionLink(): boolean {
+  try {
+    return extensionLocations().every(({ dir, spec }) => {
+      const entry = lstatSync(join(dir, spec.linkName), { throwIfNoEntry: false });
+      return !entry || (entry.isSymbolicLink() && ownsExtensionTarget(resolve(dir, readlinkSync(join(dir, spec.linkName)))));
+    });
+  } catch { return false; }
+}
+
 /** Reconcile the single declared extension link. Never edits settings.json or real files. */
-export function reconcileExtensionLink(desired: boolean): ReconcileResult {
+export function reconcileExtensionLink(desired: boolean, output = piExtensionPath(), onPublished?: () => void): ReconcileResult {
   const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
   for (const { dir, spec } of extensionLocations()) {
     assertTestSkillIsolation(dir);
     const path = join(dir, spec.linkName);
     try {
-      const target = resolve(piExtensionPath());
+      const target = resolve(output);
       const entry = lstatSync(path, { throwIfNoEntry: false });
-      if (entry && (!entry.isSymbolicLink() || !ownsExtensionTarget(resolve(dir, readlinkSync(path)), target))) {
+      if (entry && (!entry.isSymbolicLink() || !ownsExtensionTarget(resolve(dir, readlinkSync(path))))) {
         out.blocked.push(spec.linkName);
         out.problems.push(`${path} isn't ours to replace or remove; left unchanged.`);
         continue;
@@ -761,7 +774,7 @@ export function reconcileExtensionLink(desired: boolean): ReconcileResult {
         out.problems.push(`${target} is not a built extension. Run npm run build first.`);
         continue;
       }
-      if (desired && entry && resolve(dir, readlinkSync(path)) === target) continue;
+      if (desired && entry && resolve(dir, readlinkSync(path)) === target) { onPublished?.(); continue; }
       if (desired) {
         mkdirSync(dir, { recursive: true });
         if (entry) {
@@ -771,7 +784,14 @@ export function reconcileExtensionLink(desired: boolean): ReconcileResult {
           try {
             const staged = join(stage, spec.linkName);
             symlinkSync(target, staged, "file");
+            // Recheck the entry after staging. Never overwrite an intervening foreign file.
+            const latest = lstatSync(path);
+            if (latest.ino !== entry.ino || latest.dev !== entry.dev || !latest.isSymbolicLink()) throw new Error("Pi extension entry changed during publication");
+            const rollback = join(stage, "previous.js");
+            symlinkSync(readlinkSync(path), rollback, "file");
             renameSync(staged, path);
+            try { onPublished?.(); }
+            catch (error) { renameSync(rollback, path); throw error; }
             out.changed = true;
             out.unlinked.push(spec.linkName);
             out.linked.push(spec.linkName);
@@ -779,6 +799,8 @@ export function reconcileExtensionLink(desired: boolean): ReconcileResult {
         } else {
           // Creating directly refuses an intervening file instead of overwriting it.
           symlinkSync(target, path, "file");
+          try { onPublished?.(); }
+          catch (error) { unlinkSync(path); throw error; }
           out.changed = true;
           out.linked.push(spec.linkName);
         }

@@ -1,30 +1,36 @@
 import { build } from "esbuild";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mcpServerPath, piExtensionPath } from "../src/server/config.ts";
+import { piExtensionPath } from "../src/server/config.ts";
+import { piIntegrationManifest } from "../src/server/extensions/pi-artifact.ts";
 
-/** Build privately, then publish one complete file on the destination filesystem. A
- * failed or concurrent build must never expose partial JS to machine-wide Pi discovery. */
+/** Build the deployable directory without embedding source paths. No installed generation
+ * points here: the publisher verifies and copies it before exposing it to Pi. */
 export async function buildPiExtension(target?: string): Promise<void> {
   const output = piExtensionPath(target);
-  await mkdir(dirname(output), { recursive: true });
-  const stage = await mkdtemp(join(dirname(output), ".pi-extension-build-"));
+  if (!output.endsWith("/extension.js")) throw new Error("Pi integration output must be named extension.js");
+  const dir = dirname(output);
+  await mkdir(dir, { recursive: true });
+  const stage = await mkdtemp(join(dirname(dir), ".pi-integration-build-"));
   try {
-    const staged = join(stage, "index.js");
-    const options = {
-      absWorkingDir: process.cwd(), entryPoints: ["src/pi/extension.ts"], bundle: true, platform: "node" as const,
+    const options = { absWorkingDir: process.cwd(), bundle: true, platform: "node" as const,
       format: "esm" as const, target: "node22", alias: { "@shared": "./src/shared" },
-      define: { __MISSION_MCP_SERVER__: JSON.stringify(resolve(mcpServerPath())), __MISSION_PI_BUILD__: JSON.stringify("build-marker") },
-      outfile: staged,
-    };
-    const result = await build({ ...options, write: false });
-    const hash = createHash("sha256").update(result.outputFiles![0]!.contents).digest("hex");
-    await build({ ...options, define: { ...options.define, __MISSION_PI_BUILD__: JSON.stringify(hash) } });
-    // Read before publish so a failed/missing output leaves the previous installation intact.
-    await readFile(staged);
-    await rename(staged, output);
+      mainFields: ["module", "main"], write: false as const };
+    const extension = await build({ ...options, entryPoints: ["src/pi/extension.ts"],
+      define: { __MISSION_PI_PACKAGED__: "true" }, outfile: join(stage, "extension.js") });
+    const bridge = await build({ ...options, entryPoints: ["src/mcp/server.ts"], outfile: join(stage, "mcp-server.mjs") });
+    const extensionBytes = extension.outputFiles[0]!.contents;
+    const bridgeBytes = bridge.outputFiles[0]!.contents;
+    await writeFile(join(stage, "extension.js"), extensionBytes);
+    await writeFile(join(stage, "mcp-server.mjs"), bridgeBytes);
+    await writeFile(join(stage, "manifest.json"), JSON.stringify(piIntegrationManifest(extensionBytes, bridgeBytes), null, 2) + "\n");
+    // Publish individual complete files, manifest last. A racing installer either sees a
+    // verified generation or refuses the mixed snapshot; it never installs partial bytes.
+    for (const name of ["extension.js", "mcp-server.mjs", "manifest.json"]) {
+      await readFile(join(stage, name));
+      await rename(join(stage, name), join(dir, name));
+    }
   } finally { await rm(stage, { recursive: true, force: true }); }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await buildPiExtension();

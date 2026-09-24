@@ -55,6 +55,12 @@ expected by already-released updaters available without retaining a Git reposito
 `app-src`; that update's receipt then names the managed cache. `--temporary-source` cannot
 be combined with `--stage-only` or `--from-staged`, which require durable build output.
 
+A successful direct reinstall removes the previous retained installer only after committing
+the new receipt, while holding the receipt-writer lock. Cleanup requires its ownership marker
+and a direct directory under this state home's `installers/`; arbitrary sources, symlinks,
+unmarked directories, and the currently referenced installer are preserved. Automatic update
+helpers retain their previous installer because rollback can restore its receipt.
+
 ### Where the app is installed
 
 A fresh managed install puts the app in **`~/Applications/Mission Control.app`**, the signed-in

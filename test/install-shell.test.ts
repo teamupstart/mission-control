@@ -149,7 +149,7 @@ test("Bash installs through the shared release, verification, swap and receipt p
   assert.ok(existsSync(join(receipt.appPath, "Contents/Info.plist")));
   const supportFiles = readdirSync(receipt.sourceClone, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name).slice(receipt.sourceClone.length + 1));
-  assert.deepEqual(supportFiles.sort(), ["install-origin", "scripts/install-app.mjs"]);
+  assert.deepEqual(supportFiles.sort(), [".mission-control-installer", "install-origin", "scripts/install-app.mjs"]);
   const runtime = await inspectUpdateRuntime(
     { path: process.execPath, env: process.env }, { path: "npm" }, receipt.sourceClone,
   );
@@ -273,4 +273,32 @@ test("the retained installer includes newly imported transitive modules after bo
   assert.equal(retained.status, 0, retained.stdout + retained.stderr);
   assert.match(retained.stdout, /transitive installer dependency/);
   assert.match(retained.stdout, /Usage: node scripts\/install-app.mjs/);
+});
+
+test("repeated direct installs replace only the superseded owned installer after receipt commitment", (t) => {
+  const f = fixture(t);
+  const first = f.run();
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const receiptFile = join(f.state, "install-receipt.json");
+  const before = readFileSync(receiptFile, "utf8");
+  const previous = JSON.parse(before).sourceClone;
+  const unrelated = join(f.state, "installers", "installer-user-data");
+  mkdirSync(unrelated);
+  writeFileSync(join(unrelated, "keep"), "unrelated");
+
+  f.env.INSTALL_FAIL = "support-build";
+  const failed = f.run();
+  assert.equal(failed.status, 1);
+  assert.equal(readFileSync(receiptFile, "utf8"), before);
+  assert.ok(existsSync(join(previous, "scripts/install-app.mjs")));
+
+  f.env.INSTALL_FAIL = "";
+  const second = f.run();
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  const current = JSON.parse(readFileSync(receiptFile, "utf8"));
+  assert.notEqual(current.sourceClone, previous);
+  assert.equal(existsSync(previous), false);
+  assert.ok(existsSync(join(current.sourceClone, "scripts/install-app.mjs")));
+  assert.deepEqual(readdirSync(join(f.state, "installers")).sort(), [current.sourceClone.split("/").at(-1), "installer-user-data"].sort());
+  assert.equal(readFileSync(join(unrelated, "keep"), "utf8"), "unrelated");
 });

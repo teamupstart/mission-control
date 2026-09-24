@@ -84,7 +84,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   APP_BUNDLE_NAME,
@@ -130,6 +130,38 @@ export { inspectInstallDirectory };
 
 /** The updater-owned clone, inside the existing state directory. */
 export const SOURCE_CLONE_DIR_NAME = "app-src";
+
+const INSTALLER_OWNER_MARKER = ".mission-control-installer";
+
+/** Bind deletion consent to the directory this install exclusively created. */
+export function markRetainedInstaller(directory) {
+  writeFileSync(join(directory, INSTALLER_OWNER_MARKER), realpathSync(directory), { flag: "wx", mode: 0o600 });
+}
+
+/** Called with the receipt-writer lock held, after a direct install commits its receipt. */
+export function removeSupersededInstaller({ previousSource, replacementSource, stateDirectory }) {
+  if (!previousSource || previousSource === replacementSource) return null;
+  // A missing, invalid, or changed receipt cannot authorize deletion. A helper's rollback
+  // may restore an old receipt, so only the direct temporary-source path calls this.
+  if (readReceipt(join(stateDirectory, "install-receipt.json"))?.sourceClone !== replacementSource) return null;
+  try {
+    const installers = join(stateDirectory, "installers");
+    if (!/^installer-[A-Za-z0-9]{6}$/.test(basename(previousSource))) return null;
+    if (!lstatSync(installers, { throwIfNoEntry: false })?.isDirectory()) return null;
+    if (!lstatSync(previousSource, { throwIfNoEntry: false })?.isDirectory()) return null;
+    if (realpathSync(dirname(previousSource)) !== realpathSync(installers)) return null;
+    const previousPath = realpathSync(previousSource);
+    if (previousPath === realpathSync(replacementSource)) return null;
+    const marker = join(previousSource, INSTALLER_OWNER_MARKER);
+    if (!lstatSync(marker, { throwIfNoEntry: false })?.isFile()) return null;
+    if (readFileSync(marker, "utf8") !== previousPath) return null;
+    rmSync(previousSource, { recursive: true, force: true });
+    return null;
+  } catch (error) {
+    // Reclaiming obsolete support must not turn an already installed app into a failure.
+    return `could not remove superseded updater installer ${previousSource}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
 
 /** `electron-builder`'s `dir` target output - the bundle to install, not the dmg. */
 export const PACKAGED_APP_RELATIVE_PATH = join("release", "mac-arm64", APP_BUNDLE_NAME);
@@ -875,10 +907,11 @@ function installApp(options) {
   // `~/Applications`; a machine with one stays exactly where it is, carrying its recorded scope
   // - including the absence of one, which is every install made before this existed.
   const home = homedir();
+  const previousReceipt = readReceipt();
   const destination = resolveInstallDestination({
     scope: options.scope,
     appsDir: options.appsDir,
-    receipt: readReceipt(),
+    receipt: previousReceipt,
     home,
   });
   if (destination.problem) fail(destination.problem);
@@ -1142,6 +1175,7 @@ function installApp(options) {
       `--outfile=${join(receiptSource, "scripts", "install-app.mjs")}`,
     ], { cwd: clone });
     writeFileSync(join(receiptSource, "install-origin"), `${originUrl}\n`);
+    markRetainedInstaller(receiptSource);
   }
   const appPath = swapAndRecord({
     dryRun,
@@ -1157,6 +1191,14 @@ function installApp(options) {
     progress,
   });
   installed = true;
+  if (options.temporarySource && !dryRun) {
+    const cleanupProblem = removeSupersededInstaller({
+      previousSource: previousReceipt?.sourceClone,
+      replacementSource: receiptSource,
+      stateDirectory: stateDir(),
+    });
+    if (cleanupProblem) warning(cleanupProblem);
+  }
 
   console.log("\n\x1b[1m─ summary ─\x1b[0m");
   if (dryRun) {

@@ -30,6 +30,12 @@ export type TargetRefSource = "flag" | "release" | "default-branch";
 export const APP_BUNDLE_NAME: string;
 export const SYSTEM_APPS_DIR: string;
 export const SOURCE_CLONE_DIR_NAME: string;
+export function markRetainedInstaller(directory: string): void;
+export function removeSupersededInstaller(input: {
+  previousSource?: string | null;
+  replacementSource: string;
+  stateDirectory: string;
+}): string | null;
 export const PACKAGED_APP_RELATIVE_PATH: string;
 
 export const GH_ARGS: {

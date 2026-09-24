@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
@@ -1913,6 +1914,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               homeName: launched.homeName ?? name,
               homeBackend: backend,
               terminalResourceId: launched.terminalResourceId ?? null,
+              launchProcess: launched.launchProcess,
+              launchStateHome: launched.launchStateHome,
             };
           },
         }
@@ -3700,7 +3703,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           .find(
             (candidate) =>
               candidate.sessionId === session.id &&
-              (candidate.status === "running" || candidate.status === "dispatching"),
+              isActiveTask(candidate.status),
           ) ?? null;
       if (task) {
         if (session.runtime === "sdk") clearSdkSessionTask(session.id);
@@ -3734,10 +3737,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             // the resumed CLI is working in. Null means "could not tell", and only `false`
             // reclaims - see `TerminalLaunchOutcome.homeName` and `homeAlive`.
             homeName: result.homeName ?? null,
-            homeBackend: result.homeName ? backend : null,
-            terminalResourceId: null,
+            homeBackend: backend,
+            terminalResourceId: result.terminalResourceId ?? null,
+            terminalLaunch: null,
             updatedAt: Date.now(),
           });
+          if (result.ok && result.terminalResourceId?.startsWith("emulator:")) {
+            const home = { homeName: result.homeName ?? session.name, homeBackend: backend,
+              terminalResourceId: result.terminalResourceId, launchProcess: result.launchProcess,
+              launchStateHome: result.launchStateHome };
+            const observed = await defaultHandoffDeps.waitForSessionAtCwd(workspaceRoot, 30_000);
+            if (observed) await registry.adoptTerminalLaunch(task.id, home, observed);
+          }
         }
       } else if (!result.ok) {
         agentResumeClaims.delete(session.id);
@@ -6096,7 +6107,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       || !task
       || session.task?.id !== task.id
       || !isShippingTaskKind(task.kind)
-      || !["running", "dispatching"].includes(task.status)
+      || !isActiveTask(task.status)
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
     }

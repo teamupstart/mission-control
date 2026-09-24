@@ -40,6 +40,12 @@ const MAX_LOG_BYTES = 1_000_000;
  */
 export function sanitizeLogLine(line: string): string {
   return line
+    // Some tools serialize response headers as JSON. Handle the quoted field before the
+    // ordinary header rule so `{"Authorization":"Bearer <token>"}` cannot bypass it.
+    .replace(
+      /(["'])Authorization\1\s*:\s*(["'])(?!<redacted>)[^"']*\2/gi,
+      "$1Authorization$1: $2<redacted>$2",
+    )
     // `(?!<redacted>)` is what makes this idempotent, and it is load-bearing rather than
     // tidy: the value match takes an optional SECOND token so that `Bearer <token>` goes in
     // one piece, and on a second pass over its own output that second token was the next word
@@ -54,6 +60,9 @@ export function sanitizeLogLine(line: string): string {
     // about a remote, and the path inside it is what mattered.
     .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)<>\]]+/gi, "<url>")
+    // The identity printed by an SSH client before a diagnostic, without a repository path:
+    // `git@host.example: Permission denied`. It identifies the same private host as a remote.
+    .replace(/^\s*[\w.+-]+@(?=[\w.-]*[a-z])[\w-]+(?:\.[\w-]+)+:(?=\s)/gi, "<url>:")
     // The scp-style git remote, which carries no scheme at all: `git@github.com:org/repo.git`.
     // Anchored on a dotted host followed by a colon and a path, so an ordinary `name@version`
     // and a bare email address are both left alone.

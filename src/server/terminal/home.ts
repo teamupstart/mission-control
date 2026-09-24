@@ -1,3 +1,5 @@
+import type { LaunchProcess } from "./launch-process.ts";
+import { readInventory } from "./inventory.ts";
 import { EMULATOR_IDS, MULTIPLEXER_IDS } from "@shared/terminal.ts";
 import { terminalResourceId } from "@shared/pane.ts";
 import {
@@ -9,7 +11,7 @@ import {
 import { PLAIN_NAMES } from "./names.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./registry.ts";
 import { underTestRunner } from "../util/test-runner.ts";
-import type { MuxSpawnResult, NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
+import type { SpawnResult, MuxSpawnResult, NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
 
 /**
  * Where a DISPATCHED agent's terminal home comes from, and what can be asked of it
@@ -84,9 +86,19 @@ export interface HomeSpec {
 
 /** The complete terminal-home record returned by a successful launch. */
 export interface SpawnedHome {
+  /** Ephemeral positive process correlation; only the bound task session id is persisted. */
+  launchProcess?: LaunchProcess | null;
+  /** Private marker source retained until session readiness if the wrapper starts late. */
+  launchStateHome?: string;
   homeName: string;
   homeBackend: TerminalBackendId;
   terminalResourceId: string | null;
+}
+
+/** Only these existing task fields are durable; launch observation is not task state. */
+export function homeRecord(home: SpawnedHome): Pick<SpawnedHome, "homeName" | "homeBackend" | "terminalResourceId"> & { terminalLaunch: null } {
+  return { homeName: home.homeName, homeBackend: home.homeBackend, terminalResourceId: home.terminalResourceId,
+    terminalLaunch: null };
 }
 
 /**
@@ -94,7 +106,7 @@ export interface SpawnedHome {
  * resolved into four verbs.
  *
  * `held` and `kill` are nullable and their nulls are different claims. A null `held` is "this
- * backend cannot be enumerated" (Ghostty), which makes both name-uniqueness and liveness
+ * backend cannot be enumerated", which makes both name-uniqueness and liveness
  * unanswerable HERE rather than answerable as "no". A null `kill` is "these homes are not a
  * group anything can kill at once" - true of every emulator tab, where closing the window is
  * the human's to do and the agent process is reached by its pid instead.
@@ -116,8 +128,8 @@ export interface HomeBackend {
    * The homes this backend currently holds, as name -> the address `kill` takes, or null
    * when it cannot be enumerated. See "A name is not an address" above.
    */
-  held: (() => Promise<Map<string, string>>) | null;
-  open(spec: HomeSpec): Promise<MuxSpawnResult>;
+  held: (() => Promise<Map<string, string> | null>) | null;
+  open(spec: HomeSpec): Promise<MuxSpawnResult | SpawnResult>;
   kill: ((name: string) => Promise<TerminalResult>) | null;
 }
 
@@ -153,8 +165,10 @@ export function homeBackends(
       //
       // `sessionName` keyed, `session` valued - the two halves of "a name is not an address".
       // Never use this name lookup to authorize teardown.
-      held: async () =>
-        new Map((await backend.list()).map((p) => [p.sessionName, p.session] as const)),
+      held: async () => {
+        const panes = await readInventory(id, () => backend.list());
+        return panes === null ? null : new Map(panes.map((p) => [p.sessionName, p.session] as const));
+      },
       open: (spec) =>
         sessions.spawnDetached({
           name: spec.name,
@@ -184,10 +198,10 @@ export function homeBackends(
       // address is the pane id - unused today, since no emulator declares a `kill`, and
       // carried anyway so the shape does not have to change when one does.
       held: list
-        ? async () =>
-            new Map(
-              (await list()).filter((p) => p.tabTitle).map((p) => [p.tabTitle, p.paneId] as const),
-            )
+        ? async () => {
+            const panes = await readInventory(id, list);
+            return panes === null ? null : new Map(panes.filter((p) => p.tabTitle).map((p) => [p.tabTitle, p.paneId] as const));
+          }
         : null,
       open: (spec) => spawn.tab({ argv: spec.argv, title: spec.name, cwd: spec.cwd }),
       // Declared, not forgotten: a tab is not a group, and this is the null that says the
@@ -227,11 +241,12 @@ export async function heldHomeNames(
   const selected = homeBackends(deps, preferredBackend);
   // If a selected backend cannot enumerate homes, nobody else may answer on its behalf.
   // A confident false from another terminal would let startup reclaim a live checkout.
-  if (preferredBackend !== null && selected.some((backend) => !backend.held)) return null;
+  if (selected.some((backend) => !backend.held)) return null;
   const backends = selected.filter((backend) => backend.held);
   if (!backends.length) return null;
   const maps = await Promise.all(backends.map((b) => b.held!()));
-  return new Map(maps.flatMap((m) => [...m]));
+  if (maps.some((m) => m === null)) return null;
+  return new Map(maps.flatMap((m) => [...m!]));
 }
 
 /** What opening a home produced. `where` names the backend, for the error a human reads. */
@@ -302,7 +317,9 @@ export async function launchHome(
     if (r.ok) return {
       ok: true,
       backend,
-      resourceId: r.session ? `multiplexer:${backend.id}:${r.session}` : null,
+      resourceId: "target" in r
+        ? r.target ? `emulator:${backend.id}:${r.target.paneId}` : null
+        : r.session ? `multiplexer:${backend.id}:${r.session}` : null,
     };
     last = r.error ?? `${backend.label} could not open a session`;
   }
@@ -325,21 +342,28 @@ export async function homeAlive(
     const backend = deps.multiplexers[id];
     if (binUnavailableReason(backend.bin, backend.label, deps)) return null;
     if (backend.sessions?.alive) {
-      return backend.sessions.alive(resourceId.slice(`multiplexer:${id}:`.length));
+      try {
+        return await backend.sessions.alive(resourceId.slice(`multiplexer:${id}:`.length));
+      } catch {
+        return null;
+      }
     }
-    return (await backend.list()).some((pane) =>
+    return (await readInventory(id, () => backend.list!()))?.some((pane) =>
       terminalResourceId({ ...pane, kind: "multiplexer", backend: id }) === resourceId,
-    );
+    ) ?? null;
   }
   if (resourceId?.startsWith("emulator:")) {
     const id = EMULATOR_IDS.find((candidate) => resourceId.startsWith(`emulator:${candidate}:`));
     if (!id || (preferredBackend !== null && preferredBackend !== id)) return null;
     const backend = deps.emulators[id];
     if (!backend.list || binUnavailableReason(backend.bin, backend.label, deps)) return null;
-    return (await backend.list()).some((pane) =>
+    return (await readInventory(id, () => backend.list!()))?.some((pane) =>
       terminalResourceId({ ...pane, kind: "emulator", backend: id }) === resourceId,
-    );
+    ) ?? null;
   }
+  // Titles can change while the agent remains alive. A legacy emulator record has no
+  // identity with which to confirm its absence, even after a successful inventory.
+  if (resourceId || homeBackends(deps, preferredBackend).some((b) => b.axis === "emulator")) return null;
   const held = await heldHomeNames(deps, preferredBackend);
   return held === null ? null : held.has(name);
 }

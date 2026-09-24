@@ -1,3 +1,4 @@
+import { isActiveTask } from "@shared/task-status.ts";
 import {
   ARCHIVE_TEXT_LIMITS,
   type ArchiveKind,
@@ -144,7 +145,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
         detail: "this session's task is not a scout, so it has no report to archive",
       };
     }
-    if (task.status !== "running" && task.status !== "dispatching") {
+    if (!isActiveTask(task.status)) {
       return {
         ok: false,
         reason: "not_running",
@@ -185,7 +186,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
     if (!task || !kind) return null;
     // Only work that was actually under way. A backlog task bound to nothing, and a task
     // already settled by hand, have no evidence an eviction could take with it.
-    if (task.status !== "running" && task.status !== "dispatching") return null;
+    if (!isActiveTask(task.status)) return null;
     return { kind, subject: this.subject(task, session, kind) };
   }
 
@@ -203,7 +204,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
 
   awaitsAgent(taskId: string): boolean {
     const status = this.registry.getTask(taskId)?.status;
-    return status === "running" || status === "dispatching";
+    return status !== undefined && isActiveTask(status);
   }
 
   /**

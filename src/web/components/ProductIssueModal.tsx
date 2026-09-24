@@ -181,7 +181,7 @@ function previewMatches(
 /** Everything the presentational modal draws. Owned by the layer, so a close keeps it. */
 export interface ProductIssueModalProps {
   draft: ProductIssueDraftState;
-  onDraftChange: (next: ProductIssueDraftState) => void;
+  onDraftChange: React.Dispatch<React.SetStateAction<ProductIssueDraftState>>;
   /** null while the opening's preflight is still in flight. */
   preflight: ProductIssuePreflight | null;
   /** The daemon's trusted preview of this exact draft, or null. */
@@ -227,7 +227,7 @@ export function ProductIssueModal({
   const attachmentIntakeDisabled = !attachmentsEnabled || submitting || attachmentLimitReached;
   const drop = useImageDrop({
     attachments: draft.attachments,
-    onChange: (attachments) => onDraftChange({ ...draft, attachments }),
+    onChange: (attachments) => onDraftChange((current) => ({ ...current, attachments })),
     disabled: attachmentIntakeDisabled,
     maxAttachments: PRODUCT_ISSUE_LIMITS.attachmentCount,
   });

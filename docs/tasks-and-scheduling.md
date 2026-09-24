@@ -19,3 +19,15 @@ like another client. This keeps task and queue persistence within the daemon bou
 Read [Dispatch, backlog, and task sources](dispatch-and-backlog.md), [Recurring missions](recurring-missions.md),
 and [Work queues and backlog autopilot](work-queues.md) for user-facing behavior. The
 binding and cleanup rules remain in the [tasks and worktrees contract](agent-guides/architecture.md#tasks-and-worktrees).
+
+The [shared task-status policy](../src/shared/task-status.ts) defines whether each
+`TaskStatus` is active. Provisioning (`dispatching`) and execution (`running`) are active;
+`backlog` and terminal statuses are not. Lifecycle guards use `isActiveTask`, and SQL
+readers use its derived `ACTIVE_TASK_STATUSES` list. Adding a status to `TASK_STATUSES`
+requires an explicit activity decision and an entry in the
+[lifecycle contract matrix](../test/task-status-contract.test.ts).
+
+Some consumers deliberately ask a broader question. Schedule overlap, startup loading,
+and ensemble submission eligibility include backlog work as well as active tasks. Merge
+reconciliation also considers failed and cancelled tasks that may have shipped. These
+consumers compose the active policy with their own cases; they do not redefine it.

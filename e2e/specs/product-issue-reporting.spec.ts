@@ -664,6 +664,12 @@ test("a partial upload is reported as a created issue with a screenshot warning"
   dashboard,
   daemon,
 }) => {
+  let finishUpload!: () => void;
+  const uploadReady = new Promise<void>((resolve) => { finishUpload = resolve; });
+  await dashboard.route("**/api/uploads", async (route) => {
+    await uploadReady;
+    await route.continue();
+  });
   script(daemon, { preflight: "ok", issueCreate: "partial" });
   await openFromTopbar(dashboard);
   const dialog = form(dashboard);
@@ -673,6 +679,12 @@ test("a partial upload is reported as a created issue with a screenshot warning"
   );
   await expect(dialog.getByRole("button", { name: "Remove trayTemplate.png" })).toBeVisible();
   await fill(dashboard, "Bug", "One screenshot failed", "The issue still exists.");
+  finishUpload();
+  // Completing the earlier upload must preserve text entered while it was pending.
+  await expect(dialog.getByRole("button", { name: "Report publicly" })).toBeEnabled();
+  await expect(titleBox(dashboard)).toHaveValue("One screenshot failed");
+  await expect(dialog.getByRole("textbox", { name: "Details", exact: true }))
+    .toHaveValue("The issue still exists.");
   await publish(dashboard);
 
   await expect(dialog.getByRole("link", { name: "View GitHub issue" })).toBeVisible();
@@ -747,11 +759,21 @@ test("missing GitHub auth and a missing label each produce actionable copy", asy
   dashboard,
   daemon,
 }) => {
-  script(daemon, { preflight: "gh-auth", issueCreate: "created" });
+  script(daemon, {
+    preflight: "gh-auth", issueCreate: "created",
+    preflightError: "github.com\nToken is invalid. Run gh auth login -h github.com\n",
+  });
   await openFromTopbar(dashboard);
   await expect(form(dashboard).getByRole("alert")).toContainText("gh auth login");
+  await expect(form(dashboard).getByRole("alert")).toContainText("Token is invalid. Run gh auth login -h github.com");
+  await expect(form(dashboard).getByRole("alert")).not.toContainText("Quit and reopen");
   await expect(form(dashboard).getByText(/still submit a text-only report/)).toHaveCount(0);
   await expect(submit(dashboard)).toBeDisabled();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+    mkdirSync(dir, { recursive: true });
+    await form(dashboard).screenshot({ path: join(dir, "github-auth-remediation.png") });
+  }
   await dashboard.getByRole("button", { name: "Close feedback form", exact: true }).click();
 
   script(daemon, { preflight: "labels", issueCreate: "created" });

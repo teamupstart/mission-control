@@ -214,6 +214,94 @@ for adding a harness, preserving browser-safe shared code, and using capability 
 are in the authoritative [harnesses and terminals contract](agent-guides/architecture.md#harnesses-and-terminals)
 and [harness-change contract](agent-guides/change-contracts.md#harness-changes).
 
+### Inventory availability and emulator launch identity
+
+Every terminal adapter's `list` returns `TerminalInventory<T>`: an array for a completed
+inventory, including `[]` for confirmed emptiness, or `null` when the inventory is unavailable
+or malformed. `readInventory` preserves that distinction when an adapter throws and logs
+the backend and original exception at most once per backend per minute across its callers. Discovery
+passes the inventory snapshot alongside correlated sessions to Registry, including unavailable
+and empty results. Registry uses that same snapshot when a task refreshes its session.
+Home liveness and cleanup retain uncertainty.
+tmux's definitive empty-server or missing-socket diagnostics count as completed empty
+inventory even though the CLI exits nonzero. Timeouts, permission errors, partial output
+and unrecognized diagnostics remain unavailable. Saved exact tmux sessions also have their
+existing socket- and server-identity liveness check.
+`homeAlive` returns `null` on unavailable inventory and only a completed inventory can
+establish that a recorded resource is absent. Legacy emulator records without an exact
+resource cannot establish absence through a mutable title. Unknown observations do not
+authorize worktree release.
+
+Emulator spawn results retain their pane address as `emulator:<backend>:<paneId>` in the
+existing task `terminalResourceId`. Before dispatch adopts an agent, it requires the exact
+observed pane or verifies the agent's process ancestry through the private launch wrapper,
+checking the wrapper command and both process start times. If the initial wrapper lookup
+is too early, adoption reads the private launch marker after session readiness. A captured
+process identity still takes precedence over a later marker; the marker location is ephemeral
+and is never persisted on the task. The task's
+`terminalLaunch` pairs that resource with the exact process-lifetime session ID. It is stored
+in an additive nullable `tasks.terminal_launch` JSON column. Existing tasks migrate with no
+proof; an old resource selected by a cwd heuristic is not promoted into a verified binding.
+Malformed proof is read as absent, and a new launch clears the previous binding.
+`Registry.adoptTerminalLaunch` owns verification, durable proof construction, task/session
+refresh and work-episode binding for dispatch, SDK handoff and explicit resume. It rechecks
+the task's state, session owner and recorded resource after verification before adopting.
+The adopted resource outranks the previously cached inventory until the next completed
+discovery sweep. This freshness exception applies only to that exact resource, so adopting
+a new pane does not restore a different pane whose absence was already confirmed.
+
+Registry associates an enumerated emulator pane with its bound session by the proven UUID.
+Launch projection replaces or removes only that backend's handle, preserving other backends.
+A completed inventory that omits that UUID removes its handle. Without another usable handle,
+the composer is disabled and writes are refused even while the process survives. Unavailable or unobserved inventory
+allows restoration of the saved address, and only when the proof matches the bound session
+and recorded resource and the adapter declares `restoreTarget`. Ghostty and iTerm2 use stable
+UUID addresses; WezTerm declares this capability absent because its recyclable numeric IDs
+need incarnation policy. That policy and later backends' native verification remain in their
+own phases. No terminal ID encodings or append-only backend IDs change here.
+
+Ghostty does not report a TTY. An external session therefore remains handleless unless an
+independent exact correlation is available. Shell cwd, agent cwd, GUI ancestry, mutable
+titles and a single unmatched pane do not prove a recipient. Exact TTY correlation and
+multiplexer root-process ancestry continue to work unchanged. A verified dispatched Ghostty
+session keeps its UUID during an inventory failure and after daemon restart, without a
+global timeout increase or a second session-removal path.
+
+### WezTerm mux lifetime and input safety
+
+WezTerm reuses numeric pane IDs after its native mux server restarts. A discovered
+`EmulatorTarget` therefore carries an optional `incarnation` alongside its pane and tab IDs.
+WezTerm requires that proof for text, paste, keys, capture, focus and retitle. A stale or
+legacy handle is refused until discovery supplies a current handle. Stable UUID backends
+need no incarnation field, and their restoration behavior is unchanged.
+
+The adapter first asks WezTerm to select its normal default endpoint with
+`--no-auto-start` and the inherited `WEZTERM_UNIX_SOCKET` removed. The CLI's socket trace
+locates that endpoint; its preliminary pane list does not establish target identity.
+The adapter then hard-links the socket and enumerates through that private alias. Its
+incarnation records device, inode and birth time. Every target operation repeats endpoint
+selection, pins the socket, compares the incarnation and keeps the link until the command
+finishes. A restart between validation and execution cannot redirect the alias to the new
+socket. The alias is no longer than the original socket basename, to preserve Unix socket
+path limits, and is removed in `finally`. A collision never overwrites another entry.
+
+Only the explicitly pinned alias is supplied to the command's environment through the
+fixed OS `env` executable. This does not restore inherited socket routing or permit auto
+start. Spawn, retitle and the returned target lookup share one pin, so a restart cannot
+turn a spawn result into a handle for a replacement pane. Unknown endpoint diagnostics,
+non-socket endpoints, unavailable birth time and failed hard links are unavailable
+inventory or refused operations, never confirmed emptiness or guessed identities.
+The diagnostic format is an upstream compatibility dependency; an incompatible version
+fails conservatively. Native verification used WezTerm 20240203-110809-5046fc22 on macOS.
+
+The incarnation is an observation on a live handle, not a new task storage format.
+Existing `terminalResourceId` values and Phase 5 launch-process proof remain compatible.
+WezTerm still declares `restoreTarget: null`: a saved numeric resource is not sufficient
+to recreate write authority after a daemon restart. Fresh discovery supplies that authority.
+Neither an unavailable observation nor a refused operation creates an eviction or cleanup
+path. Actions continue to own delivery policy; the adapter owns socket addressing.
+
+
 ## Dispatch-time model catalogs
 
 Every model picker that can affect a dispatch reads one browser catalog. The browser starts with

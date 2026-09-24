@@ -114,8 +114,11 @@ function digest(value: unknown): string {
 function previewFingerprint(
   preview: Omit<WorktreeActionPreview, "token" | "expiresAt">,
 ): string {
+  // Inventory freshness spans every pool. Execution is bound to the rebuilt target set
+  // and its safety facts, so unrelated process churn or reconciliation cannot stale it.
+  const { inventoryRevision: _inventoryRevision, ...scoped } = preview;
   return digest({
-    ...preview,
+    ...scoped,
     affected: preview.affected.map(({ diskBytes: _diskBytes, ...target }) => target),
   });
 }
@@ -714,7 +717,12 @@ export class WorktreeOperationsService {
           path: candidate.path,
           owner: null,
           version: candidate.slotVersion,
-          safetyRevision: digest(candidate),
+          safetyRevision: digest({
+            ...candidate,
+            // Safe candidates are necessarily clean and empty, but their HEAD can still
+            // move between two merged commits without changing eligibility or version.
+            head: pool.slots.find((entry) => entry.slot.id === candidate.slotId)?.observedHead ?? null,
+          }),
           diskBytes: candidateDiskBytes[index] ?? null,
         });
       }

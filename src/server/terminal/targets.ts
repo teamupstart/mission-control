@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readLaunchProcess, type LaunchProcess } from "./launch-process.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { MULTIPLEXER_IDS, EMULATOR_IDS } from "@shared/terminal.ts";
 import type {
@@ -236,6 +237,10 @@ export interface TerminalLaunchOutcome {
   homeName?: string | null;
   /** Captured creation identity, when the backend returned one, for task teardown. */
   terminalResourceId?: string | null;
+  /** Private launch observation used only to bind an adopted agent process. */
+  launchProcess?: LaunchProcess | null;
+  /** Private marker source for adoption after a delayed wrapper starts. */
+  launchStateHome?: string;
   error?: string;
   status: number;
 }
@@ -263,7 +268,8 @@ export async function launchAgentTerminal(
     const argv = isolatedAgentArgv(spec.argv, { cwd: spec.cwd, stateHome });
     const result = await launcher(backend, { ...spec, argv });
     if (!result.ok && result.status !== 504) cleanupDisposableAgentStateHome(stateHome);
-    return result;
+    return result.ok && result.terminalResourceId?.startsWith("emulator:")
+      ? { ...result, launchStateHome: stateHome, launchProcess: await readLaunchProcess(stateHome) } : result;
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;
@@ -415,7 +421,9 @@ export async function launchTerminal(
     // can enumerate, and persisting it as a home is what makes `homeAlive` say `false` and
     // a restart reclaim a live agent's worktree.
     homeName = null;
-    result = await emulator.spawn.tab({ argv: spec.argv, title, cwd: spec.cwd });
+    const spawned = await emulator.spawn.tab({ argv: spec.argv, title, cwd: spec.cwd });
+    result = spawned;
+    if (spawned.ok && spawned.target) terminalResourceId = `emulator:${backend}:${spawned.target.paneId}`;
   }
 
   if (result.ok) return { ok: true, label: view.label, homeName, terminalResourceId, status: 200 };

@@ -522,7 +522,7 @@ test("a session on one tty keeps a handle from EACH axis, not just the namer's",
     procs: [proc({ pid: 800, ppid: 50, tty: "ttysZ" })],
     terminals: terminals(
       [muxPane({ session: "inner", tty: "ttysZ", paneId: "%7" })],
-      [emuPane({ tty: "ttysZ", tabTitle: "Outer", paneId: "12", tabId: "4", windowId: "1", isActive: true })],
+      [emuPane({ tty: "ttysZ", tabTitle: "Outer", paneId: "12", tabId: "4", windowId: "1", isActive: true, incarnation: "mux-lifetime" })],
     ),
   };
   const [s] = correlate(input);
@@ -532,6 +532,7 @@ test("a session on one tty keeps a handle from EACH axis, not just the namer's",
     backend: "wezterm",
     paneId: "12",
     tabId: "4",
+    incarnation: "mux-lifetime",
     windowId: "1",
     tabTitle: "Outer",
     isActive: true,
@@ -642,4 +643,22 @@ test("two sessions in one tmux session stay distinct (different panes/ttys)", ()
   const results = correlate(input);
   assert.equal(results.length, 2);
   assert.notEqual(results[0]?.syntheticId, results[1]?.syntheticId);
+});
+
+test("a child cwd matching another Ghostty shell never authorizes input to that pane", () => {
+  const [session] = correlate({
+    procs: [
+      proc({ pid: 10, tty: "?", command: "/Applications/Ghostty.app/Contents/MacOS/ghostty", agent: null }),
+      proc({ pid: 20, ppid: 10, tty: "ttys1", command: "bash", agent: null }),
+      proc({ pid: 30, ppid: 20, tty: "ttys1" }),
+      proc({ pid: 40, ppid: 10, tty: "ttys2", command: "bash", agent: null }),
+    ],
+    terminals: [{ kind: "emulator", backend: "ghostty", hostProcess: { commands: ["ghostty"] }, panes: [
+      emuPane({ paneId: "agent", tty: null, tabTitle: "shell A", cwd: "/a" }),
+      emuPane({ paneId: "unrelated", tty: null, tabTitle: "shell B", cwd: "/b" }),
+    ] }],
+  }, new Map([[30, "/b"]]));
+  assert.ok(session);
+  assert.equal(session.cwd, "/b");
+  assert.equal(emulatorHandle(session), null, "refuse an unverified recipient");
 });

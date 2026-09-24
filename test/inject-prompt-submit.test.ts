@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
+import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
 import { HARNESSES } from "../src/server/harness/index.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
@@ -10,6 +11,7 @@ import type { Session } from "@shared/types.ts";
 import type { TerminalHandle } from "@shared/terminal.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
 
 // Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, read, Enter, read
 // back - and the ORDER is the whole fix, so these tests assert the sequence rather than the
@@ -44,8 +46,8 @@ const EMPTY_COMPOSER = "❯\n⏵⏵ auto mode on (shift+tab to cycle)";
 const tmuxSession = (paneId = "%1"): Session =>
   ({ id: "s1", agent: "claude", terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })] }) as Session;
 
-const weztermSession = (): Session =>
-  ({ id: "s2", agent: "claude", terminals: [mkEmuHandle({ paneId: "7", tabId: "0", windowId: "0", tabTitle: "" })] }) as Session;
+const weztermSession = (incarnation: string): Session =>
+  ({ id: "s2", agent: "claude", terminals: [mkEmuHandle({ paneId: "7", tabId: "0", windowId: "0", tabTitle: "", incarnation })] }) as Session;
 
 /**
  * One entry per thing the delivery did, in order, so the sequence itself is assertable.
@@ -68,7 +70,7 @@ type Event =
  * Enter" is the actual claim under test, and it stays true regardless of how many times
  * the implementation reads the pane between them.
  */
-function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
+function harness(clearsAfterEnters = 1, wrapExec = (exec: TerminalExec) => exec): { deps: InjectDeps; events: Event[] } {
   const events: Event[] = [];
   let entersSeen = 0;
   return {
@@ -78,13 +80,13 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
       // backend actually emits - which is what makes "pasted exactly once" a claim about
       // tmux commands rather than about a stand-in nobody ships.
       pane: (session) =>
-        bindSession(session, async (bin, args, opts) => {
+        bindSession(session, wrapExec(async (bin, args, opts) => {
           const argv = [bin, ...args].join(" ");
           const event = { kind: "exec", argv, input: opts?.input } as const;
           events.push(event);
           if (isEnter(event)) entersSeen++;
           return stubRun({ stdout: "", stderr: "", code: 0 });
-        }),
+        })),
       capture: async () => {
         events.push({ kind: "capture" });
         return entersSeen >= clearsAfterEnters ? EMPTY_COMPOSER : PLACEHOLDER;
@@ -318,10 +320,12 @@ test("a paste that never left the buffer is still reported as retryable", async 
   assert.equal(r.pasted, false, "nothing reached the pane, so this is safe to retry");
 });
 
-test("wezterm settles before its Enter too", async () => {
+test("wezterm settles before its Enter too", async (t) => {
   // The same TUI is on the other end of the wezterm handle, so it has the same window.
-  const { deps, events } = harness();
-  const r = await injectPrompt(weztermSession(), "a\nb", deps);
+  const socket = await weztermSocketFixture();
+  t.after(() => socket.close());
+  const { deps, events } = harness(1, socket.wrap);
+  const r = await injectPrompt(weztermSession(socket.incarnation), "a\nb", deps);
   assert.equal(r.ok, true);
   const sleepAt = events.findIndex((e) => e.kind === "sleep");
   const enterAt = events.findIndex((e) => e.kind === "exec" && isEnter(e));

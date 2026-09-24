@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
@@ -145,19 +146,20 @@ function fields(line: string, want: number): string[] | null {
  * than against a real server, which is the only way this asserts anything on a machine with
  * no tmux installed.
  */
-export function parsePanes(stdout: string): MuxPane[] {
+export function parsePanes(stdout: string): TerminalInventory<MuxPane> {
   const panes: MuxPane[] = [];
   for (const line of stdout.split("\n")) {
     const f = fields(line, 7);
-    if (!f) continue;
+    if (!line.trim()) continue;
+    if (!f) return null;
     // `SEP` is printable, so unlike the unit separator it once was, a field COULD contain it
     // and shift everything after it by one. Validated rather than trusted, because the
     // damage from a silent shift is specific and bad: `paneId` is what every write is
     // addressed to, so a shifted line would send an operator's keystrokes to a pane chosen
     // by a substring of somebody's window name. tmux pane ids are always `%<digits>`, which
-    // makes the check exact, and a line that fails it is DROPPED - one pane missing from the
-    // fleet is a visible absence, where one pane misaddressed is an invisible wrong.
-    if (!/^%\d+$/.test(f[3] ?? "")) continue;
+    // makes the check exact. One malformed line makes the inventory unknown rather than
+    // establishing absence for a resource we failed to parse.
+    if (!/^%\d+$/.test(f[3] ?? "")) return null;
     panes.push({
       session: tmuxAddress(f.slice(7)) ?? f[0] ?? "",
       // A human label only. Destructive commands require the server-scoped native ID.
@@ -410,12 +412,19 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     glyph: "▤",
     bin: TMUX_BIN,
 
-    // Returns [] when tmux isn't running (no server / no sessions), which is the common case
-    // on a fresh machine. Discovery must degrade silently: the product works fine with a
-    // wezterm-only or bare-terminal setup, so an absent backend is not an error.
+    // tmux reports an empty/stopped server with exit 1 rather than an empty stdout.
     list: async () => {
       const res = await tmux(["list-panes", "-a", "-F", PANE_FMT]);
-      return res.code === 0 ? parsePanes(res.stdout) : [];
+      if (res.outcomeUnknown || res.overflowed) return null;
+      if (res.code === 0) return parsePanes(res.stdout);
+      if (res.code !== 1 || res.stdout.trim() !== "") return null;
+      const error = res.stderr.trim();
+      // With no explicit target, tmux 3.7's current-target lookup fails only when
+      // there are no sessions from which list-panes -a could select a window.
+      return error === "no sessions" || error === "no current target" ||
+        /^no server running(?: on [^\r\n]+)?$/.test(error) ||
+        /^error connecting to [^\r\n]+ \(No such file or directory\)$/.test(error)
+        ? [] : null;
     },
 
     // Same contract: [] when tmux isn't running or nothing is attached.

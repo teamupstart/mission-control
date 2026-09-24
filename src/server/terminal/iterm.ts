@@ -1,3 +1,4 @@
+import type { TerminalInventory } from "./inventory.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,15 +95,15 @@ function cwdPath(value: string): string | null {
 }
 
 /** Parse the escaped record stream emitted by one iTerm2 enumeration script. */
-export function parseItermSessions(stdout: string): EmulatorPane[] {
+export function parseItermSessions(stdout: string): TerminalInventory<EmulatorPane> {
   const panes: EmulatorPane[] = [];
   for (const rawRecord of stdout.split(RS)) {
-    if (!rawRecord) continue;
+    if (!rawRecord.trim()) continue;
     const fields = rawRecord.split(US);
-    if (fields.length !== 8) continue;
+    if (fields.length !== 8) return null;
     const [rawPaneId = "", tabId = "", windowId = "", tabTitle = "", windowTitle = "", tty = "", cwd = "", active = ""] = fields.map(decodeField);
     const paneId = normalizeItermSessionId(rawPaneId);
-    if (!paneId || !tabId || !windowId || (active !== "0" && active !== "1")) continue;
+    if (!paneId || !tabId || !windowId || (active !== "0" && active !== "1")) return null;
     panes.push({
       paneId,
       tabId,
@@ -260,7 +261,7 @@ export function itermEmulator(
 
     list: async () => {
       const result = await osa(listScript(), LIST_TIMEOUT_MS);
-      return result.code === 0 ? parseItermSessions(result.stdout) : [];
+      return result.code === 0 ? parseItermSessions(result.stdout) : null;
     },
 
     hostProcess: { commands: ["iTerm2"] },
@@ -299,6 +300,11 @@ export function itermEmulator(
           targetScript(target, "  select targetWindow\n  select targetTab\n  select targetSession\n  activate"),
           "iTerm2 could not focus that session",
         ),
+    },
+
+    restoreTarget: (paneId) => {
+      const normalized = normalizeItermSessionId(paneId);
+      return normalized ? { paneId: normalized, tabId: "" } : null;
     },
 
     spawn: {

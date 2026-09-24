@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Build the production daemon entry with only OS/terminal boundaries scripted. */
-export async function buildTerminalBoundaryDaemon(root: string, id: string): Promise<string> {
+export async function buildTerminalBoundaryDaemon(root: string, id: string, wezterm = false): Promise<string> {
   // Same depth as index.mjs: runtime assets resolve relative to the daemon bundle.
   const outfile = join(root, "dist/server", `e2e-terminal-${id}.mjs`);
   const fixture = join(root, "e2e/fixtures/terminal-boundary.ts");
@@ -13,11 +13,15 @@ export async function buildTerminalBoundaryDaemon(root: string, id: string): Pro
     mainFields: ["module", "main"], alias: { "@shared": "./src/shared" },
     banner: { js: "import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);" },
     plugins: [{ name: "terminal-boundary", setup(plugin) {
-      plugin.onResolve({ filter: /^\.\/(processes|proc-cwd)\.ts$/ }, (args) =>
-        args.importer === join(root, "src/server/discovery/correlate.ts") ? { path: fixture } : undefined,
+      plugin.onResolve({ filter: /\/(processes|proc-cwd)\.ts$/ }, (args) =>
+        ["src/server/discovery/correlate.ts", "src/server/dispatcher.ts", "src/server/terminal/launch-process.ts"].some((path) => args.importer === join(root, path)) ? { path: fixture } : undefined,
       );
       plugin.onResolve({ filter: /^\.\/ghostty\.ts$/ }, (args) =>
         args.importer === join(root, "src/server/terminal/registry.ts") ? { path: fixture } : undefined,
+      );
+      plugin.onResolve({ filter: /^\.\/wezterm\.ts$/ }, (args) =>
+        args.importer === join(root, "src/server/terminal/registry.ts") && wezterm
+          ? { path: join(root, "e2e/fixtures/wezterm-boundary.ts") } : undefined,
       );
       plugin.onLoad({ filter: /src\/server\/terminal\/registry\.ts$/ }, (args) => ({
         loader: "ts",

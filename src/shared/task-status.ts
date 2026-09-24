@@ -1,4 +1,22 @@
-import type { TaskStatus } from "./types.ts";
+import { TASK_STATUSES, type TaskStatus } from "./types.ts";
+
+/** Every new status must deliberately define whether an agent is executing the task. */
+const TASK_ACTIVITY = {
+  backlog: false,
+  dispatching: true,
+  running: true,
+  done: false,
+  cancelled: false,
+  failed: false,
+} as const satisfies Record<TaskStatus, boolean>;
+
+/** An executing task, including provisioning. Backlog work is not active yet. */
+export function isActiveTask(status: TaskStatus): boolean {
+  return TASK_ACTIVITY[status] === true;
+}
+
+/** SQL and broader policies compose this list instead of restating the active pair. */
+export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = TASK_STATUSES.filter(isActiveTask);
 
 /**
  * The task statuses with no further lifecycle: the agent is gone, nothing will move the row

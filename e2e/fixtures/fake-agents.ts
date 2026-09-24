@@ -149,6 +149,8 @@ export interface FakeGhProductScript {
   issueCreate: "created" | "partial" | "partial-no-url" | "refused" | "unknown";
   /** The labels `repos/<target>/labels` reports. Defaults to the full required set. */
   labels?: readonly string[];
+  /** CLI diagnostic returned by a failed product-report preflight. */
+  preflightError?: string;
 }
 
 export const FAKE_GH_PRODUCT_ISSUE_URL = "https://github.com/acme/public-issues/issues/4242";
@@ -525,11 +527,27 @@ server.listen(socketPath);
 
 const FAKE_WEZTERM = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
+const { createConnection } = require("node:net");
 const { join } = require("node:path");
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
+}
+const args = process.argv.slice(2);
+if (args.includes("cli")) {
+  const socket = process.env.WEZTERM_UNIX_SOCKET || process.env.MC_E2E_WEZTERM_SOCKET;
+  if (!socket) process.exit(1);
+  const client = createConnection(socket);
+  client.once("error", () => { process.exitCode = 1; });
+  client.once("connect", () => {
+    if (process.env.WEZTERM_LOG === "wezterm_client::client=trace") {
+      process.stderr.write("TRACE wezterm_client::client > connect to Socket(" + JSON.stringify(socket) + ")\\n");
+    }
+    if (args.includes("list")) process.stdout.write("[]\\n");
+    if (args.includes("spawn")) process.stdout.write("0\\n");
+    client.end();
+  });
 }
 `;
 
@@ -619,7 +637,7 @@ const product = productScript();
 /** Fail exactly the scripted preflight question, the way the real CLI fails it. */
 function preflightRefusal(stage) {
   if (product.preflight !== stage) return false;
-  process.stderr.write(stage + " unavailable\\n");
+  process.stderr.write(product.preflightError || stage + " unavailable\\n");
   process.exit(1);
 }
 if (argv[0] === "--version") {

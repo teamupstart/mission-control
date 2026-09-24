@@ -133,40 +133,88 @@ test("the updater asks through a themed modal and its answer carries the questio
   ]);
 });
 
-test("a failed update is drawn in the error tone, and Escape answers it", async ({ dashboard }) => {
+test("a multiline update error wraps and scrolls safely, and Escape answers it", async ({ dashboard }) => {
   await installDialogBridge(dashboard);
+
+  const message = [
+    "The update build failed (exit 1).",
+    "Reason: Permission denied (publickey).",
+    "",
+    "Check the update log for more detail and try again.",
+  ].join("\n");
+  const wrappingMessage = [
+    "The update build failed (exit 1).",
+    "Reason: Permission denied (publickey).",
+    `electron-builder failed while unpacking artifact-${"x".repeat(250)}`,
+    "",
+    "Check the update log for more detail and try again.",
+  ].join("\n");
 
   await dashboard.evaluate(
     (request) => window.updateDialogFixture.push(request),
     {
-      ...UPDATE_DIALOGS.outcome({
-        result: "failure",
-        targetVersion: "1.9.1",
-        recordedAt: "2026-09-11T00:00:00.000Z",
-        message: "The previous update did not finish. The existing app was left in place.",
-      }),
-      id: "outcome-1",
+      ...UPDATE_DIALOGS.error(message),
+      id: "error-1",
     } satisfies UpdateDialogRequest,
   );
 
   const modal = dashboard.getByRole("dialog", { name: "Mission Control update" });
-  await expect(modal).toContainText("Mission Control 1.9.1 could not be installed");
-  await expect(modal).toContainText("The existing app was left in place.");
+  await expect(modal).toContainText("The update could not be completed");
+  await expect(modal).toContainText("Reason: Permission denied (publickey).");
+  const detail = modal.locator(".update-dialog-detail");
+  expect(await detail.textContent()).toBe(message);
+  await expect(detail).toHaveCSS("white-space", "pre-wrap");
   // The tone is the theme's own danger token, so a failure reads as one at a glance.
   await expect(modal.locator(".update-dialog-title")).toHaveCSS("color", "rgb(248, 81, 73)");
   await expectContentClearsBorder(modal);
+  const initialBox = await modal.boundingBox();
+  const initialViewport = dashboard.viewportSize();
+  expect(initialBox).not.toBeNull();
+  expect(initialViewport).not.toBeNull();
+  expect(initialBox!.y).toBeGreaterThanOrEqual(0);
+  expect(initialBox!.y + initialBox!.height).toBeLessThanOrEqual(initialViewport!.height);
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = join(process.cwd(), "e2e/.artifacts/update-dialog-theme");
     await mkdir(evidence, { recursive: true });
-    await dashboard.screenshot({ path: join(evidence, "failure.png"), fullPage: true });
+    await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(dashboard.locator(".tooltip")).toBeHidden();
+    await modal.screenshot({ path: join(evidence, "failure-diagnostic.png") });
   }
+
+  await dashboard.evaluate(
+    (request) => window.updateDialogFixture.push(request),
+    { ...UPDATE_DIALOGS.error(wrappingMessage), id: "error-1" } satisfies UpdateDialogRequest,
+  );
+  expect(await detail.textContent()).toBe(wrappingMessage);
+  expect(
+    await detail.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+  ).toBe(true);
+
+  // At a short, narrow window the bounded diagnostic wraps inside the body and only that body
+  // scrolls. The panel inset still clears the border, while the heading and close action remain
+  // outside the scrollport.
+  await dashboard.setViewportSize({ width: 360, height: 360 });
+  const body = modal.locator(".update-dialog-body");
+  const beforeScroll = await body.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    scrollTop: element.scrollTop,
+  }));
+  expect(beforeScroll.scrollHeight).toBeGreaterThan(beforeScroll.clientHeight);
+  expect(beforeScroll.scrollTop).toBe(0);
+  await body.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  expect(await body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(modal.locator(".modal-head")).toBeVisible();
+  await expectContentClearsBorder(modal);
 
   // Escape answers with the dialog's own dismissal rather than leaving the shell waiting.
   await dashboard.keyboard.press("Escape");
   await expect(modal).toBeHidden();
   expect(await dashboard.evaluate(() => window.updateDialogFixture.answers())).toEqual([
-    { id: "outcome-1", choice: "dismiss" },
+    { id: "error-1", choice: "dismiss" },
   ]);
 });
 

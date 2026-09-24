@@ -1,3 +1,4 @@
+import { ACTIVE_TASK_STATUSES } from "./task-status.ts";
 import type {
   AgentType,
   PromptedCompletionOutcome,
@@ -265,8 +266,7 @@ export const SCHEDULE_STALE_CLAIM_MS = 5 * 60 * 1000;
  */
 export const SCHEDULE_OVERLAP_BLOCKING_TASK_STATUSES: readonly TaskStatus[] = [
   "backlog",
-  "dispatching",
-  "running",
+  ...ACTIVE_TASK_STATUSES,
 ];
 
 // ---- the template ----

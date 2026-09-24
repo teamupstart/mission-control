@@ -6,7 +6,7 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 
 test("discovery and client enumeration share an opaque address without displaying it", () => {
   const address = ["/tmp/mission-test.sock", "123", "456", "$7"];
-  const [pane] = parsePanes(["Human name", "0", "Editor", "%5", "321", "/dev/ttys1", "/repo", ...address].join(SEP));
+  const [pane] = parsePanes(["Human name", "0", "Editor", "%5", "321", "/dev/ttys1", "/repo", ...address].join(SEP))!;
   const [client] = parseClients(["/dev/ttys2", "Human name", ...address].join(SEP));
   assert.ok(pane);
   assert.ok(client);

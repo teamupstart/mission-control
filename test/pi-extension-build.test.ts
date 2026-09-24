@@ -36,6 +36,27 @@ test("configured and explicit non-.js targets are rejected before touching the d
   }
 });
 
+test("configured and explicit .js targets not named extension.js are rejected without filesystem changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-output-name-"));
+  const prior = process.env.MISSION_PI_EXTENSION;
+  const existing = join(dir, "custom.js");
+  try {
+    await writeFile(existing, "previous");
+    for (const output of [existing, join(dir, "absent", "custom.js")]) {
+      process.env.MISSION_PI_EXTENSION = output;
+      assert.equal(piExtensionPath(), output, "the .js suffix is valid; the builder owns the filename restriction");
+      for (const build of [() => buildPiExtension(), () => buildPiExtension(output)]) {
+        await assert.rejects(build(), /Pi integration output must be named extension\.js/);
+        assert.equal(await readFile(existing, "utf8"), "previous", "rejection preserves existing output bytes");
+        assert.deepEqual(await readdir(dir), ["custom.js"], "rejection creates neither parent directories nor artifacts");
+      }
+    }
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = prior;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent publishers expose only the old or complete .js bundle", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-publish-"));
   const output = join(dir, "extension.js");

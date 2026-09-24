@@ -117,6 +117,7 @@ import {
   runPosture,
   evidenceChipLabel,
   openEvidenceTray,
+  roundContext,
   roundEvidenceCountLabel,
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
@@ -3466,6 +3467,16 @@ export function WorkflowRunView({
   const viewedRound = rounds.find((round) => round.submissionId === viewed?.id) ?? null;
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
+  const roundContextView = roundContext(rounds, viewedRound);
+  // Read out once: narrowing a property does not survive into the click handler below.
+  const liveRoundSubmissionId = roundContextView?.liveSubmissionId ?? null;
+  // The `<details>` survives the re-render, so every route that changes the round closes it
+  // here rather than each one remembering to.
+  const contextDiscloseRef = useRef<HTMLDetailsElement>(null);
+  const selectRound = (submissionId: string): void => {
+    contextDiscloseRef.current?.removeAttribute("open");
+    onRound(submissionId);
+  };
   // Recovery capabilities always describe the live run; this notice describes the viewed round.
   const inspectorOnly = viewed?.mode === "inspector_only";
   const bypassSourceHead = inspectorOnly
@@ -3887,7 +3898,7 @@ export function WorkflowRunView({
                     // reading this round. `aria-expanded` is what says the tray is theirs.
                     aria-pressed={ownsViewed}
                     {...(opens ? { "aria-expanded": ownsViewed } : {})}
-                    onClick={() => onRound(group.head.submissionId)}
+                    onClick={() => selectRound(group.head.submissionId)}
                   >
                     <span className="wf-run-round-line">
                       <span className="wf-run-round-name">{group.label}</span>
@@ -3936,7 +3947,7 @@ export function WorkflowRunView({
                       className={`wf-run-tray-chip workflow-${segment.status.tone}${
                         segment.submissionId === viewed?.id ? " active" : ""}`}
                       aria-pressed={segment.submissionId === viewed?.id}
-                      onClick={() => onRound(segment.submissionId)}
+                      onClick={() => selectRound(segment.submissionId)}
                     >
                       <span className="wf-run-tray-chip-name">
                         {evidenceChipLabel(segment)}
@@ -3948,20 +3959,52 @@ export function WorkflowRunView({
               </div>
             </div>
           )}
-          {/* Said under the scrubber rather than only in a tooltip: a second entry under one
-              round looks exactly like a repair, and the whole point of the segment model is
-              that it is not one. */}
-          {viewedRound && segmentProvenanceSentence(viewedRound) && (
-            <p className="wf-run-notice" role="status">
-              {segmentProvenanceSentence(viewedRound)}
-            </p>
-          )}
-          {!isLatest && (
-            <p className="wf-run-stale" role="status">
-              Viewing an earlier round. The pipeline, verdicts and timeline below are that
-              round's; the Inspector gate, deliveries and every recovery action are always the
-              live run's.
-            </p>
+          {/* Said under the scrubber rather than only in a tooltip: a hover-only fact is
+              unreachable on a touch device. */}
+          {roundContextView && (
+            <div className="wf-run-context">
+              {/* The live region is the clauses, not the whole line: including the
+                  disclosure would announce both paragraphs the moment it opened. */}
+              <span className="wf-run-context-state" role="status">
+                {roundContextView.snapshot && (
+                  <span className="wf-run-context-snapshot">Snapshot</span>
+                )}
+                {roundContextView.clauses.map((clause, index) => (
+                  <Fragment key={clause}>
+                    {(index > 0 || roundContextView.snapshot) && (
+                      <span className="wf-run-context-sep" aria-hidden>·</span>
+                    )}
+                    <span>{clause}</span>
+                  </Fragment>
+                ))}
+              </span>
+              <details className="wf-run-disclose" ref={contextDiscloseRef}>
+                <Tooltip label="Why this round reads the way it does">
+                  <summary role="button" aria-label="Explain this round">Why?</summary>
+                </Tooltip>
+                <div className="wf-run-disclose-pop">
+                  {roundContextView.sections.map((section) => (
+                    <Fragment key={section.title}>
+                      <p className="wf-run-disclose-title">{section.title}</p>
+                      <p>{section.body}</p>
+                    </Fragment>
+                  ))}
+                  {liveRoundSubmissionId && (
+                    <Tooltip
+                      label={`Leave this snapshot and read ${roundContextView.liveLabel}, which is still running`}
+                    >
+                      <button
+                        type="button"
+                        className="wf-run-disclose-go"
+                        onClick={() => selectRound(liveRoundSubmissionId)}
+                      >
+                        {`Go to ${roundContextView.liveLabel}, the live round`}
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
+              </details>
+            </div>
           )}
         </section>
       )}
@@ -3995,7 +4038,7 @@ export function WorkflowRunView({
               : previous ? checkOutcomeOf(previous)?.status ?? null : null;
           }}
           inherited={inherited}
-          onOpenRound={onRound}
+          onOpenRound={selectRound}
           actionWaitFor={(nodeId) => {
             // The attempt's OWN durable state, not `summary.actionWait`. A repair round can
             // run several actions in turn and the summary carries one; scrubbing to an

@@ -24,6 +24,8 @@ import {
   nodeStatusesForSubmission,
   runRounds,
   evidenceChipLabel,
+  roundContext,
+  segmentProvenance,
   roundEvidenceCountLabel,
   runRoundGroups,
   segmentProvenanceSentence,
@@ -419,6 +421,79 @@ test("a repair round holding several segments is labelled by evidence, never as 
   assert.match(sentence, /only the\s+stages after it run again/);
   // Segment zero is not a continuation and gets no sentence at all.
   assert.equal(segmentProvenanceSentence(rounds[0]!), null);
+
+  // The line carries the short form; its disclosure carries the sentence above.
+  const live = roundContext(rounds, rounds[1]!)!;
+  assert.equal(live.snapshot, false, "the newest segment is the live one");
+  assert.deepEqual(live.clauses, ["no repair round spent"]);
+  assert.deepEqual(live.sections, [{ title: "This evidence", body: sentence }]);
+  assert.equal(live.liveSubmissionId, null, "nowhere to jump when already live");
+
+  const stale = roundContext(rounds, rounds[0]!)!;
+  assert.equal(stale.snapshot, true);
+  assert.deepEqual(stale.clauses, ["Round 1 is live"]);
+  assert.deepEqual(stale.sections.map((section) => section.title), ["This snapshot"]);
+  assert.match(stale.sections[0]!.body, /Inspector gate, deliveries and every recovery action/);
+  // The clause replaced it, so the popover never repeats it.
+  assert.doesNotMatch(stale.sections[0]!.body, /Viewing an earlier round/);
+  assert.equal(stale.liveSubmissionId, "sub-1");
+  assert.equal(stale.liveLabel, "Round 1");
+});
+
+test("one classifier answers provenance long and short, so the two cannot drift", () => {
+  const parent = submission({ id: "sub-0", round: 1, segment: 0 });
+  const preflight = submission({
+    id: "sub-1",
+    round: 1,
+    segment: 1,
+    parentSubmissionId: "sub-0",
+    refinementReason: "evidence_preflight",
+  });
+  const action = submission({
+    id: "sub-2",
+    round: 1,
+    segment: 2,
+    parentSubmissionId: "sub-1",
+    continuationNodeId: ACTION,
+    continuationNodeAttemptId: "att-1",
+  });
+  const rounds = runRounds(
+    detail({ submissions: [parent, preflight, action] }),
+    (nodeId) => nodeId === ACTION ? "Tidy the workspace" : null,
+  );
+
+  for (const round of rounds) {
+    const provenance = segmentProvenance(round);
+    if (round.segment === 0) {
+      assert.equal(provenance, null, "segment zero is not a continuation");
+      assert.equal(segmentProvenanceSentence(round), null);
+      // Segment zero still has a line here, because it is a snapshot of a three-segment round.
+      assert.equal(
+        roundContext(rounds, round)?.sections.some((section) => section.title === "This evidence"),
+        false,
+      );
+      continue;
+    }
+    assert.ok(provenance, `segment ${round.segment} should classify`);
+    assert.ok(provenance.sentence.length > provenance.clause.length, "the clause is the short reading");
+    assert.equal(segmentProvenanceSentence(round), provenance.sentence);
+    const context = roundContext(rounds, round)!;
+    assert.ok(
+      context.clauses.includes(provenance.clause),
+      `round ${round.segment} line should print ${provenance.clause}`,
+    );
+    assert.equal(
+      context.sections.find((section) => section.title === "This evidence")?.body,
+      provenance.sentence,
+    );
+  }
+});
+
+test("a live round with nothing to explain renders no context line at all", () => {
+  const only = submission({ id: "sub-0", round: 1, segment: 0 });
+  const rounds = runRounds(detail({ submissions: [only] }));
+  assert.equal(roundContext(rounds, rounds[0]!), null);
+  assert.equal(roundContext(rounds, null), null, "no selection is not a snapshot");
 });
 
 test("a verified terminal pull request segment is shipping completion, not evidence repair", () => {
@@ -472,6 +547,10 @@ test("a verified terminal pull request segment is shipping completion, not evide
   assert.equal(evidenceChipLabel(shipping), "verified shipping");
   assert.equal(roundEvidenceCountLabel(runRoundGroups(rounds)[0]!), "review + shipping");
   assert.match(segmentProvenanceSentence(shipping) ?? "", /reached End without another evidence review/);
+  // Shipping is not a refinement, so it does not get the repair-round clause.
+  const shippingContext = roundContext(rounds, shipping)!;
+  assert.deepEqual(shippingContext.clauses, ["verified shipping, no further review"]);
+  assert.equal(shippingContext.sections[0]!.title, "This evidence");
 
   const warned = {
     ...completed,

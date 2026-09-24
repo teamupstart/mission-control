@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Round context without the banners</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --page: #ffffff;
+  --ink: #1a1d23;
+  --ink-soft: #4d5663;
+  --rule: #e2e6ec;
+  --panel: #f6f8fa;
+  --accent: #1f6feb;
+  --code: #eef1f5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0e1116;
+    --ink: #e7ebf1;
+    --ink-soft: #939eae;
+    --rule: #232a33;
+    --panel: #14181e;
+    --accent: #4a9eff;
+    --code: #171c23;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 15px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main { max-width: 860px; margin: 0 auto; padding: 48px 24px 120px; }
+
+h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.015em; }
+h2 { font-size: 21px; margin: 44px 0 12px; padding-top: 18px; border-top: 1px solid var(--rule); }
+h3 { font-size: 16px; margin: 28px 0 8px; }
+p { margin: 0 0 14px; }
+strong { font-weight: 650; }
+
+a { color: var(--accent); }
+
+ul, ol { margin: 0 0 14px; padding-left: 22px; }
+li { margin: 0 0 7px; }
+
+blockquote {
+  margin: 0 0 14px;
+  padding: 10px 16px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  color: var(--ink-soft);
+}
+
+blockquote p:last-child { margin: 0; }
+
+code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--code);
+  font: 13px ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+pre { overflow-x: auto; padding: 14px; border-radius: 9px; background: var(--code); }
+pre code { padding: 0; background: none; }
+
+/* Wide content scrolls inside its own container so the page body never scrolls sideways. */
+.table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: 9px; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { padding: 9px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+th { background: var(--panel); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-soft); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; font-weight: 600; }
+
+.plan-meta { margin: 0 0 32px; color: var(--ink-soft); font-size: 13px; }
+.plan-meta code { font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+<p class="plan-meta">
+  A rendering of <code>docs/plans/round-context-disclosure/plan.md</code>. The interactive
+  mockups are <code>docs/plans/round-context-disclosure/mockups.html</code>.
+</p>
+<h1>Round context without the banners</h1>
+<h2>The problem</h2>
+<p>A workflow run scrubbed onto an earlier round draws two full-width amber panels between the
+round scrubber and the pipeline:</p>
+<blockquote>
+<p>Evidence 2 of round 2, captured to repair evidence preflight gaps. This refinement does not
+spend a Persona repair round.</p>
+</blockquote>
+<blockquote>
+<p>Viewing an earlier round. The pipeline, verdicts and timeline below are that round&#39;s; the
+Inspector gate, deliveries and every recovery action are always the live run&#39;s.</p>
+</blockquote>
+<p>They come from <code>segmentProvenanceSentence</code> in <code>src/web/workflows/run-model.ts</code> and the
+<code>.wf-run-stale</code> paragraph in <code>src/web/workflows/WorkflowRuns.tsx</code>.</p>
+<p>Three problems, in the order they cost a reader something.</p>
+<p><strong>Most of it is already on screen.</strong> &quot;Evidence 2 of round 2&quot; is the pressed round tile
+(<code>Round 2</code>) plus the pressed tray chip (<code>evidence 2</code>), read back as a sentence. &quot;Viewing an
+earlier round&quot; is the fact that the pressed tile is not the last one. Exactly two clauses are
+new: this refinement spent no repair round, and the Inspector gate, deliveries and recovery
+actions stay live while everything else on the page is a snapshot.</p>
+<p><strong>It is expensive.</strong> Measured in a browser at 1360px, the rounds block is <strong>239px</strong> tall with
+both panels and <strong>140px</strong> without them. The banners are 41% of the run&#39;s most valuable
+vertical space, and the pipeline is what that space is for.</p>
+<p><strong>It is the wrong colour.</strong> Both panels are <code>--attention</code> amber, which everywhere else in the
+app means this needs you. Neither is actionable.</p>
+<h2>Mockups</h2>
+<p><code>docs/plans/round-context-disclosure/mockups.html</code> renders today&#39;s surface and four
+alternatives using the product&#39;s own stylesheet and markup, so each one shows what would
+actually ship. Every disclosure in the page is live; open the file and click.</p>
+<p>Each option keeps every sentence and puts the explanation behind a click. None of them delete
+a fact.</p>
+<h3>A. One context line, one disclosure</h3>
+<p>The four facts collapse to a single muted line under the tray, <code>Snapshot · round 3 is live · no repair round spent</code>, followed by a <code>Why?</code> pill. The pill opens a popover carrying both
+sentences verbatim and a <code>Go to round 3</code> button.</p>
+<p>Measured: <strong>168px</strong>, saving 71px (30%).</p>
+<p>The line keeps <code>role=&quot;status&quot;</code>, so the state is still announced when the selection changes.
+Only the explanation moves behind the click, never the state itself.</p>
+<h3>B. The mark rides the thing it describes</h3>
+<p>No extra row at all. The selected evidence chip grows a <code>?</code> mark pinned to its corner, and the
+popover opens from there. The live round tile wears a green <code>● LIVE</code> mark, which answers
+&quot;which round is the live one&quot; positively instead of telling the reader which one is not.</p>
+<p>Measured: <strong>140px</strong>, saving 99px (41%).</p>
+<p>The disclosure is a sibling of the chip&#39;s button, never a child: the chip is a <code>&lt;button&gt;</code>, and
+a <code>&lt;details&gt;</code> nested in one is invalid markup and unreachable by keyboard.</p>
+<p>This is the largest saving and the weakest discoverability. Nothing announces the snapshot
+state to a screen reader once the selection settles, and a 9px <code>?</code> is easy to miss.</p>
+<h3>C. Two pills on the scrubber&#39;s own line</h3>
+<p>The state becomes two right-aligned pills sharing the row the scrubber already occupies:
+<code>Snapshot</code> in amber and <code>Free refinement</code> in green. Each opens only its own sentence, so a
+reader who wants one fact does not read the other.</p>
+<p>Measured: <strong>140px</strong>, saving 99px (41%).</p>
+<p>The saving is real but conditional: the scrubber wraps once a run passes roughly six rounds,
+and the pills then land on a line of their own.</p>
+<h3>D. One &quot;About this view&quot; panel</h3>
+<p>A <code>ⓘ About this view</code> control beside a new <code>ROUNDS</code> section heading opens a single panel
+answering every question about the view at once: what is showing, why there is a second
+evidence, what comes from this round, and what is always live.</p>
+<p>Measured: <strong>169px</strong>, saving 70px (29%).</p>
+<p>The smallest saving, and the only shape with room to grow. Inspector-only rounds,
+verified-shipping segments and carried-stage provenance all want a line of explanation here,
+and under today&#39;s design each would arrive as another banner.</p>
+<h2>Comparison</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Rows above the pipeline</th>
+<th>Height</th>
+<th>Snapshot state visible without clicking</th>
+<th>Announced to a screen reader</th>
+<th>Survives a long run</th>
+<th>Room for the next sentence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Today</td>
+<td>2 panels, 3 lines</td>
+<td>239px</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Grows one panel per fact</td>
+<td>Another banner</td>
+</tr>
+<tr>
+<td>A, context line</td>
+<td>1 line</td>
+<td>168px</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Fixed height</td>
+<td>Popover grows, line does not</td>
+</tr>
+<tr>
+<td>B, chip mark</td>
+<td>None</td>
+<td>140px</td>
+<td>Only as the LIVE mark elsewhere</td>
+<td>No</td>
+<td>Fixed height</td>
+<td>Per-chip popover only</td>
+</tr>
+<tr>
+<td>C, scrubber pills</td>
+<td>None, until the scrubber wraps</td>
+<td>140px</td>
+<td>Yes, as two words</td>
+<td>Only if the pill group is a live region</td>
+<td>Wraps past about 6 rounds</td>
+<td>One more pill each time</td>
+</tr>
+<tr>
+<td>D, about panel</td>
+<td>1 heading row</td>
+<td>169px</td>
+<td>Only as the LIVE mark elsewhere</td>
+<td>No</td>
+<td>Fixed height</td>
+<td>Another row in one panel</td>
+</tr>
+</tbody></table></div>
+<h2>Decision</h2>
+<p><strong>Option A shipped.</strong> The LIVE mark from B was not part of that decision and is still
+available as an independent follow-up; the context line names the live round in words
+(<code>Round 3 is live</code>), which covers the same question from the other side.</p>
+<h2>Recommendation as written before the decision</h2>
+<p><strong>A, with B&#39;s LIVE mark on the live round tile.</strong></p>
+<p>A keeps the one thing a banner is genuinely good at, a state that is announced and cannot be
+missed, while dropping it from three lines to one and from alarm amber to muted text. B&#39;s mark
+is nearly free and answers the question a reader actually has once they know they are not on
+the live round. D is the better shape if more per-round explanation is coming, and it can be
+layered on later without undoing A.</p>
+<p>Not mocked: moving the sentences into the existing chip tooltips alone. They are already there
+(<code>Tooltip</code> wraps every tile and chip in <code>WorkflowRuns.tsx</code>). A hover-only fact is unreachable
+on a touch device and invisible to anyone who does not hover, which is what makes a click
+target the ask rather than a tooltip.</p>
+<h2>What option A actually touched</h2>
+<ul>
+<li><code>src/web/workflows/run-model.ts</code>: added <code>roundContext</code>, which returns the short <code>clauses</code>
+the line prints and the full <code>sections</code> the popover opens, built in one pass so the two
+cannot drift into different orders or different claims. <code>segmentProvenance</code> classifies a
+segment ONCE and returns both readings of it, long and short;
+<code>segmentProvenanceSentence</code> is now a projection of that rather than a second classifier,
+and still feeds both the popover and the tray chip tooltips.</li>
+<li><code>src/web/workflows/WorkflowRuns.tsx</code>: <code>.wf-run-notice</code> (provenance) and <code>.wf-run-stale</code> are
+replaced by one <code>.wf-run-context</code> line carrying a <code>&lt;details&gt;</code> disclosure. <code>role=&quot;status&quot;</code>
+sits on the clause group rather than on the whole line, so scrubbing to another round is
+still announced while opening the disclosure does not read both paragraphs aloud. The four
+other <code>.wf-run-notice</code> call sites on this page are unrelated and untouched.</li>
+<li><code>src/web/styles.css</code>: added <code>.wf-run-context</code> and the <code>.wf-run-disclose</code> popover, and
+registered that popover in the <code>.is-desktop</code> no-drag rule. Deleted <code>.wf-run-stale</code>.</li>
+<li><code>test/session-action-run-render.test.ts</code>: focused cases for <code>roundContext</code>, covering the
+live round, the scrubbed-back snapshot, and the common case that renders no line at all.</li>
+<li><code>test/workflow-runs-render.test.ts</code>: the assertions on <code>Viewing an earlier round</code> now pin
+the new line, plus the regression that the live round says nothing about itself.</li>
+<li><code>e2e/specs/workflow-round-scrubber.spec.ts</code>: the collapsed line, the sentences being
+hidden until <code>Why?</code> is clicked, the popover&#39;s content and ordering, the jump back to the
+live round and the popover closing behind it, the measured claim that the line is shorter
+than one round tile, and a narrow-viewport check that the popover stays inside the window.</li>
+<li><code>e2e/specs/workflow-session-action-run.spec.ts</code> and
+<code>e2e/specs/workflow-session-action-evidence.spec.ts</code>: the continuation provenance now reads
+from the line and its disclosure rather than from the removed banner.</li>
+</ul>
+<p><code>expectContentClearsBorder</code> does not apply: the disclosure is a popover anchored in the page,
+not a modal.</p>
+<p>Two defects the existing suite caught rather than a reviewer:</p>
+<ul>
+<li><code>test/desktop-drag-region.test.ts</code> refused the popover as an unregistered floating layer.
+In the desktop shell the macOS titlebar drag region would have eaten its clicks, and this
+popover holds the only copy of both the explanation and the button back to the live round.</li>
+<li><code>test/tooltip-coverage.test.ts</code> refused the jump button for having no hover description.</li>
+</ul>
+<p>Both are fixed. They are recorded here because neither was visible in the mockups: a mockup
+renders in a browser tab, not in the Electron shell, and it has no tooltip contract.</p>
+<p>Two more the mockups could not have shown, because a mockup has no state that outlives a
+click:</p>
+<ul>
+<li>The <code>&lt;details&gt;</code> survives a round change, so taking the jump button left the popover open
+over the pipeline, re-explaining the round the reader had just left. The button now closes
+its own disclosure, the way the pipeline&#39;s item menus close on a chosen item.</li>
+<li><code>role=&quot;status&quot;</code> on the whole line meant opening the disclosure read both paragraphs aloud,
+which is the opposite of putting the explanation behind a click. The live region is now the
+clause group only.</li>
+</ul>
+<p>Two the review round found, both real:</p>
+<ul>
+<li><strong>The disclosure closed on one route out of four.</strong> Closing it from the popover&#39;s own jump
+button covered only the path that starts inside the popover. A round tile, an evidence chip
+and a carried stage&#39;s provenance link all change the same selection from outside it, and
+each left a stale explanation standing over a round it was not describing. All four now go
+through one <code>selectRound</code> boundary that closes the disclosure first, so a fifth route
+cannot be added without it. The e2e spec checks each route from a freshly opened
+disclosure, because a route that closed nothing would otherwise be covered by whichever
+route ran before it.</li>
+<li><strong>Provenance was classified twice.</strong> The compact clause decided &quot;is this verified shipping&quot;
+independently of the sentence, so a new provenance case added to one and missed in the
+other would put a collapsed line on screen contradicting the disclosure it opens, which is
+the exact inconsistency <code>roundContext</code> exists to prevent. One classifier now returns both
+readings.</li>
+</ul>
+<h2>Decisions resolved during implementation</h2>
+<ol>
+<li><strong>Which option</strong>: A, as instructed.</li>
+<li><strong>The jump button</strong>: kept. It reads <code>Go to Round 3, the live round</code>, and it is the one
+piece of new behavior here rather than a restatement. A reader who has just learned they
+are on a snapshot should not have to work out which tile is the live one.</li>
+<li><strong>The LIVE mark</strong>: not shipped. It belonged to option B and was never a standalone
+decision the human made.</li>
+</ol>
+<h2>Still open</h2>
+<ul>
+<li>Whether B&#39;s <code>● LIVE</code> mark on the live round tile should follow. It is independent of this
+change and would not undo it.</li>
+</ul>
+<h2>Status</h2>
+<p>Implemented. The mockups stay as the record of what was compared and why A won.</p>
+</main>
+</body>
+</html>

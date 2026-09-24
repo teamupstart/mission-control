@@ -2075,15 +2075,110 @@ button.wf-run-version:focus-visible {
   line-height: 1.35;
 }
 
-.wf-run-stale {
+/* Deliberately not a panel and not `--attention`: nothing this line says is actionable, and
+   that colour means "this needs you" everywhere else. Only `Snapshot` below keeps it. */
+.wf-run-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--attention) 45%, var(--border));
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--attention) 9%, var(--panel));
-  padding: 9px 11px;
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.5;
+}
+
+/* Carries the line's `role="status"`, so it lays out its own clauses. */
+.wf-run-context-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf-run-context-sep { color: var(--border); }
+.wf-run-context-snapshot { color: var(--attention); }
+
+/* Relative on the `<details>` rather than the line, so the popover anchors to the control
+   that opened it and stays put when the line wraps. */
+.wf-run-disclose { position: relative; }
+
+.wf-run-disclose > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 9px;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.wf-run-disclose > summary::-webkit-details-marker { display: none; }
+
+.wf-run-disclose > summary:hover {
+  border-color: var(--working);
+  color: var(--fg);
+}
+
+.wf-run-disclose > summary:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.wf-run-disclose[open] > summary {
+  border-color: var(--working);
+  color: var(--fg);
+}
+
+/* Above the pipeline, which it overlaps when it opens. */
+.wf-run-disclose-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 9px;
+  width: min(360px, 78vw);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.wf-run-disclose-pop p { margin: 0; }
+
+.wf-run-disclose-title {
+  color: var(--dim);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.wf-run-disclose-go {
+  justify-self: start;
+  border: 1px solid color-mix(in srgb, var(--working) 45%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--working) 10%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.wf-run-disclose-go:hover { border-color: var(--working); }
+
+/* This stylesheet has no global `:focus-visible`; every control declares its own. */
+.wf-run-disclose-go:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 
 .wf-run-section {
@@ -3744,7 +3839,10 @@ body {
    where Archive and Re-import live now, and the chip popover is where the provider and model
    selects live. An eaten click there is an action with no other route to it. */
 .is-desktop .lib-menu-pop,
-.is-desktop .lib-chip-pop {
+.is-desktop .lib-chip-pop,
+/* The round context line's `Why?` disclosure. It holds the only copy of the evidence
+   explanation and of the button back to the live round. */
+.is-desktop .wf-run-disclose-pop {
   -webkit-app-region: no-drag;
 }
 

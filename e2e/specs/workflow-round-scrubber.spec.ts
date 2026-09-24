@@ -310,10 +310,62 @@ test("a round is one tile however many times it captured evidence", async ({
   await chips.nth(6).click();
   await expect(chips.nth(6)).toHaveAttribute("aria-pressed", "true");
   await expect(chips.last()).toHaveAttribute("aria-pressed", "false");
-  await expect(dashboard.locator(".wf-run-notice")).toContainText("Evidence 7 of round 2");
-  await expect(dashboard.locator(".wf-run-notice"))
-    .toContainText("does not spend a Persona repair round");
+  const context = dashboard.locator(".wf-run-context");
+  await expect(context).toContainText("Snapshot");
+  await expect(context).toContainText("Round 3 is live");
+  await expect(context).toContainText("no repair round spent");
+  // The panels themselves are gone, not restyled.
+  await expect(dashboard.locator(".wf-run-stale")).toHaveCount(0);
+
+  // A closed `<details>` still renders its children, so only a browser can tell hidden from
+  // absent here.
+  const why = dashboard.getByRole("button", { name: "Explain this round" });
+  await expect(why).toBeVisible();
+  const disclosed = dashboard.locator(".wf-run-disclose-pop");
+  await expect(disclosed).toBeHidden();
   await shoot(dashboard, dashboard.locator(".wf-run-rounds"), "02-evidence-selected");
+
+  // Against a tile rather than a pixel budget, so a font or padding change is not a failure.
+  const lineBox = (await context.boundingBox())!;
+  const tileHeight = (await tileOf(2).boundingBox())!.height;
+  expect(lineBox.height).toBeLessThan(tileHeight);
+
+  await why.click();
+  await expect(disclosed).toBeVisible();
+  await expect(disclosed).toContainText("Evidence 7 of round 2");
+  await expect(disclosed).toContainText("does not spend a Persona repair round");
+  await expect(disclosed).toContainText("Inspector gate, deliveries and every recovery action");
+  // The clause on the line said this already, so the popover never repeats it.
+  await expect(disclosed).not.toContainText("Viewing an earlier round");
+  await shoot(dashboard, dashboard, "02b-context-disclosed");
+
+  // One `<details>` survives every re-render, so each selection route is checked from a
+  // freshly opened disclosure: tile, then chip, then the popover's own jump button below.
+  await expect(disclosed).toBeVisible();
+  await tileOf(1).click();
+  await expect(disclosed).toBeHidden();
+
+  await tileOf(2).click();
+  await chips.nth(6).click();
+  await why.click();
+  await expect(disclosed).toBeVisible();
+  await chips.nth(2).click();
+  await expect(disclosed).toBeHidden();
+
+  await chips.nth(6).click();
+  await why.click();
+  await expect(disclosed).toBeVisible();
+
+  await disclosed.getByRole("button", { name: "Go to Round 3, the live round" }).click();
+  await expect(tileOf(3)).toHaveAttribute("aria-pressed", "true");
+  await expect(disclosed).toBeHidden();
+  await expect(context).not.toContainText("Snapshot");
+  await expect(context).not.toContainText("Round 3 is live");
+
+  // Back to the capture the assertions below are about.
+  await tileOf(2).click();
+  await chips.nth(6).click();
+  await expect(chips.nth(6)).toHaveAttribute("aria-pressed", "true");
   // The TILE STRIP on its own, with a capture selected inside round 2. Framed on the strip
   // rather than the whole panel because the assertions below are about the strip
   // specifically - three tiles, one row, unmoved - and a full-panel frame cannot isolate it.
@@ -332,4 +384,18 @@ test("a round is one tile however many times it captured evidence", async ({
   const widths = await chips.evaluateAll((nodes) =>
     nodes.map((node) => Math.round(node.getBoundingClientRect().width)));
   expect(new Set(widths).size, `chips should share one width, got ${widths.join(",")}`).toBe(1);
+
+  // Last, because it resizes the viewport the assertions above measured in.
+  await dashboard.setViewportSize({ width: 900, height: 720 });
+  await tileOf(2).click();
+  await chips.nth(6).click();
+  const narrowWhy = dashboard.getByRole("button", { name: "Explain this round" });
+  await narrowWhy.click();
+  const narrowPop = dashboard.locator(".wf-run-disclose-pop");
+  await expect(narrowPop).toBeVisible();
+  const popBox = (await narrowPop.boundingBox())!;
+  expect(popBox.x, "the popover should not open off the left edge").toBeGreaterThanOrEqual(0);
+  expect(popBox.x + popBox.width, "the popover should not overflow the viewport")
+    .toBeLessThanOrEqual(900);
+  await expect(narrowPop).toContainText("does not spend a Persona repair round");
 });

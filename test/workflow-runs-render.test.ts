@@ -615,6 +615,9 @@ test("the round scrubber defaults to the latest round and scopes what it says", 
   assert.doesNotMatch(latest, /No risk found/);
   assert.doesNotMatch(latest, /Every path is guarded/);
   assert.match(latest, /Passed 0/);
+  // The live round says nothing about itself.
+  assert.doesNotMatch(latest, /wf-run-context-snapshot/);
+  assert.doesNotMatch(latest, /Explain this round/);
   assert.doesNotMatch(latest, /Viewing an earlier round/);
   /*
    * The change round 1 asked for IS still on screen at round 2, and that is the whole point of
@@ -638,7 +641,12 @@ test("the round scrubber defaults to the latest round and scopes what it says", 
   assert.match(earlier, /Passed 1/);
   assert.doesNotMatch(earlier, /No risk found/);
   assert.doesNotMatch(earlier, /Every path is guarded/);
-  assert.match(earlier, /Viewing an earlier round/);
+  // The state stays on screen; the sentence explaining it moved behind the disclosure.
+  assert.match(earlier, /wf-run-context-snapshot/);
+  assert.match(earlier, /Round 2 is live/);
+  assert.match(earlier, /Explain this round/);
+  assert.match(earlier, /Go to Round 2, the live round/);
+  assert.doesNotMatch(earlier, /Viewing an earlier round/);
   // The join packet is that round's receipts, named as its stage rather than as a node id.
   assert.match(earlier, /1 of 2 reviewers reported/);
   assertNoGraphIds(earlier);

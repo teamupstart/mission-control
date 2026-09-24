@@ -1,0 +1,4564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Round context without the banners - mockups</title>
+<style>
+/* ====================================================================================
+   The product's own rules, extracted verbatim from src/web/styles.css so these mockups
+   render exactly as the app does. Comments stripped; nothing else changed.
+   ==================================================================================== */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  
+  --dim: #7c8798;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --exited: #707a88;
+  --neutral: #8b94a3;
+
+  
+  --select: #35c08a;
+
+  
+  --find: #e3b341;
+
+  
+
+  
+  --purple: #a371f7;
+
+  
+  --foreman: var(--purple);
+
+  
+  --held: var(--purple);
+
+  
+  --syntax-type: #d97757;
+
+  --pr-open: #3fb950;
+  --pr-merged: var(--purple);
+
+  
+  --prio-low: var(--dim);
+  --prio-med: var(--working);
+  --prio-high: var(--attention);
+  --prio-blocker: var(--danger);
+
+  
+  --cost: var(--purple);
+
+  
+  --board-col-wide: 520px;
+
+  --radius: 13px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body.driver-active .driver-active-element:not(#driver-dummy-element),
+body.driver-active [aria-controls="driver-popover-content"]:not(#driver-dummy-element) {
+  position: relative !important;
+  z-index: 10001 !important;
+  -webkit-app-region: no-drag;
+  outline: 2px solid var(--attention) !important;
+  outline-offset: 8px !important;
+  border-radius: 8px !important;
+  filter: brightness(1.2) saturate(1.04);
+}
+
+body.driver-active .board-detail.driver-active-element:not(#driver-dummy-element) {
+  outline-offset: -2px !important;
+}
+
+html[data-mc-tour-session-tile="true"]
+  body.driver-active
+  .board-col:has(.mc-tour-task)
+  > .board-col-head {
+  position: relative;
+  z-index: 10001;
+  -webkit-app-region: no-drag;
+  filter: brightness(1.2) saturate(1.04);
+}
+
+html[data-mc-tour-review="true"] .driver-overlay,
+html[data-mc-tour-review="true"] .driver-overlay *,
+html:has([role="dialog"][aria-label="Review request"]) .driver-overlay,
+html:has([role="dialog"][aria-label="Review request"]) .driver-overlay * {
+  pointer-events: none !important;
+}
+
+html:has([role="dialog"][aria-label="Review request"]) .modal-backdrop,
+html:has([role="dialog"][aria-label="Review request"]) .modal-backdrop * {
+  pointer-events: auto !important;
+}
+
+html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
+  opacity: 0 !important;
+}
+
+.workflow-chip,
+.workflow-bind-chip {
+  border: 1px solid color-mix(in srgb, var(--working) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--working) 9%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.workflow-bind-chip.armed {
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 18%, var(--panel));
+  color: var(--working);
+  font-weight: 600;
+}
+
+.workflow-bind-chip.armed .wbc-name {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.workflow-chip:hover,
+.workflow-bind-chip:hover {
+  border-color: var(--working);
+}
+
+.workflow-chip-repo {
+  color: var(--muted);
+  display: inline-block;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.workflow-running { color: var(--working); }
+
+.workflow-waiting { color: var(--attention); }
+
+.workflow-blocked,
+.workflow-failed { color: var(--danger); }
+
+.workflow-passed { color: var(--idle); }
+
+.workflow-stopped {
+  color: var(--exited);
+  border-color: var(--border-soft);
+  background: color-mix(in srgb, var(--exited) 7%, var(--panel));
+}
+
+.wf-status-explained {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
+  text-underline-offset: 3px;
+}
+
+.wf-status-explained:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.workflow-binding-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.workflow-binding-dialog > p,
+.workflow-binding-dialog > small {
+  color: var(--muted);
+}
+
+.workflow-binding-dialog label {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workflow-binding-dialog select,
+.workflow-binding-dialog input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 10px;
+}
+
+.workflow-binding-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+
+.workflow-binding-modes label:last-child {
+  grid-column: 1 / -1;
+}
+
+.workflow-binding-session {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px;
+}
+
+.workflow-binding-session div {
+  min-width: 0;
+}
+
+.workflow-binding-session dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workflow-binding-session dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-binding-existing {
+  border-left: 3px solid var(--working);
+  padding-left: 10px;
+}
+
+.workflow-version-bind {
+  margin: 0 0 10px auto;
+}
+
+.workflow-runs {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.wf-run-rail {
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+}
+
+.wf-run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 9px;
+}
+
+.wf-run-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.wf-run-chip:hover {
+  border-color: var(--working);
+  color: var(--fg);
+}
+
+.wf-run-chip.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 14%, var(--panel));
+  color: var(--fg);
+}
+
+.wf-run-filters {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.wf-run-filters label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-filters input,
+.wf-run-filters select {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  color: var(--fg);
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.wf-run-empty-filter {
+  padding: 18px 10px;
+  color: var(--muted);
+}
+
+.wf-run-row {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  width: 100%;
+  margin-bottom: 7px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg);
+  padding: 10px;
+  text-align: left;
+}
+
+.wf-run-row:hover,
+.wf-run-row.active {
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+.wf-run-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wf-run-row-session,
+.wf-run-row-repo,
+.wf-run-row-gate,
+.wf-run-row small {
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-row-why {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg));
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-repo {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.wf-run-version {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: transparent;
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+
+button.wf-run-version {
+  cursor: pointer;
+}
+
+button.wf-run-version:hover:not(:disabled),
+button.wf-run-version:focus-visible {
+  border-color: var(--working);
+  color: var(--working);
+}
+
+.wf-run-more {
+  width: 100%;
+}
+
+.wf-run-reader {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.wf-run-detail {
+  display: grid;
+  gap: 16px;
+}
+
+.wf-run-detail > *,
+.wf-run-section > *,
+.wf-run-card > *,
+.wf-run-head > * {
+  min-width: 0;
+}
+
+.wf-persona-directive-head .workflow-eyebrow {
+  margin: 0 0 6px;
+  color: var(--attention);
+}
+
+.wf-persona-directive-actions .btn-ghost { margin-left: auto; }
+
+.wf-persona-directive-actions .btn-danger-ghost + .btn-ghost { margin-left: 0; }
+
+.btn.wf-persona-directive-save {
+  color: #1d1305;
+  border-color: var(--attention);
+  background: var(--attention);
+  font-weight: 700;
+}
+
+.btn.wf-persona-directive-save:hover:not(:disabled) {
+  color: #1d1305;
+  border-color: color-mix(in oklab, var(--attention) 88%, #fff);
+  background: color-mix(in oklab, var(--attention) 88%, #fff);
+}
+
+.wf-run-head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wf-run-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  margin-right: auto;
+}
+
+.wf-run-identity h3,
+.wf-run-identity p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-identity small {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-run-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wf-run-why {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+.wf-run-why b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.wf-run-granted,
+.wf-run-refused,
+.wf-run-refused-claim {
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 66ch;
+  padding: 1px 0 3px;
+}
+
+.wf-run-granted {
+  color: var(--working);
+  font-weight: 600;
+}
+
+.wf-run-refused {
+  color: var(--attention);
+}
+
+.wf-run-refused-claim {
+  color: var(--muted);
+}
+
+.wf-run-posture {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--working) 30%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--working) 7%, var(--panel));
+  padding: 10px 14px;
+}
+
+.wf-run-posture p {
+  margin: 0;
+}
+
+.wf-run-posture-eyebrow {
+  color: var(--working);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wf-run-posture-text {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-posture-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: wf-posture-pulse 2s infinite;
+}
+
+.wf-run-posture-yours {
+  border-color: color-mix(in srgb, var(--attention) 40%, var(--border));
+  background: color-mix(in srgb, var(--attention) 8%, var(--panel));
+}
+
+.wf-run-posture-yours .wf-run-posture-eyebrow {
+  color: var(--attention);
+}
+
+.wf-run-posture-yours .wf-run-posture-dot {
+  background: var(--attention);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-run-posture-dot {
+    animation: none;
+  }
+}
+
+.wf-run-override-tag {
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 4px;
+  color: var(--attention);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wf-run-session {
+  border: 0;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.wf-run-session:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.wf-run-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-run-actions-danger {
+  padding-left: 12px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.wf-run-rounds {
+  display: grid;
+  gap: 8px;
+}
+
+.wf-run-scrubber {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-run-round {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  justify-items: start;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  font: inherit;
+  padding: 7px 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wf-run-round:hover {
+  border-color: var(--working);
+}
+
+.wf-run-round.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 12%, var(--panel));
+}
+
+.wf-run-round-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.wf-run-round-name {
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.wf-run-round-state {
+  font-size: 10px;
+}
+
+.wf-run-round-count {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.wf-run-round-failed {
+  border: 1px solid color-mix(in srgb, currentColor 45%, var(--border));
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wf-run-tray {
+  display: grid;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--working) 34%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--working) 6%, var(--panel));
+  padding: 9px 11px;
+}
+
+.wf-run-tray-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wf-run-tray-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 5px;
+}
+
+.wf-run-tray-chip {
+  display: grid;
+  gap: 1px;
+  justify-items: start;
+  align-content: start;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  font: inherit;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wf-run-tray-chip:hover {
+  border-color: var(--working);
+}
+
+.wf-run-tray-chip.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 14%, var(--panel));
+}
+
+.wf-run-tray-chip-name {
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.wf-run-tray-chip-state {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.wf-run-stale {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 45%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--attention) 9%, var(--panel));
+  padding: 9px 11px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.wf-run-section {
+  display: grid;
+  gap: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.wf-run-section > h4,
+.wf-run-section > h5,
+.wf-run-section-head h4 {
+  margin: 0;
+}
+
+.wf-run-section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wf-run-section-head h4 {
+  margin-right: auto;
+}
+
+.wf-run-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.wf-run-record .workflow-tabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.wf-run-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.workflow-tabs button.active .wf-run-tab-count {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--working) 30%, var(--panel));
+}
+
+.wf-run-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.wf-run-pane > * {
+  min-width: 0;
+}
+
+.wf-run-worklist-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.wf-run-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 9px;
+}
+
+.wf-run-stat {
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.wf-run-stat-key {
+  display: block;
+  color: var(--dim);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wf-run-stat-value {
+  display: block;
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-stat-value.is-ok { color: var(--idle); }
+
+.wf-run-stat-value.is-alert { color: var(--attention); }
+
+.wf-run-ledger table {
+  font-size: 12px;
+}
+
+.wf-run-ledger td {
+  vertical-align: middle;
+}
+
+.wf-run-ledger code {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wf-run-ledger-toggle {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.wf-run-ledger-alert > td {
+  padding-top: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 2px solid var(--danger);
+  background: color-mix(in oklab, var(--danger) 7%, transparent);
+}
+
+.wf-run-ledger-detail > td {
+  padding-top: 0;
+  background: var(--panel-2);
+}
+
+.wf-run-ledger-detail pre {
+  max-height: 340px;
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11.5px;
+}
+
+.wf-run-disclosure {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.wf-run-disclosure > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.wf-run-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wf-run-disclosure > summary::before {
+  content: "▸";
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.wf-run-disclosure[open] > summary::before {
+  content: "▾";
+}
+
+.wf-run-disclosure-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.wf-run-disclosure-meta {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wf-run-disclosure-body {
+  padding: 11px 12px 12px;
+  font-size: 12.5px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wf-run-disclosure-body p,
+.wf-run-disclosure-body li {
+  font-size: 12.5px;
+}
+
+.wf-run-disclosure-body small {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.wf-run-disclosure-body > * + * {
+  margin-top: 8px;
+}
+
+.wf-run-disclosure-body pre {
+  max-height: 340px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11.5px;
+}
+
+.wf-run-decision {
+  background: var(--panel);
+}
+
+.wf-run-decision + .wf-run-decision {
+  margin-top: 6px;
+}
+
+.wf-run-decision > summary .wf-run-disclosure-title {
+  overflow: hidden;
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wf-run-decision .wf-run-disclosure-body p {
+  white-space: pre-wrap;
+}
+
+.wf-run-lead {
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.wf-run-lead-text {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.wf-run-chiprow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.wf-evidence-head,
+.wf-run-subhead {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wf-evidence-claims,
+.wf-run-rowlist {
+  display: grid;
+  gap: 4px;
+}
+
+.wf-evidence-claim,
+.wf-evidence-criterion,
+.wf-run-rowlist-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-evidence-claim-body,
+.wf-evidence-criterion-body,
+.wf-run-rowlist-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wf-evidence-claim-text,
+.wf-evidence-criterion-text,
+.wf-run-rowlist-title {
+  font-size: 12.5px;
+}
+
+.wf-evidence-claim-facts,
+.wf-evidence-criterion-facts,
+.wf-run-rowlist-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-evidence-claim-facts code,
+.wf-evidence-criterion-facts code,
+.wf-run-rowlist-facts code {
+  font-size: 9.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-image-preview .wf-run-facts-list {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.wf-run-worklist {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.wf-run-worklist > * {
+  min-width: 0;
+}
+
+.wf-run-worklist-rail,
+.wf-run-worklist-detail {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.wf-run-worklist-list {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.wf-run-worklist-detail-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.wf-run-worklist-seg {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-run-worklist-seg button {
+  flex: 1;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-worklist-seg button.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 18%, var(--panel));
+}
+
+.wf-run-worklist-group {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-worklist-rows {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wf-run-worklist-row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  border: 1px solid transparent;
+  
+  border-left: 3px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.wf-run-worklist-row:hover {
+  border-color: var(--border);
+}
+
+.wf-run-worklist-row.active {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel-2));
+}
+
+.wf-run-worklist-row.is-tone-failed { border-left-color: var(--danger); }
+
+.wf-run-worklist-row.is-tone-passed { border-left-color: var(--idle); }
+
+.wf-run-worklist-row.is-tone-waiting { border-left-color: var(--attention); }
+
+.wf-run-worklist-row.is-tone-running { border-left-color: var(--working); }
+
+.wf-run-worklist-row.is-tone-stopped { border-left-color: var(--exited); }
+
+.wf-run-worklist-row-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wf-run-worklist-row-head strong {
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-worklist-row-line {
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-worklist-stalemate {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+}
+
+.wf-run-worklist-stalemate strong {
+  color: var(--attention);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wf-run-worklist-stalemate p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.wf-run-worklist-walk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.wf-run-worklist-walk .wf-run-meta {
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-change.is-open { border-left-color: var(--danger); }
+
+.wf-run-change.is-resolved { border-left-color: var(--idle); }
+
+.wf-run-change.is-unconfirmed { border-left-color: var(--attention); }
+
+.wf-run-change-title {
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-change-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.wf-run-change-acts .btn {
+  font-size: 11.5px;
+  padding: 4px 9px;
+}
+
+.wf-run-card-body h5 {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wf-run-card-body p {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wf-run-change .wf-run-facts-list dd {
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .wf-run-worklist {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wf-run-worklist-list,
+  .wf-run-worklist-detail-body {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+.wf-run-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-card-head strong {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.wf-run-card {
+  display: grid;
+  gap: 8px;
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 12px;
+}
+
+.wf-run-card p,
+.wf-run-card h5 {
+  margin: 0;
+}
+
+.wf-run-card pre,
+.wf-run-context pre,
+.wf-run-packet pre {
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.wf-run-verdict.is-pass { border-left-color: var(--idle); }
+
+.wf-run-verdict.is-fail { border-left-color: var(--danger); }
+
+.wf-run-action { border-left-color: color-mix(in oklab, #a878ff 70%, var(--border)); }
+
+.wf-run-action-pr { display: flex; gap: 4px; align-items: baseline; flex-wrap: wrap; }
+
+.wf-run-action-pr a { font-variant-numeric: tabular-nums; }
+
+.wf-run-check.is-passed { border-left-color: var(--idle); }
+
+.wf-run-check.is-failed { border-left-color: var(--danger); }
+
+.wf-run-check.is-skipped,
+.wf-run-check.is-unavailable { border-left-color: var(--attention); }
+
+.wf-run-check-sentence { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+
+.wf-run-check-output {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.wf-run-delivery.is-delivered { border-left-color: var(--idle); }
+
+.wf-run-delivery.is-uncertain,
+.wf-run-delivery.is-refused { border-left-color: var(--danger); }
+
+.wf-run-finding-row > td:first-child {
+  border-left: 3px solid transparent;
+  padding-left: 7px;
+}
+
+.wf-run-finding-row.is-blocker > td:first-child,
+.wf-run-finding-row.is-major > td:first-child { border-left-color: var(--danger); }
+
+.wf-run-finding-row.is-minor > td:first-child,
+.wf-run-finding-row.is-nit > td:first-child { border-left-color: var(--attention); }
+
+.wf-run-gate-ledgers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.wf-run-gate-ledger {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 76%, transparent);
+}
+
+.wf-run-gate-ledger.is-history {
+  border-left-color: var(--attention);
+  border-left-style: dashed;
+}
+
+.wf-run-gate-ledger h5 {
+  margin: 0 0 9px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.wf-run-gate-fingerprints {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.wf-run-gate-fingerprints li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.wf-run-gate-fingerprints code {
+  max-width: 16ch;
+  overflow: hidden;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-run-recovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wf-run-summary {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wf-run-sentence {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wf-run-meta,
+.wf-run-confidence {
+  color: var(--dim);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.wf-run-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wf-run-code {
+  color: var(--dim);
+  font: 10px var(--mono);
+}
+
+.wf-run-notice {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 60%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel));
+  padding: 12px;
+  line-height: 1.55;
+}
+
+.wf-run-pruned {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 8px;
+  color: var(--attention);
+  font-size: 10.5px;
+  border: 1px solid color-mix(in oklab, var(--attention) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+
+.wf-run-evidence,
+.wf-run-changes,
+.wf-run-decisions {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.wf-run-evidence li,
+.wf-run-decisions li {
+  display: grid;
+  gap: 2px;
+}
+
+.wf-run-evidence span,
+.wf-run-changes p,
+.wf-run-decisions small {
+  color: var(--muted);
+}
+
+.wf-run-evidence li,
+.wf-run-changes li {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wf-run-facts-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 18px;
+  margin: 0;
+}
+
+.wf-run-facts-list > div {
+  min-width: 0;
+}
+
+.wf-run-facts-list dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-facts-list dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-packet summary {
+  cursor: pointer;
+  color: var(--attention);
+  font-size: 11px;
+}
+
+.wf-run-table {
+  overflow-x: auto;
+}
+
+.wf-run-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.wf-run-table th,
+.wf-run-table td {
+  padding: 7px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.wf-run-table th {
+  color: var(--muted);
+}
+
+.wf-run-provenance {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-provenance code {
+  font-size: 11px;
+}
+
+.wf-run-graph {
+  display: grid;
+  gap: 8px;
+}
+
+.wf-run-graph-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-timeline ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.wf-run-timeline li {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 3px 12px;
+}
+
+.wf-run-timeline li strong {
+  font-size: 11.5px;
+}
+
+.wf-run-timeline li span {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-timeline time {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-run-timeline-round + .wf-run-timeline-round {
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wf-run-timeline-round h5 {
+  margin: 0 0 6px;
+}
+
+.wf-run-audit {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.wf-run-audit > summary {
+  padding: 9px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  
+  list-style: none;
+}
+
+.wf-run-audit > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wf-run-audit > summary::before {
+  content: "▸ ";
+  color: var(--dim);
+}
+
+.wf-run-audit[open] > summary::before {
+  content: "▾ ";
+}
+
+.wf-run-audit > summary span {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.wf-run-audit-body {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wf-run-audit-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.wf-run-audit-row dt {
+  flex: none;
+  min-width: 108px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wf-run-audit-row dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-audit-row dd.wf-run-audit-id {
+  color: var(--fg);
+  font: 11px var(--mono);
+}
+
+.wf-run-audit-row dd.wf-run-audit-act {
+  flex: none;
+}
+
+@media (max-width: 900px) {
+  .workflow-runs {
+    grid-template-columns: 1fr;
+  }
+
+  .wf-run-rail {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .wf-run-timeline li {
+    grid-template-columns: 1fr;
+  }
+
+  .wf-run-timeline li span {
+    grid-column: 1;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--sans);
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.is-desktop .modal-backdrop,
+.is-desktop .alert-pop,
+
+.is-desktop .spend-pop,
+
+.is-desktop .ka-pop,
+.is-desktop .combobox-list,
+
+.is-desktop .pal,
+.is-desktop .file-window,
+.is-desktop .workflow-library-sidebar,
+.is-desktop .workflow-builder-right,
+.is-desktop .wf-pipeline-item-menu-pop,
+
+.is-desktop .ctx-menu-pop,
+.is-desktop .ctx-menu-flash,
+
+.is-desktop .open-in-pop,
+
+.is-desktop .launch-pop,
+
+.is-desktop .bl-planner-pop,
+
+.is-desktop .foreman-recommendation-sidecar,
+
+.is-desktop .lib-menu-pop,
+.is-desktop .lib-chip-pop {
+  -webkit-app-region: no-drag;
+}
+
+body.is-pane-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid color-mix(in oklab, var(--working) 28%, var(--border));
+  border-radius: 8px;
+  padding: 5px 11px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-send {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+
+.btn-ghost {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+a.btn {
+  text-decoration: none;
+}
+
+.btn-danger-ghost {
+  color: var(--dim);
+}
+
+.btn-danger-ghost:hover {
+  color: var(--exited);
+  border-color: color-mix(in oklab, #e5534b 55%, var(--border)) !important;
+  background: color-mix(in oklab, #e5534b 12%, var(--panel-2)) !important;
+}
+
+.btn-remedy {
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--border));
+  color: var(--attention);
+}
+
+.btn-remedy:hover:not(:disabled) {
+  border-color: var(--attention) !important;
+}
+
+.btn-danger {
+  color: #fff;
+  background: #c8352c;
+  border-color: #c8352c;
+}
+
+.btn-danger:hover {
+  background: #d94840 !important;
+}
+
+.btn-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-queue.on {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
+}
+
+.btn-count {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 26%, var(--panel));
+  color: var(--fg);
+  font-size: 10.5px;
+  font-weight: 640;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-retro {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, var(--border));
+}
+
+.btn-retro:hover:not(:disabled) {
+  color: var(--purple) !important;
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--purple) 12%, var(--panel-2)) !important;
+}
+
+.btn-retro:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-complete {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+}
+
+.btn-complete:hover:not(:disabled) {
+  color: var(--idle) !important;
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--idle) 12%, var(--panel-2)) !important;
+}
+
+.btn-complete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-interrupt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-reset {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+}
+
+.btn-reset:hover:not(:disabled) {
+  color: var(--attention) !important;
+  border-color: color-mix(in oklab, var(--attention) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--attention) 12%, var(--panel-2)) !important;
+}
+
+.btn-approve {
+  color: #fff;
+  background: #2f9e63;
+  border-color: #2f9e63;
+  font-weight: 600;
+}
+
+.btn-approve:hover:not(:disabled) {
+  background: #37b171 !important;
+  border-color: #37b171 !important;
+}
+
+.btn-reject {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+
+.transcript[data-view="terminal"] .btn-send {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font: 10px/1.6 var(--mono);
+}
+
+.transcript[data-view="terminal"] .btn-send:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  color: var(--fg);
+}
+
+.btn-primary.btn-wait {
+  color: #1a1206;
+  background: color-mix(in oklab, var(--attention) 88%, #402c07);
+  border-color: color-mix(in oklab, var(--attention) 70%, var(--border));
+}
+
+.btn-primary.btn-wait:hover:not(:disabled) {
+  background: var(--attention) !important;
+  color: #1a1206 !important;
+}
+
+.btn-primary {
+  color: #fff;
+  background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+  border-color: color-mix(in oklab, var(--working) 70%, var(--border));
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--working) !important;
+  color: #fff !important;
+}
+
+.btn.danger {
+  color: var(--danger);
+}
+
+.workflow-page {
+  min-width: 0;
+  padding: 4px 0 40px;
+}
+
+.app-console > .workflow-page,
+.app-board > .workflow-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 22px;
+}
+
+.workflow-page-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.workflow-page-head h2,
+.workflow-page-head p,
+.persona-sidebar h3,
+.persona-sidebar p,
+.persona-editor h3 {
+  margin: 0;
+}
+
+.workflow-page-head h2 {
+  margin-top: 2px;
+  font-size: 26px;
+  letter-spacing: -0.025em;
+}
+
+.workflow-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--working);
+}
+
+.workflow-page-blurb {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.workflow-tabs {
+  display: flex;
+  width: max-content;
+  margin: 0 0 14px;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.workflow-tabs button {
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workflow-tabs button.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 16%, var(--panel-2));
+}
+
+.workflow-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg);
+  background: var(--attention);
+}
+
+.workflow-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  min-height: 52vh;
+  padding: 48px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--panel) 80%, transparent);
+}
+
+.workflow-empty h3 {
+  margin: 12px 0 4px;
+  color: var(--fg);
+}
+
+.workflow-empty p {
+  max-width: 560px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.workflow-empty-mark {
+  font-size: 28px;
+  color: var(--working);
+}
+
+.pipelines-run .wf-pipeline-strip {
+  align-items: center;
+}
+
+.workflow-library-sidebar .lib-back-row {
+  padding-inline: 12px;
+}
+
+.lib-work-meta .workflow-eyebrow {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.persona-rail-foot-row .btn {
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.persona-rail-foot-row .btn:first-child {
+  flex: 1;
+}
+
+.wf-action-rail-foot .btn {
+  flex: 1;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.persona-import-source .btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
+.foreman-profile-summary .btn,
+.foreman-profile-links .btn {
+  justify-content: flex-start;
+  color: var(--working);
+}
+
+.workflow-builder {
+  position: relative;
+  display: grid;
+  grid-template-columns: 240px minmax(420px, 1fr) 300px;
+  min-height: calc(100dvh - var(--topbar-h, 88px) - 112px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.workflow-mobile-drawers { display: none; }
+
+.workflow-library-sidebar,
+.workflow-builder-right {
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--panel-2);
+}
+
+.workflow-library-sidebar { border-right: 1px solid var(--border-soft); }
+
+.workflow-builder-right { border-left: 1px solid var(--border-soft); }
+
+.workflow-library-sidebar > header,
+.workflow-builder-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.workflow-library-sidebar > header { justify-content: space-between; }
+
+.workflow-library-sidebar h3,
+.workflow-library-sidebar h4,
+.workflow-library-sidebar p,
+.workflow-builder-toolbar h3,
+.workflow-builder-toolbar p,
+.workflow-properties h3,
+.workflow-properties h4,
+.workflow-version-history h4 { margin: 0; }
+
+.workflow-library-sidebar header p,
+.workflow-palette p,
+.workflow-version-history p {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.workflow-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.workflow-library-list > button,
+.workflow-library-list > .tt-anchor > button,
+.workflow-version-list > button,
+.workflow-version-list > .tt-anchor > button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.workflow-library-list > button.active,
+.workflow-library-list > .tt-anchor > button.active,
+.workflow-version-list > button.active,
+.workflow-version-list > .tt-anchor > button.active {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 11%, var(--panel));
+}
+
+.workflow-library-list span,
+.workflow-version-list span { font-size: 10px; color: var(--dim); }
+
+.workflow-library-list strong {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workflow-library-list > .tt-anchor,
+.workflow-version-list > .tt-anchor { font: inherit; color: inherit; }
+
+.workflow-show-archived { display: flex; align-items: center; gap: 6px; padding: 7px 9px; font-size: 10.5px; color: var(--dim); }
+
+.workflow-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 8px;
+  padding: 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.workflow-palette button,
+.workflow-properties input,
+.workflow-properties textarea {
+  width: 100%;
+  padding: 7px 8px;
+  font: inherit;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.workflow-palette select,
+.workflow-properties select {
+  width: 100%;
+}
+
+.workflow-palette button { text-align: left; cursor: pointer; }
+
+.workflow-palette-note {
+  margin-top: -2px;
+  line-height: 1.5;
+}
+
+.workflow-palette-link {
+  color: var(--working);
+  white-space: nowrap;
+}
+
+.workflow-builder-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 600px;
+  background: var(--bg-2);
+}
+
+.workflow-builder-toolbar { flex-wrap: wrap; background: var(--panel); }
+
+.workflow-builder-toolbar > div:first-child { flex: 1; min-width: 170px; }
+
+.workflow-builder-toolbar h3 { overflow-wrap: anywhere; }
+
+.workflow-builder-toolbar > span { font-size: 10.5px; color: var(--dim); }
+
+.workflow-builder-toolbar > span.is-dirty,
+.workflow-builder-toolbar > span.is-saving { color: var(--attention); }
+
+.workflow-conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--attention);
+  border-bottom: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+
+.workflow-conflict span { flex: 1; }
+
+.workflow-connect-dialog {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 9px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+
+.workflow-connect-dialog h4 { width: 100%; margin: 0; }
+
+.workflow-connect-dialog label { display: grid; gap: 4px; color: var(--muted); font-size: 10.5px; }
+
+.workflow-connect-dialog select { min-width: 170px; }
+
+.workflow-canvas {
+  flex: 1;
+  min-height: 560px;
+  color: var(--fg);
+}
+
+.workflow-canvas.is-compact { height: 250px; min-height: 250px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+
+.workflow-canvas.is-compact > .react-flow { height: 250px !important; }
+
+.workflow-canvas .react-flow__controls button { background: var(--panel); border-color: var(--border); fill: var(--fg); }
+
+.workflow-canvas .react-flow__minimap { background: var(--panel); border: 1px solid var(--border); border-radius: 7px; }
+
+.workflow-canvas .react-flow__edge-text { fill: var(--muted); font-size: 9px; }
+
+.workflow-alignment-guide {
+  position: absolute;
+  z-index: 20;
+  display: block;
+  pointer-events: none;
+  background: var(--attention);
+}
+
+.workflow-alignment-guide.is-vertical {
+  top: -100000px;
+  width: 1px;
+  height: 200000px;
+}
+
+.workflow-alignment-guide.is-horizontal {
+  left: -100000px;
+  width: 200000px;
+  height: 1px;
+}
+
+.workflow-canvas .workflow-edge-fail path { stroke: var(--danger); stroke-dasharray: 7 4; }
+
+.workflow-canvas .workflow-edge-pass path { stroke: var(--working); }
+
+.workflow-canvas .workflow-edge-complete path { stroke: #a878ff; }
+
+.workflow-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  
+  width: 180px;
+  padding: 11px 14px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 5px 18px color-mix(in oklab, black 16%, transparent);
+}
+
+.workflow-node-session { border-color: color-mix(in oklab, #4a9eff 65%, var(--border)); }
+
+.workflow-node-persona { border-color: color-mix(in oklab, var(--working) 60%, var(--border)); }
+
+.workflow-node-all_pass { border-style: double; }
+
+.workflow-node-check {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--attention) 55%, var(--border));
+}
+
+.workflow-node-session_action {
+  border-color: color-mix(in oklab, #a878ff 65%, var(--border));
+  background: color-mix(in oklab, #a878ff 7%, var(--panel));
+}
+
+.workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
+
+.workflow-node-kind {
+  font: 700 9px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--dim);
+}
+
+.workflow-node small { max-width: 180px; color: var(--muted); }
+
+.workflow-node::before {
+  content: "◇";
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.workflow-node-runtime {
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 3px 7px;
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.workflow-runtime-pass .workflow-node,
+.workflow-runtime-completed .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--idle) 65%, transparent);
+}
+
+.workflow-runtime-fail .workflow-node,
+.workflow-runtime-error .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 65%, transparent);
+}
+
+.workflow-runtime-running .workflow-node,
+.workflow-runtime-queued .workflow-node,
+.workflow-runtime-retry_wait .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--working) 65%, transparent);
+}
+
+.workflow-runtime-pass .workflow-node::before,
+.workflow-runtime-completed .workflow-node::before { content: "✓"; color: var(--idle); }
+
+.workflow-runtime-fail .workflow-node::before,
+.workflow-runtime-error .workflow-node::before { content: "!"; color: var(--danger); }
+
+.workflow-node:focus-within { outline: 3px solid var(--working); outline-offset: 3px; }
+
+.workflow-port-label {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  padding: 1px 3px;
+  opacity: 0;
+  color: var(--fg);
+  font: 8px var(--mono);
+  border-radius: 3px;
+  background: var(--panel);
+  pointer-events: none;
+}
+
+.workflow-node:hover .workflow-port-label,
+.workflow-node:focus-within .workflow-port-label,
+.workflow-node:has(.react-flow__handle.connecting) .workflow-port-label { opacity: 1; }
+
+.workflow-port-pass { top: 27%; }
+
+.workflow-port-fail { top: 62%; }
+
+.workflow-port-input { right: auto; left: 8px; top: 46%; transform: translateY(-50%); }
+
+.workflow-port-submitted,
+.workflow-port-complete { top: 46%; transform: translateY(-50%); }
+
+.workflow-properties,
+.workflow-version-history { padding: 13px; border-bottom: 1px solid var(--border-soft); }
+
+.workflow-properties > section,
+.workflow-policy-fields { display: flex; flex-direction: column; gap: 9px; }
+
+.workflow-properties label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--dim); }
+
+.workflow-properties textarea { min-height: 68px; resize: vertical; }
+
+.workflow-validation { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+
+.workflow-validation ul { display: flex; flex-direction: column; gap: 7px; margin: 8px 0 0; padding: 0; list-style: none; }
+
+.workflow-validation li { display: grid; gap: 2px; font-size: 10.5px; line-height: 1.4; color: var(--muted); }
+
+.workflow-diagnostic-message { color: var(--fg); }
+
+.workflow-diagnostic-code { justify-self: start; font: 9px var(--mono); color: var(--dim); }
+
+.workflow-valid { color: #42c977; }
+
+.workflow-edge-list { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+
+.workflow-edge-list ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+
+.workflow-edge-list li { display: grid; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 7px; }
+
+.workflow-edge-list span { overflow-wrap: anywhere; font-size: 10px; line-height: 1.4; color: var(--muted); }
+
+.workflow-edge-list span:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
+
+.workflow-version-list { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+
+.workflow-version-detail { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+
+.workflow-version-detail dl { display: grid; gap: 4px; margin: 0; }
+
+.workflow-version-detail dl div { display: flex; justify-content: space-between; font-size: 10.5px; }
+
+.workflow-version-detail dt { color: var(--dim); }
+
+.workflow-version-detail dd { margin: 0; }
+
+.workflow-version-persona summary { cursor: pointer; font-size: 11px; color: var(--attention); }
+
+.workflow-version-routing { display: grid; gap: 2px; margin: 4px 0; }
+
+.workflow-version-routing p { margin: 0; font-size: 10.5px; color: var(--dim); }
+
+.workflow-version-persona pre { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; font: 10px/1.45 var(--mono); background: var(--bg); border-radius: 6px; }
+
+.workflow-toolbar-group { display: flex; align-items: center; gap: 8px; }
+
+.workflow-toolbar-ship { margin-left: auto; padding-left: 14px; border-left: 1px solid var(--border-soft); }
+
+.wf-pipeline-blockers {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+
+.wf-pipeline-blockers p { margin: 0; color: var(--attention); font-size: 11px; font-weight: 700; }
+
+.wf-pipeline-blockers ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; font-size: 10.5px; line-height: 1.45; }
+
+.wf-pipeline-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  padding: 18px;
+  overflow: hidden;
+}
+
+.wf-pipeline {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 10px;
+  justify-content: center;
+}
+
+.wf-pipeline-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 4px 2px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.wf-pipeline-strip::-webkit-scrollbar { height: 10px; }
+
+.wf-pipeline-strip::-webkit-scrollbar-track { background: transparent; }
+
+.wf-pipeline-strip::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+
+.wf-pipeline-strip::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
+
+.wf-pipeline-slot { display: flex; align-items: stretch; }
+
+.wf-pipeline-seam-slot { display: flex; align-items: stretch; }
+
+.wf-pipeline-repair {
+  margin: 0;
+  padding: 9px 11px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-pipeline-keys { margin: 0; font-size: 10px; line-height: 1.5; color: var(--dim); }
+
+.wf-pipeline-terminus,
+.wf-pipeline-stage {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 8px;
+  width: 232px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.wf-pipeline-terminus {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-self: center;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 6px;
+  width: 176px;
+}
+
+.wf-pipeline-terminus-mark { grid-row: 1; font-size: 15px; color: var(--working); }
+
+.wf-pipeline-terminus:has(.wf-pipeline-status) .wf-pipeline-terminus-mark {
+  grid-row: 1 / span 2;
+}
+
+.wf-pipeline-terminus .wf-pipeline-status { grid-column: 2; justify-self: start; }
+
+.wf-pipeline-terminus-body,
+.wf-pipeline-reviewer-body,
+.wf-pipeline-inspector-body,
+.wf-pipeline-stage-title { display: grid; gap: 2px; min-width: 0; }
+
+.wf-pipeline-inspector {
+  display: grid;
+  
+  grid-template-columns: auto minmax(0, 1fr);
+  align-self: center;
+  
+  align-items: start;
+  column-gap: 8px;
+  row-gap: 6px;
+  
+  flex: none;
+  width: 236px;
+  padding: 9px 10px;
+  border: 1px dashed color-mix(in oklab, var(--border) 70%, var(--dim));
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.wf-pipeline-inspector .wf-pipeline-status { grid-column: 2; justify-self: start; }
+
+.wf-pipeline-inspector-mark { grid-row: 1; margin-top: 1px; font-size: 14px; color: var(--dim); }
+
+.wf-pipeline-inspector-name { display: flex; align-items: center; gap: 6px; }
+
+.wf-pipeline-inspector-sub,
+.wf-pipeline-inspector-detail {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--dim);
+  overflow-wrap: break-word;
+}
+
+.wf-pipeline-inspector-detail { color: var(--muted); }
+
+.wf-pipeline-inspector-fixed,
+.wf-ladder-fixed {
+  flex: none;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.wf-pipeline-terminus-name,
+.wf-pipeline-stage-name,
+.wf-pipeline-inspector-name { font-size: 12.5px; font-weight: 700; overflow-wrap: break-word; }
+
+.wf-pipeline-terminus-sub,
+.wf-pipeline-stage-sub,
+.wf-pipeline-reviewer-meta { font-size: 10px; color: var(--dim); overflow-wrap: break-word; }
+
+.wf-pipeline-terminus:focus-visible,
+.wf-pipeline-stage-head:focus-visible,
+.wf-pipeline-reviewer:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.wf-pipeline-stage-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 6px;
+  border-radius: 8px;
+}
+
+.wf-pipeline-stage-head[draggable="true"] { cursor: grab; }
+
+.wf-pipeline-stage-title { grid-column: 1; }
+
+.wf-pipeline-stage-actions { grid-column: 2; grid-row: 1; }
+
+.wf-pipeline-stage-head .wf-pipeline-status { grid-column: 1; justify-self: start; }
+
+.wf-pipeline-stage.is-dragging,
+.wf-pipeline-reviewer.is-dragging { opacity: 0.45; }
+
+.wf-pipeline-stage.is-drop-target,
+.wf-pipeline-reviewer.is-drop-target { border-color: var(--working); }
+
+.wf-pipeline-stage.has-directive,
+.wf-pipeline-reviewer.has-directive {
+  border-color: color-mix(in srgb, var(--attention) 58%, var(--border));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--attention) 8%, var(--panel-2)),
+    var(--panel-2) 56%
+  );
+}
+
+.wf-pipeline-members { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+
+.wf-pipeline-reviewer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 7px;
+  row-gap: 6px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-pipeline-reviewer-body { grid-column: 1; }
+
+.wf-pipeline-reviewer-actions { grid-column: 2; grid-row: 1; }
+
+.wf-pipeline-reviewer .wf-pipeline-status { grid-column: 1; justify-self: start; }
+
+.wf-pipeline-reviewer-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.wf-pipeline-directive-mark {
+  margin-top: 4px;
+  color: var(--attention);
+  font: 700 8.5px/1.25 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wf-pipeline-reviewer.is-check { border-style: dashed; }
+
+.wf-pipeline-reviewer.is-session_action {
+  border-color: color-mix(in oklab, #a878ff 55%, var(--border));
+  background: color-mix(in oklab, #a878ff 6%, transparent);
+}
+
+.wf-pipeline-check-mark,
+.wf-pipeline-action-mark {
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.wf-pipeline-action-mark {
+  color: color-mix(in oklab, #a878ff 72%, var(--fg));
+  border-color: color-mix(in oklab, #a878ff 45%, var(--border));
+}
+
+.wf-pipeline-reviewer-actions button,
+.wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+
+.wf-pipeline-item-menu { position: relative; }
+
+.wf-pipeline-item-menu > summary {
+  min-width: 28px;
+  min-height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.wf-pipeline-item-menu > summary::-webkit-details-marker { display: none; }
+
+.wf-pipeline-item-menu > summary:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.wf-pipeline-item-menu > .wf-pipeline-item-menu-pop {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 20;
+  width: 176px;
+  display: grid;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+
+.wf-pipeline-item-menu > div button {
+  width: 100%;
+  padding: 7px 8px;
+  color: var(--fg);
+  text-align: left;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wf-pipeline-item-menu > div button:hover,
+.wf-pipeline-item-menu > div button:focus-visible { background: var(--panel-2); }
+
+.wf-pipeline-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  justify-items: start;
+  row-gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wf-pipeline-reviewer-hit,
+.wf-pipeline-stage-hit { grid-column: 1; }
+
+.wf-pipeline-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.wf-pipeline-reviewer.is-disabled {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-soft));
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel-2));
+}
+
+.wf-pipeline-stage.is-disabled {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--panel));
+}
+
+.wf-pipeline-reviewer.is-disabled .wf-pipeline-reviewer-name,
+.wf-pipeline-stage.is-disabled .wf-pipeline-stage-name { color: var(--danger); }
+
+.wf-pipeline-disabled-mark { color: var(--danger); font-weight: 700; }
+
+.wf-pipeline-stage-name .wf-pipeline-disabled-mark { margin-right: 6px; }
+
+.wf-pipeline-stage.is-carried {
+  border-color: color-mix(in oklab, var(--border) 62%, transparent);
+  background: color-mix(in oklab, var(--panel) 52%, transparent);
+}
+
+.wf-pipeline-stage.is-carried .wf-pipeline-stage-name { color: var(--muted); }
+
+.wf-pipeline-stage.is-carried .wf-pipeline-stage-sub { color: var(--dim); }
+
+.wf-carried {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 5px 7px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--idle) 7%, transparent);
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.wf-carried-tick {
+  flex: none;
+  color: var(--idle);
+  font-weight: 700;
+}
+
+.wf-carried-text { min-width: 0; }
+
+.wf-carried-go {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+}
+
+button.wf-carried.is-link {
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+button.wf-carried.is-link:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--idle) 34%, var(--border));
+  background: color-mix(in oklab, var(--idle) 13%, transparent);
+}
+
+button.wf-carried.is-link:hover .wf-carried-go { color: var(--fg); }
+
+button.wf-carried.is-link:focus-visible {
+  outline: 2px solid var(--idle);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.wf-carried.is-link { transition: none; }
+}
+
+.wf-pipeline-empty {
+  padding: 9px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+}
+
+.wf-pipeline-stage-foot { display: flex; }
+
+.wf-pipeline-add,
+.wf-pipeline-insert-picker { display: grid; width: 100%; }
+
+.wf-pipeline-insert-picker select { min-width: 150px; }
+
+.wf-pipeline-seam {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: 5px;
+  width: 132px;
+  padding: 0 8px;
+}
+
+.wf-pipeline-gate-slot { display: flex; align-items: center; min-height: 18px; }
+
+.wf-pipeline-gate {
+  padding: 3px 8px;
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+
+.wf-pipeline-seam-line { color: var(--border); font-size: 16px; line-height: 1; }
+
+.wf-pipeline-insert { padding: 4px 8px; font-size: 10px; }
+
+.wf-pipeline-status { flex: none; }
+
+.wf-pipeline-bind { padding: 13px; }
+
+.wf-pipeline-bind button { width: 100%; }
+
+.workflow-confirm { width: min(460px, 100%); }
+
+.workflow-confirm.has-evidence { width: min(760px, 100%); }
+
+.workflow-confirm-body { padding: 16px 18px; }
+
+.workflow-confirm-body p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+
+.workflow-confirm-phrase { display: grid; gap: 7px; margin-top: 14px; }
+
+.workflow-confirm-phrase > span { color: var(--muted); font-size: 11.5px; }
+
+.workflow-confirm-phrase strong { color: var(--fg); font: 11px var(--mono); }
+
+.workflow-confirm-phrase input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px var(--mono);
+}
+
+.workflow-evidence-composer {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--bg) 74%, var(--panel));
+}
+
+.workflow-binding-dialog .workflow-evidence-composer { margin: 16px 0 4px; }
+
+.workflow-evidence-composer.is-dropping {
+  border-color: var(--working);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--working) 55%, transparent);
+}
+
+.workflow-evidence-heading,
+.workflow-evidence-registered-head,
+.workflow-evidence-fileline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-evidence-heading h3 { margin: 2px 0 0; font-size: 13px; }
+
+.workflow-evidence-freeze {
+  color: var(--dim);
+  font: 10.5px var(--mono);
+  white-space: nowrap;
+}
+
+.workflow-evidence-drop {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 9px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  color: var(--muted);
+  text-align: left;
+  border: 1px dashed color-mix(in oklab, var(--working) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--working) 5%, transparent);
+  cursor: pointer;
+}
+
+.workflow-evidence-drop > span {
+  grid-row: 1 / 3;
+  color: var(--working);
+  font-size: 20px;
+}
+
+.workflow-evidence-drop strong { color: var(--fg); font-size: 11.5px; }
+
+.workflow-evidence-drop small { color: var(--dim); font-size: 10px; }
+
+.workflow-evidence-drop:hover:not(:disabled) {
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 10%, transparent);
+}
+
+.workflow-evidence-drop:disabled { opacity: .55; cursor: not-allowed; }
+
+.workflow-evidence-draft-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-evidence-draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.workflow-evidence-draft.is-error { border-color: color-mix(in oklab, var(--danger) 50%, var(--border)); }
+
+.workflow-evidence-fields { display: grid; grid-template-columns: 1fr minmax(150px, .55fr); gap: 8px; }
+
+.workflow-evidence-fileline { grid-column: 1 / -1; min-width: 0; }
+
+.workflow-evidence-fileline strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+
+.workflow-evidence-fileline span { color: var(--dim); font: 9.5px var(--mono); }
+
+.workflow-evidence-fields label {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.workflow-evidence-fields input,
+.workflow-evidence-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  color: var(--fg);
+  font: 11px var(--sans);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.workflow-evidence-fields p { grid-column: 1 / -1; margin: 0; color: var(--danger); font-size: 10.5px; }
+
+.workflow-evidence-registered {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border-left: 3px solid var(--working);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+
+.workflow-evidence-registered-head { color: var(--muted); font-size: 10.5px; }
+
+.workflow-evidence-registered-head strong { color: var(--fg); }
+
+.workflow-evidence-registered p { margin: 0; font-size: 10.5px; }
+
+.workflow-evidence-registered-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.workflow-evidence-registered-item strong { font-size: 11px; }
+
+.workflow-evidence-registered-item p,
+.workflow-evidence-registered-item small { color: var(--muted); }
+
+.workflow-evidence-source {
+  padding: 3px 5px;
+  color: var(--working);
+  font: 8.5px var(--mono);
+  text-transform: uppercase;
+  border: 1px solid color-mix(in oklab, var(--working) 35%, var(--border));
+  border-radius: 4px;
+}
+
+.workflow-evidence-errors { margin: 0; padding-left: 18px; color: var(--danger); font-size: 10.5px; }
+
+.workflow-evidence-note,
+.workflow-evidence-artifacts { margin: 0; color: var(--dim); font-size: 10px; line-height: 1.45; }
+
+.workflow-coverage-composer {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.workflow-coverage-claim {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.workflow-coverage-claim > div { display: grid; gap: 3px; min-width: 0; }
+
+.workflow-coverage-claim strong { font-size: 11px; overflow-wrap: anywhere; }
+
+.workflow-coverage-claim small { color: var(--dim); font-size: 9.5px; }
+
+.workflow-coverage-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, .5fr);
+  gap: 8px;
+}
+
+.workflow-coverage-fields label { display: grid; gap: 4px; color: var(--muted); font-size: 9.5px; }
+
+.workflow-coverage-fields label:first-child { grid-column: 1 / -1; }
+
+.workflow-coverage-fields textarea,
+.workflow-coverage-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  color: var(--fg);
+  font: 11px var(--sans);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.workflow-coverage-fields textarea { min-height: 58px; resize: vertical; }
+
+.workflow-coverage-gaps { margin: 0; color: var(--attention); font-size: 10.5px; }
+
+.workflow-coverage-hint { margin: 0; color: var(--muted); font-size: 10px; }
+
+.workflow-coverage-actions { display: flex; align-items: center; gap: 9px; }
+
+.workflow-coverage-actions small { color: var(--dim); font-size: 9.5px; line-height: 1.4; }
+
+@media (max-width: 620px) {
+  .workflow-evidence-heading { align-items: flex-start; flex-direction: column; }
+  .workflow-evidence-fields { grid-template-columns: 1fr; }
+  .workflow-evidence-fields > * { grid-column: 1; }
+  .workflow-coverage-fields { grid-template-columns: 1fr; }
+  .workflow-coverage-fields label:first-child { grid-column: 1; }
+  .workflow-coverage-actions { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 1180px) {
+  .workflow-builder { grid-template-columns: 210px minmax(380px, 1fr) 260px; }
+}
+
+@media (max-width: 900px) {
+  .workflow-builder { display: block; min-height: 660px; }
+  .workflow-mobile-drawers {
+    display: flex;
+    gap: 6px;
+    padding: 7px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--panel);
+  }
+  .workflow-library-sidebar,
+  .workflow-builder-right {
+    display: none;
+    position: absolute;
+    z-index: 15;
+    top: 48px;
+    bottom: 0;
+    width: min(330px, 88%);
+    max-height: none;
+    border: 1px solid var(--border);
+    box-shadow: 0 14px 36px rgb(0 0 0 / 30%);
+  }
+  .workflow-library-sidebar { left: 0; }
+  .workflow-builder-right { right: 0; }
+  .workflow-library-sidebar.mobile-open,
+  .workflow-builder-right.mobile-open { display: block; }
+  .workflow-builder-main { min-height: 610px; }
+}
+
+@media (max-width: 820px) {
+  .workflow-page-head,
+  .persona-editor-head,
+  .wf-action-editor-head,
+  .wf-command-editor-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .workflow-tabs {
+    align-self: flex-start;
+  }
+  .persona-library,
+  .wf-action-library,
+  .wf-command-library {
+    grid-template-columns: 1fr;
+  }
+  .persona-sidebar,
+  .wf-action-sidebar,
+  .wf-command-sidebar {
+    max-height: 250px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  
+  .persona-sidebar,
+  .wf-action-sidebar {
+    max-height: none;
+  }
+  .persona-list,
+  .wf-action-list {
+    flex: none;
+    max-height: 220px;
+  }
+  
+  .wf-command-sidebar {
+    max-height: none;
+  }
+  .wf-command-list {
+    flex: none;
+  }
+  
+  .wf-command-rules thead th:first-child {
+    width: 38%;
+  }
+  .wf-command-rules thead th:last-child {
+    width: 128px;
+  }
+  .wf-command-rules th,
+  .wf-command-rules td {
+    padding: 8px 9px;
+  }
+  .persona-model-field .foreman-model-row {
+    grid-template-columns: 1fr;
+  }
+  .persona-model-field .foreman-model-source {
+    grid-column: auto;
+  }
+  
+  .persona-library,
+  .wf-action-library {
+    height: auto;
+  }
+  .persona-guidance,
+  .wf-action-prompt {
+    min-height: 520px;
+  }
+  .persona-guidance-toolbar,
+  .wf-action-prompt-toolbar {
+    flex-wrap: wrap;
+  }
+  .persona-guidance-toolbar .file-toolbar-spacer,
+  .wf-action-prompt-toolbar .file-toolbar-spacer {
+    display: none;
+  }
+  .persona-guidance-toolbar .file-mode,
+  .wf-action-prompt-toolbar .file-mode {
+    margin-left: auto;
+  }
+  .lib-asset-usage-head,
+  .lib-asset-usage-list li {
+    flex-wrap: wrap;
+  }
+  .lib-asset-usage-workflow {
+    flex: 1 1 180px;
+  }
+  .lib-asset-usage-run {
+    margin-left: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-canvas *,
+  .workflow-builder *,
+  .persona-library *,
+  .wf-action-library *,
+  .wf-command-library * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+.foreman-error-actions .btn { font-size: 11px; white-space: normal; }
+
+.sc-card-head .sc-switch,
+.sc-card-head > .btn {
+  margin-left: auto;
+}
+
+.foreman-planner-recovery .btn {
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: 10px;
+}
+
+.line-drawer-head .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.line-drawer-foot .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.line-group-ops .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.line-run-chips .workflow-chip {
+  flex: none;
+}
+
+.line-run-ops .btn,
+.line-ens-ops .btn,
+.line-intake-ops .btn,
+.line-bl-ops .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
+  display: none;
+}
+
+.wf-ladder-rung.workflow-running {
+  --wf-ladder-tone: var(--working);
+}
+
+.wf-ladder-rung.workflow-waiting {
+  --wf-ladder-tone: var(--attention);
+}
+
+.wf-ladder-rung.workflow-passed {
+  --wf-ladder-tone: var(--idle);
+}
+
+.wf-ladder-rung.workflow-failed,
+.wf-ladder-rung.workflow-blocked {
+  --wf-ladder-tone: var(--danger);
+}
+
+.wf-ladder-rung.is-carried .wf-carried {
+  width: auto;
+  margin: 6px 0 0;
+  font-size: 9.5px;
+}
+
+.wf-ladder-member.workflow-running {
+  --wf-ladder-member-tone: var(--working);
+}
+
+.wf-ladder-member.workflow-waiting {
+  --wf-ladder-member-tone: var(--attention);
+}
+
+.wf-ladder-member.workflow-passed {
+  --wf-ladder-member-tone: var(--idle);
+}
+
+.wf-ladder-member.workflow-failed {
+  --wf-ladder-member-tone: var(--danger);
+}
+
+.wf-ladder-action.btn {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.wf-ladder-action.btn:disabled {
+  opacity: 0.58;
+  color: var(--dim);
+  border-color: var(--border-soft);
+  background: transparent;
+}
+
+.tile.workflow-expanded,
+.tile.workflow-expanded:hover {
+  transform: none;
+  border-color: color-mix(in oklab, var(--working) 65%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--working) 18%, transparent);
+}
+
+.wf-tile-peek.workflow-running {
+  --wf-tile-peek-tone: var(--working);
+}
+
+.wf-tile-peek.workflow-waiting {
+  --wf-tile-peek-tone: var(--attention);
+}
+
+.wf-tile-peek.workflow-passed {
+  --wf-tile-peek-tone: var(--idle);
+}
+
+.wf-tile-peek.workflow-failed,
+.wf-tile-peek.workflow-blocked {
+  --wf-tile-peek-tone: var(--danger);
+}
+
+.wf-tile-peek-runstate.workflow-running {
+  color: var(--working);
+}
+
+.wf-tile-peek-runstate.workflow-waiting {
+  color: var(--attention);
+}
+
+.wf-tile-peek-runstate.workflow-blocked,
+.wf-tile-peek-runstate.workflow-failed {
+  color: var(--danger);
+}
+
+.wf-tile-peek-runstate.workflow-passed {
+  color: var(--idle);
+}
+
+.wf-tile-peek-members > .workflow-passed {
+  color: var(--idle);
+}
+
+.wf-tile-peek-members > .workflow-running {
+  color: var(--working);
+}
+
+.wf-tile-peek-members > .workflow-waiting {
+  color: var(--attention);
+}
+
+.wf-tile-peek-members > .workflow-failed,
+.wf-tile-peek-members > .workflow-blocked {
+  color: #ff7b72;
+}
+
+.wf-tile-peek-carried .wf-carried-tick {
+  color: var(--idle);
+  font-weight: 700;
+}
+
+.tpm-pop-row.workflow-failed .n,
+.tpm-pop-row.workflow-running .n {
+  color: currentColor;
+}
+
+body.foreman-sidecar-open {
+  --foreman-sidecar-w: min(420px, calc(100vw - 24px));
+}
+
+body.foreman-sidecar-open .app {
+  margin-right: var(--foreman-sidecar-w);
+}
+
+body.foreman-sidecar-open .modal-backdrop {
+  right: var(--foreman-sidecar-w);
+}
+
+.rm-provenance-note .btn {
+  white-space: nowrap;
+}
+
+.setup-verdict-actions .btn {
+  font-size: 11px;
+}
+
+.setup-verdict-actions .btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.setup-verdict-actions .btn[aria-disabled="true"]:hover {
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--dim);
+}
+
+.setup-command .btn,
+.setup-link {
+  font-size: 11px;
+}
+
+
+/* ==================================================================================== */
+/* ---- Mockup page chrome. None of this is proposed app CSS. -------------------------- */
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--sans);
+}
+
+.mk-page { max-width: 1180px; margin: 0 auto; padding: 32px 24px 96px; }
+
+.mk-title { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.01em; }
+.mk-sub { margin: 0 0 4px; color: var(--muted); font-size: 13px; max-width: 78ch; }
+.mk-meta { margin: 14px 0 0; color: var(--dim); font-size: 11.5px; }
+
+.mk-card {
+  margin: 26px 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.mk-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+
+.mk-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mk-tag.is-today { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
+.mk-tag.is-pick { border-color: color-mix(in srgb, var(--idle) 50%, var(--border)); color: var(--idle); }
+
+.mk-card-name { margin: 0; font-size: 15px; }
+.mk-card-thesis { flex: 1 1 320px; margin: 0; color: var(--muted); font-size: 12px; }
+
+.mk-stage { padding: 18px; background: var(--bg); overflow-x: auto; }
+
+.mk-notes { display: grid; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border-soft); background: var(--panel); }
+.mk-note { display: grid; grid-template-columns: 116px 1fr; gap: 12px; align-items: start; font-size: 12px; }
+.mk-note dt { color: var(--dim); font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; padding-top: 2px; }
+.mk-note dd { margin: 0; color: var(--muted); }
+.mk-note dd b { color: var(--fg); font-weight: 600; }
+
+.mk-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  border: 1px dashed color-mix(in srgb, var(--working) 45%, var(--border));
+  border-radius: 999px;
+  padding: 3px 11px;
+  color: var(--working);
+  font-size: 11px;
+}
+
+.mk-measure {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  white-space: nowrap;
+}
+.mk-measure b { color: var(--fg); font-weight: 600; }
+.mk-measure.is-save { border-color: color-mix(in srgb, var(--idle) 45%, var(--border)); }
+.mk-measure.is-save b { color: var(--idle); }
+
+.mk-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mk-table th, .mk-table td { border-bottom: 1px solid var(--border-soft); padding: 9px 12px; text-align: left; vertical-align: top; }
+.mk-table th { color: var(--dim); font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.mk-table td:first-child { color: var(--fg); font-weight: 600; white-space: nowrap; }
+.mk-table td { color: var(--muted); }
+.mk-yes { color: var(--idle); }
+.mk-no { color: var(--danger); }
+.mk-part { color: var(--attention); }
+.mk-scroll { overflow-x: auto; }
+
+.mk-fade { opacity: 0.4; }
+
+/* ---- Proposed app surfaces. These are the only rules a real change would add. ------- */
+
+/* A - one quiet context line with an inline disclosure. */
+.wf-run-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-context-sep { color: var(--border); }
+.wf-run-context-state { color: var(--fg); font-weight: 600; }
+.wf-run-context-snapshot { color: var(--attention); }
+
+.wf-run-disclose { position: relative; }
+
+.wf-run-disclose > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 9px;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.wf-run-disclose > summary::-webkit-details-marker { display: none; }
+.wf-run-disclose > summary:hover { border-color: var(--working); color: var(--fg); }
+.wf-run-disclose > summary:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
+.wf-run-disclose[open] > summary { border-color: var(--working); color: var(--fg); }
+
+.wf-run-disclose-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 9px;
+  width: 360px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  padding: 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.wf-run-disclose-pop.is-right { left: auto; right: 0; }
+.wf-run-disclose-pop p { margin: 0; }
+.wf-run-disclose-pop b { color: var(--fg); font-weight: 600; }
+
+.wf-run-disclose-title {
+  color: var(--dim);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.wf-run-disclose-go {
+  justify-self: start;
+  border: 1px solid color-mix(in srgb, var(--working) 45%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--working) 10%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.wf-run-disclose-go:hover { border-color: var(--working); }
+
+/* B - the mark rides the object it describes. The mark is a SIBLING of the chip pinned to
+   its corner, never a child: the chip is a button, and a disclosure nested in one is both
+   invalid markup and unreachable by keyboard. */
+.wf-run-chip-slot { position: relative; display: grid; }
+.wf-run-chip-slot > .wf-run-tray-chip { width: 100%; padding-right: 24px; }
+.wf-run-chip-slot > .wf-run-disclose { position: absolute; top: 4px; right: 5px; }
+
+.wf-run-tray-chip-why {
+  border: 1px solid color-mix(in srgb, currentColor 40%, var(--border));
+  border-radius: 999px;
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 9px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.wf-run-tray-chip-why::-webkit-details-marker { display: none; }
+.wf-run-tray-chip-why:hover { border-color: var(--working); color: var(--fg); }
+.wf-run-round-live { color: var(--idle); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
+
+/* C - pills on the scrubber's own line. */
+.wf-run-scrubber-marks { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+.wf-run-mark > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 3px 10px;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.wf-run-mark > summary::-webkit-details-marker { display: none; }
+.wf-run-mark > summary:hover { border-color: var(--working); color: var(--fg); }
+.wf-run-mark.is-snapshot > summary { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); color: var(--attention); }
+.wf-run-mark.is-free > summary { border-color: color-mix(in srgb, var(--idle) 40%, var(--border)); color: var(--idle); }
+
+/* D - one panel that answers every question about the view. */
+.wf-run-rounds-head { display: flex; align-items: center; gap: 10px; }
+.wf-run-rounds-title { margin: 0; color: var(--dim); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.wf-run-about {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 13px 15px;
+}
+
+.wf-run-about dl { display: grid; gap: 11px; margin: 0; }
+.wf-run-about div { display: grid; grid-template-columns: 132px 1fr; gap: 12px; }
+.wf-run-about dt { color: var(--fg); font-size: 11px; font-weight: 600; }
+.wf-run-about dd { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+.wf-run-about-live { color: var(--idle); }
+.wf-run-about-snapshot { color: var(--attention); }
+
+</style>
+</head>
+<body>
+<div class="mk-page">
+
+<h1 class="mk-title">Round context without the banners</h1>
+<p class="mk-sub">
+  A run scrubbed onto an earlier round prints two full-width amber panels above the pipeline.
+  Between them they say four things, three of which the scrubber directly above them has
+  already said, and they cost roughly a fifth of the visible run detail before the pipeline
+  starts. These are four ways to keep every sentence and put it behind a click.
+</p>
+<p class="mk-sub">
+  Every mockup below is live: click the disclosure in each and it opens. All five use the
+  product's own stylesheet and the product's own markup, so what renders here is what renders
+  in the app. The run shown is a four-stage review parked on round 2, evidence 2, while round
+  3 is the live one.
+</p>
+<p class="mk-meta">
+  Source of today's copy: <code>segmentProvenanceSentence</code> in
+  <code>src/web/workflows/run-model.ts</code> and the stale notice in
+  <code>src/web/workflows/WorkflowRuns.tsx</code>.
+</p>
+
+<!-- ------------------------------------------------------------------ TODAY -->
+<section class="mk-card" id="today">
+  <header class="mk-card-head">
+    <span class="mk-tag is-today">Today</span>
+    <h2 class="mk-card-name">Two stacked banners</h2>
+    <p class="mk-card-thesis">
+      Both sentences are always on screen, both are amber, and neither is actionable.
+    </p>
+    <span class="mk-measure">rounds block <b data-mk-height="today">--</b></span>
+  </header>
+  <div class="mk-stage">
+    <section class="wf-run-rounds" aria-label="Rounds" data-mk-section="today">
+      <div class="wf-run-scrubber" role="group" aria-label="Select a round">
+        <button class="wf-run-round workflow-failed" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 1</span></span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-failed active" type="button" aria-pressed="true" aria-expanded="true">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 2</span>
+            <span class="wf-run-round-count">2 evidence</span>
+            <span class="wf-run-round-failed workflow-failed">1 failed</span>
+          </span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-running" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 3</span></span>
+          <span class="wf-run-round-state">Under review</span>
+        </button>
+      </div>
+      <div class="wf-run-tray" role="group" aria-label="Select evidence in round 2">
+        <p class="wf-run-tray-label">Round 2 evidence</p>
+        <div class="wf-run-tray-chips">
+          <button class="wf-run-tray-chip workflow-passed" type="button">
+            <span class="wf-run-tray-chip-name">evidence 1</span>
+            <span class="wf-run-tray-chip-state">Passed</span>
+          </button>
+          <button class="wf-run-tray-chip workflow-failed active" type="button" aria-pressed="true">
+            <span class="wf-run-tray-chip-name">evidence 2</span>
+            <span class="wf-run-tray-chip-state">Changes requested</span>
+          </button>
+        </div>
+      </div>
+      <p class="wf-run-notice" role="status">
+        Evidence 2 of round 2, captured to repair evidence preflight gaps. This refinement does
+        not spend a Persona repair round.
+      </p>
+      <p class="wf-run-stale" role="status">
+        Viewing an earlier round. The pipeline, verdicts and timeline below are that round's;
+        the Inspector gate, deliveries and every recovery action are always the live run's.
+      </p>
+    </section>
+    <div class="mk-pipeline-slot"></div>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note"><dt>Repeats</dt><dd><b>&ldquo;Evidence 2 of round 2&rdquo;</b> is the pressed tile (Round 2) plus the pressed chip (evidence 2), read back as a sentence. <b>&ldquo;Viewing an earlier round&rdquo;</b> is the fact that the pressed tile is not the last one.</dd></div>
+    <div class="mk-note"><dt>New</dt><dd>Only two clauses are not already on screen: this refinement spends no repair round, and the Inspector gate, deliveries and recovery actions below stay live while the rest of the page is a snapshot.</dd></div>
+    <div class="mk-note"><dt>Tone</dt><dd>Amber is <code>--attention</code>, which everywhere else in the app means this needs you. Neither panel is actionable, so both spend the alarm colour on prose.</dd></div>
+  </dl>
+</section>
+
+<!-- ------------------------------------------------------------------ A -->
+<section class="mk-card" id="alt-a">
+  <header class="mk-card-head">
+    <span class="mk-tag is-pick">Option A</span>
+    <h2 class="mk-card-name">One context line, one disclosure</h2>
+    <p class="mk-card-thesis">
+      The four facts collapse to a single muted line; the two sentences move into a popover
+      opened from <em>Why?</em>.
+    </p>
+    <span class="mk-measure">rounds block <b data-mk-height="a">--</b></span>
+    <span class="mk-measure is-save">saves <b data-mk-delta="a">--</b></span>
+  </header>
+  <div class="mk-stage">
+    <p class="mk-hint">&#9757; Click <b>Why?</b></p>
+    <section class="wf-run-rounds" aria-label="Rounds" data-mk-section="a">
+      <div class="wf-run-scrubber" role="group" aria-label="Select a round">
+        <button class="wf-run-round workflow-failed" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 1</span></span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-failed active" type="button" aria-pressed="true" aria-expanded="true">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 2</span>
+            <span class="wf-run-round-count">2 evidence</span>
+            <span class="wf-run-round-failed workflow-failed">1 failed</span>
+          </span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-running" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 3</span></span>
+          <span class="wf-run-round-state">Under review</span>
+        </button>
+      </div>
+      <div class="wf-run-tray" role="group" aria-label="Select evidence in round 2">
+        <p class="wf-run-tray-label">Round 2 evidence</p>
+        <div class="wf-run-tray-chips">
+          <button class="wf-run-tray-chip workflow-passed" type="button">
+            <span class="wf-run-tray-chip-name">evidence 1</span>
+            <span class="wf-run-tray-chip-state">Passed</span>
+          </button>
+          <button class="wf-run-tray-chip workflow-failed active" type="button" aria-pressed="true">
+            <span class="wf-run-tray-chip-name">evidence 2</span>
+            <span class="wf-run-tray-chip-state">Changes requested</span>
+          </button>
+        </div>
+      </div>
+      <div class="wf-run-context" role="status">
+        <span class="wf-run-context-snapshot">Snapshot</span>
+        <span class="wf-run-context-sep">&middot;</span>
+        <span>round 3 is live</span>
+        <span class="wf-run-context-sep">&middot;</span>
+        <span>no repair round spent</span>
+        <details class="wf-run-disclose">
+          <summary role="button" aria-label="Why this round is a snapshot and why it spent no repair round">Why?</summary>
+          <div class="wf-run-disclose-pop">
+            <p class="wf-run-disclose-title">This evidence</p>
+            <p>Evidence 2 of round 2, captured to repair evidence preflight gaps. <b>This refinement does not spend a Persona repair round.</b></p>
+            <p class="wf-run-disclose-title">What is live below</p>
+            <p>The pipeline, verdicts and timeline are this round's. The <b>Inspector gate, deliveries and every recovery action</b> are always the live run's.</p>
+            <button class="wf-run-disclose-go" type="button">Go to round 3 &rarr;</button>
+          </div>
+        </details>
+      </div>
+    </section>
+    <div class="mk-pipeline-slot"></div>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note"><dt>Click target</dt><dd>A <code>Why?</code> pill on the context line. The popover is the app's existing <code>&lt;details&gt;</code> idiom, the same one every <code>&bull;&bull;&bull;</code> stage menu already uses.</dd></div>
+    <div class="mk-note"><dt>Keeps</dt><dd>The line is still <code>role="status"</code>, so a screen reader is still told the view changed. Only the explanation moves behind the click, never the state.</dd></div>
+    <div class="mk-note"><dt>Costs</dt><dd>One row survives. It is the only option that keeps a permanent, non-amber marker that the page is a snapshot, which is also why it is the safest.</dd></div>
+  </dl>
+</section>
+
+<!-- ------------------------------------------------------------------ B -->
+<section class="mk-card" id="alt-b">
+  <header class="mk-card-head">
+    <span class="mk-tag">Option B</span>
+    <h2 class="mk-card-name">The mark rides the thing it describes</h2>
+    <p class="mk-card-thesis">
+      No row at all. The evidence chip carries its own <em>why</em>, and the live round wears a
+      LIVE mark.
+    </p>
+    <span class="mk-measure">rounds block <b data-mk-height="b">--</b></span>
+    <span class="mk-measure is-save">saves <b data-mk-delta="b">--</b></span>
+  </header>
+  <div class="mk-stage">
+    <p class="mk-hint">&#9757; Click the <b>?</b> on <b>evidence 2</b></p>
+    <section class="wf-run-rounds" aria-label="Rounds" data-mk-section="b">
+      <div class="wf-run-scrubber" role="group" aria-label="Select a round">
+        <button class="wf-run-round workflow-failed" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 1</span></span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-failed active" type="button" aria-pressed="true" aria-expanded="true">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 2</span>
+            <span class="wf-run-round-count">2 evidence</span>
+            <span class="wf-run-round-failed workflow-failed">1 failed</span>
+          </span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-running" type="button">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 3</span>
+            <span class="wf-run-round-live">&#9679; LIVE</span>
+          </span>
+          <span class="wf-run-round-state">Under review</span>
+        </button>
+      </div>
+      <div class="wf-run-tray" role="group" aria-label="Select evidence in round 2">
+        <p class="wf-run-tray-label">Round 2 evidence</p>
+        <div class="wf-run-tray-chips">
+          <button class="wf-run-tray-chip workflow-passed" type="button">
+            <span class="wf-run-tray-chip-name">evidence 1</span>
+            <span class="wf-run-tray-chip-state">Passed</span>
+          </button>
+          <span class="wf-run-chip-slot">
+            <button class="wf-run-tray-chip has-why workflow-failed active" type="button" aria-pressed="true">
+              <span class="wf-run-tray-chip-name">evidence 2</span>
+              <span class="wf-run-tray-chip-state">Changes requested</span>
+            </button>
+            <details class="wf-run-disclose">
+              <summary class="wf-run-tray-chip-why" role="button" aria-label="What evidence 2 is">?</summary>
+              <div class="wf-run-disclose-pop">
+                <p class="wf-run-disclose-title">Evidence 2 of round 2</p>
+                <p>Captured to repair evidence preflight gaps. <b>This refinement does not spend a Persona repair round.</b></p>
+                <p class="wf-run-disclose-title">You are not on the live round</p>
+                <p>The pipeline, verdicts and timeline below are this round's. The <b>Inspector gate, deliveries and every recovery action</b> are always the live run's.</p>
+                <button class="wf-run-disclose-go" type="button">Go to round 3 &rarr;</button>
+              </div>
+            </details>
+          </span>
+        </div>
+      </div>
+    </section>
+    <div class="mk-pipeline-slot"></div>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note"><dt>Click target</dt><dd>A <code>?</code> on the selected evidence chip. The explanation is anchored to the exact object it explains, so there is nothing to map back from a banner to a chip.</dd></div>
+    <div class="mk-note"><dt>Keeps</dt><dd>Zero extra rows, and the <b>LIVE</b> mark answers <em>which round is the live one</em> positively rather than telling the reader which one is not.</dd></div>
+    <div class="mk-note"><dt>Costs</dt><dd>Nothing announces the snapshot state to a screen reader once the scrubber selection settles, and a <code>?</code> at 9px is easy to miss. This is the option that trades the most discoverability for the most space.</dd></div>
+  </dl>
+</section>
+
+<!-- ------------------------------------------------------------------ C -->
+<section class="mk-card" id="alt-c">
+  <header class="mk-card-head">
+    <span class="mk-tag">Option C</span>
+    <h2 class="mk-card-name">Two pills on the scrubber's own line</h2>
+    <p class="mk-card-thesis">
+      The state becomes two right-aligned pills sharing the row the scrubber already occupies.
+      Each opens its own sentence.
+    </p>
+    <span class="mk-measure">rounds block <b data-mk-height="c">--</b></span>
+    <span class="mk-measure is-save">saves <b data-mk-delta="c">--</b></span>
+  </header>
+  <div class="mk-stage">
+    <p class="mk-hint">&#9757; Click <b>Snapshot</b> or <b>Free refinement</b></p>
+    <section class="wf-run-rounds" aria-label="Rounds" data-mk-section="c">
+      <div class="wf-run-scrubber" role="group" aria-label="Select a round">
+        <button class="wf-run-round workflow-failed" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 1</span></span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-failed active" type="button" aria-pressed="true" aria-expanded="true">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 2</span>
+            <span class="wf-run-round-count">2 evidence</span>
+            <span class="wf-run-round-failed workflow-failed">1 failed</span>
+          </span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-running" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 3</span></span>
+          <span class="wf-run-round-state">Under review</span>
+        </button>
+        <span class="wf-run-scrubber-marks">
+          <details class="wf-run-mark wf-run-disclose is-snapshot">
+            <summary role="button" aria-label="What a snapshot view means">&#9719; Snapshot</summary>
+            <div class="wf-run-disclose-pop is-right">
+              <p class="wf-run-disclose-title">Snapshot of round 2</p>
+              <p>The pipeline, verdicts and timeline below are this round's. The <b>Inspector gate, deliveries and every recovery action</b> are always the live run's.</p>
+              <button class="wf-run-disclose-go" type="button">Go to round 3, the live one &rarr;</button>
+            </div>
+          </details>
+          <details class="wf-run-mark wf-run-disclose is-free">
+            <summary role="button" aria-label="Why this refinement was free">&#8635; Free refinement</summary>
+            <div class="wf-run-disclose-pop is-right">
+              <p class="wf-run-disclose-title">Evidence 2 of round 2</p>
+              <p>Captured to repair evidence preflight gaps. <b>This refinement does not spend a Persona repair round.</b></p>
+            </div>
+          </details>
+        </span>
+      </div>
+      <div class="wf-run-tray" role="group" aria-label="Select evidence in round 2">
+        <p class="wf-run-tray-label">Round 2 evidence</p>
+        <div class="wf-run-tray-chips">
+          <button class="wf-run-tray-chip workflow-passed" type="button">
+            <span class="wf-run-tray-chip-name">evidence 1</span>
+            <span class="wf-run-tray-chip-state">Passed</span>
+          </button>
+          <button class="wf-run-tray-chip workflow-failed active" type="button" aria-pressed="true">
+            <span class="wf-run-tray-chip-name">evidence 2</span>
+            <span class="wf-run-tray-chip-state">Changes requested</span>
+          </button>
+        </div>
+      </div>
+    </section>
+    <div class="mk-pipeline-slot"></div>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note"><dt>Click target</dt><dd>Two pills, each opening only its own sentence. A reader who wants one fact does not read the other.</dd></div>
+    <div class="mk-note"><dt>Keeps</dt><dd>Zero extra rows, and both states stay permanently visible as words rather than as an inference from which tile is pressed.</dd></div>
+    <div class="mk-note"><dt>Costs</dt><dd>The scrubber wraps once the round count grows, and the pills then land on a line of their own, so the saving is real but not guaranteed on a long run.</dd></div>
+  </dl>
+</section>
+
+<!-- ------------------------------------------------------------------ D -->
+<section class="mk-card" id="alt-d">
+  <header class="mk-card-head">
+    <span class="mk-tag">Option D</span>
+    <h2 class="mk-card-name">One &ldquo;About this view&rdquo; panel</h2>
+    <p class="mk-card-thesis">
+      Every question about what is on screen gets one answer in one place, opened from the
+      section heading.
+    </p>
+    <span class="mk-measure">rounds block <b data-mk-height="d">--</b></span>
+    <span class="mk-measure is-save">saves <b data-mk-delta="d">--</b></span>
+  </header>
+  <div class="mk-stage">
+    <p class="mk-hint">&#9757; Click <b>About this view</b></p>
+    <section class="wf-run-rounds" aria-label="Rounds" data-mk-section="d">
+      <div class="wf-run-rounds-head">
+        <p class="wf-run-rounds-title">Rounds</p>
+        <details class="wf-run-disclose">
+          <summary role="button" aria-label="About this view">&#9432; About this view</summary>
+          <div class="wf-run-disclose-pop" style="width: 520px;">
+            <div class="wf-run-about">
+              <dl>
+                <div>
+                  <dt>Showing</dt>
+                  <dd><span class="wf-run-about-snapshot">Round 2, evidence 2</span>, a snapshot. Round 3 is the live round.</dd>
+                </div>
+                <div>
+                  <dt>Why a second evidence</dt>
+                  <dd>Captured to repair evidence preflight gaps. <b>This refinement does not spend a Persona repair round.</b></dd>
+                </div>
+                <div>
+                  <dt>From this round</dt>
+                  <dd>The pipeline, the verdicts and the timeline.</dd>
+                </div>
+                <div>
+                  <dt><span class="wf-run-about-live">Always live</span></dt>
+                  <dd>The Inspector gate, deliveries and every recovery action, whichever round you are reading.</dd>
+                </div>
+              </dl>
+              <button class="wf-run-disclose-go" type="button">Go to round 3, the live one &rarr;</button>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="wf-run-scrubber" role="group" aria-label="Select a round">
+        <button class="wf-run-round workflow-failed" type="button">
+          <span class="wf-run-round-line"><span class="wf-run-round-name">Round 1</span></span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-failed active" type="button" aria-pressed="true" aria-expanded="true">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 2</span>
+            <span class="wf-run-round-count">2 evidence</span>
+            <span class="wf-run-round-failed workflow-failed">1 failed</span>
+          </span>
+          <span class="wf-run-round-state">Changes requested</span>
+        </button>
+        <button class="wf-run-round workflow-running" type="button">
+          <span class="wf-run-round-line">
+            <span class="wf-run-round-name">Round 3</span>
+            <span class="wf-run-round-live">&#9679; LIVE</span>
+          </span>
+          <span class="wf-run-round-state">Under review</span>
+        </button>
+      </div>
+      <div class="wf-run-tray" role="group" aria-label="Select evidence in round 2">
+        <p class="wf-run-tray-label">Round 2 evidence</p>
+        <div class="wf-run-tray-chips">
+          <button class="wf-run-tray-chip workflow-passed" type="button">
+            <span class="wf-run-tray-chip-name">evidence 1</span>
+            <span class="wf-run-tray-chip-state">Passed</span>
+          </button>
+          <button class="wf-run-tray-chip workflow-failed active" type="button" aria-pressed="true">
+            <span class="wf-run-tray-chip-name">evidence 2</span>
+            <span class="wf-run-tray-chip-state">Changes requested</span>
+          </button>
+        </div>
+      </div>
+    </section>
+    <div class="mk-pipeline-slot"></div>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note"><dt>Click target</dt><dd>One control beside the section heading, in a fixed place that does not move when the selection does.</dd></div>
+    <div class="mk-note"><dt>Keeps</dt><dd>The one place that can absorb the next sentence. Inspector-only rounds, verified-shipping segments and carried-stage provenance all want a line here, and today each would be another banner.</dd></div>
+    <div class="mk-note"><dt>Costs</dt><dd>The heading row is new, so the saving is smaller than B or C. Nothing on the collapsed surface says the view is a snapshot unless the <b>LIVE</b> mark from B comes with it, as it does here.</dd></div>
+  </dl>
+</section>
+
+<!-- ------------------------------------------------------------------ COMPARE -->
+<section class="mk-card" id="compare">
+  <header class="mk-card-head">
+    <span class="mk-tag">Side by side</span>
+    <h2 class="mk-card-name">What each one trades</h2>
+  </header>
+  <div class="mk-scroll">
+    <table class="mk-table">
+      <thead>
+        <tr>
+          <th>Option</th>
+          <th>Rows above the pipeline</th>
+          <th>Snapshot state visible without clicking</th>
+          <th>Announced to a screen reader</th>
+          <th>Survives a long run</th>
+          <th>Room for the next sentence</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Today</td>
+          <td class="mk-no">2 panels, 3 lines</td>
+          <td class="mk-yes">Yes</td>
+          <td class="mk-yes">Yes</td>
+          <td class="mk-no">Grows one panel per fact</td>
+          <td class="mk-no">Another banner</td>
+        </tr>
+        <tr>
+          <td>A - context line</td>
+          <td class="mk-part">1 line</td>
+          <td class="mk-yes">Yes</td>
+          <td class="mk-yes">Yes</td>
+          <td class="mk-yes">Fixed height</td>
+          <td class="mk-part">Popover grows, line does not</td>
+        </tr>
+        <tr>
+          <td>B - chip mark</td>
+          <td class="mk-yes">None</td>
+          <td class="mk-part">Only as the LIVE mark elsewhere</td>
+          <td class="mk-no">No</td>
+          <td class="mk-yes">Fixed height</td>
+          <td class="mk-part">Per-chip popover only</td>
+        </tr>
+        <tr>
+          <td>C - scrubber pills</td>
+          <td class="mk-yes">None, until the scrubber wraps</td>
+          <td class="mk-yes">Yes, as two words</td>
+          <td class="mk-part">Only if the pill group is a live region</td>
+          <td class="mk-part">Wraps past ~6 rounds</td>
+          <td class="mk-no">One more pill each time</td>
+        </tr>
+        <tr>
+          <td>D - about panel</td>
+          <td class="mk-part">1 heading row</td>
+          <td class="mk-part">Only as the LIVE mark elsewhere</td>
+          <td class="mk-no">No</td>
+          <td class="mk-yes">Fixed height</td>
+          <td class="mk-yes">Another row in one panel</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <dl class="mk-notes">
+    <div class="mk-note">
+      <dt>Recommendation</dt>
+      <dd>
+        <b>A, with B's LIVE mark on the live round tile.</b> A keeps the one thing a banner is
+        genuinely good at, a state that is announced and cannot be missed, while
+        dropping it from three lines to one and from alarm amber to muted text. B's mark is
+        nearly free and answers <em>which round is live</em> positively, which is the question
+        a reader actually has once they know they are not on it. D is the better shape if more
+        per-round explanation is coming; it can be layered on later without undoing A.
+      </dd>
+    </div>
+    <div class="mk-note">
+      <dt>Not mocked</dt>
+      <dd>
+        Dropping the sentences into the existing chip tooltips alone. They are already there,
+        and a hover-only fact is unreachable on a touch device and invisible to anyone who does
+        not hover. That is what makes a click target the ask rather than a tooltip.
+      </dd>
+    </div>
+  </dl>
+</section>
+
+</div>
+
+<template id="mk-pipeline">
+  <div class="wf-pipeline">
+    <div class="wf-pipeline-strip" role="group" aria-label="Workflow run pipeline">
+      <section class="wf-pipeline-terminus is-session">
+        <span class="wf-pipeline-terminus-mark" aria-hidden="true">&#9671;</span>
+        <span class="wf-pipeline-terminus-body">
+          <span class="wf-pipeline-terminus-name">Session</span>
+          <span class="wf-pipeline-terminus-sub">Submits the work</span>
+        </span>
+        <span class="workflow-chip wf-pipeline-status workflow-failed">Changes requested</span>
+      </section>
+      <div class="wf-pipeline-seam">
+        <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">submitted</span></span>
+        <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+      </div>
+
+      <div class="wf-pipeline-slot">
+        <section class="wf-pipeline-stage">
+          <header class="wf-pipeline-stage-head">
+            <span class="wf-pipeline-stage-title">
+              <span class="wf-pipeline-stage-name">Stage 1</span>
+              <span class="wf-pipeline-stage-sub">3 commands &middot; all must pass</span>
+            </span>
+            <span class="workflow-chip wf-pipeline-status workflow-passed">All passed</span>
+            <span class="wf-pipeline-stage-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+          </header>
+          <ul class="wf-pipeline-members">
+            <li class="wf-pipeline-reviewer is-check">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name"><span class="wf-pipeline-check-mark">Command</span>typecheck</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-passed">Passed</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-check">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name"><span class="wf-pipeline-check-mark">Command</span>test</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-passed">Passed</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-check">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name"><span class="wf-pipeline-check-mark">Command</span>lint</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-passed">Passed</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+          </ul>
+        </section>
+        <div class="wf-pipeline-seam">
+          <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">all pass</span></span>
+          <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+        </div>
+      </div>
+
+      <div class="wf-pipeline-slot">
+        <section class="wf-pipeline-stage">
+          <header class="wf-pipeline-stage-head">
+            <span class="wf-pipeline-stage-title">
+              <span class="wf-pipeline-stage-name">Stage 2</span>
+              <span class="wf-pipeline-stage-sub">2 reviewers &middot; all must pass</span>
+            </span>
+            <span class="workflow-chip wf-pipeline-status workflow-failed">Failed</span>
+            <span class="wf-pipeline-stage-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+          </header>
+          <ul class="wf-pipeline-members">
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name">Intent Conformance Judge</span>
+                <span class="wf-pipeline-reviewer-meta">codex &middot; gpt-5.6-terra</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-failed">Changes requested</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name">Test Coverage Judge</span>
+                <span class="wf-pipeline-reviewer-meta">codex &middot; gpt-5.6-terra</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-passed">Passed</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+          </ul>
+        </section>
+        <div class="wf-pipeline-seam">
+          <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">all pass</span></span>
+          <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+        </div>
+      </div>
+
+      <div class="wf-pipeline-slot">
+        <section class="wf-pipeline-stage">
+          <header class="wf-pipeline-stage-head">
+            <span class="wf-pipeline-stage-title">
+              <span class="wf-pipeline-stage-name">Stage 3</span>
+              <span class="wf-pipeline-stage-sub">3 reviewers &middot; all must pass</span>
+            </span>
+            <span class="workflow-chip wf-pipeline-status workflow-waiting">Waiting</span>
+            <span class="wf-pipeline-stage-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+          </header>
+          <ul class="wf-pipeline-members">
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Code Risk Reviewer</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Code Quality Judge</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Code Design Reviewer</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+          </ul>
+        </section>
+        <div class="wf-pipeline-seam">
+          <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">all pass</span></span>
+          <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+        </div>
+      </div>
+
+      <div class="wf-pipeline-slot">
+        <section class="wf-pipeline-stage">
+          <header class="wf-pipeline-stage-head">
+            <span class="wf-pipeline-stage-title">
+              <span class="wf-pipeline-stage-name">Stage 4</span>
+              <span class="wf-pipeline-stage-sub">3 reviewers &middot; all must pass</span>
+            </span>
+            <span class="workflow-chip wf-pipeline-status workflow-waiting">Waiting</span>
+            <span class="wf-pipeline-stage-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+          </header>
+          <ul class="wf-pipeline-members">
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Test Evidence Auditor</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Documentation Steward</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+            <li class="wf-pipeline-reviewer is-persona">
+              <span class="wf-pipeline-reviewer-body"><span class="wf-pipeline-reviewer-name">Slop Filter</span></span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+              <span class="wf-pipeline-reviewer-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+            </li>
+          </ul>
+        </section>
+        <div class="wf-pipeline-seam">
+          <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">all pass</span></span>
+          <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+        </div>
+      </div>
+
+      <div class="wf-pipeline-slot">
+        <section class="wf-pipeline-stage">
+          <header class="wf-pipeline-stage-head">
+            <span class="wf-pipeline-stage-title">
+              <span class="wf-pipeline-stage-name">Pull Request</span>
+              <span class="wf-pipeline-stage-sub">1 session action &middot; later stages review new evidence</span>
+            </span>
+            <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+            <span class="wf-pipeline-stage-actions"><span class="mk-dots" aria-hidden="true">&bull;&bull;&bull;</span></span>
+          </header>
+          <ul class="wf-pipeline-members">
+            <li class="wf-pipeline-reviewer is-session_action">
+              <span class="wf-pipeline-reviewer-body">
+                <span class="wf-pipeline-reviewer-name"><span class="wf-pipeline-action-mark">Session action</span>Pull Request</span>
+              </span>
+              <span class="workflow-chip wf-pipeline-status workflow-waiting">Not started</span>
+            </li>
+          </ul>
+        </section>
+        <div class="wf-pipeline-seam">
+          <span class="wf-pipeline-gate-slot"><span class="wf-pipeline-gate">complete</span></span>
+          <span class="wf-pipeline-seam-line" aria-hidden="true">&rarr;</span>
+        </div>
+      </div>
+
+      <section class="wf-pipeline-terminus is-end">
+        <span class="wf-pipeline-terminus-mark" aria-hidden="true">&#9670;</span>
+        <span class="wf-pipeline-terminus-body">
+          <span class="wf-pipeline-terminus-name">Merged</span>
+          <span class="wf-pipeline-terminus-sub">Terminal outcome</span>
+        </span>
+        <span class="workflow-chip wf-pipeline-status workflow-waiting">Waiting</span>
+      </section>
+    </div>
+  </div>
+</template>
+
+<script>
+(() => {
+  // The pipeline is identical in every card and is here only so the space above it can be
+  // compared against something real. Cloned rather than written five times.
+  const template = document.getElementById("mk-pipeline");
+  for (const slot of document.querySelectorAll(".mk-pipeline-slot")) {
+    slot.append(template.content.cloneNode(true));
+  }
+
+  // One disclosure open at a time, which is what the app's own stage menus do.
+  document.addEventListener("toggle", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLDetailsElement) || !target.open) return;
+    for (const other of document.querySelectorAll("details[open]")) {
+      if (other !== target && !other.contains(target)) other.open = false;
+    }
+  }, true);
+
+  // Measured, not estimated: every number printed in a card header is this page reading
+  // its own laid-out rectangles.
+  const measure = () => {
+    const heights = new Map();
+    for (const section of document.querySelectorAll("[data-mk-section]")) {
+      heights.set(section.dataset.mkSection, Math.round(section.getBoundingClientRect().height));
+    }
+    const baseline = heights.get("today") ?? 0;
+    for (const cell of document.querySelectorAll("[data-mk-height]")) {
+      const value = heights.get(cell.dataset.mkHeight);
+      if (value != null) cell.textContent = value + "px";
+    }
+    for (const cell of document.querySelectorAll("[data-mk-delta]")) {
+      const value = heights.get(cell.dataset.mkDelta);
+      if (value == null) continue;
+      const saved = baseline - value;
+      cell.textContent = saved + "px (" + Math.round((saved / baseline) * 100) + "%)";
+    }
+  };
+
+  measure();
+  addEventListener("resize", measure);
+})();
+</script>
+</body>
+</html>

@@ -164,6 +164,14 @@ The operations have deliberately narrow meanings:
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse
   adapter. There is no force action for unverifiable or foreign resources.
 
+Native slot cleanliness allows a narrow set of untracked ai-conductor scratch files at the
+checkout root: `.pipeline/.memory-count-at-start`, `conduct-state.json`, `engineer-run.json`,
+`HALT`, `HALT.class`, `DONE`, `events.jsonl`, and `.pipeline/gates/<step>.json` (all files are
+under `.pipeline/`). Inspection leaves them in place. Safe removal cleans only those files,
+then asks Git to remove the worktree without force. Tracked changes, symlinks, and unknown
+untracked paths, including other files under `.pipeline/`, still block safe pruning. The
+merge, process, lease, and owner checks apply as usual.
+
 Inventory is an observation, not a second owner database. Open dashboards receive only a
 content-free change signal and fetch the bounded view again. They do not receive raw process
 commands, Git diffs, environment values, or unbounded errors.

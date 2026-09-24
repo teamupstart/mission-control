@@ -1,8 +1,9 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { remoteDefaultRef } from "../actions.ts";
 import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
+import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
 import { run } from "../util/exec.ts";
 import {
   worktreeRepositoryIdentity,
@@ -142,6 +143,40 @@ export class NativeWorktreeGit implements WorktreeGit {
     return failure("git symbolic-ref HEAD", probe);
   }
 
+  private async status(path: string): Promise<GitResult<{ dirty: boolean; scratch: string[] }>> {
+    const status = await this.execute(
+      "git", ["-C", path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      { timeoutMs: 15_000 },
+    );
+    if (commandFailed(status)) return failure("git status", status);
+    const dirty: GitResult<{ dirty: boolean; scratch: string[] }> = {
+      ok: true, value: { dirty: true, scratch: [] },
+    };
+    if (status.stdout === "") return { ok: true, value: { dirty: false, scratch: [] } };
+    // NUL records keep quoted, non-ASCII and newline-bearing filenames unambiguous.
+    // Any tracked record (including a rename's first record) blocks before path filtering.
+    if (!status.stdout.endsWith("\0")) return dirty;
+    const scratch: string[] = [];
+    for (const record of status.stdout.slice(0, -1).split("\0")) {
+      const relative = record.slice(3);
+      if (!record.startsWith("?? ") || !isConductorScratchPath(relative)) return dirty;
+      // Never treat symlinks, directories named like files, or unreadable entries as scratch.
+      const parts = relative.split("/");
+      let current = path;
+      try {
+        for (const [index, part] of parts.entries()) {
+          current = join(current, part);
+          const stat = await lstat(current);
+          if (index === parts.length - 1 ? !stat.isFile() : !stat.isDirectory()) return dirty;
+        }
+      } catch {
+        return dirty;
+      }
+      scratch.push(relative);
+    }
+    return { ok: true, value: { dirty: false, scratch } };
+  }
+
   async inspect(path: string): Promise<GitResult<WorktreeInspection>> {
     const identity = worktreeRepositoryIdentity(path);
     if (!identity) {
@@ -149,20 +184,18 @@ export class NativeWorktreeGit implements WorktreeGit {
     }
     const [head, status, detached] = await Promise.all([
       this.execute("git", ["-C", path, "rev-parse", "HEAD"], { timeoutMs: 15_000 }),
-      this.execute("git", ["-C", path, "status", "--porcelain", "--untracked-files=all"], {
-        timeoutMs: 15_000,
-      }),
+      this.status(path),
       this.detachedAt(path),
     ]);
     if (commandFailed(head)) return failure("git rev-parse HEAD", head);
-    if (commandFailed(status)) return failure("git status", status);
+    if (!status.ok) return status;
     if (!detached.ok) return detached;
     return {
       ok: true,
       value: {
         path: await canonical(path),
         head: head.stdout.trim(),
-        dirty: status.stdout.trim().length > 0,
+        dirty: status.value.dirty,
         commonDirectory: identity.gitCommonDirectory,
         detached: detached.value,
       },
@@ -316,6 +349,24 @@ export class NativeWorktreeGit implements WorktreeGit {
     path: string,
     force: boolean,
   ): Promise<GitResult<void>> {
+    if (!force) {
+      const status = await this.status(path);
+      if (!status.ok) return status;
+      if (status.value.dirty) {
+        return { ok: false, reason: "worktree has changes other than disposable scratch", outcomeUnknown: false };
+      }
+      if (status.value.scratch.length > 0) {
+        // Clean exact untracked files only. Git protects files added to the index since
+        // status, and the directory exclusions protect a file replaced by a directory.
+        const cleaned = await this.execute("git", [
+          "-C", path, "clean", "-f",
+          ...status.value.scratch.flatMap((file) => ["-e", `/${file}/`]),
+          "--", ...status.value.scratch.map((file) => `:(literal)${file}`),
+        ], { timeoutMs: 30_000 });
+        if (commandFailed(cleaned)) return failure("git clean scratch", cleaned);
+      }
+    }
+    // Keep Git's final dirty check: newly arrived work must still prevent safe removal.
     const args = ["-C", identity.mainCheckoutRoot, "worktree", "remove"];
     if (force) args.push("--force");
     args.push(path);

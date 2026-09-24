@@ -4,6 +4,7 @@ import { stateDir } from "@shared/harness-runtime.mjs";
 import { piExtensionPath } from "../config.ts";
 import { inspectPiCandidate } from "./pi-candidate.ts";
 import { canReconcileExtensionLink, reconcileExtensionLink, type ReconcileResult } from "../skills/reconcile.ts";
+import type { ExtensionIntentCommit } from "./pi-link-publication.ts";
 import { assertTestStateIsolation } from "../state/isolation.ts";
 import { PI_INTEGRATION_FILES, verifyPiIntegration } from "./pi-artifact.ts";
 import { piGenerationPath, piIntegrationRoot } from "./pi-paths.ts";
@@ -11,7 +12,7 @@ import { prunePiGenerations } from "./pi-retention.ts";
 
 /** Artifact bytes are immutable. Retention protects current/prior publications and
  * generations leased by Pi processes that may start another bridge after an update. */
-export async function publishPiIntegration(onPublished?: () => void): Promise<ReconcileResult> {
+export async function publishPiIntegration(onPublished?: ExtensionIntentCommit): Promise<ReconcileResult> {
   const failed = (detail: string): ReconcileResult => ({ changed: false, linked: [], unlinked: [], blocked: ["mission-control.js"], problems: [detail] });
   const root = piIntegrationRoot();
   assertTestStateIsolation(join(stateDir(), "pi-extension.json"));

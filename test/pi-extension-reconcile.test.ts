@@ -11,6 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-extension-reconcile-"));
 process.env.MISSION_HOME = home;
@@ -69,7 +70,7 @@ test("off on a new install writes nothing; install, repoint and uninstall are id
   assert.equal(uninstallExtensionLink().changed, false);
 });
 
-for (const operation of ["symlinkSync", "renameSync"] as const) {
+for (const operation of ["symlinkSync", "exchangePaths"] as const) {
   test(`failed replacement ${operation} preserves the working link and enabled intent`, (t) => {
     const prior = join(home, "previous.js");
     const contents = "export const missionControlBuild = { previous: true };\n";
@@ -77,10 +78,11 @@ for (const operation of ["symlinkSync", "renameSync"] as const) {
     mkdirSync(dir);
     symlinkSync(prior, link);
     const before = lstatSync(link);
-    const fault = t.mock.method(fs, operation, () => {
+    const fail = () => {
       // The old implementation had already unlinked here when symlink creation failed.
       throw Object.assign(new Error("injected replacement I/O failure"), { code: "EIO" });
-    });
+    };
+    const fault = operation === "symlinkSync" ? t.mock.method(fs, operation, fail) : mockSymlinkPublication(t, operation, fail);
     syncBuiltinESMExports();
     try {
       // Persist intent before injecting rename failure into link publication only.
@@ -98,7 +100,7 @@ for (const operation of ["symlinkSync", "renameSync"] as const) {
       assert.deepEqual(readdirSync(dir), [spec.linkName], "staging leaves no residue");
       assert.deepEqual(getPiExtensionConfig(), { enabled: true });
     } finally {
-      fault.mock.restore();
+      if (operation === "symlinkSync") t.mock.restoreAll(); else (fault as ReturnType<typeof mockSymlinkPublication>).restore();
       syncBuiltinESMExports();
     }
     const retried = reconcileExtensionLink(true);
@@ -160,6 +162,81 @@ test("fresh publication refuses an entry arriving while its link is still privat
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
 
+for (const replacement of ["file", "directory", "foreign-link", "same-target-link"] as const) {
+  test(`replacement publication preserves a concurrent ${replacement} after its last identity read`, (t) => {
+    mkdirSync(dir);
+    const prior = join(home, "previous.js");
+    writeFileSync(prior, "export const missionControlBuild = {};\n");
+    symlinkSync(prior, link);
+    const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator bytes");
+    let concurrent: fs.Stats | undefined;
+    const fault = mockSymlinkPublication(t, "exchangePaths", (exchange, from, to) => {
+      fs.renameSync(link, join(dir, "displaced.js"));
+      if (replacement === "file") writeFileSync(link, "operator bytes");
+      else if (replacement === "directory") { mkdirSync(link); writeFileSync(join(link, "keep"), "directory bytes"); }
+      else symlinkSync(replacement === "same-target-link" ? target : foreign, link);
+      concurrent = lstatSync(link);
+      exchange(from, to);
+    });
+    const commit = t.mock.fn();
+    try {
+      const result = reconcileExtensionLink(true, target, commit);
+      assert.ok(concurrent);
+      assert.equal(result.changed, false);
+      assert.deepEqual(result.blocked, [spec.linkName]);
+      assert.equal(commit.mock.callCount(), 0);
+      assert.equal(lstatSync(link).ino, concurrent.ino);
+      if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator bytes");
+      if (replacement.endsWith("link")) assert.equal(readlinkSync(link), replacement === "same-target-link" ? target : foreign);
+      if (replacement === "directory") assert.equal(readFileSync(join(link, "keep"), "utf8"), "directory bytes");
+      assert.equal(readdirSync(dir).some(name => name.startsWith(".mission-extension-")), false);
+    } finally { fault.restore(); }
+  });
+}
+
+for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
+  test(`replacement publication retains the prior owned link when ${replacement} arrives after exchange`, (t) => {
+    mkdirSync(dir);
+    const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
+    symlinkSync(prior, link);
+    const owned = lstatSync(link);
+    const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator bytes");
+    let concurrent: fs.Stats | undefined;
+    const fault = mockSymlinkPublication(t, "exchangePaths", (exchange, from, to) => {
+      exchange(from, to);
+      fs.renameSync(link, join(dir, "displaced.js"));
+      if (replacement === "file") writeFileSync(link, "operator bytes");
+      else if (replacement === "directory") { mkdirSync(link); writeFileSync(join(link, "keep"), "directory bytes"); }
+      else if (replacement !== "missing") symlinkSync(replacement === "same-target-link" ? target : foreign, link);
+      concurrent = lstatSync(link, { throwIfNoEntry: false });
+    });
+    const commit = t.mock.fn();
+    try {
+      const result = reconcileExtensionLink(true, target, commit);
+      assert.equal(commit.mock.callCount(), 0, "provenance fails before the first intent write");
+      assert.equal(result.changed, false);
+      assert.deepEqual(result.blocked, [spec.linkName]);
+      const stages = readdirSync(dir).filter(name => name.startsWith(".mission-extension-"));
+      if (replacement === "missing") {
+        assert.equal(lstatSync(link).ino, owned.ino, "the exact prior link is restored when the path is free");
+        assert.equal(readlinkSync(link), prior);
+        assert.deepEqual(stages, []);
+      } else {
+        assert.ok(concurrent);
+        assert.equal(lstatSync(link).ino, concurrent.ino);
+        assert.equal(stages.length, 1);
+        const recovery = join(dir, stages[0]!);
+        assert.ok(result.problems[0]!.includes(recovery));
+        assert.equal(lstatSync(join(recovery, "candidate")).ino, owned.ino);
+        assert.equal(readlinkSync(join(recovery, "candidate")), prior);
+        if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator bytes");
+        else if (replacement === "directory") assert.equal(readFileSync(join(link, "keep"), "utf8"), "directory bytes");
+        else assert.equal(readlinkSync(link), replacement === "same-target-link" ? target : foreign);
+      }
+    } finally { fault.restore(); }
+  });
+}
+
 for (const replacement of ["file", "foreign-link", "same-target-link"] as const) {
   for (const commitFails of [false, true]) {
     test(`fresh publication does not adopt a concurrent ${replacement} before ${commitFails ? "failing" : "successful"} intent commit`, (t) => {
@@ -194,12 +271,93 @@ for (const replacement of ["file", "foreign-link", "same-target-link"] as const)
 }
 
 for (const previous of [false, true]) {
+  for (const conflict of ["withdrawal", "restoration"] as const) {
+    test(`${previous ? "replacement" : "fresh"} rollback preserves arrivals during ${conflict}`, (t) => {
+      mkdirSync(dir);
+      const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
+      if (previous) symlinkSync(prior, link);
+      const owned = lstatSync(link, { throwIfNoEntry: false });
+      let arrival: fs.Stats | undefined;
+      const fault = mockSymlinkPublication(t, "renameNoReplace", (rename, from, to) => {
+        if (from === link) {
+          fs.renameSync(link, join(dir, "displaced.js"));
+          writeFileSync(link, "first concurrent bytes");
+          arrival = lstatSync(link);
+        } else if (conflict === "restoration" && to === link) {
+          mkdirSync(link); writeFileSync(join(link, "keep"), "latest concurrent bytes");
+        }
+        rename(from, to);
+      });
+      try {
+        const result = reconcileExtensionLink(true, target, () => { throw new Error("intent commit failed"); });
+        assert.ok(arrival);
+        assert.equal(result.changed, false);
+        assert.equal(result.blocked.length, 1);
+        const stages = readdirSync(dir).filter(name => name.startsWith(".mission-extension-"));
+        if (conflict === "withdrawal") {
+          assert.equal(lstatSync(link).ino, arrival.ino);
+          assert.equal(readFileSync(link, "utf8"), "first concurrent bytes");
+          assert.equal(stages.length, previous ? 1 : 0);
+        } else {
+          assert.equal(stages.length, 1);
+          const recovery = join(dir, stages[0]!);
+          assert.ok(result.problems[0]!.includes(recovery));
+          assert.equal(lstatSync(join(recovery, "withdrawn")).ino, arrival.ino);
+          assert.equal(readFileSync(join(recovery, "withdrawn"), "utf8"), "first concurrent bytes");
+          assert.equal(readFileSync(join(link, "keep"), "utf8"), "latest concurrent bytes");
+        }
+        if (previous) {
+          const recovery = join(dir, stages[0]!);
+          assert.ok(result.problems[0]!.includes(recovery));
+          assert.equal(lstatSync(join(recovery, "candidate")).ino, owned!.ino);
+          assert.equal(readlinkSync(join(recovery, "candidate")), prior);
+        }
+      } finally { fault.restore(); }
+    });
+  }
+}
+
+test("a second arrival blocks restoration of a foreign swap victim without deleting either entry", (t) => {
+  mkdirSync(dir);
+  const prior = join(home, "previous.js"); writeFileSync(prior, "export const missionControlBuild = {};\n");
+  symlinkSync(prior, link);
+  let first: fs.Stats | undefined;
+  let latest: fs.Stats | undefined;
+  const swap = mockSymlinkPublication(t, "exchangePaths", (exchange, from, to) => {
+    fs.renameSync(link, join(dir, "displaced.js"));
+    mkdirSync(link); writeFileSync(join(link, "keep"), "first operator directory");
+    first = lstatSync(link);
+    exchange(from, to);
+  });
+  const restore = mockSymlinkPublication(t, "renameNoReplace", (rename, from, to) => {
+    if (to === link) { writeFileSync(link, "latest operator file"); latest = lstatSync(link); }
+    rename(from, to);
+  });
+  const commit = t.mock.fn();
+  try {
+    const result = reconcileExtensionLink(true, target, commit);
+    assert.ok(first); assert.ok(latest);
+    assert.equal(commit.mock.callCount(), 0);
+    assert.equal(result.blocked.length, 1);
+    assert.equal(lstatSync(link).ino, latest.ino);
+    assert.equal(readFileSync(link, "utf8"), "latest operator file");
+    const stages = readdirSync(dir).filter(name => name.startsWith(".mission-extension-"));
+    assert.equal(stages.length, 1);
+    const recovery = join(dir, stages[0]!);
+    assert.ok(result.problems[0]!.includes(recovery));
+    assert.equal(lstatSync(join(recovery, "candidate")).ino, first.ino);
+    assert.equal(readFileSync(join(recovery, "candidate", "keep"), "utf8"), "first operator directory");
+  } finally { restore.restore(); swap.restore(); }
+});
+
+for (const previous of [false, true]) {
   for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
     test(`failed ${previous ? "replacement" : "fresh"} publication preserves a concurrent ${replacement}`, () => {
       mkdirSync(dir);
       const prior = join(home, "previous.js");
       writeFileSync(prior, "export const missionControlBuild = {};\n");
       if (previous) symlinkSync(prior, link);
+      const owned = lstatSync(link, { throwIfNoEntry: false });
       const foreign = join(home, "foreign.js");
       writeFileSync(foreign, "operator code");
       let concurrent: fs.Stats | undefined;
@@ -215,14 +373,25 @@ for (const previous of [false, true]) {
         throw new Error("intent commit failed");
       });
       assert.deepEqual(result.blocked, [spec.linkName]);
-      assert.deepEqual(result.problems, [`${link}: intent commit failed`]);
       const after = lstatSync(link, { throwIfNoEntry: false });
-      assert.equal(after?.ino, concurrent?.ino, "rollback leaves the concurrent entry untouched");
-      assert.equal(after?.dev, concurrent?.dev);
+      const expected = previous && replacement === "missing" ? owned : concurrent;
+      assert.equal(after?.ino, expected?.ino, "rollback preserves a concurrent entry or restores the prior link into a free path");
+      assert.equal(after?.dev, expected?.dev);
       if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator code");
       if (replacement === "foreign-link") assert.equal(readlinkSync(link), foreign);
       if (replacement === "same-target-link") assert.equal(readlinkSync(link), target);
-      assert.equal(readdirSync(dir).some(name => name.startsWith(".mission-extension-")), false);
+      const stages = readdirSync(dir).filter(name => name.startsWith(".mission-extension-"));
+      if (previous && replacement !== "missing") {
+        assert.equal(stages.length, 1);
+        const recovery = join(dir, stages[0]!);
+        assert.ok(result.problems[0]!.includes(recovery));
+        assert.equal(lstatSync(join(recovery, "candidate")).ino, owned!.ino);
+        assert.equal(readlinkSync(join(recovery, "candidate")), prior);
+      } else {
+        assert.deepEqual(result.problems, [`${link}: intent commit failed`]);
+        assert.deepEqual(stages, []);
+        if (previous) assert.equal(readlinkSync(link), prior);
+      }
     });
   }
   test(`failed ${previous ? "replacement" : "fresh"} publication rolls back its own unchanged link`, () => {

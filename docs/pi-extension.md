@@ -26,18 +26,34 @@ flowchart LR
 The publisher copies into a private directory on the same filesystem as
 `~/.mission-control/integrations/pi/<buildId>/`, verifies the manifest, loads the copied
 extension in a bounded child, and completes a real initialize/tools-list handshake against
-its copied bridge. Only then does it publish the generation and atomically replace
+its copied bridge. Only then does it publish the generation and update
 `~/.pi/agent/extensions/mission-control.js`. Fresh publication captures a private symlink's
 identity before exposing it, uses `linkat` without following the symlink to atomically refuse
-an occupied destination, and rechecks that identity and target before committing enabled intent.
-The primitive ships in the existing native state-lock addon; no external utility is required.
-Replacement rechecks ownership and entry identity immediately before rename.
+an occupied destination, and keeps a private link to that inode until the operation finishes.
+Replacement uses an atomic exchange, retaining the displaced entry in private staging, and
+verifies its identity and target before committing intent. The prior owned link remains
+recoverable until intent and the final provenance check succeed; failure restores it when the
+discovery path is free, or retains and reports it when a concurrent entry blocks restoration.
+The native state-lock addon supplies
+the exchange and exclusive-rename primitives on macOS and Linux; no external utility is required.
+Filesystems that do not support them refuse publication without an unsafe fallback.
 
 `pi-extension.json` stores machine-local enabled intent, independently of skills and SQLite.
 Unknown or malformed intent is refused. Enable stages intent before publication and commits it
-only after the link is published; a failed intent commit restores the previous link only if
-the published link's entry identity and target still match. A concurrent replacement is left
-untouched. Failed copy, verification or link publication preserves the previous installation. Disable persists
+only after the link is published. All paths, including an unchanged link, verify identity and
+target both before and after the intent write. A lost publication compensates that write by
+restoring the exact prior intent bytes, or removing newly created intent. Already-enabled intent
+remains enabled after a failed update. An intent rollback I/O failure reports its retained recovery
+directory rather than claiming success.
+
+Link rollback withdraws an entry into private staging and verifies it before discarding it.
+Restoration uses an exclusive rename, so it cannot overwrite a later arrival. A foreign entry
+that races with exchange or withdrawal can temporarily move; its inode and bytes are preserved
+and restored to the discovery path when free. If another arrival or I/O failure prevents
+restoration, publication fails and reports a `.mission-extension-*` recovery directory beside
+the discovery path. That directory is retained for the operator, including foreign directory
+contents, and is never automatically pruned. Failed copy or verification preserves the previous
+installation. Disable persists
 off even if a foreign entry prevents removal. This state is excluded from portable backups.
 An operation queue and a process-identity lock serialize startup, Setup and standalone CLI
 writers. Crashed process claims are reclaimed by the existing installer lock protocol.
@@ -54,8 +70,9 @@ Failed publication or intent commit does not run cleanup. No health read prunes 
 Failed generation swaps remove empty damaged-backup containers; backups holding recovery
 bytes remain intact even if restoration fails.
 
-Real files, directories and foreign or unknown links at Pi's reserved extension name are never
-replaced or removed. Owned links include managed generation paths, readable legacy targets
+Real files, directories and foreign or unknown links found at Pi's reserved extension name are
+refused. Concurrent replacements are preserved by the recovery protocol above, not overwritten
+or recursively deleted. Owned links include managed generation paths, readable legacy targets
 with the `missionControlBuild` marker, and dangling legacy `dist/pi-extension/index.js` targets.
 A foreign entry requires its owner to move it before Setup can install. Health reads never
 repair anything; only explicit install/repair and enabled startup publish.

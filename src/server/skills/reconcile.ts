@@ -2,17 +2,14 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readlinkSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
-  type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -24,7 +21,7 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
 import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
-import { publishSymlinkNoReplace } from "../symlink-publication.ts";
+import { commitExtensionIntent, publishExtensionLink, type ExtensionIntentCommit } from "../extensions/pi-link-publication.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -755,17 +752,8 @@ export function canReconcileExtensionLink(): boolean {
   } catch { return false; }
 }
 
-/** Rollback owns only the link this attempt published, never a later replacement. */
-function isPublishedExtensionLink(path: string, published: Stats, target: string): boolean {
-  try {
-    const current = lstatSync(path, { throwIfNoEntry: false });
-    return !!current?.isSymbolicLink() && current.dev === published.dev && current.ino === published.ino
-      && readlinkSync(path) === target;
-  } catch { return false; }
-}
-
 /** Reconcile the single declared extension link. Never edits settings.json or real files. */
-export function reconcileExtensionLink(desired: boolean, output = piExtensionPath(), onPublished?: () => void): ReconcileResult {
+export function reconcileExtensionLink(desired: boolean, output = piExtensionPath(), onPublished?: ExtensionIntentCommit): ReconcileResult {
   const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
   for (const { dir, spec } of extensionLocations()) {
     assertTestSkillIsolation(dir);
@@ -773,7 +761,8 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
     try {
       const target = resolve(output);
       const entry = lstatSync(path, { throwIfNoEntry: false });
-      if (entry && (!entry.isSymbolicLink() || !ownsExtensionTarget(resolve(dir, readlinkSync(path))))) {
+      const previous = entry?.isSymbolicLink() ? { entry, target: readlinkSync(path) } : undefined;
+      if (entry && (!previous || !ownsExtensionTarget(resolve(dir, previous.target)))) {
         out.blocked.push(spec.linkName);
         out.problems.push(`${path} isn't ours to replace or remove; left unchanged.`);
         continue;
@@ -785,52 +774,16 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
         out.problems.push(`${target} is not a built extension. Run npm run build first.`);
         continue;
       }
-      if (desired && entry && resolve(dir, readlinkSync(path)) === target) { onPublished?.(); continue; }
+      if (desired && previous && resolve(dir, previous.target) === target) {
+        commitExtensionIntent(path, previous, onPublished);
+        continue;
+      }
       if (desired) {
         mkdirSync(dir, { recursive: true });
-        if (entry) {
-          // Publish on the same filesystem, keeping the working link until replacement
-          // succeeds. A creation or rename failure leaves the old link intact.
-          const stage = mkdtempSync(join(dir, ".mission-extension-"));
-          try {
-            const staged = join(stage, spec.linkName);
-            symlinkSync(target, staged, "file");
-            const published = lstatSync(staged);
-            // Recheck the entry after staging. Never overwrite an intervening foreign file.
-            const latest = lstatSync(path);
-            if (latest.ino !== entry.ino || latest.dev !== entry.dev || !latest.isSymbolicLink()) throw new Error("Pi extension entry changed during publication");
-            const rollback = join(stage, "previous.js");
-            symlinkSync(readlinkSync(path), rollback, "file");
-            renameSync(staged, path);
-            try { onPublished?.(); }
-            catch (error) {
-              if (isPublishedExtensionLink(path, published, target)) renameSync(rollback, path);
-              throw error;
-            }
-            out.changed = true;
-            out.unlinked.push(spec.linkName);
-            out.linked.push(spec.linkName);
-          } finally { rmSync(stage, { recursive: true, force: true }); }
-        } else {
-          // Capture identity privately, then expose that same inode without replacing
-          // any intervening entry. Keep the private link until commit/rollback finishes.
-          const stage = mkdtempSync(join(dir, ".mission-extension-"));
-          try {
-            const staged = join(stage, spec.linkName);
-            symlinkSync(target, staged, "file");
-            const published = lstatSync(staged);
-            publishSymlinkNoReplace(staged, path);
-            try {
-              if (!isPublishedExtensionLink(path, published, target)) throw new Error("Pi extension entry changed during publication");
-              onPublished?.();
-            } catch (error) {
-              if (isPublishedExtensionLink(path, published, target)) unlinkSync(path);
-              throw error;
-            }
-            out.changed = true;
-            out.linked.push(spec.linkName);
-          } finally { rmSync(stage, { recursive: true, force: true }); }
-        }
+        publishExtensionLink(path, target, previous, onPublished);
+        out.changed = true;
+        if (entry) out.unlinked.push(spec.linkName);
+        out.linked.push(spec.linkName);
       } else if (entry) {
         unlinkSync(path);
         out.changed = true;

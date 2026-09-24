@@ -17,6 +17,7 @@ import { verifyPiIntegration } from "../src/server/extensions/pi-artifact.ts";
 import { buildPiExtension } from "../scripts/build-pi-extension.ts";
 import { piGenerationPath, piIntegrationRoot, isManagedPiExtensionTarget } from "../src/server/extensions/pi-paths.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
 
 ensureNativeStateLockAddon();
 
@@ -121,16 +122,13 @@ test("startup upgrades enabled integration atomically, retaining the previous br
   } finally { clearInterval(poll); }
 });
 
-for (const operation of ["copyFileSync", "renameSync", "symlinkSync"] as const) {
+for (const operation of ["copyFileSync", "exchangePaths", "symlinkSync"] as const) {
   test(`failed ${operation} preserves the previous link, generation and intent`, async (t) => {
     const old = await enable(); const inode = lstatSync(link).ino;
     writePiIntegration(source, piMetadataSource + "\n// next release");
-    const original = fs[operation];
-    const fault = t.mock.method(fs, operation, (...args: unknown[]) => {
-      // For rename, fault the actual link publication, after copying and validation.
-      if (operation !== "renameSync" || args[1] === link) throw new Error("injected publication fault");
-      return Reflect.apply(original, fs, args);
-    }); syncBuiltinESMExports();
+    const fail = () => { throw new Error("injected publication fault"); };
+    const fault = operation === "exchangePaths" ? mockSymlinkPublication(t, operation, fail) : t.mock.method(fs, operation, fail);
+    syncBuiltinESMExports();
     try {
       const result = await applyPiExtensionConfig({ enabled: true });
       assert.equal(result.changed, false); assert.equal(result.blocked.length, 1);
@@ -138,7 +136,10 @@ for (const operation of ["copyFileSync", "renameSync", "symlinkSync"] as const) 
       assert.equal(lstatSync(link).ino, inode); assert.equal(readlinkSync(link), old);
       assert.deepEqual(getPiExtensionConfig(), { enabled: true });
       verifyPiIntegration(dirname(old));
-    } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+    } finally {
+      if (operation === "exchangePaths") (fault as ReturnType<typeof mockSymlinkPublication>).restore(); else t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
     assert.equal((await reconcilePiExtension()).changed, true);
   });
 }
@@ -169,6 +170,61 @@ test("first link publication failure never persists enabled intent", async (t) =
     assert.equal(existsSync(link), false);
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
+
+for (const installation of ["fresh", "disabled", "replacement", "unchanged"] as const) {
+  for (const timing of ["before", "after"] as const) {
+    for (const replacement of ["file", "directory", "same-target-link"] as const) {
+      test(`${installation} publication restores prior intent when a ${replacement} arrives ${timing} intent rename`, async (t) => {
+        const wasEnabled = installation === "replacement" || installation === "unchanged";
+        if (wasEnabled) await enable();
+        const owned = installation === "replacement" ? { entry: lstatSync(link), target: readlinkSync(link) } : undefined;
+        if (installation === "replacement") writePiIntegration(source, piMetadataSource + "\n// next release");
+        const intent = join(home, "pi-extension.json");
+        if (installation === "disabled") { mkdirSync(home, { recursive: true }); writeFileSync(intent, '{ "enabled": false }\n'); }
+        const prior = existsSync(intent) ? readFileSync(intent, "utf8") : undefined;
+        const rename = fs.renameSync;
+        let concurrent: fs.Stats | undefined;
+        let concurrentTarget: string | undefined;
+        const arrive = () => {
+          concurrentTarget = readlinkSync(link);
+          rename(link, join(home, "displaced.js"));
+          if (replacement === "file") writeFileSync(link, "operator bytes");
+          else if (replacement === "directory") mkdirSync(link);
+          else symlinkSync(concurrentTarget, link);
+          concurrent = lstatSync(link);
+        };
+        const fault = t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+          const committing = String(from).endsWith("/intent.json") && String(to) === intent;
+          if (committing && timing === "before") arrive();
+          rename(from, to);
+          if (committing && timing === "after") arrive();
+        });
+        syncBuiltinESMExports();
+        try {
+          const result = await applyPiExtensionConfig({ enabled: true });
+          assert.ok(concurrent, "replacement races with the durable intent write");
+          assert.equal(result.blocked.length, 1);
+          assert.equal(result.changed, false);
+          assert.equal(existsSync(intent) ? readFileSync(intent, "utf8") : undefined, prior);
+          assert.equal(result.config.enabled, wasEnabled);
+          assert.equal(lstatSync(link).ino, concurrent.ino);
+          if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator bytes");
+          if (replacement === "same-target-link") assert.equal(readlinkSync(link), concurrentTarget);
+          assert.equal(readdirSync(home).some(name => name.startsWith(".pi-extension-")), false);
+          const recoveryDirectories = readdirSync(dirname(link)).filter(name => name.startsWith(".mission-extension-"));
+          if (owned) {
+            assert.equal(recoveryDirectories.length, 1, "a failed update keeps its formerly working discovery link");
+            const recovery = join(dirname(link), recoveryDirectories[0]!);
+            assert.ok(result.problems[0]!.includes(recovery));
+            assert.equal(lstatSync(join(recovery, "candidate")).ino, owned.entry.ino);
+            assert.equal(readlinkSync(join(recovery, "candidate")), owned.target);
+          } else assert.deepEqual(recoveryDirectories, []);
+        } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+      });
+    }
+  }
+}
+
 test("intent commit failure restores the previous link without deleting either generation", async (t) => {
   const old = await enable(); writePiIntegration(source, piMetadataSource + "\n// next");
   const rename = fs.renameSync;

@@ -186,7 +186,7 @@ test("an explicit backend owns liveness even when another backend holds the same
     }),
   );
 
-  assert.equal(await homeAlive("api", machine), true);
+  assert.equal(await homeAlive("api", machine, null, "multiplexer:tmux:api"), true);
   assert.equal(await homeAlive("api", machine, "wezterm"), null);
   assert.equal(await homeAlive("api", machine, "future-terminal"), null);
 });
@@ -339,6 +339,25 @@ test("cleanup without a captured identity never resolves a legacy name to a new 
   assert.match(result.error ?? "", /identity.*unknown/);
   assert.equal(enumerated, false);
   assert.equal(killed, false);
+});
+
+test("legacy multiplexer liveness cannot infer absence from a renamed or missing title", async () => {
+  let panes = [muxPane({ session: "owned-uuid", sessionName: "renamed" })];
+  const machine = deps(fakeMultiplexer(), fakeEmulator());
+  machine.multiplexers.cmux = fakeMultiplexer({
+    id: "cmux",
+    sessions: sessions(),
+    list: async () => panes,
+  });
+
+  assert.equal(await homeAlive("original", machine, "cmux", "multiplexer:cmux:owned-uuid"), true);
+  assert.equal(await homeAlive("original", machine, "cmux"), null);
+  panes = [muxPane({ session: "replacement-uuid", sessionName: "original" })];
+  assert.equal(await homeAlive("original", machine, "cmux"), null, "a matching title cannot identify the legacy home either");
+  assert.equal(await homeAlive("original", machine, "cmux", "multiplexer:cmux:owned-uuid"), false);
+  panes = [];
+  assert.equal(await homeAlive("original", machine, "cmux"), null);
+  assert.equal(await homeAlive("original", machine, "cmux", "multiplexer:cmux:owned-uuid"), false);
 });
 
 test("legacy emulator titles allocate names but do not prove liveness", async () => {

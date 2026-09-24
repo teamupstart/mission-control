@@ -30,17 +30,30 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 
 ## Managed install and the receipt
 
-`make install` ([`scripts/install-app.mjs`](../scripts/install-app.mjs)) is the user install
-path; `make app` and `make install-app` remain the developer path that packages the current
+`make install` and the [Bash installer](../scripts/install.sh) both use
+[`scripts/install-app.mjs`](../scripts/install-app.mjs) for managed installation;
+`make app` and `make install-app` remain the developer path that packages the current
 worktree. The difference that matters is not the build - it is who owns the source tree the app
 was built from, and whether an install left a record of itself.
 
-A managed install builds in a clone **only the updater touches**, at `app-src` inside the state
+By default, `make install` builds in a clone **only the updater touches**, at `app-src` inside the state
 directory (`~/.mission-control/app-src`). A developer's own worktree is never fetched, checked
-out, or rebuilt by the install or by the updater, which is why the install can safely use a
-forced checkout in that one location and nowhere else. The clone is a full checkout with its own
+out, or rebuilt by the install or by the updater. Forced checkout is confined to installer-owned
+source directories. The managed clone is a full checkout with its own
 `node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
 deleting it costs the next install a fresh clone and nothing else.
+
+The Bash entry point passes `--temporary-source`: its bootstrap checkout and build clone are
+temporary and removed on exit, including ordinary failure and interruption. It never deletes
+an existing `app-src` cache or the caller's checkout. Before installing the app, esbuild bundles
+the installer and its imported dependencies into one self-contained module under `installers/`
+in the state directory, alongside its validated origin. The compiler comes from the build
+clone's installed dependencies; no separate dependency manifest is maintained. The receipt's
+`sourceClone` names that small directory, keeping the entry point
+expected by already-released updaters available without retaining a Git repository,
+`node_modules`, or packaged build output. A later update invokes it normally and recreates
+`app-src`; that update's receipt then names the managed cache. `--temporary-source` cannot
+be combined with `--stage-only` or `--from-staged`, which require durable build output.
 
 ### Where the app is installed
 

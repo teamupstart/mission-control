@@ -12,6 +12,7 @@
 //   --ref <git-ref>       install that ref instead of the newest stable release
 //   --from-origin         install this checkout's own origin rather than the canonical repository
 //   --dry-run             print what each step would do, change nothing
+//   --temporary-source    remove build sources on exit; retain only the updater's installer
 //   --scope user|system   install into ~/Applications (the default) or /Applications
 //   --apps-dir <dir>      install into <dir> instead (verification aid)
 //   --progress            also emit machine-readable stage markers for the app to render
@@ -73,13 +74,16 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -493,6 +497,7 @@ const USAGE = `Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-ori
   --ref <git-ref>       install that ref instead of the newest stable release
   --from-origin         install this checkout's own origin rather than ${CANONICAL_REPO}
   --dry-run             print what each step would do, change nothing
+  --temporary-source    remove build sources on exit; retain only the updater's installer
   --scope user|system   install into ${userAppsDir()} (the default for a new install)
                         or ${SYSTEM_APPS_DIR} for every account on this Mac
   --apps-dir <dir>      install into <dir> instead (verification aid; the directory must exist)
@@ -506,6 +511,7 @@ export function parseArgs(argv) {
     ref: null,
     fromOrigin: false,
     dryRun: false,
+    temporarySource: false,
     /** Null until a destination is resolved: the default now depends on the receipt and home. */
     appsDir: null,
     scope: null,
@@ -517,6 +523,7 @@ export function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--temporary-source") options.temporarySource = true;
     else if (arg === "--from-origin") options.fromOrigin = true;
     else if (arg === "--progress") options.progress = true;
     else if (arg === "--stage-only") options.stageOnly = true;
@@ -544,6 +551,9 @@ export function parseArgs(argv) {
   // for the swap alone, so a run carrying both has no meaning to fall back to.
   if (options.stageOnly && options.fromStaged) {
     return { options, help: false, problem: "--stage-only and --from-staged cannot be combined" };
+  }
+  if (options.temporarySource && (options.stageOnly || options.fromStaged)) {
+    return { options, help: false, problem: "--temporary-source cannot be combined with --stage-only or --from-staged" };
   }
   // The destination is settled here, before a clone is fetched or a build starts, because a
   // conflicting pair of destination arguments has no safe fallback and a long build is an
@@ -892,7 +902,12 @@ function installApp(options) {
 
   // 2. Repository to install -------------------------------------------------------------
   heading("Repository");
-  const originUrl = capture("git", ["-C", repoRoot, "remote", "get-url", "origin"]).stdout.trim();
+  // The small retained installer has no .git directory. Its recorded origin is still parsed
+  // and checked by the same repository policy as a checkout's remote, including fork refusal.
+  const recordedOrigin = join(repoRoot, "install-origin");
+  const originUrl = !existsSync(join(repoRoot, ".git")) && existsSync(recordedOrigin)
+    ? readFileSync(recordedOrigin, "utf8").trim()
+    : capture("git", ["-C", repoRoot, "remote", "get-url", "origin"]).stdout.trim();
   const origin = parseRemote(originUrl);
   const { repo, problem: repoProblem } = resolveInstallRepo({
     originSlug: origin?.slug ?? null,
@@ -902,7 +917,18 @@ function installApp(options) {
   if (repoProblem) fail(repoProblem);
   ok(repo === CANONICAL_REPO ? `${repo} (canonical)` : `${repo} (--from-origin)`);
 
-  const clone = join(stateDir(), SOURCE_CLONE_DIR_NAME);
+  let clone = join(stateDir(), SOURCE_CLONE_DIR_NAME);
+  if (options.temporarySource) {
+    if (dryRun) {
+      clone = join(tmpdir(), "mission-control-install-<temporary>", "source");
+    } else {
+      const temporaryRoot = mkdtempSync(join(tmpdir(), "mission-control-install-"));
+      process.on("exit", () => rmSync(temporaryRoot, { recursive: true, force: true }));
+      process.on("SIGINT", () => process.exit(130));
+      process.on("SIGTERM", () => process.exit(143));
+      clone = join(temporaryRoot, "source");
+    }
+  }
 
   if (swapOnly) {
     // The build already happened, in an earlier run of this same script, and its output is the
@@ -955,7 +981,7 @@ function installApp(options) {
 
   // 3. Updater-owned clone ---------------------------------------------------------------
   progress("source");
-  heading("Updater-owned clone");
+  heading(options.temporarySource ? "Temporary build clone" : "Updater-owned clone");
   const remoteUrl = canonicalRemoteUrl(origin?.transport ?? "https", repo);
   if (existsSync(clone)) {
     // Host AND slug. This clone is about to be fetched and force-checked-out, so a remote that
@@ -1098,6 +1124,25 @@ function installApp(options) {
   }
 
   // 8. Install and 9. Receipt ------------------------------------------------------------
+  let receiptSource = clone;
+  let installed = false;
+  if (options.temporarySource && !dryRun) {
+    const installers = join(stateDir(), "installers");
+    mkdirSync(installers, { recursive: true });
+    receiptSource = mkdtempSync(join(installers, "installer-"));
+    process.on("exit", () => {
+      if (!installed) rmSync(receiptSource, { recursive: true, force: true });
+    });
+    // Use the compiler already installed for packaging, and let imports own the dependency
+    // graph. Older apps still find sourceClone/scripts/install-app.mjs, but that entry point
+    // is now self-contained and needs neither a checkout nor node_modules after cleanup.
+    run(join(clone, "node_modules", ".bin", "esbuild"), [
+      join(repoRoot, "scripts", "install-app.mjs"),
+      "--bundle", "--platform=node", "--format=esm", "--target=node24",
+      `--outfile=${join(receiptSource, "scripts", "install-app.mjs")}`,
+    ], { cwd: clone });
+    writeFileSync(join(receiptSource, "install-origin"), `${originUrl}\n`);
+  }
   const appPath = swapAndRecord({
     dryRun,
     bundle: packagedApp,
@@ -1107,10 +1152,11 @@ function installApp(options) {
     repo,
     ref,
     source,
-    clone,
+    clone: receiptSource,
     sourceVersion,
     progress,
   });
+  installed = true;
 
   console.log("\n\x1b[1m─ summary ─\x1b[0m");
   if (dryRun) {
@@ -1119,13 +1165,20 @@ function installApp(options) {
   }
   console.log(`\x1b[32mMission Control ${sourceVersion} installed.\x1b[0m`);
   console.log(`  app:    ${appPath}  (${describeInstallScope(installScope)})`);
-  console.log(`  source: ${clone}  (the updater owns this clone; your own worktree is untouched)`);
+  if (options.temporarySource) {
+    console.log(`  updater installer: ${receiptSource}`);
+    console.log("  temporary sources and build output will be removed on exit");
+  } else {
+    console.log(`  source: ${clone}  (the updater owns this clone; your own worktree is untouched)`);
+  }
   console.log("\nNext:");
   console.log(`  open "${appPath}"`);
   return 0;
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
+// Node resolves the module URL through symlinks. macOS's normal TMPDIR starts with /var,
+// which resolves to /private/var; compare the same identity when invoked from a download.
+const invokedPath = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : "";
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const { options, help, problem } = parseArgs(process.argv.slice(2));
   if (help) {

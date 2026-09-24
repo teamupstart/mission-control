@@ -129,6 +129,7 @@ export function parseArgs(argv: string[]): {
     ref: string | null;
     fromOrigin: boolean;
     dryRun: boolean;
+    temporarySource: boolean;
     /** Null until `resolveInstallDestination` picks one; `--apps-dir` sets it explicitly. */
     appsDir: string | null;
     /** The proposed `--scope`, unvalidated here and decided by the destination policy. */

@@ -168,15 +168,35 @@ Prefer a real menu-bar app over a browser tab? Mission Control packages into a n
 macOS app (Apple Silicon) that supervises the daemon, shows the dashboard in a window,
 and - crucially - **delivers alerts even with the window closed** (a browser tab can't).
 
-```sh
-make install        # install the app from a clean, updater-owned clone
+Install directly, with no checkout to keep:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' --
 ```
 
-That is the whole install. It needs `git`, an authenticated `gh` (`gh auth login`), the Xcode
+The Bash installer downloads a temporary bootstrap checkout, then calls the same installer as
+`make install`. It removes its temporary checkouts, dependencies, and build output on success
+or failure. A self-contained installer remains under `~/.mission-control/installers`,
+so even an older installed release can prepare its next update. Requesting an update later
+creates the normal updater-owned `app-src` cache. Existing caches and personal checkouts are
+left alone. Like any process, a forcibly killed installer cannot run its cleanup handlers.
+
+The wrapper reports download failures as failures. Pass installer options after its final `--`,
+for example:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' -- --ref v1.2.3
+```
+
+From a checkout, `make install` retains the updater-owned build cache as before.
+`make install ARGS="--temporary-source"` uses the same temporary-build behavior as Bash.
+Both paths share release selection, verification, install destinations, and receipts.
+
+The install needs Node.js 24+ with npm, `git`, an authenticated `gh` (`gh auth login`), the Xcode
 command line tools (`xcode-select --install`, for the native keep-awake module node-gyp
 compiles during packaging), and an Apple Silicon Mac - it refuses an Intel host rather than
-building an app that cannot run there. Each is checked before the clone, so a missing one
-costs seconds rather than failing at the end of a full build. From a fresh clone it:
+building an app that cannot run there. Each is checked before the build clone, so a missing one
+costs seconds rather than failing at the end of a full build. `make install`:
 
 - establishes a **separate clone of this repository at `~/.mission-control/app-src` that only
   the updater ever touches**. Your own worktree is never built, fetched, or checked out by it;

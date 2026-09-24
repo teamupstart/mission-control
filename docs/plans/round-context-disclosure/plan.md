@@ -31,10 +31,9 @@ app means this needs you. Neither is actionable.
 
 ## Mockups
 
-`docs/plans/round-context-disclosure/mockups.html` renders today's surface and four
-alternatives using the product's own stylesheet and markup, so each one shows what would
-actually ship. Each alternative's disclosure is interactive in that page, and the measured
-heights below are what it reports for the collapsed state of each.
+`docs/plans/round-context-disclosure/mockups.html` is a self-contained page rendering today's
+surface and four alternatives with the product's own stylesheet and markup, so each one shows
+what would actually ship. The measured heights recorded below come from that page.
 
 Each option keeps every sentence and puts the explanation behind a click. None of them delete
 a fact.

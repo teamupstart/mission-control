@@ -12,6 +12,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -753,6 +754,15 @@ export function canReconcileExtensionLink(): boolean {
   } catch { return false; }
 }
 
+/** Rollback owns only the link this attempt published, never a later replacement. */
+function isPublishedExtensionLink(path: string, published: Stats, target: string): boolean {
+  try {
+    const current = lstatSync(path, { throwIfNoEntry: false });
+    return !!current?.isSymbolicLink() && current.dev === published.dev && current.ino === published.ino
+      && readlinkSync(path) === target;
+  } catch { return false; }
+}
+
 /** Reconcile the single declared extension link. Never edits settings.json or real files. */
 export function reconcileExtensionLink(desired: boolean, output = piExtensionPath(), onPublished?: () => void): ReconcileResult {
   const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
@@ -784,6 +794,7 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
           try {
             const staged = join(stage, spec.linkName);
             symlinkSync(target, staged, "file");
+            const published = lstatSync(staged);
             // Recheck the entry after staging. Never overwrite an intervening foreign file.
             const latest = lstatSync(path);
             if (latest.ino !== entry.ino || latest.dev !== entry.dev || !latest.isSymbolicLink()) throw new Error("Pi extension entry changed during publication");
@@ -791,7 +802,10 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
             symlinkSync(readlinkSync(path), rollback, "file");
             renameSync(staged, path);
             try { onPublished?.(); }
-            catch (error) { renameSync(rollback, path); throw error; }
+            catch (error) {
+              if (isPublishedExtensionLink(path, published, target)) renameSync(rollback, path);
+              throw error;
+            }
             out.changed = true;
             out.unlinked.push(spec.linkName);
             out.linked.push(spec.linkName);
@@ -799,8 +813,12 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
         } else {
           // Creating directly refuses an intervening file instead of overwriting it.
           symlinkSync(target, path, "file");
+          const published = lstatSync(path);
           try { onPublished?.(); }
-          catch (error) { unlinkSync(path); throw error; }
+          catch (error) {
+            if (isPublishedExtensionLink(path, published, target)) unlinkSync(path);
+            throw error;
+          }
           out.changed = true;
           out.linked.push(spec.linkName);
         }

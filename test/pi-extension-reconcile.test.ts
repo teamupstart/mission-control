@@ -137,6 +137,51 @@ test("real files, directories, foreign links and unknown dangling links are neve
   }
 });
 
+for (const previous of [false, true]) {
+  for (const replacement of ["file", "directory", "foreign-link", "same-target-link", "missing"] as const) {
+    test(`failed ${previous ? "replacement" : "fresh"} publication preserves a concurrent ${replacement}`, () => {
+      mkdirSync(dir);
+      const prior = join(home, "previous.js");
+      writeFileSync(prior, "export const missionControlBuild = {};\n");
+      if (previous) symlinkSync(prior, link);
+      const foreign = join(home, "foreign.js");
+      writeFileSync(foreign, "operator code");
+      let concurrent: fs.Stats | undefined;
+      const result = reconcileExtensionLink(true, target, () => {
+        assert.equal(readlinkSync(link), target);
+        // Keep the published inode alive so even a replacement with the same target
+        // has a distinct identity on filesystems that promptly reuse freed inodes.
+        fs.renameSync(link, join(dir, "displaced.js"));
+        if (replacement === "file") writeFileSync(link, "operator code");
+        else if (replacement === "directory") mkdirSync(link);
+        else if (replacement !== "missing") symlinkSync(replacement === "foreign-link" ? foreign : target, link);
+        concurrent = lstatSync(link, { throwIfNoEntry: false });
+        throw new Error("intent commit failed");
+      });
+      assert.deepEqual(result.blocked, [spec.linkName]);
+      assert.deepEqual(result.problems, [`${link}: intent commit failed`]);
+      const after = lstatSync(link, { throwIfNoEntry: false });
+      assert.equal(after?.ino, concurrent?.ino, "rollback leaves the concurrent entry untouched");
+      assert.equal(after?.dev, concurrent?.dev);
+      if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator code");
+      if (replacement === "foreign-link") assert.equal(readlinkSync(link), foreign);
+      if (replacement === "same-target-link") assert.equal(readlinkSync(link), target);
+      assert.equal(readdirSync(dir).some(name => name.startsWith(".mission-extension-")), false);
+    });
+  }
+  test(`failed ${previous ? "replacement" : "fresh"} publication rolls back its own unchanged link`, () => {
+    mkdirSync(dir);
+    const prior = join(home, "previous.js");
+    writeFileSync(prior, "export const missionControlBuild = {};\n");
+    if (previous) symlinkSync(prior, link);
+    const result = reconcileExtensionLink(true, target, () => { throw new Error("intent commit failed"); });
+    assert.deepEqual(result.problems, [`${link}: intent commit failed`]);
+    if (previous) assert.equal(readlinkSync(link), prior);
+    else assert.equal(lstatSync(link, { throwIfNoEntry: false }), undefined);
+    assert.equal(readdirSync(dir).some(name => name.startsWith(".mission-extension-")), false);
+  });
+}
+
 test("the build output layout the reconciler recognizes is the one this build writes", () => {
   // piExtensionPath keeps its specifier literal so the bundle smoke check can read it,
   // so nothing but this stops the two drifting apart.

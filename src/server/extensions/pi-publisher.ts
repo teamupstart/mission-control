@@ -1,4 +1,4 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { piExtensionPath } from "../config.ts";
@@ -41,9 +41,15 @@ export async function publishPiIntegration(onPublished?: () => void): Promise<Re
       if (!valid) {
         const retained = mkdtempSync(join(root, ".damaged-"));
         const backup = join(retained, manifest.buildId);
-        renameSync(generation, backup);
-        try { renameSync(stage, generation); stage = undefined; }
-        catch (error) { renameSync(backup, generation); throw error; }
+        try {
+          renameSync(generation, backup);
+          try { renameSync(stage, generation); stage = undefined; }
+          catch (error) { renameSync(backup, generation); throw error; }
+        } finally {
+          // A failed move or successful restoration leaves an empty container. Never
+          // recursively remove it: failed restoration must retain the recovery bytes.
+          try { rmdirSync(retained); } catch { /* Nonempty or inaccessible backup stays intact. */ }
+        }
       }
     } else { renameSync(stage, generation); stage = undefined; }
     const result = reconcileExtensionLink(true, join(generation, "extension.js"), onPublished);

@@ -208,6 +208,43 @@ test("repair replaces damaged owned files, retaining the damaged directory for r
   assert.equal(readdirSync(generations).filter(name => name.startsWith(".damaged-")).length, 1);
 });
 
+for (const failure of ["backup", "replacement", "restoration"] as const) {
+  test(`failed damaged-generation ${failure} removes empty backup containers and retains recovery data`, async (t) => {
+    const target = await enable();
+    const generation = dirname(target);
+    const buildId = verifyPiIntegration(generation).buildId;
+    writeFileSync(target, "damaged bytes for recovery");
+    const rename = fs.renameSync;
+    let failures = 0;
+    const fault = t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+      if ((failure === "backup" && String(from) === generation)
+        || (failure !== "backup" && String(to) === generation
+          && (failure === "restoration" || String(from).includes("/.staging-")))) {
+        failures++;
+        throw new Error("injected damaged-generation rename failure");
+      }
+      rename(from, to);
+    });
+    syncBuiltinESMExports();
+    try {
+      for (let attempt = 0; attempt < (failure === "restoration" ? 1 : 3); attempt++) {
+        assert.equal((await applyPiExtensionConfig({ enabled: true })).blocked.length, 1);
+        const entries = readdirSync(piIntegrationRoot());
+        assert.equal(entries.some(name => name.startsWith(".staging-")), false);
+        const backups = entries.filter(name => name.startsWith(".damaged-"));
+        if (failure === "restoration") {
+          assert.equal(backups.length, 1);
+          assert.equal(readFileSync(join(piIntegrationRoot(), backups[0]!, buildId, "extension.js"), "utf8"), "damaged bytes for recovery");
+        } else {
+          assert.deepEqual(backups, [], "failed retries must not accumulate empty backup containers");
+          assert.equal(readFileSync(target, "utf8"), "damaged bytes for recovery");
+        }
+      }
+      assert.equal(failures, failure === "restoration" ? 2 : 3);
+    } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+  });
+}
+
 test("repeated repair retains only the newest idle damaged backup", async () => {
   const target = await enable();
   for (let repair = 0; repair < 4; repair++) {

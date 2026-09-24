@@ -32,8 +32,9 @@ Replacement rechecks ownership and entry identity immediately before rename.
 
 `pi-extension.json` stores machine-local enabled intent, independently of skills and SQLite.
 Unknown or malformed intent is refused. Enable stages intent before publication and commits it
-only after the link is published; a failed intent commit restores the previous link. Failed
-copy, verification or link publication preserves the previous installation. Disable persists
+only after the link is published; a failed intent commit restores the previous link only if
+the published link's entry identity and target still match. A concurrent replacement is left
+untouched. Failed copy, verification or link publication preserves the previous installation. Disable persists
 off even if a foreign entry prevents removal. This state is excluded from portable backups.
 An operation queue and a process-identity lock serialize startup, Setup and standalone CLI
 writers. Crashed process claims are reclaimed by the existing installer lock protocol.
@@ -47,6 +48,8 @@ not lose protection. Process exit releases the lease; after a crash, the next su
 publication reclaims it using the process identity. Unreadable or unknown leases fail closed.
 Cleanup failures defer reclamation until a later publication and never undo a successful install.
 Failed publication or intent commit does not run cleanup. No health read prunes files.
+Failed generation swaps remove empty damaged-backup containers; backups holding recovery
+bytes remain intact even if restoration fails.
 
 Real files, directories and foreign or unknown links at Pi's reserved extension name are never
 replaced or removed. Owned links include managed generation paths, readable legacy targets

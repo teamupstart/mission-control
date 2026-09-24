@@ -55,11 +55,13 @@ test("bare identity follows Git boolean syntax and changes in included config, r
     assert.equal(mainRepoRoot(bare), bare);
     writeFileSync(join(bare, "config"), '[core]\n bare = "yes"\n');
     assert.equal(isBareRepository(bare), true);
-    writeFileSync(join(bare, "included"), "[core]\n bare = true\n");
-    writeFileSync(join(bare, "config"), "[include]\n path = included\n");
-    assert.equal(mainRepoRoot(bare), bare);
-    writeFileSync(join(bare, "included"), "[core]\n bare = false\n");
-    assert.equal(isBareRepository(bare), false, "the include changed without changing the parent config");
+    for (const section of ["include", `includeIf "gitdir:${bare}"`]) {
+      writeFileSync(join(bare, "included"), "[core]\n bare = true\n");
+      writeFileSync(join(bare, "config"), `[${section}]\n path = included\n`);
+      assert.equal(mainRepoRoot(bare), bare, section);
+      writeFileSync(join(bare, "included"), "[core]\n bare = false\n");
+      assert.equal(isBareRepository(bare), false, `${section} changed without changing the parent config`);
+    }
     writeFileSync(join(bare, "config"), "[core]\n bare = invalid\n");
     assert.equal(mainRepoRoot(bare), null);
     assert.equal(gitInfo(bare).repoRoot, null, "unknown bare state must not grant the container");

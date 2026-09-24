@@ -15,8 +15,8 @@ function bareGitDirectory(dir: string): boolean | null {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? false : null;
   }
-  // Ordinary configs are stable across discovery ticks. Includes can change independently,
-  // so those are always re-read by Git instead of trusting the parent file's cached value.
+  // Ordinary configs are stable across discovery ticks. Both include and includeIf can
+  // change independently, so Git re-reads them rather than trusting the parent's cache.
   const cacheable = !/^\s*\[\s*include/im.test(source);
   const cached = bareConfigCache.get(dir);
   if (cacheable && cached?.source === source) return cached.bare;

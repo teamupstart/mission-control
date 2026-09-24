@@ -1011,7 +1011,10 @@ test("a cycle that moves something republishes health, and an idle cycle wakes n
   capture();
 
   let published = 0;
-  const service = startTelemetry({}, { cycleMs: 20, onHealthChanged: () => (published += 1) });
+  // Hold the health-sample clock still: crossing a 30-second bucket creates real work,
+  // even while the cadence timer is otherwise idle.
+  const now = Date.now();
+  const service = startTelemetry({ now: () => now }, { cycleMs: 20, onHealthChanged: () => (published += 1) });
   try {
     await waitFor(() => published > 0, "the cycle that consumed the journal should publish");
 

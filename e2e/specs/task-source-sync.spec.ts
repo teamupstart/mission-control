@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Task } from "../../src/shared/types.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
@@ -33,6 +33,39 @@ async function enable(page: Page, daemon: DaemonHandle) {
   await page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"}).check();
   await expect.poll(async()=> (await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json()).sources[0].keepUpdated).toBe(true);
 }
+
+test("imported update setting matches the backlog autopilot typography and card", async ({ page, daemon }) => {
+  await configure(page, daemon);
+  const updates = page.getByRole("checkbox", { name: "Keep imported backlog tasks updated", exact: true });
+  const autopilot = page.getByRole("checkbox", { name: "Allow backlog autopilot to schedule swept tasks" });
+  const updateCard = page.locator("label").filter({ has: updates });
+  const autopilotCard = page.locator("label").filter({ has: autopilot });
+  const style = (locator: Locator, properties: string[]) => locator.evaluate((node, keys) => {
+    const computed = getComputedStyle(node);
+    return Object.fromEntries(keys.map((key) => [key, computed.getPropertyValue(key)]));
+  }, properties);
+  const textProperties = ["font-family", "font-size", "font-weight", "line-height", "color"];
+  expect(await style(page.getByText("Keep imported backlog tasks updated", { exact: true }), textProperties))
+    .toEqual(await style(page.getByText("Allow backlog autopilot", { exact: true }), textProperties));
+  const description = updateCard.getByText(/On each sweep, refresh imported details/);
+  await expect(description).toBeVisible();
+  expect(await style(description, textProperties))
+    .toEqual(await style(autopilotCard.getByText(/On, Foreman may schedule tasks/), textProperties));
+  const cardProperties = ["padding", "border-width", "border-style", "border-color", "border-radius", "background-color", "gap", "align-items"];
+  for (const checked of [false, true]) {
+    await updates.setChecked(checked);
+    await autopilot.setChecked(checked);
+    await page.mouse.move(0, 0);
+    await expect(async () => {
+      expect(await style(updateCard, cardProperties)).toEqual(await style(autopilotCard, cardProperties));
+    }).toPass();
+  }
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("task-source-sync"); mkdirSync(dir, { recursive: true });
+    await updates.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${dir}matching-settings-cards.png` });
+  }
+});
 
 test("source updates preserve task identity, arrive over SSE, and resolve local conflicts",async({page,context,daemon})=>{
   await configure(page,daemon);

@@ -27,13 +27,15 @@ export function TaskSourceSync({ src, state, onChange }: {
   return <section className="ts-sync" aria-label="Imported task updates">
     <label className={`settings-toggle${src.keepUpdated ? " is-on" : ""}`}>
       <Tooltip label="Refresh imported details on each sweep while tasks have not started">
-        <input type="checkbox" checked={src.keepUpdated === true}
+        <input type="checkbox" checked={src.keepUpdated === true} aria-label="Keep imported backlog tasks updated"
           onChange={(event) => onChange({ ...src, keepUpdated: event.target.checked })} />
       </Tooltip>
-      <span>Keep imported backlog tasks updated</span>
+      <span className="settings-toggle-text">
+        <span className="settings-toggle-label">Keep imported backlog tasks updated</span>
+        <span className="settings-toggle-desc">On each sweep, refresh imported details for tasks that have not started.
+          Local edits are preserved and conflicting updates are shown here for review. This does not change task status or write upstream.</span>
+      </span>
     </label>
-    <p className="settings-hint">On each sweep, refresh imported details for tasks that have not started.
-      Local edits are preserved and conflicting updates are shown here for review. This does not change task status or write upstream.</p>
     {src.keepUpdated && <p className="settings-hint">{reviews.length} linked backlog {reviews.length === 1 ? "item" : "items"}.
       {unchecked > 0 && ` ${unchecked} older ${unchecked === 1 ? "item needs" : "items need"} a sweep before adoption review.`}</p>}
     {pending.map((review) => <article key={review.taskId} className="ts-sync-review" aria-label={`Source update for ${review.externalId}`}>

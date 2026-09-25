@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { run } from "../src/server/util/exec.ts";
+import { inspectWorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { ownWorktreeProcesses } from "../src/server/worktrees/own-processes.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
@@ -156,10 +161,15 @@ test("inventory reads share one later observation and never join one that predat
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let held = (): void => {};
+  const firstHeld = new Promise<void>((resolve) => {
+    held = resolve;
+  });
   const legacy = {
     capabilities: async () => ({ kind: "missing" as const, diagnostic: "not installed" }),
     inventory: async () => {
       reads += 1;
+      held();
       await gate;
       return [];
     },
@@ -173,7 +183,15 @@ test("inventory reads share one later observation and never join one that predat
     diskBytes: async () => null,
   });
   const first = service.inventory();
-  while (reads === 0) await new Promise((resolve) => setImmediate(resolve));
+  // Wait for the first observation to be held open - or fail at once if it ended instead,
+  // rather than spinning forever on a counter that will never move.
+  await Promise.race([
+    firstHeld,
+    first.then(
+      () => { throw new Error("the first observation finished before it was held"); },
+      (error: unknown) => { throw error; },
+    ),
+  ]);
   // Both arrive while the first observation is running, so neither may reuse it.
   const second = service.inventory();
   const third = service.inventory();
@@ -600,4 +618,34 @@ test("a slow Git removal does not make an unrelated preview wait", async () => {
   finish();
   assert.equal(outcome, "observed", "status() waited behind the removal");
   assert.equal((await removal).outcome, "removed");
+});
+
+test("a process scan during our own running worktree Git ignores it, and still sees anything else in the slot", async () => {
+  // Real processes, real ps and lsof. A tracked command stands in for a long git worktree
+  // remove: it runs with its cwd inside the slot for as long as the scan takes.
+  const [slot] = await availableSlots("mission-worktree-bg-own-git-", 1);
+  const git = new NativeWorktreeGit((_bin, _args, opts) =>
+    run("sh", ["-c", "sleep 6"], { ...opts, cwd: slot!.path, timeoutMs: 20_000 }));
+  const running = git.inspect(slot!.path);
+  while (ownWorktreeProcesses().size === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const ours = (await inspectWorktreeOccupancy([slot!.path])).get(slot!.path);
+  assert.equal(ours?.status, "known", ours?.status === "unknown" ? ours.reason : "");
+  assert.deepEqual(ours?.status === "known" ? ours.occupants : null, [], "our own Git is not an occupant");
+
+  const foreign = spawn("sleep", ["6"], { cwd: slot!.path, stdio: "ignore" });
+  await once(foreign, "spawn");
+  try {
+    const theirs = (await inspectWorktreeOccupancy([slot!.path])).get(slot!.path);
+    assert.equal(theirs?.status, "known", theirs?.status === "unknown" ? theirs.reason : "");
+    assert.deepEqual(
+      theirs?.status === "known" ? theirs.occupants.map((entry) => entry.pid) : null,
+      [foreign.pid],
+      "a process we did not start is still an occupant",
+    );
+  } finally {
+    foreign.kill("SIGKILL");
+    await running;
+  }
+  assert.equal(ownWorktreeProcesses().size, 0, "a finished command is no longer recorded");
 });

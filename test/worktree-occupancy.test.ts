@@ -275,3 +275,25 @@ test("an omitted PID that is still live and in scope keeps occupancy unknown", a
   });
   assert.deepEqual(result.get(one), { status: "unknown", reason: "cwd listing omitted 1 ps-listed PID: 20" });
 });
+
+test("this daemon's running worktree Git and its helpers are never occupants, and are not cwd-read", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20), process(30, 20)],
+      unknownReason: null,
+      cwdScopePids: [10, 20, 30],
+      completedCollectorPids: [],
+    }),
+    ownProcesses: () => new Set([20]),
+    readCwds: async (pids) => {
+      assert.deepEqual(pids, [10], "our Git (20) and its helper (30) are excluded before the cwd read");
+      return { cwds: new Map([[10, one]]), unknownReason: null };
+    },
+  });
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10], "a foreign process in the slot still counts");
+  }
+});

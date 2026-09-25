@@ -124,6 +124,12 @@ export async function run(
      * would otherwise retry forever.
      */
     maxBuffer?: number;
+    /**
+     * Called with the child's PID as soon as it exists, while it is still running. Lets a
+     * caller account for its own children - the worktree occupancy scan must not mistake
+     * this daemon's `git -C <slot>` for somebody working in that slot.
+     */
+    onSpawn?: (pid: number) => void;
   } = {},
 ): Promise<RunResult> {
   const executable = await executableLocator.resolveCommand(bin, {
@@ -199,6 +205,7 @@ export async function run(
         },
       );
       childPid = child.pid ?? null;
+      if (childPid !== null) opts.onSpawn?.(childPid);
     } catch (err) {
       // `execFile` reports a non-existent binary through the CALLBACK, but an argv the
       // kernel will not take is thrown SYNCHRONOUSLY out of `spawn` - and a throw inside

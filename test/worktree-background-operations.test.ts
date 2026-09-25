@@ -4,6 +4,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "../src/server/db.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
+import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
@@ -505,7 +506,7 @@ test("failure reports are never evicted: a full list refuses new cleanups until 
   assert.deepEqual((await capped.inventory()).operations.map((entry) => entry.id), [failedIds[1]]);
 });
 
-test("a process read that fails while Git is still observing degrades to unknown occupancy, never a crash", async () => {
+test("a failing process read degrades status to unknown occupancy, never a crash", async () => {
   const [slot] = await availableSlots("mission-worktree-bg-occupancy-reject-", 1);
   const unhandled: unknown[] = [];
   const listen = (reason: unknown) => unhandled.push(reason);
@@ -525,4 +526,39 @@ test("a process read that fails while Git is still observing degrades to unknown
   } finally {
     process.off("unhandledRejection", listen);
   }
+});
+
+test("observations never overlap, and no process read runs while this daemon's Git reads do", async () => {
+  // Occupancy is a process whose cwd is inside a slot, and `git -C <slot>` has exactly that
+  // cwd. A process read taken during our own Git reads would count them as occupants and make
+  // a preview and its recheck disagree - the stale-preview refusals CI saw under load.
+  await availableSlots("mission-worktree-bg-observation-order-", 2);
+  let gitInFlight = 0;
+  let readsInFlight = 0;
+  const violations: string[] = [];
+  class CountingGit extends NativeWorktreeGit {
+    override async inspect(path: string) {
+      gitInFlight += 1;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return await super.inspect(path);
+      } finally {
+        gitInFlight -= 1;
+      }
+    }
+  }
+  const observed = new WorktreeManager(db, {
+    git: new CountingGit(),
+    occupancy: async (paths: readonly string[]) => {
+      if (gitInFlight > 0) violations.push(`process read started with ${gitInFlight} Git read(s) in flight`);
+      if (readsInFlight > 0) violations.push("two process reads overlapped");
+      readsInFlight += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      readsInFlight -= 1;
+      return new Map(paths.map((path) => [path, { status: "known" as const, occupants: [] }]));
+    },
+    resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
+  });
+  await Promise.all([observed.status(), observed.status(), observed.status()]);
+  assert.deepEqual(violations, []);
 });

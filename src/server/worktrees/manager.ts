@@ -1170,21 +1170,30 @@ export class WorktreeManager {
     this.store.recordReconciliation(pool.id, now, errors.length > 0 ? bounded(errors.join("; ")) : null);
   }
 
+  /**
+   * Observations never overlap, and within one the process read finishes before any Git read
+   * starts. Occupancy is "a process whose cwd is inside the slot", and `git -C <slot>` runs
+   * with exactly that cwd: a process read taken while this daemon's own Git reads are in
+   * flight - from this observation or a concurrent one - sees them as occupants. A slot then
+   * looks occupied for a moment, a preview and its recheck disagree, and a cleanup is refused
+   * as stale for a change that was only ever us looking.
+   */
   async status(): Promise<NativePoolStatus[]> {
+    return this.withObservation(() => this.observeStatus());
+  }
+
+  private withObservation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withLock("observation", operation);
+  }
+
+  private async observeStatus(): Promise<NativePoolStatus[]> {
     const pools = this.store.pools();
     const allSlots = this.store.slots();
-    // One system-wide process read, overlapped with the per-pool Git reads below instead of
-    // run ahead of them: it is the single slowest observation on a loaded machine.
-    //
-    // It is not awaited until a slot needs it, so its failure handling is attached here, where
-    // it starts, rather than trusted to `occupancy()`: a rejection with nobody listening yet is
-    // an unhandled rejection, and on Node 24 that ends the daemon. A failed read is unknown
-    // occupancy for every slot, which blocks cleanup rather than permitting it.
-    const occupiedPaths = allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path);
-    const occupancyRead: Promise<Map<string, WorktreeOccupancy>> = this.occupancy(occupiedPaths).catch((error: unknown) => {
-      const reason = `slot occupancy query failed: ${bounded(String(error))}`;
-      return new Map(occupiedPaths.map((path) => [path, { status: "unknown" as const, reason }]));
-    });
+    // `occupancy()` turns any failure into unknown occupancy for every slot, which blocks
+    // cleanup rather than permitting it, and it is awaited here before anything else starts.
+    const occupancy = await this.occupancy(
+      allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path),
+    );
     const output: NativePoolStatus[] = [];
     for (const pool of pools) {
       const identity = this.identity(pool.mainCheckoutRoot);
@@ -1252,7 +1261,7 @@ export class WorktreeManager {
             : null,
           observedHead: inspection?.ok === true ? inspection.value.head : null,
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
-          occupancy: (await occupancyRead).get(slot.path) ?? { status: "unknown", reason: "path is missing" },
+          occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,
         };
@@ -1266,8 +1275,6 @@ export class WorktreeManager {
         slots,
       });
     }
-    // A machine with no slots never awaited the read above; settle it here, not as a stray.
-    await occupancyRead;
     return output;
   }
 
@@ -1282,7 +1289,10 @@ export class WorktreeManager {
     allowDirty: boolean;
     allowUnmerged: boolean;
   }): Promise<WorktreeRemoveResult> {
-    return this.withSlot(input.slotId, async () => {
+    // Under the observation lock as well: its occupancy checks must not catch an inventory
+    // observation's Git reads inside the very slot being removed. Lock order is slot, then
+    // observation; nothing holding the observation lock takes a slot lock.
+    return this.withSlot(input.slotId, () => this.withObservation(async () => {
       const slot = this.store.slot(input.slotId);
       if (!slot) return { outcome: "alreadyRemoved" };
       if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
@@ -1396,7 +1406,7 @@ export class WorktreeManager {
       }
       this.publish();
       return { outcome: "removed" };
-    });
+    }));
   }
 
   /** Preview-only safe prune and right-size candidates. No filesystem mutation occurs. */

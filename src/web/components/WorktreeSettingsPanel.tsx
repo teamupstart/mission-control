@@ -121,7 +121,11 @@ function OperationList({
                       <button className="btn btn-secondary" type="button" onClick={(event) => onRetry(operation, retry, event.currentTarget)}>Preview again</button>
                     </Tooltip>
                   )}
-                  <Tooltip label={removed > 0 ? "Hide this report; the worktrees listed as removed stay removed" : "Hide this failure; nothing was changed by it"}>
+                  <Tooltip label={removed > 0
+                    ? "Hide this report; the worktrees listed as removed stay removed"
+                    // No confirmed removal is not proof of no change: a task or check owner
+                    // may already have been recovered before the failure. Stay neutral.
+                    : "Hide this report; dismissing it does not undo or retry anything"}>
                     <button className="btn btn-ghost" type="button" onClick={() => onDismiss(operation)}>Dismiss</button>
                   </Tooltip>
                 </span>

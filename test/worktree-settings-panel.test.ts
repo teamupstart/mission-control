@@ -410,3 +410,17 @@ test("a cleanup of one task-owned slot is not counted as several worktrees", () 
   assert.match(destroying, /<code>\/state\/worktrees\/pool-1\/1\/mission-control<\/code>/);
   assert.doesNotMatch(destroying, /3 worktrees/);
 });
+
+test("Dismiss never claims a failure without confirmed removals changed nothing", () => {
+  const html = render({
+    operations: [{
+      ...queuedDestroy,
+      state: "failed",
+      error: "task cleanup was refused",
+      completed: [],
+      finishedAt: 2,
+    }],
+  });
+  assert.match(html, /dismissing it does not undo or retry anything/);
+  assert.doesNotMatch(html, /nothing was changed/);
+});

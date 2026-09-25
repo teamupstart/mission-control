@@ -265,6 +265,9 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
     contentType: "application/json",
     body: JSON.stringify({ error: "worktree operations unavailable" }),
   }));
+  // With no confirmed removal the tooltip stays neutral: an owner may already have been recovered.
+  await expect(background.getByRole("button", { name: "Dismiss" }))
+    .toHaveAccessibleDescription("Hide this report; dismissing it does not undo or retry anything");
   await background.getByRole("button", { name: "Dismiss" }).click();
   await expect(dashboard.getByText("That cleanup report could not be dismissed: worktree operations unavailable")).toBeVisible();
   await expect(background.getByText("State changed after this preview.")).toBeVisible();

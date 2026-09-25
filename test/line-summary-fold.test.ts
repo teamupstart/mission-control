@@ -55,6 +55,7 @@ function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
     label: "mission-control bugs",
     enabled: true,
     repoRoot: "/repo",
+    keepUpdated: false,
     intervalMs: 15 * 60_000,
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,

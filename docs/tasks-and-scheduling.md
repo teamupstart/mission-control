@@ -31,3 +31,31 @@ Some consumers deliberately ask a broader question. Schedule overlap, startup lo
 and ensemble submission eligibility include backlog work as well as active tasks. Merge
 reconciliation also considers failed and cancelled tasks that may have shipped. These
 consumers compose the active policy with their own cases; they do not redefine it.
+
+## Task-source content refresh
+
+The daemon's existing task-source sweeper drives discovery and optional refresh on the same
+cadence. `TaskSourceInstance.keepUpdated` defaults to false. The provider registry owns
+`readLinked`, which reads known issue identities outside discovery filters; adapters still
+return candidates and never write the database.
+GitHub linked reads use at most four concurrent CLI calls. An aborted sweep stops scheduling
+queued reads; in-flight calls remain bounded by their individual timeout, and aborted results
+are not applied. This reduces serial delays without promising that every batch fits the sweep
+deadline.
+
+`task-sources/ingest.ts` records import provenance and a normalized content baseline alongside
+creation. `task-sources/sync.ts` selects at most 25 eligible linked tasks by last attempt, performs
+three-way content comparison, and prepares adoption or conflict reviews. The pure policy lives
+in `shared/task-source-sync.ts`. `task_source_sync` holds task-linked history and is cleaned up
+with the task; `task_source_seen` independently preserves deletion suppression. Pushed tasks are
+marked as excluded, and legacy links require explicit adoption.
+
+`TaskManager.applySourceContent` waits for titling, checks live task content, assignment and
+execution eligibility, then commits the task and its baseline together. Registry publishes the
+already-persisted task after commit through the existing task event. Source generation and
+content checks refuse changes overtaken by configuration, another review, local edits, or a
+launch. Recorded work episodes also exclude a rescheduled task from automatic rewriting.
+
+The existing source view exposes persisted reviews; the versioned resolution route rechecks
+source ownership and the exact local/source values shown before applying either choice. No new
+worker, scheduler, event channel or browser polling loop is introduced.

@@ -1,3 +1,6 @@
+import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
+import { saveSourceSync } from "./task-sources/sync-store.ts";
+import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
@@ -3599,6 +3602,35 @@ export class TaskManager {
     return { ok: true, task: next };
   }
 
+  /** Apply only source-owned content, atomically with its accepted comparison baseline. */
+  async applySourceContent(
+    id: string,
+    source: TaskSourceRef,
+    expected: SourceContent,
+    content: SourceContent,
+    persist: () => void,
+    stillCurrent: () => boolean,
+  ): Promise<Ok> {
+    await this.titling.get(id);
+    const task = this.registry.getTask(id);
+    if (!task || !canRefreshSourceTask(task) || this.assigningTasks.has(id)
+      || taskWorkEpisodeForTask(id) || historicalTaskWorkEpisodeBindingsForTask(id).length > 0) {
+      return { ok: false, error: "the task has started, is being assigned, or is no longer in the backlog" };
+    }
+    if (task.source?.sourceId !== source.sourceId || task.source.externalId !== source.externalId
+      || !sameSourceContent(task, expected) || !stillCurrent()) {
+      return { ok: false, error: "the task or source changed; sweep again before applying this update" };
+    }
+    const changed = !sameSourceContent(task, content);
+    const next = { ...task, ...content, updatedAt: Date.now() };
+    const displaced = inTransaction(() => {
+      persist();
+      return changed ? dbUpsertTask(next) : [];
+    });
+    if (changed) this.registry.publishPersistedTask(next, displaced);
+    return { ok: true };
+  }
+
   /**
    * Link a backlog task to the external item that was just created FOR it.
    *
@@ -3609,8 +3641,8 @@ export class TaskManager {
    * narrower call rather than another optional field on the edit path.
    *
    * SYNCHRONOUS, and that is a requirement rather than a convenience. Its caller
-   * (`src/server/task-sources/push.ts`) runs it inside `inTransaction` alongside the
-   * `task_source_seen` write, and SQLite transaction bodies are synchronous - an async
+   * (`src/server/task-sources/push.ts`) supplies a transaction wrapper that also writes
+   * `task_source_seen`, and SQLite transaction bodies are synchronous - an async
    * body would commit before it resolved and split the pair this feature exists to keep
    * together. So this cannot wait out in-flight titling the way `update` does, and it does
    * not need to: `autoTitleThenDispatch` re-reads the row before writing its title, so a
@@ -3632,25 +3664,34 @@ export class TaskManager {
    * seconds `gh` was running would throw away the identity of an issue that exists - and
    * with it the "already linked" guard that stops a later push filing a second one.
    */
-  attachSource(id: string, ref: TaskSourceRef): Ok & { task?: Task } {
-    const t = this.registry.getTask(id);
-    // Deleted while the push was in flight. The one state that genuinely cannot hold a
-    // link, and the caller reports the created item's name because this is where the
-    // knowledge of it ends.
-    if (!t) return { ok: false, error: "no such task" };
-    // Re-checked here rather than trusted from the caller's earlier look, because the
-    // window between them is a subprocess talking to GitHub. Refused rather than
-    // overwritten: the first item is the one that exists, and clobbering its ref would
-    // leave it unreachable from the task it was created for.
-    if (t.source) {
-      return { ok: false, error: `task is already linked to ${t.source.externalId}` };
-    }
-    const task: Task = { ...t, source: ref, updatedAt: Date.now() };
-    // The db upsert behind this already persists `source_id/external_id/source_url` and
-    // the registry emits `task_upsert` - so the dashboard learns of the link over the
-    // stream that already exists, and this feature adds no `ServerEvent`.
-    this.registry.upsertTask(task);
-    return { ok: true, task };
+  attachSource(
+    id: string,
+    ref: TaskSourceRef,
+    transaction: typeof inTransaction = inTransaction,
+  ): Ok & { task?: Task } {
+    const attached = transaction(() => {
+      const t = this.registry.getTask(id);
+      // Deleted while the push was in flight. Return the refusal so the caller's seen
+      // marker still commits and the next sweep cannot re-file the created issue.
+      if (!t) return { ok: false as const, error: "no such task" };
+      // Re-check after the subprocess: a second link must never overwrite the first.
+      if (t.source) {
+        return { ok: false as const, error: `task is already linked to ${t.source.externalId}` };
+      }
+      const task: Task = { ...t, source: ref, updatedAt: Date.now() };
+      const displaced = dbUpsertTask(task);
+      saveSourceSync(task.id, ref.sourceId, {
+        origin: "pushed", externalId: ref.externalId,
+        defaults: { priority: task.priority, labels: task.labels },
+        baseline: null, pending: null, conflicts: [], checkedAt: null, appliedAt: null, error: null,
+      });
+      return { ok: true as const, task, displaced };
+    });
+    if (!attached.ok) return attached;
+    // A failed provenance write or commit must leave both memory and the dashboard
+    // unchanged. Publish only after the caller's entire transaction has committed.
+    this.registry.publishPersistedTask(attached.task, attached.displaced);
+    return { ok: true, task: attached.task };
   }
 
   /**

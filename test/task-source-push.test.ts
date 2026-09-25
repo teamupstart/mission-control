@@ -40,6 +40,7 @@ const { openDb, countTaskSourceSeen, getTask, recordTaskSourceSeen, inTransactio
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { pushTask } = await import("../src/server/task-sources/push.ts");
+const { getSourceSync } = await import("../src/server/task-sources/sync-store.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -233,10 +234,12 @@ test("a result with neither an item nor an error is still a refusal, never a suc
 test("a success records the seen row and the link, in that order, in ONE transaction", async () => {
   const { registry, tasks, task } = setup();
   const order: string[] = [];
-  // The link is observed through the registry's own event, which `upsertTask` emits
-  // synchronously - so its position in this list is the position of the actual write.
+  // Publication must follow the commit of the link, seen row, and pushed provenance.
   const off = registry.subscribe((e) => {
-    if (e.type === "task_upsert" && e.task.source) order.push("link");
+    if (e.type === "task_upsert" && e.task.source) {
+      order.push("link");
+      assert.equal(getSourceSync(task.id)?.origin, "pushed");
+    }
   });
   const r = await pushTask(mkSource(), task, tasks, {
     push: spy(created).push,
@@ -256,7 +259,7 @@ test("a success records the seen row and the link, in that order, in ONE transac
   assert.deepEqual(r.ok && r.task.source, REF);
   // Remember FIRST: from the moment the issue exists, stopping the re-sweep matters more
   // than the link, and this is the order the moved-mid-push case below depends on.
-  assert.deepEqual(order, ["begin", "remember", "link", "commit"]);
+  assert.deepEqual(order, ["begin", "remember", "commit", "link"]);
   // Both writes really landed, in the database the sweep reads.
   assert.equal(countTaskSourceSeen("src-1"), 1);
   assert.deepEqual(getTask("t1")!.source, REF);
@@ -352,6 +355,36 @@ test("the claim is released when a push fails, so a retry is possible", async ()
 });
 
 // ---- attachSource, against the real database ----
+
+for (const viaPush of [false, true]) {
+  test(`${viaPush ? "pushTask" : "attachSource"} rolls back the link without publishing when provenance fails`, async () => {
+    const { registry, tasks, task } = setup();
+    const events: Task[] = [];
+    const off = registry.subscribe((event) => {
+      if (event.type === "task_upsert") events.push(event.task);
+    });
+    openDb().exec(`CREATE TEMP TRIGGER reject_push_provenance
+      BEFORE INSERT ON task_source_sync BEGIN
+      SELECT RAISE(ABORT, 'injected provenance failure'); END`);
+    try {
+      if (viaPush) {
+        const result = await pushTask(mkSource(), task, tasks, { push: spy(created).push });
+        assert.equal(result.ok === false && result.kind, "unknown-outcome");
+        assert.match(result.ok === false ? result.error : "", /do not push again/);
+      } else {
+        assert.throws(() => tasks.attachSource(task.id, REF), /injected provenance failure/);
+      }
+      assert.equal(getTask(task.id)!.source, null, "the link must roll back");
+      assert.equal(getSourceSync(task.id), null);
+      assert.equal(countTaskSourceSeen(REF.sourceId), 0);
+      assert.equal(registry.getTask(task.id)!.source, null, "memory must match the rollback");
+      assert.deepEqual(events, [], "no uncommitted link may reach the dashboard");
+    } finally {
+      openDb().exec("DROP TRIGGER reject_push_provenance");
+      off();
+    }
+  });
+}
 
 test("attachSource persists the ref and re-emits the task, with no new event type", () => {
   const { registry, tasks } = setup();

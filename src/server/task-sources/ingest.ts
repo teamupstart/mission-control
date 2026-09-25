@@ -1,3 +1,5 @@
+import { sourceContent } from "@shared/task-source-sync.ts";
+import { saveSourceSync } from "./sync-store.ts";
 import { DispatchSchema } from "@shared/protocol.ts";
 import type {
   SweepReport,
@@ -10,7 +12,7 @@ import { resolveTaskRepoRoot, type TaskRepoRoot } from "../repos.ts";
 import type { TaskManager } from "../tasks.ts";
 
 // Everything a task source does NOT get to do. A source returns candidates; this decides
-// which of them become rows, and it is the only thing in the feature that writes.
+// which of them become new rows. Optional refresh of existing rows lives in sync.ts.
 //
 // Concentrating it here is what makes the interface safe to hand out: a source that got
 // de-duplication wrong would re-file the same issue every sweep, forever, and no amount
@@ -142,11 +144,17 @@ export async function ingestSweep(
       // retrying, so they are not allowed to happen separately.
       transaction(() => {
         remember(inst.id, c.ref.externalId, c.ref.url);
-        tasks.create({
+        const task = tasks.create({
           ...parsed.data,
           repoRoot,
           source: c.ref,
           enabled: inst.defaults.enabled,
+        });
+        saveSourceSync(task.id, inst.id, {
+          origin: "imported", externalId: c.ref.externalId,
+          defaults: { priority: inst.defaults.priority, labels: inst.defaults.labels },
+          baseline: sourceContent(task), pending: null, conflicts: [],
+          checkedAt: Date.now(), appliedAt: Date.now(), error: null,
         });
       });
       report.filed += 1;

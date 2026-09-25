@@ -34475,3 +34475,14 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--dim);
   font: 9.5px/1.4 var(--mono);
 }
+
+/* Source refresh reviews belong beside the source's own import policy. */
+.ts-sync { margin-block: 18px; min-width: 0; }
+.ts-sync-review { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-block: 12px; }
+.ts-sync-review h4, .ts-sync-review h5 { margin: 0 0 8px; }
+.ts-sync-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.ts-sync-comparison > div { min-width: 0; }
+.ts-sync-comparison pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font: inherit; }
+.ts-sync-comparison strong { overflow-wrap: anywhere; }
+.ts-sync-actions { display: flex; gap: 8px; margin-top: 12px; }
+@media (max-width: 700px) { .ts-sync-comparison { grid-template-columns: 1fr; } }

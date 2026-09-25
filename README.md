@@ -185,7 +185,9 @@ hold individual items, express dependencies, or let backlog autopilot schedule e
 the concurrency you allow.
 
 Task sources pull from GitHub issues and Jira without starting agents behind your back. Imported
-work arrives parked by default for triage. Recurring missions and agent-created follow-up tasks feed
+work arrives parked by default for triage. Enable **Keep imported backlog tasks updated** on a source
+to refresh unstarted tasks on each sweep, preserving local edits and showing conflicts for review.
+Recurring missions and agent-created follow-up tasks feed
 the same queue, so planned work, discovered work, and scheduled work share one lifecycle.
 
 Read more in [Dispatch and backlog](docs/dispatch-and-backlog.md),

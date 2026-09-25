@@ -1,5 +1,6 @@
 import type {
   GithubIssuesConfig,
+  LinkedReadResult,
   PushContext,
   PushDraft,
   PushResult,
@@ -7,6 +8,7 @@ import type {
   SweepResult,
   TaskCandidate,
   TaskSourceImpl,
+  TaskSourceRef,
   WritebackContext,
   WritebackNotice,
   WritebackResult,
@@ -535,6 +537,50 @@ async function resolve(
   return writebackResultFrom(res, `closed as ${ghCloseReason(cfg.closeReason)}`);
 }
 
+/** A linked issue remains readable after closure or leaving the source's search filter. */
+export function ghLinkedIssueArgs(ref: TaskSourceRef): string[] {
+  const url = new URL(ref.url ?? "");
+  if (url.protocol !== "https:" || url.username || url.password
+    || !/\/issues\/\d+$/.test(url.pathname) || externalIdFor(url.href) !== ref.externalId) {
+    throw new Error("the linked GitHub issue has no valid issue identity");
+  }
+  return ["issue", "view", url.href, "--json", JSON_FIELDS];
+}
+async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
+  const items: TaskCandidate[] = [];
+  const errors: [string, string][] = [];
+  async function read(ref: TaskSourceRef): Promise<void> {
+    let args: string[];
+    try { args = ghLinkedIssueArgs(ref); }
+    catch {
+      errors.push([ref.externalId, "The linked GitHub issue has no valid issue identity."]);
+      return;
+    }
+    try {
+      const res = await run(ghBin(), args, { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
+      // Sync errors are persisted and served to the dashboard. Never copy command output
+      // or parser exceptions, which can contain credentials, paths, or account details.
+      if (res.code !== 0) {
+        errors.push([ref.externalId, "The linked GitHub issue could not be read. Check access and authentication, then sweep again."]);
+        return;
+      }
+      const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);
+      if (candidate?.ref.externalId === ref.externalId) items.push(candidate);
+      else errors.push([ref.externalId, "The linked GitHub issue identity changed or its content was unreadable."]);
+    } catch {
+      errors.push([ref.externalId, "The linked GitHub issue returned unreadable content."]);
+    }
+  }
+  // Share a cursor so slow issues do not serialize the batch or spawn 25 subprocesses
+  // at once. In-flight reads retain their own timeout; abort stops scheduling new ones.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, refs.length) }, async () => {
+    while (!ctx.signal.aborted && next < refs.length) await read(refs[next++]!);
+  }));
+  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
+  return { items, error: null, ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
+}
+
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   // Spread rather than restated: the kind, the name and the blurb are the half the
   // settings panel renders in the browser, and it cannot import this file. The schema is
@@ -543,6 +589,7 @@ export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   configSchema: GithubIssuesConfigSchema,
   preflight,
   sweep,
+  readLinked,
   // Present because the kind's `canPush` says so - the contract test holds the two
   // together in both directions.
   push,

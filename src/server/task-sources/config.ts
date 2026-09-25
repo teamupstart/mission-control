@@ -1,3 +1,4 @@
+import { clearSourceSync } from "./sync-store.ts";
 import { TaskSourcesConfigSchema } from "@shared/task-source.ts";
 import type { TaskSourcesConfigPatch } from "@shared/protocol.ts";
 import type { TaskSourceInstance, TaskSourcesConfig } from "@shared/task-source.ts";
@@ -47,6 +48,7 @@ export function setTaskSourcesConfig(patch: TaskSourcesConfigPatch): TaskSources
   for (const id of before) {
     if (kept.has(id)) continue;
     forgetTaskSourceSeen(id);
+    clearSourceSync(id);
     discardWritebacks(id);
   }
   return next;

@@ -287,10 +287,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
   // SQLite parses REFERENCES clauses whatever this says and enforces them only when it is
   // on, so declaring a foreign key without this line is a comment that looks like a
-  // constraint. It is safe to switch on for the whole file because the ensemble family
-  // below is the ONLY one that declares a foreign key - every other table in here relates
-  // by convention, and turning the pragma on cannot retroactively constrain a relation the
-  // schema never declared. A new REFERENCES clause on an older table therefore becomes
+  // constraint. The ensemble family and task_source_sync declare foreign keys; other
+  // tables relate by convention. Turning the pragma on cannot retroactively constrain a
+  // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
   d.exec(`
@@ -1405,8 +1404,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- ENFORCED, and both enforcement modes are wrong: ON DELETE CASCADE would delete this
     -- row when retention removes the attempt, destroying the only record of a tree that is
     -- still held; RESTRICT would make retention fail outright on a leaked lease. The
-    -- requirement is precisely that this table outlives both. (It also matches the house
-    -- rule that the ensemble family is the only one here that declares foreign keys.)
+    -- requirement is precisely that this table outlives both. The ensemble family and
+    -- task_source_sync declare foreign keys; these leases deliberately do not.
     --
     -- submission_id and node_id are CARRIED rather than joined for, for the same reason.
     -- Before a check node may retry, it has to answer "does this node still own an
@@ -1506,6 +1505,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       seen_at     INTEGER NOT NULL,
       PRIMARY KEY (source_id, external_id)
     );
+
+    -- Task-linked content history, separate from deletion suppression in task_source_seen.
+    CREATE TABLE IF NOT EXISTS task_source_sync (
+      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_source_sync_source ON task_source_sync(source_id);
 
     -- One owed write-back to an external item: a comment to post, an issue to close.
     --
@@ -1674,8 +1681,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- until the harness mints it - that is the driver bound event, and a row written before
     -- it lands is a session that was starting when the daemon died.
     --
-    -- Ordinary table with no REFERENCES clause (the ensemble family stays the only one
-    -- declaring foreign keys) and no index: the only reads are by primary key and the
+    -- Ordinary table with no REFERENCES clause (unlike the ensemble family and
+    -- task_source_sync) and no index: the only reads are by primary key and the
     -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
@@ -6482,6 +6489,7 @@ export function deleteTask(id: string): void {
     // table would then only ever grow, and `listOrphanedTaskWorktreeRetentionIds` would be
     // cleaning up after this function forever instead of after genuine surprises.
     d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
     if (ownsTransaction) d.exec("COMMIT");
   } catch (error) {
@@ -6494,6 +6502,15 @@ export function listTasks(): Task[] {
   const rows = openDb()
     .prepare(`SELECT * FROM tasks ORDER BY created_at DESC`)
     .all() as unknown as TaskRow[];
+  return rowsToTasks(rows);
+}
+
+/** Source-linked backlog tasks with no recorded execution, including legacy imports. */
+export function listTaskSourceBacklog(sourceId: string): Task[] {
+  const rows = openDb().prepare(`SELECT * FROM tasks WHERE source_id = ? AND status = 'backlog'
+    AND NOT EXISTS (SELECT 1 FROM task_work_episode_bindings WHERE task_id = tasks.id)
+    AND NOT EXISTS (SELECT 1 FROM historical_task_work_episode_bindings WHERE task_id = tasks.id)`)
+    .all(sourceId) as unknown as TaskRow[];
   return rowsToTasks(rows);
 }
 

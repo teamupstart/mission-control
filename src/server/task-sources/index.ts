@@ -1,4 +1,5 @@
 import type {
+  LinkedReadResult,
   PushContext,
   PushDraft,
   PushResult,
@@ -7,6 +8,7 @@ import type {
   TaskSourceImpl,
   TaskSourceInstance,
   TaskSourceKind,
+  TaskSourceRef,
   WritebackContext,
   WritebackNotice,
   WritebackResult,
@@ -36,6 +38,7 @@ interface ErasedTaskSource {
   canPush: boolean;
   preflight(config: unknown, ctx: SweepContext): Promise<string | null>;
   sweep(config: unknown, ctx: SweepContext): Promise<SweepResult>;
+  readLinked(config: unknown, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult>;
   /**
    * Null when this kind cannot receive a pushed task.
    *
@@ -88,6 +91,11 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
       const parsed = impl.configSchema.safeParse(config ?? {});
       if (!parsed.success) return { items: [], error: reason(parsed.error) };
       return impl.sweep(parsed.data, ctx);
+    },
+    async readLinked(config, refs, ctx) {
+      const parsed = impl.configSchema.safeParse(config ?? {});
+      if (!parsed.success) return { items: [], error: reason(parsed.error) };
+      return impl.readLinked(parsed.data, refs, ctx);
     },
     // Same boundary parse, and the same rule about what a rejected blob becomes - except
     // the stakes are higher here than for a sweep. `outcomeUnknown: false` is a FACT: the
@@ -306,4 +314,11 @@ export async function resolveWith(
       detail: null,
     };
   }
+}
+
+/** Existing links use the same registry and configuration boundary as discovery. */
+export async function readLinkedSource(inst: TaskSourceInstance, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
+  if (refs.length > 25) return { items: [], error: "a linked refresh may read at most 25 items" };
+  try { return await TASK_SOURCES[inst.kind].readLinked(inst.config, refs, ctx); }
+  catch { return { items: [], error: "The linked source items could not be read. Check the source settings and sweep again." }; }
 }

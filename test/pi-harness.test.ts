@@ -181,7 +181,7 @@ test("a launch-identified session binds its transcript and reads runtime state",
     const located = locatePiTranscript(locateSession("pi-dispatched", cwd, sessionId), root);
     assert.equal(located, path);
     const read = piTranscript.passiveRead?.(located!);
-    assert.equal(read?.meta?.modelId, "gpt-5.5");
+    assert.equal(read?.meta?.modelId, "openai/gpt-5.5");
     assert.equal(read?.activity?.state, "idle", "the captured transcript ends in an interrupted turn");
   } finally {
     piTranscript.retain?.(new Set());
@@ -353,12 +353,24 @@ test("bookkeeping and empty non-aborted turns produce no conversation messages",
 test("runtime metadata comes off the newest PRICED turn, not the aborted one", () => {
   const meta = computePiRuntimeMeta([...PI_SESSION_LINES]);
   assert.ok(meta);
-  assert.equal(meta?.modelId, "gpt-5.5");
+  assert.equal(meta?.modelId, "openai/gpt-5.5");
   // The newest turn is aborted (usage zeroed) and is skipped; the previous turn's context is
   // input 228 + cacheRead 1024 = 1252, not 0.
   assert.equal(meta?.contextTokens, 1252);
   assert.equal(meta?.thinkingLevel, "medium");
   assert.equal(meta?.longContext, false);
+});
+
+test("Pi runtime model identities distinguish providers and preserve slashes inside model ids", () => {
+  const turn = (provider: string) => JSON.stringify({
+    type: "message", message: { role: "assistant", provider, model: "vendor/model.v1", usage: { input: 10 } },
+  });
+  assert.equal(computePiRuntimeMeta([turn("provider-a")])?.modelId, "provider-a/vendor/model.v1");
+  assert.equal(computePiRuntimeMeta([turn("provider-a"), turn("provider-b")])?.modelId, "provider-b/vendor/model.v1");
+  assert.equal(computePiRuntimeMeta([JSON.stringify({
+    type: "model_change", provider: "provider-b", modelId: "vendor/model.v1",
+  })])?.modelId, "provider-b/vendor/model.v1");
+  assert.equal(computePiRuntimeMeta([JSON.stringify({ type: "model_change", modelId: "legacy-model" })])?.modelId, "legacy-model");
 });
 
 test("pi model families use their real context windows", () => {

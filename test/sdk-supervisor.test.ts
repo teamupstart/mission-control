@@ -2085,6 +2085,7 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start({ ...START, model: "old-model", effort: "low" });
+    assert.equal(session.configuredModel, "old-model");
     // A binding is what makes the row resumable at all.
     first.push({
       kind: "bound",
@@ -2100,6 +2101,10 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     await supervisor.setModel(session.id, "new-model");
     assert.deepEqual(accepted, ["mode:acceptEdits", "effort:xhigh", "model:new-model"]);
 
+    // A late binding still describes the old turn, not the configured restart model.
+    first.push({ kind: "bound", agentSessionId: "agent-rebound", transcriptPath: null, modelId: "old-model", pid: null });
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-rebound");
+
     // The driver accepted first, and only then was the row written - so a change the live
     // session refused (Codex refuses a sandbox its thread cannot move to) never becomes a
     // promise a restart would keep.
@@ -2107,14 +2112,23 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     assert.equal(row.permissionMode, "acceptEdits");
     assert.equal(row.effort, "xhigh");
     assert.equal(row.model, "new-model");
+    assert.equal(registry.getSession(session.id)?.configuredModel, "new-model");
+    assert.equal(registry.getSession(session.id)?.meta?.modelId, "old-model", "selection does not rewrite the running turn");
+    first.setModel = async () => { throw new Error("model unavailable"); };
+    await assert.rejects(supervisor.setModel(session.id, "refused-model"), /model unavailable/);
+    assert.equal(getSdkSession(session.id)?.model, "new-model");
+    assert.equal(registry.getSession(session.id)?.configuredModel, "new-model");
+    await assert.rejects(supervisor.setModel(session.id, "gpt-6-astra"), /not available/);
 
     // Now the restart, for real: a new process is a fresh supervisor AND a fresh registry
     // over the same store, which is the only thing that survives. Reusing the old registry
     // would hit the duplicate-registration refusal and prove nothing about restore.
     await supervisor.stopAll(50);
-    await new SdkSupervisor(new Registry()).restore();
+    const restoredRegistry = new Registry();
+    await new SdkSupervisor(restoredRegistry).restore();
+    assert.equal(restoredRegistry.getSession(session.id)?.configuredModel, "new-model");
     const relaunch = fake.calls.at(-1)!;
-    assert.equal(relaunch.resume, "agent-x", "the same conversation, not a new one");
+    assert.equal(relaunch.resume, "agent-rebound", "the latest conversation binding");
     assert.equal(relaunch.permissionMode, "acceptEdits");
     assert.equal(relaunch.effort, "xhigh");
     assert.equal(relaunch.model, "new-model");
@@ -2122,3 +2136,64 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     fake.restore();
   }
 });
+
+for (const scenario of ["restored", "rollback refused", "previous unknown"] as const) {
+  test(`a model persistence failure is compensated or disclosed: ${scenario}`, async () => {
+    const previous = scenario === "previous unknown" ? null : "old-model";
+    let rollbackUnavailable = scenario === "rollback refused";
+    let liveModel = previous;
+    const changes: string[] = [];
+    const first = fakeHandle();
+    first.setModel = async (model) => {
+      changes.push(model);
+      if (rollbackUnavailable && model === previous) throw new Error("rollback unavailable");
+      liveModel = model;
+    };
+    const handles = [first, fakeHandle()];
+    const fake = withFakeDriver(async () => handles.shift()!);
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    try {
+      const session = await supervisor.start({ ...START, model: previous });
+      first.push({ kind: "bound", agentSessionId: "model-write-failure", transcriptPath: null, modelId: previous, pid: null });
+      await waitFor(() => getSdkSession(session.id)?.agentSessionId === "model-write-failure");
+      const published: string[] = [];
+      registry.subscribe((event) => {
+        if (event.type === "session_upsert" && event.session.configuredModel) published.push(event.session.configuredModel);
+      });
+      openDb().exec(`CREATE TEMP TRIGGER reject_model_write BEFORE UPDATE OF model ON sdk_sessions
+        WHEN NEW.model = 'new-model' BEGIN SELECT RAISE(FAIL, 'disk full'); END;`);
+      await assert.rejects(supervisor.setModel(session.id, "new-model"), scenario === "restored"
+        ? /could not be saved.*previous model was restored/i
+        : /changed.*could not be saved.*restart/i);
+      assert.equal(getSdkSession(session.id)?.model, previous, "the failed write leaves the restart model intact");
+      const expected = scenario === "restored" ? previous : "new-model";
+      assert.equal(liveModel, expected, "driver and visible selection must agree after the failed write");
+      assert.equal(registry.getSession(session.id)?.configuredModel, expected);
+      assert.deepEqual(changes, previous ? ["new-model", previous] : ["new-model"]);
+      assert.equal(published.includes("new-model"), scenario !== "restored", "only a partial acceptance publishes the new model");
+      // A retry must still compensate to what restart will load, even though the
+      // published runtime selection now contains the unsaved model.
+      await assert.rejects(supervisor.setModel(session.id, "new-model"), scenario === "restored"
+        ? /could not be saved.*previous model was restored/i
+        : /changed.*could not be saved.*restart/i);
+      assert.equal(getSdkSession(session.id)?.model, previous);
+      assert.equal(liveModel, expected);
+      assert.equal(registry.getSession(session.id)?.configuredModel, expected);
+      assert.deepEqual(changes, previous ? ["new-model", previous, "new-model", previous] : ["new-model", "new-model"]);
+      if (scenario === "rollback refused") {
+        rollbackUnavailable = false;
+        await assert.rejects(supervisor.setModel(session.id, "new-model"), /previous model was restored/i);
+        assert.equal(liveModel, previous);
+        assert.equal(registry.getSession(session.id)?.configuredModel, previous, "successful recovery replaces the previously published unsaved choice");
+      }
+      openDb().exec("DROP TRIGGER reject_model_write");
+      await supervisor.stopAll(50);
+      await new SdkSupervisor(new Registry()).restore();
+      assert.equal(fake.calls.at(-1)?.model, previous, "restart matches compensation, or the explicit partial-acceptance warning");
+    } finally {
+      openDb().exec("DROP TRIGGER IF EXISTS reject_model_write");
+      fake.restore();
+    }
+  });
+}

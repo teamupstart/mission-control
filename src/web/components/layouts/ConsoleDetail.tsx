@@ -614,7 +614,7 @@ export function ConsoleDetail({
             session with no model, thinking level or context, and the mode chip must not
             disappear with it. */}
         <ModePicker session={session} />
-        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
+        <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
 

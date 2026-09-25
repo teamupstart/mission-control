@@ -225,7 +225,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
     );
 }
 
-/** Record the harness-native session id, which is what a later resume is cut from. */
+/** Record the resume identity; reported models only fill an unset restart choice. */
 export function recordSdkSessionBinding(
   id: string,
   agentSessionId: string,
@@ -235,7 +235,7 @@ export function recordSdkSessionBinding(
   openDb()
     .prepare(
       `UPDATE sdk_sessions
-          SET agent_session_id = ?, model = COALESCE(?, model), status = ?, updated_at = ?
+          SET agent_session_id = ?, model = COALESCE(model, ?), status = ?, updated_at = ?
         WHERE id = ?`,
     )
     .run(agentSessionId, modelId, "running" satisfies SdkSessionStatus, now, id);

@@ -119,6 +119,7 @@ import {
   SetNoteSchema,
   SetPermissionModeSchema,
   SetSessionEffortSchema,
+  SetSessionModelSchema,
   SetWorkItemStateSchema,
   PromptedHandoffUndeliveredSchema,
   PromptedRecoveryClaimSchema,
@@ -5642,6 +5643,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  app.post("/api/sessions/:id/model", async (c) => {
+    const parsed = await parseBody(c, SetSessionModelSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ ok: false, error: "no such session" }, 404);
+    if (session.runtime !== "sdk" || session.state === "exited" || session.state === "stopping") {
+      return c.json({ ok: false, error: "model changes require a live Agent SDK session" }, 409);
+    }
+    if (!sdkSessions) return c.json({ ok: false, error: "this build has no session supervisor" }, 409);
+    try {
+      await sdkSessions.setModel(session.id, parsed.data.model);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 409);
+    }
   });
 
   app.post("/api/sessions/:id/effort", async (c) => {

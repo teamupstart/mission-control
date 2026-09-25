@@ -492,9 +492,7 @@ export function SessionTile({
           keeps one spelling of the number per surface rather than two. */}
       {runtimeLine && (
         <span className="tile-runtime-line">
-          {session.meta && (
-            <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
-          )}
+          <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
           {shown("effort") && (session.meta?.thinkingLevel || session.meta?.nativeEffort) && <EffortPicker session={session} />}
           {/* On this row rather than in `.tile-foot`: a
               tile's foot is branch-and-timestamp, while mode is the same kind of thing as

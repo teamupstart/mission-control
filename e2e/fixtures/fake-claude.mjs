@@ -80,7 +80,8 @@ let authenticationExpired = false;
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
 // for default launches, but preserve a pinned model so browser specs can exercise the
 // production model-metadata resolver rather than a browser-side stub.
-const MODEL = argvValue("--model") ?? "claude-e2e-mock";
+let MODEL = argvValue("--model") ?? "claude-e2e-mock";
+let turnModel = MODEL;
 
 /**
  * The reasoning effort this session is running at, written onto every assistant record the
@@ -717,10 +718,10 @@ function appendTurn(role, content) {
   turn += 1;
   const runtime = role === "assistant"
     ? {
-        model: MODEL,
+        model: turnModel,
         // Fable's fixture deliberately mirrors the screenshot regression: 184k tokens is
         // 92% only under the incorrect 200k fallback, and 18% under its real 1M window.
-        ...(MODEL === "claude-fable-5"
+        ...(turnModel === "claude-fable-5"
           ? {
               usage: {
                 input_tokens: 184_000,
@@ -992,6 +993,7 @@ function answerAsked(requestId, response) {
 
 /** How many `result` frames this fake has emitted, for UUIDs and cumulative query totals. */
 let results = 0;
+const resultsByModel = new Map();
 
 /**
  * What one turn cost, in the vendor's exact `result`-frame shape.
@@ -1013,19 +1015,18 @@ let results = 0;
  */
 function turnUsage() {
   results += 1;
+  resultsByModel.set(turnModel, (resultsByModel.get(turnModel) ?? 0) + 1);
   return {
     uuid: `${SESSION_ID}-result-${resumedRecordCount + results}`,
     total_cost_usd: 2.5 * results,
     num_turns: results,
-    modelUsage: {
-      [MODEL]: {
-        inputTokens: 1_000 * results,
-        outputTokens: 500 * results,
-        cacheReadInputTokens: 20_000 * results,
-        cacheCreationInputTokens: 3_000 * results,
-        costUSD: 2.5 * results,
-      },
-    },
+    modelUsage: Object.fromEntries([...resultsByModel].map(([model, count]) => [model, {
+      inputTokens: 1_000 * count,
+      outputTokens: 500 * count,
+      cacheReadInputTokens: 20_000 * count,
+      cacheCreationInputTokens: 3_000 * count,
+      costUSD: 2.5 * count,
+    }])),
     usage: {
       input_tokens: 1_000 * results,
       output_tokens: 500 * results,
@@ -1136,6 +1137,11 @@ rl.on("line", (line) => {
       ok(frame.request_id, {});
       return;
     }
+    if (frame.request?.subtype === "set_model") {
+      MODEL = frame.request.model;
+      ok(frame.request_id, {});
+      return;
+    }
     // Every other subtype gets a success. `get_usage` arrives repeatedly (once per init and
     // per result) and the driver .catch()es a missing answer, but answering keeps the log
     // clean.
@@ -1204,6 +1210,8 @@ rl.on("line", (line) => {
       openTurn.prompts.push(prompt);
       return;
     }
+    // A selection changes future turns, while a held turn keeps its original model.
+    turnModel = MODEL;
 
     // A fixture-owned permission wait: keep the SAME first turn alive until teardown, so a
     // hook a spec posts for it cannot be followed by a stale result from before the hook.

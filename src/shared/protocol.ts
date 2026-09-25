@@ -1183,6 +1183,10 @@ export const SetSessionEffortSchema = z.object({
 });
 export type SetSessionEffortInput = z.infer<typeof SetSessionEffortSchema>;
 
+/** Change the model of one managed SDK conversation. */
+export const SetSessionModelSchema = z.object({ model: ModelIdSchema });
+export type SetSessionModelInput = z.infer<typeof SetSessionModelSchema>;
+
 /**
  * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
  *

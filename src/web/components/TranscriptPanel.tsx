@@ -1068,11 +1068,15 @@ export function TranscriptPanel({
   const pinned = useOffscreenInFlight(logRef, inFlight.map((row) => row.id));
   const inFlightClock = useSecondClock(inFlight.length > 0);
 
-  function jumpToLatest(): void {
-    const el = logRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    atBottom.current = true;
+  /**
+   * Bring the row the pill stands for into view. Not the log's tail: queued rows drawn after
+   * a steer can push it above the viewport even with the log scrolled to the bottom.
+   */
+  function jumpToInFlight(): void {
+    const row = inFlightPill
+      ? logRef.current?.querySelector(`[data-in-flight="${CSS.escape(inFlightPill.id)}"]`)
+      : null;
+    row?.scrollIntoView({ block: "nearest" });
   }
 
   /**
@@ -1240,7 +1244,7 @@ export function TranscriptPanel({
               <button
                 type="button"
                 className={`in-flight-pill${workingPinned ? " is-above-working-row" : ""}`}
-                onClick={jumpToLatest}
+                onClick={jumpToInFlight}
               >
                 <span className="in-flight-pulse" aria-hidden />
                 <span className="in-flight-pill-label">

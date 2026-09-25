@@ -1,12 +1,17 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-// The held turn keeps Claude busy for the whole spec, and the fake reads the deferred steer
-// fifteen seconds after taking it: long enough to prove the row stays, scroll away from it
-// and come back, short enough that the receipt arrives inside the spec.
-test.use({ daemonEnv: { MC_E2E_CLAUDE_HELD_TURN_MS: "180000", MC_E2E_CLAUDE_STEER_READ_MS: "15000" } });
+// The held turn keeps Claude busy for the whole spec. The fake takes the deferred steer at
+// once but reads it only when `readSteers` says so, so every check of the waiting state runs
+// before the receipt exists however slow the run is.
+test.use({ daemonEnv: { MC_E2E_CLAUDE_HELD_TURN_MS: "180000" } });
+
+/** Let the fake agent read the steers it is holding (see `READ_STEERS_SIGNAL`). */
+function readSteers(daemon: DaemonHandle): void {
+  writeFileSync(join(daemon.recordDir, "e2e-read-steers"), "");
+}
 
 const STEER = "read this steer at your next step: skip e2e for now";
 
@@ -88,6 +93,7 @@ test("a steered message stays in view until the agent reads it", async ({ dashbo
   }
 
   // The agent reads it: the transcript turn replaces the row and says it was received.
+  readSteers(daemon);
   await expect(delivered(STEER)).toBeVisible({ timeout: 30000 });
   await expect(card.locator(".pending-turn").filter({ hasText: STEER })).toHaveCount(0);
   const receivedTurn = card.getByRole("article", { name: "you" }).filter({ hasText: STEER });
@@ -141,4 +147,31 @@ test("with the working row pinned, the steer's pill sits above it instead of on 
     await dashboard.mouse.move(0, 0);
     await card.screenshot({ path: `${dir}pinned-above-working-row.png` });
   }
+});
+
+test("Jump to it brings the steer into view when queued turns below it fill the log", async ({ dashboard, daemon }) => {
+  test.setTimeout(120000);
+  const { card, log } = await steerIntoHeldTurn(dashboard, daemon, "jump to a steer above the queue");
+  const steered = card.locator(".pending-turn").filter({ hasText: STEER });
+  await expect(steered.getByRole("status")).toHaveText("steered · waiting for claude to read it");
+  // Messages queued after the steer are drawn after it, so at the log's very bottom the steer
+  // itself can be above the fold.
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  for (let i = 1; i <= 4; i++) {
+    await composer.fill(`queued after the steer ${i}\n${"this one waits for the turn to end. ".repeat(6)}`);
+    await composer.press("Enter");
+    await expect(card.locator(".pending-turn").filter({ hasText: `queued after the steer ${i}` })).toHaveCount(1);
+    await expect(composer).toHaveValue("");
+  }
+  await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect(steered).not.toBeInViewport();
+  const pill = card.getByRole("button", { name: /^Steered \d:\d\d/ });
+  await expect(pill).toBeVisible();
+  // Reached from the keyboard, it draws a ring of its own; its shadow is always there.
+  await pill.focus();
+  await expect(pill).toHaveCSS("outline-style", "solid");
+  await expect(pill).toHaveCSS("outline-width", "2px");
+  await pill.press("Enter");
+  await expect(steered).toBeInViewport();
+  await expect(pill).toHaveCount(0);
 });

@@ -8016,10 +8016,14 @@ kbd {
 .in-flight-pill.is-above-working-row {
   bottom: 40px;
 }
-.in-flight-pill:hover,
+.in-flight-pill:hover {
+  border-color: var(--working);
+}
+/* Its own ring: the drop shadow is always there, so it cannot be what says "focused". */
 .in-flight-pill:focus-visible {
   border-color: var(--working);
-  outline: none;
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 .in-flight-pill-label {
   flex: none;

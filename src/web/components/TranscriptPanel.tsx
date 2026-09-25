@@ -1237,7 +1237,11 @@ export function TranscriptPanel({
               how a message on its way stays in view until the agent reads it. */}
           {pinned && inFlightPill && (
             <Tooltip label="Scroll to the message that is on its way to the agent">
-              <button type="button" className="in-flight-pill" onClick={jumpToLatest}>
+              <button
+                type="button"
+                className={`in-flight-pill${workingPinned ? " is-above-working-row" : ""}`}
+                onClick={jumpToLatest}
+              >
                 <span className="in-flight-pulse" aria-hidden />
                 <span className="in-flight-pill-label">
                   {inFlightPill.label} {sentAgo(inFlightPill.since, inFlightClock)}

@@ -8010,6 +8010,12 @@ kbd {
   box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
   cursor: pointer;
 }
+/* Display > Working indicator > Pin the working row holds that row on the same bottom edge.
+   Sit just above it rather than on it: both are true at once while a steered turn runs, and
+   the row says what the agent is doing while the pill says what it has not read yet. */
+.in-flight-pill.is-above-working-row {
+  bottom: 40px;
+}
 .in-flight-pill:hover,
 .in-flight-pill:focus-visible {
   border-color: var(--working);

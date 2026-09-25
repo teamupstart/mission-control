@@ -48,6 +48,7 @@ import {
   TASK_KIND_BACKLOG_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
+  taskRequeueRefusal,
 } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
@@ -5313,6 +5314,32 @@ export class TaskManager {
       this.reschedulingTasks.delete(id);
       this.cleanupReservations.delete(id);
     }
+  }
+
+  /**
+   * Send a dispatched task back to the backlog, whatever it is doing now.
+   *
+   * The operator's "run this later" answer, reachable from the task's own session. The
+   * parts already exist and are composed here rather than copied: a live task is cancelled
+   * first (agent stopped, archives settled, checkout reclaimed), and then `reschedule`
+   * re-files the stopped row at the rank it had. A task that already stopped skips straight
+   * to the second step.
+   *
+   * `taskRequeueRefusal` is checked BEFORE the cancel, because a cancel that would be
+   * followed by a refused re-file leaves the operator with a stopped task they never asked
+   * to stop. A cancel that fails is returned as it stands and nothing is re-filed: a task
+   * whose resources are still tracked must not become a backlog row on top of them.
+   */
+  async requeue(id: string): Promise<Ok> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    const refusal = taskRequeueRefusal(t);
+    if (refusal) return { ok: false, error: refusal };
+    if (isActiveTask(t.status)) {
+      const cancelled = await this.cancel(id);
+      if (!cancelled.ok) return cancelled;
+    }
+    return this.reschedule(id);
   }
 
   /**

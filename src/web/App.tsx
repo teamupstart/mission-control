@@ -34,6 +34,7 @@ import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
 import { KillModal } from "./components/KillModal.tsx";
+import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
@@ -211,6 +212,7 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["queue", "toggleQueue"],
   ["mode", "cycleMode"],
   ["interrupt", "requestInterrupt"],
+  ["requeue", "requestRequeue"],
   ["complete", "requestComplete"],
   ["kill", "requestKill"],
 ];
@@ -627,6 +629,7 @@ export function App(): React.JSX.Element {
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
+  const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   const [workflowBindingTarget, setWorkflowBindingTarget] = useState<WorkflowBindingTarget | null>(null);
   // Bumped for a session each time it's reset. The compose boxes are uncontrolled
   // (their text is parked in the draft map, not React state), so clearing the map
@@ -1827,6 +1830,7 @@ export function App(): React.JSX.Element {
   }, [route.page]);
   const closeReset = useCallback(() => setResetSessionId(null), []);
   const closeKill = useCallback(() => setKillSessionId(null), []);
+  const closeRequeue = useCallback(() => setRequeueSessionId(null), []);
   const closeFiles = useCallback(() => {
     if (filesSessionId) files.flush(filesSessionId);
     setFilesSessionId(null);
@@ -2034,6 +2038,7 @@ export function App(): React.JSX.Element {
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: completeSessionId, close: closeComplete },
       { sessionId: killSessionId, close: closeKill },
+      { sessionId: requeueSessionId, close: closeRequeue },
       { sessionId: filesSessionId, close: closeFiles },
       { sessionId: filePickerSessionId, close: closeFilePicker },
       {
@@ -2045,12 +2050,14 @@ export function App(): React.JSX.Element {
       resetSessionId,
       completeSessionId,
       killSessionId,
+      requeueSessionId,
       filesSessionId,
       filePickerSessionId,
       workflowBindingTarget,
       closeReset,
       closeComplete,
       closeKill,
+      closeRequeue,
       closeFiles,
       closeFilePicker,
     ],
@@ -2647,6 +2654,9 @@ export function App(): React.JSX.Element {
     ? sessions.find((s) => s.id === completeSessionId) ?? null
     : null;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
+  const requeueSession = requeueSessionId
+    ? sessions.find((s) => s.id === requeueSessionId) ?? null
+    : null;
   const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
   const filePickerSession = filePickerSessionId
     ? sessions.find((s) => s.id === filePickerSessionId) ?? null
@@ -2708,7 +2718,6 @@ export function App(): React.JSX.Element {
     onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
     detailId,
     onOpenReviews: setReviewSessionId,
-    onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
     onOpenFilePath: openSessionPath,
@@ -2725,6 +2734,7 @@ export function App(): React.JSX.Element {
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
     onKill: setKillSessionId,
+    onRequeue: setRequeueSessionId,
     onKilled,
     resetNonces,
     registerEl,
@@ -4314,6 +4324,14 @@ export function App(): React.JSX.Element {
               killSession.task ? () => setCompleteSessionId(killSession.id) : undefined
             }
             onClose={closeKill}
+          />
+        )}
+
+        {requeueSession && (
+          <RequeueModal
+            session={requeueSession}
+            onRequeued={() => onKilled(requeueSession.id)}
+            onClose={closeRequeue}
           />
         )}
 

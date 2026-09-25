@@ -611,7 +611,8 @@ tells you the exact resume command to run yourself.
 
 ### Interrupt: stop the turn without ending the session
 
-<kbd>⌃</kbd><kbd>C</kbd>, or the **Interrupt** button beside Kill. It stops what the agent is
+<kbd>⌃</kbd><kbd>C</kbd> in the session detail. It has no button in the footer, so the chord
+is the whole control; rebind it under **Settings → Keyboard**. It stops what the agent is
 doing right now, drops every message still queued behind it, and puts the cursor in that
 session's composer so the replacement instruction can be typed immediately.
 

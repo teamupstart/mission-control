@@ -41,7 +41,10 @@ data the fleet shows: **who needs you** (needs-input, pending reviews, sessions 
 **who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task, [edit it](dispatch-and-backlog.md#edit-a-shelved-task) by
 clicking its name, or drop it right from the panel, and **Mark
-done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
+done** a running task with its outcome (e.g. "opened PR #123") to close the loop. A cancelled
+or failed row in recent outcomes offers **Reschedule**, which puts the task
+[back in the backlog](dispatch-and-backlog.md#send-a-dispatched-task-back-to-the-backlog) at
+its old position after a confirming click. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
 

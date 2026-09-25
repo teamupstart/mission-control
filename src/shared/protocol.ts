@@ -1240,6 +1240,13 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 export const RescheduleTaskSchema = z.object({}).strict();
 
 /**
+ * Send a dispatched task back to the backlog (`POST /api/tasks/:id/requeue`). Empty and
+ * strict like `RescheduleTaskSchema`: the task id is the whole request, and a stray field is
+ * a caller expecting an option this route does not have.
+ */
+export const RequeueTaskSchema = z.object({}).strict();
+
+/**
  * Move one backlog task in the operator's order - the ONE route that writes
  * `Task.backlogRank`, and the only way the order ever changes by hand.
  *

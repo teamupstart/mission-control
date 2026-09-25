@@ -762,8 +762,8 @@ available:
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a tile. In Console and Board, the
-  Diff tab contains the complete checkout diff reader; the footer action and <kbd>d</kbd>
-  reveal it in place.
+  Diff tab contains the complete checkout diff reader; the tab itself and
+  <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
   the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
@@ -1645,7 +1645,7 @@ it and no fleet action loses its key.
 ### Keycaps on the buttons
 
 The buttons those shortcuts drive print the key on their own face - Terminal and
-Codex / Claude in the Console and Board detail's tab strip; Focus, Diff, Reset, Interrupt,
+Codex / Claude in the Console and Board detail's tab strip; Focus, Reset, Backlog,
 Complete and Kill in the Console
 footer; the Console's Conversation, Work queue, Diff and Files tabs; the Files toolbar's Preview,
 Editor and Comment controls; Dispatch and the Fleet,

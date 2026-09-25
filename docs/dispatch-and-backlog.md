@@ -730,6 +730,31 @@ evidence that anybody is finished with the work in a tree. The retention clock a
 already had survives the settlement rather than restarting, so a daemon restarted every day
 cannot postpone cleanup forever.
 
+### Send a dispatched task back to the backlog
+
+When a dispatched task should run *later* rather than now, press **backlog** (<kbd>b</kbd>)
+in its session detail's footer. A confirm names the one cost, then the task goes back into
+the Backlog column at the [position it had](#the-backlog-order-is-the-one-you-set) before it
+was dispatched: re-enabled, with no outcome, error or pull-request link, ready to dispatch
+again (`POST /api/tasks/:id/requeue`).
+
+On the way back the task is cancelled: the agent Mission Control launched for it is stopped,
+any scout report is archived, and its checkout is removed so the next attempt starts from a
+fresh one. **Uncommitted and unpushed work in that checkout is deleted**, which is the
+difference from Kill: Kill keeps the tree and settles the task `failed`. An agent you
+[handed the task to](#hand-a-shelved-task-to-an-agent-thats-already-running) is yours, so
+it keeps running; only the task leaves it.
+
+The control is disabled, with the reason in its tooltip, on a session with no task, a done
+task, a chat task (chat never sits in the backlog), and a Pipeline commission, which has a
+lifecycle of its own and is restarted by filing a new Pipeline task.
+
+A task that has already stopped - `cancelled` or `failed`, including one whose agent you
+killed - no longer has a session to press this from. It is re-filed from its own row in
+[Sitrep](attention-and-alerts.md#roundup)'s **Recent outcomes** instead: **Reschedule** asks
+for a confirming click, removes any checkout the task still holds, and puts it back at its
+old position, whether or not anything depends on it.
+
 ### Hold a backlog item back
 
 Every backlog row carries an **on/off switch**: turn it off and the

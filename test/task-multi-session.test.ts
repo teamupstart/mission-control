@@ -488,7 +488,7 @@ function viewFor(session: Session): SessionViewProps {
     onDeselect: () => {},
     detailId: null,
     onOpenReviews: () => {},
-    onOpenDiff: () => {},
+    onRequeue: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
     onOpenFilePath: () => {},

@@ -39,7 +39,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onDeselect: () => {},
     detailId: null,
     onOpenReviews: () => {},
-    onOpenDiff: () => {},
+    onRequeue: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
     onOpenFilePath: () => {},

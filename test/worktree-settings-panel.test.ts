@@ -303,6 +303,7 @@ const queuedDestroy: WorktreeOperationView = {
   targets: [{ provider: "mission", id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
   error: null,
   changed: false,
+  removals: [{ id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
   completed: [],
   queuedAt: 1,
   finishedAt: null,

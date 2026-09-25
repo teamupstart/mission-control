@@ -157,8 +157,13 @@ test("a bulk destroy selection accepts up to the bulk limit and rejects one more
     headers: HEADERS,
     body: JSON.stringify(body(count)),
   });
-  // 128 unknown ids pass validation and reach the service, which finds none of them.
-  assert.equal((await preview(128)).status, 404);
+  // 128 unknown ids pass validation and reach the service, which answers with a blocked
+  // preview naming the lost selection rather than a 404.
+  const accepted = await preview(128);
+  assert.equal(accepted.status, 200);
+  const blocked = await accepted.json() as { allowed: boolean; blockers: string[] };
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.blockers.join("\n"), /128 selected slots no longer exist/);
   // 129 is refused at the boundary, before any observation runs.
   assert.equal((await preview(129)).status, 400);
   assert.equal((await preview(0)).status, 400);

@@ -808,11 +808,13 @@ export class WorktreeOperationsService {
       // shown in the preview, and bound into the token, so nothing joins it after the fact.
       const selected = new Set(request.target.slotIds);
       const found = this.nativeTargets(observed).filter(({ slot }) => selected.has(slot.slot.id));
-      if (found.length === 0) throw new WorktreeOperationError(404, "native worktree target was not found", "not-found");
       const missing = selected.size - found.length;
       if (missing > 0) {
         blockers.push(`${missing} selected ${missing === 1 ? "slot no longer exists" : "slots no longer exist"}; clear the selection and choose again.`);
       }
+      // Even a selection that lost every slot answers with a blocked preview, not a 404: the
+      // operator is looking at that selection and needs to be told it has to change.
+      if (found.length === 0) return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
       return this.buildSlotTargets(request, observed, found, affected, risks, blockers, consequences);
     }
 
@@ -992,6 +994,7 @@ export class WorktreeOperationsService {
       targets: held.preview.affected.map(({ provider, id, path }) => ({ provider, id, path })),
       error: null,
       changed: false,
+      removals: this.removalTargets(held.preview).map(({ id, path }) => ({ id, path })),
       completed: [],
       queuedAt: this.deps.now(),
       finishedAt: null,
@@ -1051,6 +1054,7 @@ export class WorktreeOperationsService {
     return [...this.operations.values()].map(({ view }) => ({
       ...view,
       targets: view.targets.map((target) => ({ ...target })),
+      removals: view.removals.map((target) => ({ ...target })),
       completed: view.completed.map((target) => ({ ...target })),
     }));
   }
@@ -1180,13 +1184,7 @@ export class WorktreeOperationsService {
       if (ownerIdentity) recoveredOwners.add(ownerIdentity);
     }
     if (request.action === "destroy") {
-      const removalTargets = preview.affected.filter((target) => {
-        if (target.provider !== "mission") return false;
-        if (request.target.kind === "slot") return target.id === request.target.slotId;
-        if (request.target.kind === "slots") return request.target.slotIds.includes(target.id);
-        return this.manager.store.slot(target.id)?.poolId === request.target.poolId;
-      });
-      for (const target of removalTargets) {
+      for (const target of this.removalTargets(preview)) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
           allowDirty: acknowledgements.has("dirty"),
@@ -1196,6 +1194,23 @@ export class WorktreeOperationsService {
         removed(target);
       }
     }
+  }
+
+  /**
+   * The exact slots an accepted preview will remove, fixed when it is accepted. Owners of
+   * other affected paths are recovered, not removed. A retry after a partial failure is built
+   * from this set, so nothing that joined a pool afterwards can ride along.
+   */
+  private removalTargets(preview: WorktreeActionPreview): WorktreeActionAffected[] {
+    const request = preview.request;
+    if (request.action === "prune") return preview.affected;
+    if (request.action !== "destroy") return [];
+    return preview.affected.filter((target) => {
+      if (target.provider !== "mission") return false;
+      if (request.target.kind === "slot") return target.id === request.target.slotId;
+      if (request.target.kind === "slots") return request.target.slotIds.includes(target.id);
+      return this.manager.store.slot(target.id)?.poolId === request.target.poolId;
+    });
   }
 
   private async reclaimTask(id: string): Promise<void> {

@@ -15,6 +15,7 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { openWorktreeTerminal } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { capacityGeometry, type CapacityGeometry } from "../lib/worktree-capacity.ts";
+import { BULK_SELECTION_LIMIT, changeSelection } from "../lib/worktree-selection.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -187,6 +188,7 @@ function SlotCard({
   slot,
   pending,
   selected,
+  selectionFull,
   onSelect,
   onAction,
 }: {
@@ -194,6 +196,8 @@ function SlotCard({
   /** A queued or running cleanup already covers this slot; no second one may be started. */
   pending: WorktreeOperationView | null;
   selected: boolean;
+  /** The bulk selection holds its maximum; an unticked slot cannot join it. */
+  selectionFull: boolean;
   onSelect: (slotId: string, selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
@@ -226,7 +230,11 @@ function SlotCard({
     <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`}>
       <div className="wt-slot-head">
         {slot.actions.includes("destroy") && (
-          <Tooltip label={pending ? "A cleanup for this slot is already queued" : "Include this slot in the next bulk destroy preview"}>
+          <Tooltip label={pending
+            ? "A cleanup for this slot is already queued"
+            : selectionFull && !selected
+              ? `Bulk destroy is limited to ${BULK_SELECTION_LIMIT} slots; untick one to add this`
+              : "Include this slot in the next bulk destroy preview"}>
             <input
               className="wt-slot-select"
               type="checkbox"
@@ -234,7 +242,7 @@ function SlotCard({
               checked={selected}
               // A pending slot cannot be newly added, but one already in the selection can
               // still be unticked: the selection is only ever changed by the operator.
-              disabled={pending !== null && !selected}
+              disabled={!selected && (pending !== null || selectionFull)}
               onChange={(event) => onSelect(slot.id, event.target.checked)}
             />
           </Tooltip>
@@ -448,6 +456,7 @@ function PoolRow({
                   slot={slot}
                   pending={pendingBySlot.get(slot.id) ?? null}
                   selected={selected.has(slot.id)}
+                  selectionFull={selected.size >= BULK_SELECTION_LIMIT}
                   onSelect={(slotId, next) => onSelect([slotId], next)}
                   onAction={onAction}
                 />
@@ -547,7 +556,7 @@ function ActionDialog({
         <div className="modal-body wt-action-body">
           {changed && <div className="wt-changed"><strong>State changed after this preview.</strong><p>{error}</p><Tooltip label="Discard the stale token and build a new safety preview"><button className="btn btn-secondary" type="button" onClick={onRefresh}>Refresh preview</button></Tooltip></div>}
           {!changed && error && <p className="settings-error">{error}</p>}
-          <section><h4>Affected paths</h4><ul className="wt-affected">{preview.affected.map((item) => <li key={`${item.provider}:${item.id}`}><code>{item.path}</code><span>{item.owner?.label ?? item.provider} · {bytes(item.diskBytes)}</span></li>)}</ul></section>
+          {preview.affected.length > 0 && <section><h4>Affected paths</h4><ul className="wt-affected">{preview.affected.map((item) => <li key={`${item.provider}:${item.id}`}><code>{item.path}</code><span>{item.owner?.label ?? item.provider} · {bytes(item.diskBytes)}</span></li>)}</ul></section>}
           {preview.blockers.length > 0 && <section className="wt-blockers"><h4>Cannot execute</h4><ul>{preview.blockers.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}
@@ -565,6 +574,8 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const [lastRequest, setLastRequest] = useState<WorktreeActionRequest | null>(null);
   const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
+  // How many slots the last tick or Select all could not add because the selection was full.
+  const [refused, setRefused] = useState(0);
   const pendingBySlot = useMemo(() => {
     const pending = new Map<string, WorktreeOperationView>();
     for (const operation of operations) {
@@ -586,14 +597,9 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   }, [chosen, inventory, pendingBySlot]);
 
   function select(slotIds: string[], next: boolean): void {
-    setChosen((current) => {
-      const updated = new Set(current);
-      for (const id of slotIds) {
-        if (next) updated.add(id);
-        else updated.delete(id);
-      }
-      return updated;
-    });
+    const change = changeSelection(chosen, slotIds, next);
+    setChosen(change.next);
+    setRefused(change.refused);
   }
   const config = inventory?.config;
   const exactLegacy = inventory?.legacy.items.filter((item) => item.classification === "ownedExact") ?? [];
@@ -616,7 +622,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
     const submitted = preview?.request;
     void state.executePreview(acks).then((ok) => {
       if (!ok) return;
-      if (submitted?.action === "destroy" && submitted.target.kind === "slots") setChosen(new Set());
+      if (submitted?.action === "destroy" && submitted.target.kind === "slots") { setChosen(new Set()); setRefused(0); }
       trigger?.focus();
       setTrigger(null);
     });
@@ -656,6 +662,11 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <span>
               <strong>{selected.size}</strong> {selected.size === 1 ? "slot" : "slots"} selected
               {unavailable > 0 && <em className="wt-bulk-changed">{unavailable} no longer available</em>}
+              {selected.size >= BULK_SELECTION_LIMIT && (
+                <em className="wt-bulk-changed">
+                  Limit of {BULK_SELECTION_LIMIT} reached{refused > 0 ? `; ${refused} ${refused === 1 ? "slot was" : "slots were"} not added` : ""}
+                </em>
+              )}
             </span>
             <Tooltip label="Preview destroying exactly the selected slots as one fixed set">
               <button className="btn btn-danger" type="button" onClick={(event) => request({ action: "destroy", target: { kind: "slots", slotIds: [...selected] } }, event.currentTarget)}>
@@ -663,7 +674,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
               </button>
             </Tooltip>
             <Tooltip label="Clear the bulk destroy selection without changing any worktree">
-              <button className="btn btn-ghost" type="button" onClick={() => setChosen(new Set())}>Clear selection</button>
+              <button className="btn btn-ghost" type="button" onClick={() => { setChosen(new Set()); setRefused(0); }}>Clear selection</button>
             </Tooltip>
           </div>
         )}

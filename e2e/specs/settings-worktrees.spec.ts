@@ -709,6 +709,7 @@ test("bulk destroy removes exactly the selected slots in the background", async 
         targets: [{ provider: "mission", id: survivor.id, path: survivor.path }],
         error: null,
         changed: false,
+        removals: [{ id: survivor.id, path: survivor.path }],
         completed: [],
         queuedAt: Date.now(),
         finishedAt: null,
@@ -744,6 +745,10 @@ test("bulk destroy removes exactly the selected slots in the background", async 
         ],
         error: "git worktree remove failed",
         changed: false,
+        removals: [
+          { id: "already-removed", path: first!.path },
+          { id: survivor.id, path: survivor.path },
+        ],
         completed: [{ id: "already-removed", path: first!.path }],
         queuedAt: Date.now(),
         finishedAt: Date.now(),
@@ -842,4 +847,79 @@ test("a bulk selection that lost a slot is blocked at preview, not silently narr
   await expect(bulk.getByText("2 slots selected")).toBeVisible();
   await bulk.getByRole("button", { name: "Clear selection" }).click();
   await expect(bulk).toHaveCount(0);
+});
+
+/**
+ * The selection controls never build a request the server must refuse.
+ *
+ * The bulk request allows 128 slot ids. A selection may span pools, so the limit is enforced
+ * where the selection is made: Select all fills the remaining room and says what did not
+ * fit, and an unticked slot cannot join a full selection. Reaching 129 slots for real means
+ * 129 checkouts, so the pool is routed; the preview behind it is the real daemon's, and
+ * since none of these ids exist there it also proves a selection that lost every slot gets
+ * a blocked dialog rather than an error.
+ */
+test("bulk selection stops at 128 slots and says so", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "selection limit template" },
+  });
+  expect(acquired.status()).toBe(201);
+  const current = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const pool = current.repositories[0]!;
+  const template = pool.slots[0]!;
+  const slots = Array.from({ length: 129 }, (_, index) => ({
+    ...template,
+    id: `limit-slot-${index + 1}`,
+    ordinal: index + 1,
+    state: "available",
+    owner: null,
+    path: `${pool.poolPath}/${index + 1}/demo-repo`,
+    actions: ["destroy" as const],
+  }));
+  await dashboard.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      repositories: [{
+        ...pool,
+        policy: { ...pool.policy, maxSlots: 128 },
+        counts: { total: 129, leased: 0, available: 129, quarantined: 0, overCapacity: 1 },
+        slots,
+      }],
+      operations: [],
+    } satisfies WorktreeInventory),
+  }));
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const row = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = row.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+
+  await row.getByRole("button", { name: "Select all slots" }).click();
+  const bulk = dashboard.getByRole("region", { name: "Bulk destroy selection" });
+  await expect(bulk.getByText("128 slots selected")).toBeVisible();
+  await expect(bulk.getByText("Limit of 128 reached; 1 slot was not added")).toBeVisible();
+  await shoot(dashboard, "23-bulk-selection-limit");
+
+  // The slot that did not fit is the pool's last; it cannot be ticked while the selection is full.
+  const more = row.getByRole("button", { name: /^Show more slots/ });
+  while (await more.count() > 0) await more.click();
+  const last = row.getByRole("checkbox", { name: "Select slot 129 for bulk destroy" });
+  await expect(last).not.toBeChecked();
+  await expect(last).toBeDisabled();
+  // Unticking frees room, and the freed room can be taken by the slot that was left out.
+  await row.getByRole("checkbox", { name: "Select slot 1 for bulk destroy" }).uncheck();
+  await expect(bulk.getByText("127 slots selected")).toBeVisible();
+  await expect(bulk.getByText(/Limit of 128 reached/)).toHaveCount(0);
+  await last.check();
+  await expect(bulk.getByText("128 slots selected")).toBeVisible();
+
+  const previewed = dashboard.waitForRequest((request) => request.url().endsWith("/api/worktrees/actions/preview"));
+  await bulk.getByRole("button", { name: "Destroy selected" }).click();
+  expect(((await previewed).postDataJSON() as { target: { slotIds: string[] } }).target.slotIds).toHaveLength(128);
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Destroy 128 selected worktrees" })).toBeVisible();
+  await expect(preview.getByText("128 selected slots no longer exist; clear the selection and choose again.")).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await shoot(dashboard, "24-bulk-preview-all-selected-gone");
+  await preview.getByRole("button", { name: "Cancel" }).click();
 });

@@ -172,7 +172,9 @@ runs after Execute has answered, that refusal appears in the same list above the
 **Preview again** to build a new preview of the same request from current state, and **Dismiss**.
 A stale refusal changes nothing on disk. A failure partway through a set of removals is reported
 as **partly done**: it lists each worktree already removed, says how many were left in place, and
-its **Preview again** asks only for the ones it left. Process churn in unrelated slots and inventory reconciliation
+its **Preview again** asks only for the ones it left. A destroy is always retried as the fixed
+set of slots it was accepted with, minus those already removed, so a pool destroy's retry never
+picks up a slot that joined the pool after the failure. Process churn in unrelated slots and inventory reconciliation
 timestamps do not invalidate an unchanged target. Unknown process occupancy is never
 acknowledgeable.
 
@@ -196,7 +198,10 @@ The operations have deliberately narrow meanings:
   the ticked slots as one fixed set, so one Execute queues the whole cleanup. The selection is
   exactly what you ticked and is never narrowed for you: a selected slot that has since
   disappeared stays in it, the selection bar counts it as no longer available, and the preview
-  names it and is blocked until you clear or change the selection.
+  names it and is blocked until you clear or change the selection - even when every selected
+  slot is gone. One selection holds at most 128 slots, the most one bulk request may name:
+  **Select all slots** fills the remaining room and says how many did not fit, and an unticked
+  slot cannot be added while the selection is full.
   Destroy may discard dirty or unlanded work only after those risks are acknowledged. It has no target
   meaning every pool and cannot override unknown identity, ownership, registration, or process
   state.

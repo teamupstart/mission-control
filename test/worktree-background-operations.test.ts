@@ -113,10 +113,11 @@ test("a bulk selection naming a slot that no longer exists is blocked, not silen
   });
   assert.equal(preview.allowed, false);
   assert.match(preview.blockers.join("\n"), /1 selected slot no longer exists/);
-  await assert.rejects(
-    operations.preview({ action: "destroy", target: { kind: "slots", slotIds: ["gone-1", "gone-2"] } }),
-    /not found/,
-  );
+  // A selection that lost every slot still answers with a blocked preview, not a 404.
+  const allGone = await operations.preview({ action: "destroy", target: { kind: "slots", slotIds: ["gone-1", "gone-2"] } });
+  assert.equal(allGone.allowed, false);
+  assert.deepEqual(allGone.affected, []);
+  assert.match(allGone.blockers.join("\n"), /2 selected slots no longer exist; clear the selection/);
 });
 
 test("a second cleanup of a path that already has one queued is refused", async () => {
@@ -375,6 +376,7 @@ test("the retry request narrows bulk destroys, drops finished single slots, and 
     id: "op",
     state: "failed" as const,
     targets: [],
+    removals: [] as Array<{ id: string; path: string }>,
     error: "x",
     changed: false,
     queuedAt: 1,
@@ -393,8 +395,74 @@ test("the retry request narrows bulk destroys, drops finished single slots, and 
   }), null);
   const single = { action: "destroy" as const, target: { kind: "slot" as const, slotId: "a" } };
   assert.equal(worktreeRetryRequest({ ...base, request: single, completed: [{ id: "a", path: "/a" }] }), null);
+  // A pool destroy retries as the fixed set it was accepted with, never as the pool.
   const pool = { action: "destroy" as const, target: { kind: "pool" as const, poolId: "p" } };
-  assert.deepEqual(worktreeRetryRequest({ ...base, request: pool, completed: [{ id: "a", path: "/a" }] }), pool);
+  const removals = ["a", "b", "c"].map((id) => ({ id, path: `/${id}` }));
+  assert.deepEqual(
+    worktreeRetryRequest({ ...base, request: pool, removals, completed: [{ id: "a", path: "/a" }] }),
+    { action: "destroy", target: { kind: "slots", slotIds: ["b", "c"] } },
+  );
+  assert.deepEqual(
+    worktreeRetryRequest({ ...base, request: pool, removals, completed: [] }),
+    { action: "destroy", target: { kind: "slots", slotIds: ["a", "b", "c"] } },
+  );
+  assert.equal(worktreeRetryRequest({ ...base, request: pool, removals, completed: removals }), null);
   const prune = { action: "prune" as const, poolId: "p", mode: "safe" as const };
   assert.deepEqual(worktreeRetryRequest({ ...base, request: prune, completed: [{ id: "a", path: "/a" }] }), prune);
+});
+
+test("a pool destroy that fails partway retries its original slots, not whatever the pool holds now", async (t) => {
+  const { clone } = mkOriginAndClone("mission-worktree-bg-pool-partial-");
+  const base = gitIn(clone, "rev-parse", "HEAD");
+  // Leases are held together and released together: a released slot is warm capacity that
+  // the next acquire would reuse, so acquiring one at a time would keep landing on one slot.
+  const acquireReleased = async (...keys: string[]) => {
+    const leases = [];
+    for (const key of keys) {
+      const acquired = await manager.acquire({ repositoryPath: clone, baseSha: base, owner: { kind: "manual", key } });
+      assert.equal(acquired.outcome, "acquired");
+      if (acquired.outcome !== "acquired") throw new Error("acquire failed");
+      leases.push(acquired.lease);
+    }
+    for (const lease of leases) {
+      assert.equal((await manager.release(lease, { ownerAuthorized: true, requireClean: true })).outcome, "released");
+    }
+    return leases;
+  };
+  const [first, second] = await acquireReleased("pool-partial-1", "pool-partial-2");
+  assert.notEqual(first!.slotId, second!.slotId);
+  const preview = await operations.preview({ action: "destroy", target: { kind: "pool", poolId: first!.poolId } });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const removeSlot = manager.removeSlot.bind(manager);
+  let calls = 0;
+  t.mock.method(manager, "removeSlot", async (...args: Parameters<typeof removeSlot>) => {
+    calls += 1;
+    if (calls === 2) throw new Error("git worktree remove failed");
+    return removeSlot(...args);
+  });
+  t.mock.method(console, "error", () => {});
+
+  const accepted = operations.submit(preview.token, []);
+  assert.deepEqual(accepted.operation.removals.map((target) => target.id).sort(), [first!.slotId, second!.slotId].sort());
+  await operations.idle();
+  t.mock.restoreAll();
+  const [failed] = (await operations.inventory()).operations;
+  assert.equal(failed?.completed.length, 1);
+  const left = [first!.slotId, second!.slotId].find((id) => id !== failed!.completed[0]!.id)!;
+
+  // A slot joins the pool after the failure. It was never part of that cleanup. The first
+  // acquire reuses the surviving warm slot, so the second is the genuinely new one.
+  const late = await acquireReleased("pool-partial-late-1", "pool-partial-late-2");
+  const joined = late.find((lease) => lease.slotId !== left)!;
+  assert.ok(joined, "a new slot joined the pool");
+  const retry = worktreeRetryRequest(failed!);
+  assert.deepEqual(retry, { action: "destroy", target: { kind: "slots", slotIds: [left] } });
+  operations.dismiss(failed!.id);
+  const again = await operations.preview(retry!);
+  assert.deepEqual(again.affected.map((target) => target.id), [left]);
+  assert.ok(!again.affected.some((target) => target.id === joined.slotId), "the late slot does not ride along");
+  operations.submit(again.token, []);
+  await operations.idle();
+  assert.equal(manager.store.slot(left), null);
+  assert.equal(manager.store.slot(joined.slotId)?.state, "available");
 });

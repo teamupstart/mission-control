@@ -162,3 +162,73 @@ test("older imports need adoption and missing source items leave a visible error
   await expect(review.locator(".settings-error")).toBeVisible();
   expect((await tasks(page, daemon))[0]!.title).toBe("Changed before adoption");
 });
+
+test("Jira link failures render per task instead of poisoning the batch", async ({ page, daemon }) => {
+  const source = { id: "s", kind: "jira", repoRoot: daemon.repo, enabled: false, keepUpdated: true,
+    config: { site: "acme.atlassian.net", jql: "project = MC" } };
+  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { sources: [source] } })).ok()).toBe(true);
+  for (const [key, url] of [
+    ["MC-1", "https://another.atlassian.net/browse/MC-1"],
+    ["MC-2", null],
+    ["MC-3", "https://acme.atlassian.net/browse/MC-3"],
+  ] as const) {
+    const created = await page.request.post(`${daemon.baseURL}/api/tasks`, {
+      data: { repoRoot: daemon.repo, title: `Imported ${key}`, intent: "Keep these notes", backlog: true, enabled: false },
+    });
+    expect(created.ok()).toBe(true);
+    const task = await created.json();
+    // Model old imported links, then let restart load them into the real registry.
+    withDaemonDb(daemon, (db) => db.prepare("UPDATE tasks SET source_id = ?, external_id = ?, source_url = ? WHERE id = ?")
+      .run("s", key, url, task.id));
+  }
+  await daemon.crash(); await daemon.restart();
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  expect((await sweep(page)).sync.skipped).toBe(3);
+  const foreign = page.getByRole("article", { name: "Source update for MC-1", exact: true });
+  await expect(foreign.locator(".settings-error")).toHaveText("The linked item belongs to another Jira site.");
+  await expect(page.getByRole("article", { name: "Source update for MC-2", exact: true }).locator(".settings-error"))
+    .toHaveText("The linked Jira item has a missing or invalid URL.");
+  await expect(page.getByRole("article", { name: "Source update for MC-3", exact: true }).locator(".settings-error"))
+    .toContainText("The linked item was not returned");
+  expect((await tasks(page, daemon)).every((task) => task.intent === "Keep these notes")).toBe(true);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("task-source-sync"); mkdirSync(dir, { recursive: true });
+    await foreign.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${dir}jira-link-errors.png` });
+  }
+});
+
+test.describe("scheduled review visibility", () => {
+  test.use({ daemonEnv: { MISSION_TASK_SOURCE_TICK_MS: "5000" } });
+  test("an open settings page receives conflict-only and error-only sweeps without reload or manual sweep", async ({ page, daemon }) => {
+    await configure(page, daemon); await sweep(page); await enable(page, daemon);
+    const [task] = await tasks(page, daemon);
+    expect((await page.request.post(`${daemon.baseURL}/api/tasks/${task!.id}/update`, {
+      data: { intent: "Local notes before scheduled refresh" },
+    })).ok()).toBe(true);
+    upstream(daemon, { title: "Scheduled remote title", body: "Scheduled remote notes", discoverable: false });
+    const cfg = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
+    const schedule = async (enabled: boolean) => {
+      expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+        data: { sources: cfg.sources.map((source: Record<string, unknown>) => ({ ...source, enabled })) },
+      })).ok()).toBe(true);
+    };
+    // The setup's manual sweep is still recent. Pause an enabled schedule to clear its
+    // due state, then let the real background tick do the next refresh.
+    await schedule(true); await schedule(false); await schedule(true);
+    const review = page.getByRole("article", { name: "Source update for acme/demo#17" });
+    await expect(review.getByText("Scheduled remote notes", { exact: false })).toBeVisible({ timeout: 15_000 });
+    await expect(review.getByText("Local notes before scheduled refresh", { exact: true })).toBeVisible();
+    expect((await tasks(page, daemon))[0]!.title).toBe("Imported issue");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("task-source-sync"); mkdirSync(dir, { recursive: true });
+      await review.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${dir}scheduled-conflict.png` });
+    }
+    writeFileSync(daemon.ghIssuesPath, "[]");
+    // Reset the schedule's due state through the API, leaving the open page untouched.
+    await schedule(false); await schedule(true);
+    await expect(review.locator(".settings-error")).toContainText("The linked GitHub issue could not be read", { timeout: 15_000 });
+    expect((await tasks(page, daemon))[0]!.title).toBe("Imported issue");
+  });
+});

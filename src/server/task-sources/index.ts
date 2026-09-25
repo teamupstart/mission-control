@@ -1,4 +1,5 @@
 import type {
+  LinkedReadResult,
   PushContext,
   PushDraft,
   PushResult,
@@ -37,7 +38,7 @@ interface ErasedTaskSource {
   canPush: boolean;
   preflight(config: unknown, ctx: SweepContext): Promise<string | null>;
   sweep(config: unknown, ctx: SweepContext): Promise<SweepResult>;
-  readLinked(config: unknown, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult>;
+  readLinked(config: unknown, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult>;
   /**
    * Null when this kind cannot receive a pushed task.
    *
@@ -316,7 +317,7 @@ export async function resolveWith(
 }
 
 /** Existing links use the same registry and configuration boundary as discovery. */
-export async function readLinkedSource(inst: TaskSourceInstance, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult> {
+export async function readLinkedSource(inst: TaskSourceInstance, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
   if (refs.length > 25) return { items: [], error: "a linked refresh may read at most 25 items" };
   try { return await TASK_SOURCES[inst.kind].readLinked(inst.config, refs, ctx); }
   catch (error) { return { items: [], error: error instanceof Error ? error.message : String(error) }; }

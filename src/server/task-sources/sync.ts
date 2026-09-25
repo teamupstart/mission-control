@@ -93,7 +93,8 @@ export async function refreshSourceTasks(
     } else if (record.externalId !== task.source!.externalId) {
       next.error = "The task's source identity changed; its saved baseline cannot be used.";
     } else if (!candidate || candidate.ref.sourceId !== inst.id) {
-      next.error = read.error ?? "The linked item was not returned. It may be missing or inaccessible; the task was kept.";
+      next.error = read.itemErrors?.[task.source!.externalId] ?? read.error
+        ?? "The linked item was not returned. It may be missing or inaccessible; the task was kept.";
     } else if (candidate.ref.url !== task.source!.url) {
       next.error = "The source returned a different issue link. The existing task was kept.";
     } else {

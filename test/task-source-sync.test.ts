@@ -1,5 +1,8 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
@@ -11,6 +14,7 @@ const { ingestSweep } = await import("../src/server/task-sources/ingest.ts");
 const { refreshSourceTasks, sourceSyncReviews, resolveSourceSync } = await import("../src/server/task-sources/sync.ts");
 const { getSourceSync, saveSourceSync } = await import("../src/server/task-sources/sync-store.ts");
 const { TASK_SOURCES, readLinkedSource } = await import("../src/server/task-sources/index.ts");
+const { sweepOnce } = await import("../src/server/task-sources/sweeper.ts");
 const { ghLinkedIssueArgs } = await import("../src/server/task-sources/github-issues.ts");
 const { linkedJiraConfig } = await import("../src/server/task-sources/jira.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
@@ -88,35 +92,114 @@ test("legacy links need adoption and newly pushed links are excluded",async()=>{
 test("linked reads bypass discovery; missing results keep the task and show the error",async(t)=>{
   const {src,tasks,task}=await setup();
   let requested:string[]=[];
-  t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async(_cfg: unknown,refs: TaskSourceRef[])=>{
+  const reader = t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async(_cfg: unknown,refs: TaskSourceRef[])=>{
     requested=refs.map((r:{externalId:string})=>r.externalId);
     return {items:[{...candidate(),title:"Closed issue, edited"}],error:null};
   });
   await refresh(src,tasks,[]); assert.deepEqual(requested,[candidate().ref.externalId]);
   assert.equal(getTask(task.id)!.title,"Closed issue, edited");
-  t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async()=>({items:[],error:"upstream unavailable"}));
+  reader.mock.mockImplementation(async()=>({items:[],error:"upstream unavailable"}));
   assert.equal((await refresh(src,tasks,[])).skipped,1);
   assert.equal(getTask(task.id)!.title,"Closed issue, edited");
   assert.equal(sourceSyncReviews([src])[0]!.error,"upstream unavailable");
 });
 test("an in-flight pause, local edit, or dispatch cannot overwrite newer state",async(t)=>{
   const {src,registry,tasks,task}=await setup();
-  t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async()=>{
+  const reader = t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async()=>{
     await tasks.update(task.id,{intent:"Changed during read"});
     return {items:[{...candidate(),intent:"Remote"}],error:null};
   });
   assert.equal((await refresh(src,tasks,[])).skipped,1); assert.equal(getTask(task.id)!.intent,"Changed during read");
-  t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async()=>{
+  reader.mock.mockImplementation(async()=>{
     setTaskSourcesConfig({sources:[{...src,keepUpdated:false}]});
     return {items:[{...candidate(),intent:"Remote"}],error:null};
   });
   await refresh(src,tasks,[]); assert.equal(getTask(task.id)!.intent,"Changed during read");
   setTaskSourcesConfig({sources:[src]});
-  t.mock.method(TASK_SOURCES["github-issues"],"readLinked",async()=>{
+  reader.mock.mockImplementation(async()=>{
     registry.upsertTask({...getTask(task.id)!,status:"running",dispatchedAt:Date.now()});
     return {items:[{...candidate(),intent:"Remote"}],error:null};
   });
   assert.equal((await refresh(src,tasks,[])).skipped,1); assert.equal(getTask(task.id)!.intent,"Changed during read");
+});
+test("a per-item linked-read error preserves that task while valid siblings update", async (t) => {
+  const { src, tasks, task } = await setup();
+  await ingestSweep(src, { items: [candidate(2)], error: null }, tasks,
+    { resolveRepoRoot: async () => ({ ok: true, repoRoot: "/repo" }) });
+  const sibling = listTasks().find((item) => item.source?.externalId === candidate(2).ref.externalId)!;
+  t.mock.method(TASK_SOURCES["github-issues"], "readLinked", async () => ({
+    items: [{ ...candidate(2), title: "Refreshed sibling" }], error: null,
+    itemErrors: { [candidate().ref.externalId]: "The linked item belongs to another Jira site." },
+  }));
+  const result = await refresh(src, tasks, []);
+  assert.equal(result.updated, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(getTask(task.id)!.title, task.title);
+  assert.equal(getTask(sibling.id)!.title, "Refreshed sibling");
+  assert.equal(sourceSyncReviews([src]).find((review) => review.taskId === task.id)!.error,
+    "The linked item belongs to another Jira site.");
+  assert.equal(sourceSyncReviews([src]).find((review) => review.taskId === sibling.id)!.error, null);
+});
+test("GitHub linked failures never persist command output or parser details in reviews or the API", async () => {
+  const { src, registry, tasks, task } = await setup();
+  const dir = mkdtempSync(join(tmpdir(), "mission-linked-gh-"));
+  const bin = join(dir, "gh");
+  const before = process.env.MISSION_GH_BIN;
+  const secret = "fake-token-should-not-be-persisted /private/operator/path account@example.test";
+  process.env.MISSION_GH_BIN = bin;
+  const localSource = { ...src, repoRoot: dir };
+  setTaskSourcesConfig({ sources: [localSource] });
+  try {
+    const { buildApp } = await import("../src/server/routes.ts");
+    const app = buildApp({ registry, tasks, reviews: {} as never, queues: {} as never });
+    for (const [stream, code] of [["stderr", 1], ["stdout", 0]] as const) {
+      writeFileSync(bin, `#!/usr/bin/env node\nprocess.${stream}.write(${JSON.stringify(secret)}); process.exitCode = ${code};\n`);
+      chmodSync(bin, 0o755);
+      assert.equal((await refresh(localSource, tasks, [])).skipped, 1);
+      const record = getSourceSync(task.id)!;
+      assert.equal(record.error, code === 1
+        ? "The linked GitHub issue could not be read. Check access and authentication, then sweep again."
+        : "The linked GitHub issue returned unreadable content.");
+      assert.ok(!JSON.stringify(record).includes(secret));
+      const response = await app.request("/api/task-sources/config", { headers: { host: "127.0.0.1:7317" } });
+      const body = await response.text();
+      for (const fragment of secret.split(" ")) assert.ok(!body.includes(fragment), fragment);
+    }
+  } finally {
+    if (before === undefined) delete process.env.MISSION_GH_BIN;
+    else process.env.MISSION_GH_BIN = before;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+test("the sweep entry point rejects overlap during a linked refresh even within one millisecond", async (t) => {
+  const { src, tasks, task } = await setup();
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  t.mock.method(TASK_SOURCES["github-issues"], "sweep", async () => ({ items: [], error: null }));
+  const reader = t.mock.method(TASK_SOURCES["github-issues"], "readLinked", async () => {
+    entered();
+    await gate;
+    return { items: [{ ...candidate(), title: "Refreshed" }], error: null };
+  });
+  const first = sweepOnce(src, tasks);
+  try {
+    await started;
+    const attempt = getSourceSync(task.id);
+    const second = await sweepOnce(src, tasks);
+    assert.equal(second.error, "a sweep of this source is already running");
+    assert.equal(reader.mock.callCount(), 1);
+    assert.deepEqual(getSourceSync(task.id), attempt);
+    release();
+    assert.equal((await first).sync?.updated, 1);
+    assert.equal(getTask(task.id)!.title, "Refreshed");
+  } finally {
+    release();
+    await first;
+  }
 });
 test("duplicate live identities and a changed upstream site never pick an arbitrary target",async()=>{
   const {src,registry,tasks,task}=await setup();
@@ -179,7 +262,7 @@ test("provider identity readers build bounded explicit requests",()=>{
   const cfg=JiraConfigSchema.parse({site:"acme.atlassian.net",jql:"status = Open"});
   const linked=linkedJiraConfig(cfg,[{sourceId:"s",externalId:"MC-1",url:"https://acme.atlassian.net/browse/MC-1"}]);
   assert.equal(linked.jql,'key in ("MC-1")');
-  assert.throws(()=>linkedJiraConfig(cfg,[{sourceId:"s",externalId:"MC-1",url:"https://another.atlassian.net/browse/MC-1"}]),/another site/);
+  assert.throws(()=>linkedJiraConfig(cfg,[{sourceId:"s",externalId:"MC-1",url:"https://another.atlassian.net/browse/MC-1"}]),/another Jira site/);
   assert.ok(GithubIssuesConfigSchema.parse({}));
 });
 

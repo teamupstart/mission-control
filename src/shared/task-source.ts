@@ -114,6 +114,11 @@ export interface SweepResult {
   error: string | null;
 }
 
+export interface LinkedReadResult extends SweepResult {
+  /** Failures keyed by externalId, so one invalid link cannot block valid siblings. */
+  itemErrors?: Record<string, string>;
+}
+
 /** What the daemon lends a sweep. Narrow on purpose - no registry, no DB. */
 export interface SweepContext {
   sourceId: string;
@@ -375,7 +380,7 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
   preflight(config: C, ctx: SweepContext): Promise<string | null>;
   sweep(config: C, ctx: SweepContext): Promise<SweepResult>;
   /** Read existing links independently of discovery filters. At most 25 per call. */
-  readLinked(config: C, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult>;
+  readLinked(config: C, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult>;
   /**
    * File one of our tasks as an item in the external system, and report what was created.
    *

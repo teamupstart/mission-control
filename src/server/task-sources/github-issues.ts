@@ -1,5 +1,6 @@
 import type {
   GithubIssuesConfig,
+  LinkedReadResult,
   PushContext,
   PushDraft,
   PushResult,
@@ -545,20 +546,33 @@ export function ghLinkedIssueArgs(ref: TaskSourceRef): string[] {
   }
   return ["issue", "view", url.href, "--json", JSON_FIELDS];
 }
-async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult> {
+async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
   const items: TaskCandidate[] = [];
-  const errors: string[] = [];
+  const errors: [string, string][] = [];
   for (const ref of refs) {
     if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
+    let args: string[];
+    try { args = ghLinkedIssueArgs(ref); }
+    catch {
+      errors.push([ref.externalId, "The linked GitHub issue has no valid issue identity."]);
+      continue;
+    }
     try {
-      const res = await run(ghBin(), ghLinkedIssueArgs(ref), { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
-      if (res.code !== 0) { errors.push(`${ref.externalId}: ${res.stderr.trim().slice(0, 300) || "issue could not be read"}`); continue; }
+      const res = await run(ghBin(), args, { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
+      // Sync errors are persisted and served to the dashboard. Never copy command output
+      // or parser exceptions, which can contain credentials, paths, or account details.
+      if (res.code !== 0) {
+        errors.push([ref.externalId, "The linked GitHub issue could not be read. Check access and authentication, then sweep again."]);
+        continue;
+      }
       const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);
       if (candidate?.ref.externalId === ref.externalId) items.push(candidate);
-      else errors.push(`${ref.externalId}: issue identity changed or content was unreadable`);
-    } catch (error) { errors.push(`${ref.externalId}: ${error instanceof Error ? error.message : String(error)}`); }
+      else errors.push([ref.externalId, "The linked GitHub issue identity changed or its content was unreadable."]);
+    } catch {
+      errors.push([ref.externalId, "The linked GitHub issue returned unreadable content."]);
+    }
   }
-  return { items, error: errors.length ? errors.join("; ") : null };
+  return { items, error: null, ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
 }
 
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {

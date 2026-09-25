@@ -287,10 +287,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
   // SQLite parses REFERENCES clauses whatever this says and enforces them only when it is
   // on, so declaring a foreign key without this line is a comment that looks like a
-  // constraint. It is safe to switch on for the whole file because the ensemble family
-  // below is the ONLY one that declares a foreign key - every other table in here relates
-  // by convention, and turning the pragma on cannot retroactively constrain a relation the
-  // schema never declared. A new REFERENCES clause on an older table therefore becomes
+  // constraint. The ensemble family and task_source_sync declare foreign keys; other
+  // tables relate by convention. Turning the pragma on cannot retroactively constrain a
+  // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
   d.exec(`
@@ -1405,8 +1404,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- ENFORCED, and both enforcement modes are wrong: ON DELETE CASCADE would delete this
     -- row when retention removes the attempt, destroying the only record of a tree that is
     -- still held; RESTRICT would make retention fail outright on a leaked lease. The
-    -- requirement is precisely that this table outlives both. (It also matches the house
-    -- rule that the ensemble family is the only one here that declares foreign keys.)
+    -- requirement is precisely that this table outlives both. The ensemble family and
+    -- task_source_sync declare foreign keys; these leases deliberately do not.
     --
     -- submission_id and node_id are CARRIED rather than joined for, for the same reason.
     -- Before a check node may retry, it has to answer "does this node still own an
@@ -1682,8 +1681,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- until the harness mints it - that is the driver bound event, and a row written before
     -- it lands is a session that was starting when the daemon died.
     --
-    -- Ordinary table with no REFERENCES clause (the ensemble family stays the only one
-    -- declaring foreign keys) and no index: the only reads are by primary key and the
+    -- Ordinary table with no REFERENCES clause (unlike the ensemble family and
+    -- task_source_sync) and no index: the only reads are by primary key and the
     -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,

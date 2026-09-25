@@ -1,5 +1,6 @@
 import type {
   JiraConfig,
+  LinkedReadResult,
   SweepContext,
   SweepResult,
   TaskCandidate,
@@ -2126,18 +2127,37 @@ async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<Writeb
 }
 
 /** Fixed keys bypass discovery JQL, but never move a link onto another Jira site. */
+function linkedJiraRefError(cfg: JiraConfig, ref: TaskSourceRef): string | null {
+  if (!ISSUE_KEY.test(ref.externalId)) return "The linked Jira item has an invalid issue key.";
+  if (!ref.url) return "The linked Jira item has a missing or invalid URL.";
+  try {
+    if (new URL(ref.url).host !== siteHost(cfg.site)) return "The linked item belongs to another Jira site.";
+  } catch {
+    return "The linked Jira item has a missing or invalid URL.";
+  }
+  return null;
+}
 export function linkedJiraConfig(cfg: JiraConfig, refs: TaskSourceRef[]): JiraConfig {
   for (const ref of refs) {
-    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(ref.externalId)
-      || new URL(ref.url ?? "").host !== siteHost(cfg.site)) {
-      throw new Error("a linked Jira item has an invalid key or belongs to another site");
-    }
+    const error = linkedJiraRefError(cfg, ref);
+    if (error) throw new Error(error);
   }
   return { ...cfg, jql: `key in (${refs.map((ref) => `"${ref.externalId}"`).join(",")})`, limit: Math.max(1, refs.length) };
 }
-async function readLinked(cfg: JiraConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<SweepResult> {
-  if (!refs.length) return { items: [], error: null };
-  return sweep(linkedJiraConfig(cfg, refs), ctx);
+async function readLinked(cfg: JiraConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
+  const valid: TaskSourceRef[] = [];
+  const errors: [string, string][] = [];
+  for (const ref of refs) {
+    const error = linkedJiraRefError(cfg, ref);
+    if (error) errors.push([ref.externalId, error]);
+    else valid.push(ref);
+  }
+  const result = valid.length ? await sweep(linkedJiraConfig(cfg, valid), ctx) : { items: [], error: null };
+  // Discovery diagnostics can include provider output. Linked errors become durable sync
+  // history, so retain a bounded message here instead of persisting those details.
+  return { items: result.items,
+    error: result.error ? "Jira could not read the linked issues. Check source settings, access, and authentication." : null,
+    ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
 }
 
 export const jira: TaskSourceImpl<JiraConfig> = {

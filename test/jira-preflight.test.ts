@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,8 @@ case "$FAKE_JIRA_MODE" in
     echo "Error: config file not found. Run 'jira init' to configure the tool" 1>&2; exit 1 ;;
   badjql)
     echo "Error: jql: Field 'nope' does not exist" 1>&2; exit 1 ;;
+  sensitive)
+    echo "fake-jira-token /private/operator/path account@example.test" 1>&2; exit 1 ;;
   empty)
     echo "No result found for given query in project \\"MC\\"" 1>&2; exit 1 ;;
   oldcli)
@@ -253,6 +255,49 @@ test("linked Jira refresh executes an explicit key query even with empty discove
   assert.equal(result.items[0]!.ref.externalId, "MC-1");
   assert.equal(result.items[0]!.title, "Fix the thing");
   assert.ok(callsIn(args).includes('key in ("MC-1")'));
+});
+
+test("invalid Jira links fail individually without blocking valid keys or querying another site", async () => {
+  const args = join(home, "mixed-linked-args.txt");
+  machine({ cli: true, args });
+  const refs = [
+    { sourceId: ctx.sourceId, externalId: "MC-1", url: "https://acme.atlassian.net/browse/MC-1" },
+    { sourceId: ctx.sourceId, externalId: "MC-2", url: null },
+    { sourceId: ctx.sourceId, externalId: "MC-3", url: "not a URL" },
+    { sourceId: ctx.sourceId, externalId: "MC-4", url: "https://another.atlassian.net/browse/MC-4" },
+    { sourceId: ctx.sourceId, externalId: "invalid-key", url: "https://acme.atlassian.net/browse/invalid-key" },
+  ];
+  const result = await jira.readLinked(cfg({ jql: "" }), refs, ctx);
+  assert.equal(result.error, null);
+  assert.deepEqual(result.items.map((item) => item.ref.externalId), ["MC-1"]);
+  assert.match(result.itemErrors?.["MC-2"] ?? "", /missing or invalid URL/);
+  assert.match(result.itemErrors?.["MC-3"] ?? "", /missing or invalid URL/);
+  assert.match(result.itemErrors?.["MC-4"] ?? "", /another Jira site/);
+  assert.match(result.itemErrors?.["invalid-key"] ?? "", /invalid issue key/);
+  const sent = callsIn(args);
+  assert.ok(sent.includes('key in ("MC-1")'));
+  assert.ok(!sent.some((arg) => /MC-[234]|invalid-key/.test(arg)));
+
+  const invalidArgs = join(home, "invalid-linked-args.txt");
+  machine({ cli: true, args: invalidArgs });
+  const invalid = await jira.readLinked(cfg(), refs.slice(1), ctx);
+  assert.deepEqual(invalid.items, []);
+  assert.equal(invalid.error, null);
+  assert.deepEqual(invalid.itemErrors, result.itemErrors);
+  assert.equal(existsSync(invalidArgs), false, "an all-invalid batch must not invoke the provider");
+});
+
+test("linked Jira failures do not carry provider output into durable sync errors", async () => {
+  machine({ cli: true, mode: "sensitive" });
+  const result = await jira.readLinked(cfg(), [
+    { sourceId: ctx.sourceId, externalId: "MC-1", url: "https://acme.atlassian.net/browse/MC-1" },
+    { sourceId: ctx.sourceId, externalId: "MC-2", url: null },
+  ], ctx);
+  assert.equal(result.error, "Jira could not read the linked issues. Check source settings, access, and authentication.");
+  assert.match(result.itemErrors?.["MC-2"] ?? "", /missing or invalid URL/);
+  for (const secret of ["fake-jira-token", "/private/operator/path", "account@example.test"]) {
+    assert.ok(!JSON.stringify(result).includes(secret));
+  }
 });
 
 // jira-cli exits NON-ZERO when the filter matched nothing. A healthy, up-to-date source

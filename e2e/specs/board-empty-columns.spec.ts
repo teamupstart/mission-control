@@ -138,10 +138,28 @@ test("an empty needs you column is a slim all-clear rail that widens in place wh
   // No widen control on a column with nothing to read wider.
   await expect(needsYou.getByRole("button", { name: /widen|narrow/i })).toHaveCount(0);
 
-  // ---- the all-clear sentence is on hover ----
-  await needsYou.locator(".board-allclear").hover();
+  // ---- the all-clear sentence is on hover, anywhere down the rail's blank middle ----
+  // `Tooltip` merges its handlers onto `.board-allclear` rather than wrapping it, so that
+  // element is the rail's flex item and takes the spare height. Hovered at a point well
+  // below the tick and above the count, which is blank rail, not the glyph.
+  const tick = await needsYou.locator(".board-allclear-tick").boundingBox();
+  const count = await needsYou.locator(".board-col-n").boundingBox();
+  expect(tick && count, "the tick and the count are laid out").toBeTruthy();
+  const blank = {
+    x: tick!.x + tick!.width / 2,
+    y: (tick!.y + tick!.height + count!.y) / 2,
+  };
+  expect(count!.y - (tick!.y + tick!.height), "there is blank rail between tick and count")
+    .toBeGreaterThan(100);
+  const allClear = await needsYou.locator(".board-allclear").boundingBox();
+  expect(blank.y, "the hover target reaches the blank middle").toBeGreaterThan(allClear!.y);
+  expect(blank.y).toBeLessThan(allClear!.y + allClear!.height);
+  await page.mouse.move(blank.x, blank.y);
   await expect(page.locator(".tooltip")).toHaveText("All clear. Nothing is waiting on you.");
-  observed("hovering the rail shows: All clear. Nothing is waiting on you.");
+  observed(
+    `hovering blank rail at y=${Math.round(blank.y)} (tick ends ${Math.round(tick!.y + tick!.height)}, ` +
+      `count starts ${Math.round(count!.y)}) shows: All clear. Nothing is waiting on you.`,
+  );
   await shoot(page, "slim-rail", page.locator("main.board"));
 
   // ---- a session that needs you widens it in place ----

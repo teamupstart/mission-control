@@ -27673,13 +27673,16 @@ span.line-run-prov {
   background: none;
 }
 /* The tick, and the hover target for the sentence: it takes the rail's spare height between
-   the name and the zero, so pointing anywhere down the rail explains it. */
+   the name and the zero, so pointing anywhere down the rail explains it. It is the flex item
+   itself - `Tooltip` merges its handlers onto this element rather than wrapping it. */
 .board-allclear {
   order: 1;
   flex: 1;
   align-self: stretch;
   display: flex;
   justify-content: center;
+  /* The tick keeps its own height at the top; stretched, its box would run to the count. */
+  align-items: flex-start;
   margin: 0;
   padding: 0;
 }

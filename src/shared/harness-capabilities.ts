@@ -736,6 +736,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levelsFor: (modelId) => {
         const id = modelId?.toLowerCase() ?? "";
         return id.startsWith("gpt-6-astra") ||
+          id.startsWith("gpt-6-sol") ||
+          id.startsWith("gpt-6-luna") ||
           id.startsWith("gpt-5.6-sol") ||
           id.startsWith("gpt-5.6-terra")
           ? THINKING_LEVELS

@@ -467,7 +467,7 @@ no resume state, new top-bar control, or chapter beyond this one guided sequence
    and explains that Workflows run reusable review and follow-up steps after an agent finishes.
 8. **Dispatch the task** spotlights the real **Dispatch now** button without dimming the rest
    of the form. The operator clicks that button to schedule one fixed read-only Ship task on
-   Codex pinned to `gpt-5.6-terra`. This is a real model call and can spend model tokens. On an
+   Codex pinned to `gpt-6-sol`. This is a real model call and can spend model tokens. On an
    empty fleet, the temporary Chat conversation is a separate real model call using Codex's
    configured default model. Each temporary daemon route accepts only a repository; it owns
    the prompt, kind, and no-Workflow posture. Only the Ship route grants the required
@@ -859,6 +859,13 @@ available:
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
   places, or have it in neither.
+- **And the working indicator.** Under **Working indicator**, with a preview of its own beside
+  it, sit two marks a conversation can add while its session works: **Pin the working row**,
+  which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
+  and **Reply box progress bar**, a thin moving bar along the top of the reply box. Both ship
+  off, and an upgraded profile gets them off too, once, the same way as **Workflow details**.
+  The row's elapsed-time clock is not on this list: it is always drawn. See
+  [the step the current turn is on](sessions.md#the-step-the-current-turn-is-on).
 - **The conversation header stays on one row, and gives way in a fixed order.** It carries the
   session's name and objective, the chips that have something to say about it, the review
   button, and then the permission mode, model, reasoning effort, context meter and cost. On a

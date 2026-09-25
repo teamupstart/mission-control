@@ -62,14 +62,14 @@ test("an emptied box falls through the ladder instead of spawning with no model 
 
 test("Codex resolves provider-compatible defaults for every Foreman role", () => {
   const all = resolveForemanModels({}, {}, "codex");
-  assert.equal(all.review.id, "gpt-5.6-sol");
-  assert.equal(all.verify.id, "gpt-5.6-sol");
-  assert.equal(all.triage.id, "gpt-5.6-luna");
-  assert.equal(all.backlog.id, "gpt-5.6-terra");
+  assert.equal(all.review.id, "gpt-6-sol");
+  assert.equal(all.verify.id, "gpt-6-sol");
+  assert.equal(all.triage.id, "gpt-6-luna");
+  assert.equal(all.backlog.id, "gpt-6-sol");
 });
 
 test("the worker resolves an inherited Codex backlog model through the effective provider", () => {
-  assert.equal(backlogModel({}, "codex"), "gpt-5.6-terra");
+  assert.equal(backlogModel({}, "codex"), "gpt-6-sol");
   assert.equal(backlogModel({ backlogModel: "gpt-5.6-sol" }, "codex"), "gpt-5.6-sol");
 });
 

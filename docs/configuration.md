@@ -65,8 +65,8 @@
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
-| `FOREMAN_REVIEW_MODEL` | `claude-opus-5` | Foreman [models](foreman.md#which-model-foreman-runs-as): the full reviewer (the `reviewModel` config wins over this) |
-| `FOREMAN_VERIFY_MODEL` | `claude-opus-5` | Foreman [models](foreman.md#which-model-foreman-runs-as): the work-queue verifier (the `verifyModel` config wins over this) |
+| `FOREMAN_REVIEW_MODEL` | `claude-opus-5-5` | Foreman [models](foreman.md#which-model-foreman-runs-as): the full reviewer (the `reviewModel` config wins over this) |
+| `FOREMAN_VERIFY_MODEL` | `claude-opus-5-5` | Foreman [models](foreman.md#which-model-foreman-runs-as): the work-queue verifier (the `verifyModel` config wins over this) |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](foreman.md#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |

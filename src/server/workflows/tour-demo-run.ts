@@ -321,7 +321,7 @@ export function seedWorkflowsTourDemoRun(store: WorkflowStore, now = Date.now())
           port: "pass",
           receipt: () => workflowJson({ outcome: "pass", persona: node.persona.name, verdict }),
           runner: node.persona.runner ?? "codex",
-          model: node.persona.model ?? "gpt-5.6-terra",
+          model: node.persona.model ?? "gpt-6-sol",
         });
       } else if (node.kind === "all_pass") {
         attempt(SUB_1, node, {

@@ -26,11 +26,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
   page,
   daemon,
 }) => {
-  // Tall enough for the whole panel to be on screen at once. The checklist is fifteen rows
-  // of label-over-prose across two sections, beside a sticky card, and a screenshot of it
+  // Tall enough for the whole panel to be on screen at once. The checklist is nineteen rows
+  // of label-over-prose across three sections, beside a sticky card, and a screenshot of it
   // taken across a scroll is stitched rather than photographed - which is not what a frame
   // meant for pixel review should be.
-  await page.setViewportSize({ width: 1500, height: 1860 });
+  await page.setViewportSize({ width: 1500, height: 2300 });
 
   // The preview's workflow panel is drawn from a run SUMMARY, and there is no run behind
   // it. Recorded from before the navigation, because the failure this guards against is a
@@ -51,17 +51,20 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   // Every registry item has a reachable checkbox, and the LAST one is reachable too - the
   // panel is the tallest thing in Display and its final row is the one a layout mistake
-  // would push off the end of the section rather than merely below the fold. Seventeen now:
+  // would push off the end of the section rather than merely below the fold. Nineteen now:
   // fifteen card items - including both compact progress meters, the jump shortcut, and the
-  // workflow-details switch - and the console band's two, which share this panel rather
-  // than a second one.
-  await expect(panel.getByRole("checkbox")).toHaveCount(17);
+  // workflow-details switch - the console band's two, and the working indicator's two,
+  // which share this panel rather than a second one.
+  await expect(panel.getByRole("checkbox")).toHaveCount(19);
   await expect(panel.getByRole("checkbox", { name: "Git branch", exact: true }))
     .toBeVisible();
-  // Both sections name themselves, which is what tells the card's "Branch" apart from the
+  await expect(panel.getByRole("checkbox", { name: "Reply box progress bar", exact: true }))
+    .toBeVisible();
+  // Every section names itself, which is what tells the card's "Branch" apart from the
   // console band's "Git branch" three rows below it.
   await expect(panel.getByRole("heading", { name: "Board card" })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Conversation header" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Working indicator" })).toBeVisible();
   await expect(panel.getByRole("checkbox", { name: "Last seen", exact: true }))
     .toBeVisible();
 
@@ -92,7 +95,8 @@ test("the preview redraws as items are toggled, and never navigates", async ({
     const lastRow = panel.getByRole("checkbox", { name: "Git branch", exact: true });
     const top = await heading.boundingBox();
     const bottom = await lastRow.boundingBox();
-    const column = await panel.locator(".board-card-checklist").boundingBox();
+    // The first checklist, which holds this section: the Working indicator brings its own.
+    const column = await panel.locator(".board-card-checklist").first().boundingBox();
     if (top && bottom && column) {
       await page.screenshot({
         path: `${EVIDENCE}03-conversation-header-section.png`,
@@ -147,7 +151,8 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
 test("the preview card cannot be clicked, tabbed into, or opened", async ({ page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  const stage = page.locator(".board-card-preview-stage");
+  // The card's stage, by its tile: the Working indicator group mounts a second one.
+  const stage = page.locator(".board-card-preview-stage").filter({ has: page.locator(".tile") });
   await expect(stage).toBeVisible();
 
   // `inert` takes the whole subtree out of the accessibility tree and out of hit-testing,

@@ -21,7 +21,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     dependencies: [],
     backlogRank: null,
     enabled: true,
-    model: "gpt-5.6-terra",
+    model: "gpt-6-sol",
     effort: null,
     workflowId: null,
     source: null,
@@ -52,7 +52,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
   };
 }
 
-test("the tour route fixes Terra, the harmless prompt, and request_input at the server", async () => {
+test("the tour route fixes Sol, the harmless prompt, and request_input at the server", async () => {
   enableExperience();
   const captured: {
     created?: CreateTaskInput;
@@ -81,7 +81,7 @@ test("the tour route fixes Terra, the harmless prompt, and request_input at the 
   });
   assert.equal(response.status, 200);
   assert.equal(captured.created?.agent, "codex");
-  assert.equal(captured.created?.model, "gpt-5.6-terra");
+  assert.equal(captured.created?.model, "gpt-6-sol");
   assert.equal(captured.created?.workflowId, null);
   assert.equal(captured.created?.backlog, true);
   assert.match(String(captured.created?.intent), /Do not edit files/);
@@ -360,7 +360,7 @@ test("the See the work recipes stay byte-for-byte what they were", () => {
   assert.equal(tour.operations.dispatch?.outcome, "Tour demo");
   assert.equal(tour.operations.preview?.outcome, "Tour conversation");
   assert.equal(tour.operations.dispatch?.create.title, "Tour demo");
-  assert.equal(tour.operations.dispatch?.create.model, "gpt-5.6-terra");
+  assert.equal(tour.operations.dispatch?.create.model, "gpt-6-sol");
   assert.deepEqual(tour.operations.dispatch?.dispatch, {
     overrideDisabled: true,
     missionMcp: { tools: ["request_input"] },

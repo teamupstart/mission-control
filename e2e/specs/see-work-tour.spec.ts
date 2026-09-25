@@ -234,6 +234,16 @@ test("the tour dispatches Terra, pauses for a real review, reaches Idle, and com
   await expect(dispatchDialog.getByRole("heading", { name: "Dispatch an agent" })).toBeVisible();
   await expect(dispatchDialog.getByPlaceholder("What should this agent do?")).toBeVisible();
   await expect(dispatchDialog.getByRole("combobox", { name: "After work" })).toBeVisible();
+  // The tour drives a fixed form, so the two controls that would take it somewhere else are
+  // not offered. The Guided switch used to be: live, persisting the preference, and unable to
+  // start a pass, because the pass state behind it was never wired for this form.
+  await expect(dispatchDialog.getByRole("switch", { name: "Guided" })).toHaveCount(0);
+  await expect(dispatchDialog.getByRole("radio", { name: "Ensemble" })).toHaveCount(0);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("dispatch-modes");
+    mkdirSync(evidence, { recursive: true });
+    await dashboard.screenshot({ path: join(evidence, "tour-form.png"), animations: "disabled" });
+  }
   const kindSelection = dispatchDialog.getByRole("group", { name: "Task type selection" });
   await expect(kindSelection).toHaveCSS("outline-width", "2px");
   await expect(kindSelection).toHaveCSS("outline-color", "rgb(246, 167, 51)");

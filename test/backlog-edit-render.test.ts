@@ -50,14 +50,14 @@ const mkTask = (over: Partial<Task> = {}): Task =>
 const editor = (task: Task): string =>
   renderToStaticMarkup(
     withOverlayHost(
-      createElement(DispatchLayer, { open: true, editTask: task, onClose: () => {} }),
+      createElement(DispatchLayer, { opening: { kind: "edit", task: task }, onClose: () => {} }),
     ),
   );
 
 /** A fresh dispatch, which is the same component over no row at all. */
 const dispatcher = (): string =>
   renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} })),
+    withOverlayHost(createElement(DispatchLayer, { opening: { kind: "new" }, onClose: () => {} })),
   );
 
 /**
@@ -195,8 +195,7 @@ test("the dependency picker offers both backlog tasks and active sessions", () =
   const html = renderToStaticMarkup(
     withOverlayHost(
       createElement(DispatchLayer, {
-        open: true,
-        editTask: mkTask(),
+        opening: { kind: "edit", task: mkTask() },
         tasks: [prerequisite],
         sessions: [mkSession({ id: "active", name: "Manual investigation", task: null })],
         onClose: () => {},

@@ -49,7 +49,6 @@ import {
   fetchPipelineRepos,
   fetchRepos,
   fetchTaskSources,
-  type ActionResult,
   type DispatchResult,
 } from "../lib/api.ts";
 import {
@@ -123,6 +122,14 @@ import {
   useEnsembleLaunch,
 } from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
+import {
+  dispatchModeProblem,
+  dispatchOpeningProblem,
+  type DispatchLaunchMode,
+  type DispatchMode,
+  type DispatchOpening,
+  type SeeWorkTourDispatchPreview,
+} from "../lib/dispatch-mode.ts";
 import { StandingInstructionsNote } from "./StandingInstructionsNote.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import { supportsManagedPipelineHost, type PipelineLaunchRuntime } from "@shared/pipeline.ts";
@@ -177,14 +184,6 @@ function freshDispatchDraft(): DispatchDraft {
     // for the next task, even though the primary repo deliberately remains sticky.
     extraRepoRoots: [],
   };
-}
-
-/** Temporary input owned by DispatchLayer while the See the work tour is active. */
-export interface SeeWorkTourDispatchPreview {
-  id: string;
-  briefReady: boolean;
-  repoRoot: string | null;
-  dispatch: (repoRoot: string) => Promise<ActionResult & { task?: Task }>;
 }
 
 /**
@@ -340,10 +339,11 @@ function freshPushState(taskId: string): PushState {
 }
 
 /**
- * Which task the modal is over, when it is over one. `new` writes a task that does
- * not exist yet; `edit` rewrites one that is waiting in the backlog.
+ * Re-exported so a caller that opens this form needs one import, not two. The shapes
+ * themselves live in `lib/dispatch-mode.ts`, which also holds the rule that makes a
+ * contradictory opening unrepresentable - see the header there.
  */
-type DispatchMode = { kind: "new" } | { kind: "edit"; task: Task };
+export type { DispatchOpening, SeeWorkTourDispatchPreview };
 
 /**
  * A kept working copy of one backlog task: what the operator has written, and the
@@ -470,8 +470,7 @@ export function harnessDefaultsLine(
  * from, and a reopen whose row has moved on drops it and starts from the row.
  */
 export function DispatchLayer({
-  open,
-  editTask,
+  opening,
   tasks = [],
   sessions = [],
   personas = [],
@@ -479,16 +478,26 @@ export function DispatchLayer({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
-  launchIntent = null,
-  tourDemo = null,
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
   onEnsembleLaunched,
 }: {
-  open: boolean;
-  /** The backlog task being edited, or null for a fresh dispatch. */
-  editTask: Task | null;
+  /**
+   * What this opening is FOR, or `null` for a closed form.
+   *
+   * ONE input rather than the four booleans-and-optionals this used to take, because those
+   * four could be combined into openings with no meaning - a task to edit alongside an armed
+   * Ensemble strategy, a tour preview alongside either - and the form then had to invent a
+   * precedence between them. A caller now names the job, and exactly one mode comes out of it.
+   *
+   * The Library's strategy launchers reach Ensemble mode through here rather than by setting
+   * the launch mode themselves: mode and Ensemble draft are this component's state (so
+   * switching mode or closing loses neither), and a caller allowed to write them would be a
+   * second place that decides what Ensemble mode means. An opening is a request; the layer
+   * applies it.
+   */
+  opening: DispatchOpening | null;
   tasks?: Task[];
   sessions?: Session[];
   /** Live Personas, for the Ensemble evaluator-guidance selector. */
@@ -505,17 +514,6 @@ export function DispatchLayer({
   harnessesRevision?: number;
   /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
   pipelinesRevision?: string;
-  /**
-   * What the caller wants this opening to be, when it is not an ordinary Dispatch.
-   *
-   * The Library's strategy launchers reach the modal through here rather than by setting the
-   * launch mode themselves: mode and Ensemble draft are this component's state (so switching
-   * mode or closing loses neither), and a caller allowed to write them would be a second
-   * place that decides what Ensemble mode means. An intent is a request; the modal applies it.
-   */
-  launchIntent?: { strategyId: EnsembleStrategyId } | null;
-  /** Isolated draft and fixed submit path used only while the See the work tour is active. */
-  tourDemo?: SeeWorkTourDispatchPreview | null;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -529,6 +527,20 @@ export function DispatchLayer({
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
+  /**
+   * An opening that means more than one thing is refused here, before it can seed anything.
+   *
+   * The union above makes these unreachable from TypeScript, so what is left is a value that
+   * never went through the compiler - a hand-built object, a stale bundle, a caller reaching
+   * in from plain JavaScript. Treating one as CLOSED is the whole point: the old code would
+   * have picked a winner and rendered a form whose fields and submit path came from two
+   * different jobs, and a form that quietly does the wrong thing is worse than no form. The
+   * reason is logged once, because the fix belongs to whoever wrote the caller.
+   */
+  const openingProblem = dispatchOpeningProblem(opening);
+  const requested = openingProblem ? null : opening;
+  const editTask = requested?.kind === "edit" ? requested.task : null;
+  const tourDemo = requested?.kind === "tour" ? requested.demo : null;
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
   // This temporary slot lives beside the owner's existing new/edit slots and disappears when
@@ -566,7 +578,7 @@ export function DispatchLayer({
   // The Single vs Ensemble launch mode and the Ensemble draft live BESIDE the compose draft,
   // so switching mode or closing the modal loses neither. Edit mode is always Single: an
   // existing backlog Task cannot be turned into an Ensemble.
-  const [launchMode, setLaunchMode] = useState<"single" | "ensemble">("single");
+  const [launchMode, setLaunchMode] = useState<DispatchLaunchMode>("single");
   const [ensembleDraft, setEnsembleDraft] = useState<EnsembleDispatchDraft>(freshEnsembleDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
   // instance that armed it is gone - a stale closure would compare against
@@ -589,7 +601,7 @@ export function DispatchLayer({
   // render would re-seed the fields under the operator's cursor the moment anything
   // touched the row, which loses the very typing the slot exists to keep.
   const [openedOn, setOpenedOn] = useState<string | null>(null);
-  const openOn = open && editTask ? editTask.id : null;
+  const openOn = editTask ? editTask.id : null;
   if (openOn !== openedOn) {
     setOpenedOn(openOn);
     // The row moved while this form was closed, so the working copy describes a task
@@ -606,21 +618,36 @@ export function DispatchLayer({
    * would find every later Dispatch sitting in Ensemble mode, having never asked for it.
    * So an intent arms Ensemble for its own opening, and hands the mode back when it is spent.
    */
-  const operatorMode = useRef<"single" | "ensemble">("single");
-  const chooseLaunchMode = useCallback((mode: "single" | "ensemble") => {
+  const operatorMode = useRef<DispatchLaunchMode>("single");
+  /**
+   * Entering Ensemble ends the guided pass, and this is the one place that knows both routes
+   * in: the operator's own toggle, and a Library launch intent arriving as an opening.
+   *
+   * It used to be an effect inside the modal, and could not stay one. The pass belongs to a
+   * Single dispatch - Ensemble's body replaces the very controls the questions point at - so
+   * Ensemble mode is not handed a way to write pass state at all, which leaves ending it to
+   * whoever owns it. Every answer already in the draft stays in the draft; what ends is the
+   * asking.
+   */
+  const endPassForEnsemble = useCallback(() => {
+    setGuidedPass((current) => endGuidedPass(current ?? NO_GUIDED_PASS));
+  }, []);
+  const chooseLaunchMode = useCallback((mode: DispatchLaunchMode) => {
     operatorMode.current = mode;
     setLaunchMode(mode);
-  }, []);
+    if (mode === "ensemble") endPassForEnsemble();
+  }, [endPassForEnsemble]);
 
   // A launch intent is applied the way the edit slot above is - during render, once per
   // opening, keyed on what was asked for - so the modal never paints one frame of Single
   // mode before flipping to Ensemble.
   const [armedStrategy, setArmedStrategy] = useState<EnsembleStrategyId | null>(null);
-  const askedStrategy = open && !editTask ? launchIntent?.strategyId ?? null : null;
+  const askedStrategy = requested?.kind === "ensemble" ? requested.strategyId : null;
   if (askedStrategy !== armedStrategy) {
     setArmedStrategy(askedStrategy);
     if (askedStrategy) {
       setLaunchMode("ensemble");
+      endPassForEnsemble();
       // Only RESET the config when the strategy actually changes, which is the rule the
       // in-modal strategy picker keeps: relaunching the same strategy from the Library must
       // not throw away a config the operator already filled in.
@@ -741,6 +768,19 @@ export function DispatchLayer({
     setEdit(null);
   }, []);
 
+  /**
+   * The last refusal printed, so a form re-rendering on every keystroke cannot print the same
+   * programming error a hundred times - and a later, different contradiction still gets said.
+   */
+  const refused = useRef<string | null>(null);
+  const refuse = useCallback((problem: string): null => {
+    if (refused.current !== problem) {
+      refused.current = problem;
+      console.error(`Dispatch did not open: it was given ${problem}.`);
+    }
+    return null;
+  }, []);
+
   /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
   const onNewRevert = useCallback(() => {
     setDraft(freshDispatchDraft());
@@ -786,14 +826,55 @@ export function DispatchLayer({
     [onClose, onEnsembleLaunched],
   );
 
-  if (!open) return null;
-  if (editTask && editDraft) {
+  if (openingProblem) return refuse(openingProblem);
+  if (requested === null) return null;
+  refused.current = null;
+
+  /**
+   * The one mode this opening is, built before anything is rendered.
+   *
+   * Three of the four come straight off the opening. The fourth is the Single/Ensemble split,
+   * which is not an opening at all but a toggle the operator works from inside the form - so
+   * it is read here, once, instead of being handed to the modal beside an Ensemble draft it
+   * may not be allowed to use.
+   *
+   * One value rather than a mode built inline per branch below, so the contradiction test runs
+   * over the object the form is actually given. The union already refuses these at compile
+   * time; this catches a derivation that drifts after a shape changes, which is the failure
+   * the type cannot see because both halves of it would be edited together.
+   */
+  const mode: DispatchMode =
+    requested.kind === "edit"
+      ? { kind: "edit", task: requested.task, onDeleted: onEditDeleted, onOpenSchedule }
+      : requested.kind === "tour"
+        ? { kind: "tour", demo: requested.demo }
+        : launchMode === "ensemble"
+          ? {
+              kind: "ensemble",
+              onLaunchModeChange: chooseLaunchMode,
+              ensemble: ensembleDraft,
+              onEnsembleChange: setEnsembleDraft,
+              onEnsembleClear,
+              onEnsembleLaunched: onEnsembleLaunchedInternal,
+              personas,
+            }
+          : {
+              kind: "single",
+              guidedPass,
+              onGuidedPassChange: setGuidedPass,
+              onLaunchModeChange: chooseLaunchMode,
+            };
+  const modeProblem = dispatchModeProblem(mode);
+  if (modeProblem) return refuse(modeProblem);
+
+  if (mode.kind === "edit") {
+    if (!editDraft) return null;
     return (
       <DispatchModal
         // Remounted per task, so the autofocus and repo-index effects run for each one
         // and the box you land in is that task's, not the previous card's.
-        key={editTask.id}
-        mode={{ kind: "edit", task: editTask }}
+        key={mode.task.id}
+        mode={mode}
         tasks={tasks}
         sessions={sessions}
         draft={editDraft}
@@ -802,8 +883,34 @@ export function DispatchLayer({
         onRevert={onEditRevert}
         onClose={onClose}
         onSubmitted={onEditSubmitted}
-        onDeleted={onEditDeleted}
-        onOpenSchedule={onOpenSchedule}
+        onOpenLaunchFix={onOpenLaunchFix}
+        workflowSummaries={workflowSummaries}
+        foremanEnabled={foremanEnabled}
+        harnessesRevision={harnessesRevision}
+        pipelinesRevision={pipelinesRevision}
+      />
+    );
+  }
+  if (mode.kind === "tour") {
+    // The slot is seeded during render above, so this is unreachable in practice; refusing to
+    // render rather than falling through is what keeps a tour opening from quietly becoming an
+    // ordinary dispatch over the operator's own draft.
+    if (!tourSlot) return null;
+    const demoId = mode.demo.id;
+    return (
+      <DispatchModal
+        mode={mode}
+        tasks={tasks}
+        sessions={sessions}
+        draft={tourSlot.draft}
+        onDraftChange={(next) => setTourSlot({ id: demoId, draft: next })}
+        onAttachmentsChange={(attachments) => setTourSlot({
+          id: demoId,
+          draft: { ...tourDraftRef.current!, attachments },
+        })}
+        onRevert={() => setTourSlot({ id: demoId, draft: freshTourDispatchDraft(mode.demo) })}
+        onClose={onClose}
+        onSubmitted={onTourSubmitted}
         onOpenLaunchFix={onOpenLaunchFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
@@ -814,40 +921,20 @@ export function DispatchLayer({
   }
   return (
     <DispatchModal
-      mode={{ kind: "new" }}
+      mode={mode}
       tasks={tasks}
       sessions={sessions}
-      draft={tourDemo && tourSlot ? tourSlot.draft : draft}
-      onDraftChange={tourDemo && tourSlot
-        ? (next) => setTourSlot({ id: tourDemo.id, draft: next })
-        : setDraft}
-      onAttachmentsChange={tourDemo && tourSlot
-        ? (attachments) => setTourSlot({
-            id: tourDemo.id,
-            draft: { ...tourDraftRef.current!, attachments },
-          })
-        : onAttachmentsChange}
-      onRevert={tourDemo ? () => setTourSlot({
-        id: tourDemo.id,
-        draft: freshTourDispatchDraft(tourDemo),
-      }) : onNewRevert}
+      draft={draft}
+      onDraftChange={setDraft}
+      onAttachmentsChange={onAttachmentsChange}
+      onRevert={onNewRevert}
       onClose={onClose}
-      onSubmitted={tourDemo ? onTourSubmitted : onSubmitted}
+      onSubmitted={onSubmitted}
       onOpenLaunchFix={onOpenLaunchFix}
-      guidedPass={tourDemo ? NO_GUIDED_PASS : guidedPass}
-      onGuidedPassChange={tourDemo ? undefined : setGuidedPass}
-      launchMode={tourDemo ? "single" : launchMode}
-      onLaunchModeChange={chooseLaunchMode}
-      ensembleDraft={ensembleDraft}
-      onEnsembleDraftChange={setEnsembleDraft}
-      onEnsembleClear={onEnsembleClear}
-      onEnsembleLaunched={onEnsembleLaunchedInternal}
-      personas={personas}
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
-      tourDemo={tourDemo}
     />
   );
 }
@@ -877,24 +964,22 @@ function DispatchModal({
   onRevert,
   onClose,
   onSubmitted,
-  guidedPass = null,
-  onGuidedPassChange,
-  onDeleted,
-  onOpenSchedule,
   onOpenLaunchFix,
-  launchMode = "single",
-  onLaunchModeChange,
-  ensembleDraft,
-  onEnsembleDraftChange,
-  onEnsembleClear,
-  onEnsembleLaunched,
-  personas = [],
   workflowSummaries = [],
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
-  tourDemo = null,
 }: {
+  /**
+   * Which of the form's four jobs this is, carrying that job's inputs and no others.
+   *
+   * Everything else below is shared by all four. What used to sit beside them - an edit
+   * target, a guided pass, a launch mode, an Ensemble draft and its four callbacks, a tour
+   * preview, all optional and all independent - could be combined into openings that mean
+   * nothing, and the form had to pick a winner to render at all. `lib/dispatch-mode.ts` holds
+   * the union and the reason; the only thing this component derives is which fields it may
+   * read, and it derives that from `mode.kind` alone.
+   */
   mode: DispatchMode;
   tasks: Task[];
   sessions: Session[];
@@ -905,31 +990,8 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
-  /** Progress for the new-dispatch draft, owned by `DispatchLayer` so close/reopen keeps it. */
-  guidedPass?: GuidedPass | null;
-  onGuidedPassChange?: (pass: GuidedPass | null) => void;
-  /**
-   * The edited task was deleted, so the working copy over it has nothing left to describe.
-   * Edit-only - a new dispatch has no row to delete - and the layer's implementation drops
-   * the slot and revokes its thumbnails before closing. Absent, closing is the whole job.
-   */
-  onDeleted?: () => void;
-  /** Open Recurring Missions from a scheduled task's read-only provenance. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Open the settings screen that grants what a refused launch named as missing. */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
-  /** Single vs Ensemble. Only meaningful for a new dispatch; an edit is always Single. */
-  launchMode?: "single" | "ensemble";
-  onLaunchModeChange?: (mode: "single" | "ensemble") => void;
-  ensembleDraft?: EnsembleDispatchDraft;
-  onEnsembleDraftChange?: (draft: EnsembleDispatchDraft) => void;
-  onEnsembleClear?: () => void;
-  onEnsembleLaunched?: (
-    runId: string,
-    submitted: DispatchDraft,
-    submittedEnsemble: EnsembleDispatchDraft,
-  ) => void;
-  personas?: PersonaView[];
   workflowSummaries?: WorkflowSummary[];
   foremanEnabled?: boolean;
   /**
@@ -938,11 +1000,31 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
-  /** Fixed, safety-limited submit path while the See the work preview owns this form. */
-  tourDemo?: SeeWorkTourDispatchPreview | null;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
+  /**
+   * The mode's own inputs, unpacked once.
+   *
+   * Every one of these is `null`, `undefined` or a fixed default outside the mode that owns
+   * it, and the whole form below reads them rather than `mode` - so a field belonging to
+   * another job is not merely unused here, it is not reachable. The names are the ones the
+   * form has always used, which is why the body of this component did not have to change
+   * along with the props.
+   */
   const editing = mode.kind === "edit" ? mode.task : null;
+  const onDeleted = mode.kind === "edit" ? mode.onDeleted : undefined;
+  const onOpenSchedule = mode.kind === "edit" ? mode.onOpenSchedule : undefined;
+  const tourDemo = mode.kind === "tour" ? mode.demo : null;
+  const guidedPass = mode.kind === "single" ? mode.guidedPass : null;
+  const onGuidedPassChange = mode.kind === "single" ? mode.onGuidedPassChange : undefined;
+  // Single and Ensemble are the two halves of a fresh dispatch and the toggle moves between
+  // them; Edit and Tour offer no toggle at all, so they read as Single with no way to leave it.
+  const launchMode: DispatchLaunchMode = mode.kind === "ensemble" ? "ensemble" : "single";
+  const onLaunchModeChange =
+    mode.kind === "single" || mode.kind === "ensemble" ? mode.onLaunchModeChange : undefined;
+  const ensembleDraft = mode.kind === "ensemble" ? mode.ensemble : undefined;
+  const onEnsembleDraftChange = mode.kind === "ensemble" ? mode.onEnsembleChange : undefined;
+  const onEnsembleLaunched = mode.kind === "ensemble" ? mode.onEnsembleLaunched : undefined;
   const tourModalRef = useTourTargetRef<HTMLElement>("see-work:dispatch-modal");
   const tourKindRef = useTourTargetRef<HTMLDivElement>("see-work:dispatch-kind");
   const tourInputRef = useTourTargetRef<HTMLLabelElement>("see-work:dispatch-input");
@@ -960,10 +1042,13 @@ function DispatchModal({
     tourWorkflowRef(element);
     workflowsTourAfterWorkRef(element);
   }, [tourWorkflowRef, workflowsTourAfterWorkRef]);
-  // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
-  const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
+  // Ensemble mode IS a mode now, rather than three conditions that had to agree: an Ensemble
+  // draft without the launch mode, or either without a fresh dispatch, cannot be spelled.
+  const ensembleMode = mode.kind === "ensemble";
+  // Every kind, for the two modes that launch something new. An edit is confined to the kinds
+  // a backlog row can hold, and Ensemble to the kinds its members can be.
   const availableTaskKinds =
-    mode.kind === "new" && !ensembleMode ? TASK_KINDS : BACKLOG_TASK_KINDS;
+    mode.kind === "single" || mode.kind === "tour" ? TASK_KINDS : BACKLOG_TASK_KINDS;
   const backlogCompatible = taskKindAllowsBacklog(draft.kind);
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
@@ -1083,15 +1168,18 @@ function DispatchModal({
    * ONE predicate with three readers (the mount rule, the header toggle, and Clear), because
    * they ask the same question at three moments: *should this form be asking the questions?*
    * An edit never should - those answers exist already, and re-asking them would be a quiz -
-   * and Ensemble never should, because its body replaces Crew and After work outright, so
-   * there would be nothing left to point at.
+   * Ensemble never should, because its body replaces Crew and After work outright, so there
+   * would be nothing left to point at, and the tour never should, because its draft is
+   * server-owned down to the harness and a pass has nothing left to ask. So this is exactly
+   * "is this a Single dispatch", which is now one mode rather than three agreeing conditions.
+   * The tour used to satisfy it and get the switch: live, persisting the preference, and
+   * unable to start a pass, because the pass state it would have written was never wired.
    *
    * This is deliberately NOT `guidedRunning`, which answers something narrower: is a question
    * on screen *right now*. The two part company the moment a pass hands over, and a reader
    * that wants the first question but asks the second gets a plain form.
    */
-  const guidedAppliesWith = (on: boolean): boolean =>
-    on && mode.kind === "new" && launchMode === "single";
+  const guidedAppliesWith = (on: boolean): boolean => on && mode.kind === "single";
   const guidedApplies = guidedAppliesWith(guided);
   /**
    * Whether the switch is offered at all: "would a pass apply here if the preference were on".
@@ -1810,16 +1898,16 @@ function DispatchModal({
   guidedKeyRef.current = handleGuidedKey;
 
   /**
-   * A switch to Ensemble ends the pass. Its body replaces Crew and After work entirely, so a
-   * question floating over a control that is no longer rendered would be pointing at nothing.
-   * An effect rather than a line in the toggle's `onClick` because the layer can arm Ensemble
-   * from a launch intent too, and both routes have to end the same way.
+   * A switch to Ensemble drops the highlight with the controls it was pointing at.
+   *
+   * Ending the PASS on that same switch used to live here too, and does not any more: it wrote
+   * pass state, and the pass belongs to a Single dispatch, so Ensemble - the mode that replaces
+   * Crew and After work outright - is exactly the mode that is no longer handed the setter for
+   * it. `DispatchLayer` owns that state and knows both routes into Ensemble, so it ends it
+   * there, for the toggle and for a Library launch intent alike.
    */
   useEffect(() => {
-    if (ensembleMode) {
-      setPass(endGuidedPass(pass));
-      setHighlight(null);
-    }
+    if (ensembleMode) setHighlight(null);
   }, [ensembleMode]);
 
   /**
@@ -2103,6 +2191,11 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
+    // Ensemble has no route through here. Its primary slot is Review-then-Launch, its shelve
+    // button is not rendered, and ⌘↵ is refused - so this is not a reachable path but a
+    // statement of which payload the mode owns: an Ensemble goes out through
+    // `useEnsembleLaunch`, whole, and never as a single task built from this draft.
+    if (mode.kind === "ensemble") return;
     // A new task with unmet dependencies is filed into the backlog even from the primary
     // action. It is not launching yet, so an unavailable Foreman must not erase the user's
     // after-work choice or prevent the task from being saved for later.
@@ -2154,15 +2247,19 @@ function DispatchModal({
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
     const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
+    // One call per mode, chosen by the mode itself rather than by asking which optional inputs
+    // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
+    // the repo and nothing else, and a Single dispatch posts the form.
+    //
     // Typed as the refusal shape every branch satisfies, so a Workflow block's `fix` survives
     // whichever call produced it rather than being narrowed away by the branch that cannot
     // carry one.
-    const r: DispatchResult = editing
+    const r: DispatchResult = mode.kind === "edit"
       ? patch
-        ? await api.updateTask(editing.id, patch)
+        ? await api.updateTask(mode.task.id, patch)
         : { ok: true }
-      : tourDemo
-        ? await tourDemo.dispatch(submitted.repoRoot.trim())
+      : mode.kind === "tour"
+        ? await mode.demo.dispatch(submitted.repoRoot.trim())
         : await api.dispatch({
           repoRoot: submitted.repoRoot.trim(),
           extraRepoRoots: attachedRepoRoots(submitted),
@@ -2495,9 +2592,11 @@ function DispatchModal({
       <header className="modal-head">
         <h2>{editing ? "Edit backlog task" : "Dispatch an agent"}</h2>
         {/* The launch mode lives at dialog level, not among the fields: choosing Single or
-            Ensemble reshapes the whole form below it. Only a new dispatch has the choice -
-            an existing backlog Task cannot be turned into an Ensemble. */}
-        {!editing && onLaunchModeChange && (
+            Ensemble reshapes the whole form below it. Only a fresh dispatch has the choice -
+            an existing backlog Task cannot be turned into an Ensemble, and the tour drives a
+            fixed form - so the toggle rides with the callback that moves between the two
+            halves of one, and is absent wherever there is nowhere to move to. */}
+        {onLaunchModeChange && (
           <div className="dispatch-mode-toggle" role="radiogroup" aria-label="Launch mode">
             <Tooltip label="Dispatch one agent to this task">
               <button
@@ -2528,10 +2627,12 @@ function DispatchModal({
             arming one for the NEXT opening is a switch that appears to do nothing, which is
             a switch nobody flips twice.
             Offered exactly where that is true, off the SAME predicate the pass itself reads,
-            so the two cannot drift: absent on an edit, whose answers already exist, and
-            absent in Ensemble, which replaces Crew and After work outright - a switch
-            offering to ask about controls that are not on screen is the inert switch that
-            sentence is about. Settings is the durable home for it either way (phase 3). */}
+            so the two cannot drift: absent on an edit, whose answers already exist, absent in
+            Ensemble, which replaces Crew and After work outright, and absent during the tour,
+            whose draft is server-owned down to the harness - a switch offering to ask about
+            controls that are not on screen, or that it cannot change, is the inert switch that
+            sentence is about, and the tour's WAS one until the mode became a union.
+            Settings is the durable home for it either way (phase 3). */}
         {guidedOfferable && (
           <GuidedToggle
             on={guided}
@@ -3098,11 +3199,13 @@ function DispatchModal({
           </div>
         )}
 
-        {ensembleMode && ensembleDraft && onEnsembleDraftChange && (
+        {/* Narrowed on the mode rather than on "are all four Ensemble inputs present", which
+            is the same question only as long as nobody forgets one. */}
+        {mode.kind === "ensemble" && (
           <EnsembleDispatch
-            ensemble={ensembleDraft}
-            onEnsembleChange={onEnsembleDraftChange}
-            personas={personas}
+            ensemble={mode.ensemble}
+            onEnsembleChange={mode.onEnsembleChange}
+            personas={mode.personas}
             workflowSummaries={workflowSummaries}
             launch={ensembleLaunch}
           />
@@ -3212,7 +3315,7 @@ function DispatchModal({
         <Tooltip label={editing ? "Undo these edits" : "Reset the form"}>
           <button
             className="btn btn-ghost"
-            onClick={ensembleMode ? onEnsembleClear : clearDraft}
+            onClick={mode.kind === "ensemble" ? mode.onEnsembleClear : clearDraft}
             disabled={
               busy ||
               (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft))

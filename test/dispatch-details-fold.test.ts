@@ -14,7 +14,7 @@ import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
 
 const fresh = (): string =>
   renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} })),
+    withOverlayHost(createElement(DispatchLayer, { opening: { kind: "new" }, onClose: () => {} })),
   );
 
 test("a fresh dispatch leads with the task and folds the backlog details", () => {
@@ -55,8 +55,7 @@ test("the Kind control offers every kind, in the registry's order", () => {
 test("a fresh dispatch quick-selects published after-work Workflows outside backlog details", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(DispatchLayer, {
-      open: true,
-      editTask: null,
+      opening: { kind: "new" },
       onClose: () => {},
       foremanEnabled: true,
       workflowSummaries: [{
@@ -84,11 +83,10 @@ test("a fresh dispatch quick-selects published after-work Workflows outside back
 test("an after-work Workflow can be saved while Foreman is off but not dispatched", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(DispatchLayer, {
-      open: true,
-      editTask: mkTask({
-        status: "backlog",
-        workflowId: "workflow-review",
-      }),
+      opening: {
+        kind: "edit",
+        task: mkTask({ status: "backlog", workflowId: "workflow-review" }),
+      },
       onClose: () => {},
       foremanEnabled: false,
       workflowSummaries: [{
@@ -137,8 +135,10 @@ test("an editor opens with the fold open and the summary withheld", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(
       createElement(DispatchLayer, {
-        open: true,
-        editTask: mkTask({ title: "Fix the flake", priority: "high", labels: ["test"] }),
+        opening: {
+          kind: "edit",
+          task: mkTask({ title: "Fix the flake", priority: "high", labels: ["test"] }),
+        },
         onClose: () => {},
       }),
     ),
@@ -179,7 +179,7 @@ test("an unmet dependency speaks in the attention tone at the point of commit", 
     ],
   });
   const html = renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: blocked, onClose: () => {} })),
+    withOverlayHost(createElement(DispatchLayer, { opening: { kind: "edit", task: blocked }, onClose: () => {} })),
   );
   // The chip names the dependency; the note says what waiting means; the primary says it too.
   assert.match(html, /Merge this first/);

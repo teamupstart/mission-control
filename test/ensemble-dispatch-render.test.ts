@@ -445,8 +445,10 @@ test("the dispatch modal wires Single/Ensemble mode with no second composer and 
   assert.match(modal, /dispatch-mode-toggle/);
   assert.match(modal, /<EnsembleDispatch/);
   assert.match(modal, /const ensembleMode =/);
-  // Backlog edit stays Single-only: the toggle only renders for a new dispatch.
-  assert.match(modal, /!editing && onLaunchModeChange/);
+  // Which modes offer the Single/Ensemble toggle is behavior, so it is asserted where the form
+  // is rendered rather than read out of source: `test/dispatch-mode.test.ts` renders every
+  // valid opening (the toggle on a new dispatch and an Ensemble, absent from an edit and the
+  // tour), and `e2e/specs/dispatch-modes.spec.ts` drives the same in a browser.
   // Dispatch is its own attachment surface; it introduces no session DraftKind.
   assert.doesNotMatch(modal, /DraftKind/);
 });

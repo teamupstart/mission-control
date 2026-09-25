@@ -87,6 +87,9 @@ import {
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ConversationArtifacts } from "./ConversationArtifacts.tsx";
+import { InProgressRow } from "./InProgressRow.tsx";
+import { useDisplayItems } from "../lib/board-card.ts";
+import { currentTurnStartedAt } from "../lib/working-indicator.ts";
 import { ComposerEditorModal } from "./ComposerEditorModal.tsx";
 import {
   conversationArtifacts,
@@ -528,6 +531,17 @@ export function TranscriptPanel({
    * that, for one step, from the session rather than from the log.
    */
   const inProgress = liveActivity(session);
+  /**
+   * The opt-in working marks (Display > Working indicator), both gated on `inProgress` so
+   * neither can say "working" once the row itself has gone. The row's clock is not among
+   * them: it is part of the row. `turnStartedAt` is its origin, read from `messages` rather
+   * than `visible` because the launch projection rewrites text, and only the native
+   * record's timestamp is the moment the prompt was sent.
+   */
+  const shown = useDisplayItems();
+  const workingPinned = inProgress !== null && shown("workingPinned");
+  const workingProgressBar = inProgress !== null && shown("workingProgressBar");
+  const turnStartedAt = inProgress === null ? null : currentTurnStartedAt(messages);
   /**
    * Which rendering this conversation is drawn in - the shipped chat log, or the Native
    * PTY terminal stream. One resolved answer, from one module: this session's own
@@ -1182,7 +1196,13 @@ export function TranscriptPanel({
               ),
         )}
         {inProgress && (
-          <InProgressRow agentLabel={agentLabel} activity={inProgress} terminal={terminal} />
+          <InProgressRow
+            agentLabel={agentLabel}
+            activity={inProgress}
+            terminal={terminal}
+            startedAt={turnStartedAt}
+            pinned={workingPinned}
+          />
         )}
         {/* AFTER the in-progress row, and the order is the conversation's own. A pending
             turn is a message the human has queued and the agent has NOT yet received; the
@@ -1304,7 +1324,7 @@ export function TranscriptPanel({
             // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
             key={resetNonce}
             ref={inputRef}
-            className="transcript-input"
+            className={workingProgressBar ? "transcript-input has-progress-bar" : "transcript-input"}
             placeholder={
               !canSend
                 ? "No pane to send to"
@@ -1595,67 +1615,6 @@ function Highlighted({
         );
       })}
     </>
-  );
-}
-
-/**
- * The turn currently arriving, at the tail of the log where it is arriving.
- *
- * This is the typing-indicator position and it is the honest one: the line describes work
- * that is happening after everything above it and before anything below, which is a claim
- * only the tail can make. Held above the pane - where it used to live - it was a fixed
- * band of chrome that said the same thing about a place the reader was not looking, and
- * cost the conversation 36px whether or not anything was running.
- *
- * Three deliberate shapes:
- *
- * - **One line, clipped.** Not a style preference. The log follows its tail only while the
- *   reader is within 48px of the bottom (`onScroll`), so a row that could wrap to two or
- *   three lines would appear under a bottom-pinned reader, push them past that threshold,
- *   and stop the pane following the conversation - the exact failure this row exists at
- *   the bottom to avoid. The full text rides the tooltip's always-rendered copy, so
- *   clipping costs nothing that cannot be read.
- * - **Not a turn.** No bubble, no timestamp, no find highlighting: those belong to rows
- *   that came out of a transcript and can be searched, quoted and scrolled back to. This
- *   one is a report about the present that the next real turn overwrites, so it is drawn
- *   as provisional - muted text, the working tone reserved for the marker.
- * - **Not announced.** No `role="status"`, on purpose. A busy agent rewrites this line
- *   every few seconds, and a live region here would read every one of them over the turns
- *   actually arriving in the same log. The text is in the document for anyone reading the
- *   log, and the tooltip's hidden copy says what it is.
- *
- * The terminal drawing gives the log a different rhythm - no flex gap, a 24px inset, and a
- * spine with a node per entry - so there the row takes `.pty-entry` and joins the stream.
- * Found in the browser: without it the row sat flush against the last entry and two dozen
- * pixels to the left of everything else, reading as a stray line from another component.
- * Taking the existing class rather than restating its four rules is also what keeps the
- * spine's `:last-child` treatment landing on the row that is actually last.
- */
-function InProgressRow({
-  agentLabel,
-  activity,
-  terminal,
-}: {
-  agentLabel: string;
-  activity: string;
-  terminal: boolean;
-}): React.JSX.Element {
-  return (
-    <Tooltip
-      label={`What ${agentLabel} reports it is doing right now: ${activity}. A live report from the session, not a turn the transcript recorded - the next real turn replaces it.`}
-    >
-      <p className={terminal ? "turn-progress pty-entry" : "turn-progress"}>
-        {/* The log's own byline class, so the row reads in the same rhythm as the turns
-            above it. It does NOT take `.turn-assistant`, so the name stays dim rather than
-            picking up the agent's accent: this line is provisional, and the accent is how
-            the log marks what the agent actually said. */}
-        <span className="turn-role turn-progress-who">{agentLabel}</span>
-        <span className="turn-progress-glyph" aria-hidden>
-          ⟳
-        </span>
-        <span className="turn-progress-text">{activity}</span>
-      </p>
-    </Tooltip>
   );
 }
 

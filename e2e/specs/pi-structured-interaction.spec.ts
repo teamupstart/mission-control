@@ -11,7 +11,7 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 test.use({
   daemonEnv: {
     MC_E2E_PI_TRUST: "1",
-    MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js"),
+    MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js"),
   },
   viewport: { width: 1280, height: 900 },
 });

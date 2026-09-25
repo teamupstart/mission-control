@@ -152,7 +152,7 @@ try {
   console.error("[skills] could not reconcile ~/.claude/skills:", err);
 }
 try {
-  const result = reconcilePiExtension();
+  const result = await reconcilePiExtension();
   if (result.changed) console.log("[extensions]", { linked: result.linked, unlinked: result.unlinked });
   for (const problem of result.problems) console.error("[extensions]", problem);
 } catch (err) {

@@ -29,7 +29,7 @@
     "dev:foreman": "tsx watch src/server/foreman/worker.ts",
     "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:start": "concurrently -n server,web,shell,foreman -c blue,magenta,green,cyan \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\" \"npm:dev:foreman\"",
-    "build": "npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension",
+    "build": "npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer",
     "build:pi-extension": "node --import tsx scripts/build-pi-extension.ts",
     "build:native": "node scripts/build-native.mjs",
     "build:state-lock-native": "node scripts/build-state-lock-native.mjs",
@@ -84,7 +84,8 @@
     "observability:demo": "MC_OBSERVABILITY_MODE=demo node scripts/observability.mjs up && MC_OBSERVABILITY_MODE=demo node --import tsx scripts/observability/demo.ts",
     "observability:restart": "node scripts/observability.mjs restart",
     "observability:integration": "node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/telemetry-dashboards-stack.integration.ts test/telemetry-analytics-stack.integration.ts",
-    "observability:benchmark": "node --expose-gc --import tsx scripts/observability/benchmark.ts"
+    "observability:benchmark": "node --expose-gc --import tsx scripts/observability/benchmark.ts",
+    "build:pi-installer": "esbuild scripts/install-pi-extension.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/pi-installer/index.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.278",

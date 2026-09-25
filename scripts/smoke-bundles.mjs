@@ -496,7 +496,7 @@ async function smokeSatellitePaths() {
   const expected = [
     ["MCP server", "dist/mcp/server.mjs"],
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
-    ["Pi extension", "dist/pi-extension/index.js"],
+    ["Pi extension", "dist/pi-integration/extension.js"],
   ];
   for (const [label, built] of expected) {
     const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[./]/g, "\\$&")})", *import\.meta\.url\)`)
@@ -569,7 +569,7 @@ async function smokeMermaidRenderer() {
 }
 
 async function smokePiExtension() {
-  const extension = await import(pathToFileURL(resolve("dist/pi-extension/index.js")).href);
+  const extension = await import(pathToFileURL(resolve("dist/pi-integration/extension.js")).href);
   if (!/^[a-f0-9]{64}$/.test(extension.missionControlBuild?.version) ||
       !existsSync(extension.missionControlBuild?.mcpServerPath)) {
     fail("Pi extension build marker or baked MCP path is invalid");

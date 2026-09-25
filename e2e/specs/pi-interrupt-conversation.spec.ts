@@ -4,7 +4,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
-test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js") } });
+test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
 
 // The real Pi driver writes through the vendor fake, then the real transcript reader and
 // SSE feed both conversation renderings. No provider or operator session is touched.

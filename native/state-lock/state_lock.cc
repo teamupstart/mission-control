@@ -1,7 +1,13 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <node_api.h>
+#include <stdio.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -178,14 +184,78 @@ napi_value ReleaseStateLock(napi_env env, napi_callback_info info) {
   return Undefined(env);
 }
 
+// Node's link() follows symlinks on Darwin. linkat with flags=0 preserves the
+// private symlink's inode and atomically refuses any occupied destination.
+napi_value LinkSymlinkNoReplace(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  std::string source;
+  std::string destination;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      !ReadString(env, argv[0], &source) || !ReadString(env, argv[1], &destination) ||
+      source.find('\0') != std::string::npos || destination.find('\0') != std::string::npos) {
+    return ThrowTypeError(env, "linkSymlinkNoReplace requires two filesystem paths");
+  }
+  struct stat entry;
+  if (lstat(source.c_str(), &entry) != 0) {
+    return ThrowSystemError(env, "ELINK", std::string("could not inspect staged symlink: ") + std::strerror(errno));
+  }
+  if (!S_ISLNK(entry.st_mode)) return ThrowTypeError(env, "publication source must be a symlink");
+  int result;
+  do { result = linkat(AT_FDCWD, source.c_str(), AT_FDCWD, destination.c_str(), 0); }
+  while (result != 0 && errno == EINTR);
+  if (result != 0) {
+    const int error = errno;
+    return ThrowSystemError(env, error == EEXIST ? "EEXIST" : "ELINK",
+                           std::string("could not publish staged symlink: ") + std::strerror(error));
+  }
+  return Undefined(env);
+}
+
+// Both operations preserve the destination: exchange retains it at source, and
+// exclusive rename refuses an occupied destination, including an empty directory.
+napi_value RenamePaths(napi_env env, napi_callback_info info, bool exchange) {
+  size_t argc = 2;
+  napi_value argv[2];
+  std::string source;
+  std::string destination;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      !ReadString(env, argv[0], &source) || !ReadString(env, argv[1], &destination) ||
+      source.find('\0') != std::string::npos || destination.find('\0') != std::string::npos) {
+    return ThrowTypeError(env, "rename requires two filesystem paths");
+  }
+  int result;
+  do {
+#ifdef __APPLE__
+    result = renameatx_np(AT_FDCWD, source.c_str(), AT_FDCWD, destination.c_str(),
+                         exchange ? RENAME_SWAP : RENAME_EXCL);
+#else
+    result = renameat2(AT_FDCWD, source.c_str(), AT_FDCWD, destination.c_str(),
+                       exchange ? RENAME_EXCHANGE : RENAME_NOREPLACE);
+#endif
+  } while (result != 0 && errno == EINTR);
+  if (result != 0) {
+    const int error = errno;
+    return ThrowSystemError(env, error == EEXIST ? "EEXIST" : error == ENOENT ? "ENOENT" : "ERENAME",
+                           std::string("could not move publication entry: ") + std::strerror(error));
+  }
+  return Undefined(env);
+}
+
+napi_value ExchangePaths(napi_env env, napi_callback_info info) { return RenamePaths(env, info, true); }
+napi_value RenameNoReplace(napi_env env, napi_callback_info info) { return RenamePaths(env, info, false); }
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
       {"acquire", nullptr, AcquireStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"release", nullptr, ReleaseStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"linkSymlinkNoReplace", nullptr, LinkSymlinkNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"exchangePaths", nullptr, ExchangePaths, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"renameNoReplace", nullptr, RenameNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (napi_define_properties(env, exports, 2, properties) != napi_ok) {
+  if (napi_define_properties(env, exports, 5, properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native state lock addon");
     return nullptr;
   }

@@ -48,6 +48,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/pi/generation-lease.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
+  ],
   "src/pi/mcp-client.ts": [
     { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
   ],
@@ -75,7 +78,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
   ],
-  "src/server/environment/pi-extension.ts": [
+  "src/server/extensions/pi-candidate.ts": [
     { operation: "execFile", command: "descriptor.command", contract: "current-runtime", reason: "bounded isolated Pi extension load through the shared Node or Electron runtime resolver" },
   ],
   "src/server/executables/locator.ts": [

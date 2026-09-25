@@ -10,7 +10,7 @@ const dir = await mkdtemp(join(tmpdir(), "mission-pi-live-"));
 try {
   const extensions = join(dir, "agent", "extensions");
   await mkdir(extensions, { recursive: true });
-  await symlink(resolve("dist/pi-extension/index.js"), join(extensions, "mission-control.js"));
+  await symlink(resolve(process.argv[3] ?? "dist/pi-integration/extension.js"), join(extensions, "mission-control.js"));
   const record = join(dir, "registered.json");
   await writeFile(join(extensions, "verify.js"), `import {writeFileSync} from 'node:fs';
 export default function(pi) { pi.on('session_start', () => { writeFileSync(${JSON.stringify(record)}, JSON.stringify(pi.getAllTools())); }); }`);
@@ -29,5 +29,5 @@ export default function(pi) { pi.on('session_start', () => { writeFileSync(${JSO
   for (const name of ["request_input", "submit_workflow_evidence", "report_status"]) assert.ok(tools.some((tool) => tool.name === name), name);
   assert.equal(stdout, "", "extension writes no protocol noise to stdout");
   assert.equal(stderr, "", "a down daemon must not print an extension error");
-  console.log(`Pi ${version.stdout.trim()}: auto-discovered .js symlink registered ${tools.length - 8} Mission tools using the baked MCP path, with no daemon, no extension stdout/stderr and no model calls.`);
+  console.log(`Pi ${version.stdout.trim()}: auto-discovered .js symlink registered ${tools.length - 8} Mission tools using the generation-relative MCP path, with no daemon, no extension stdout/stderr and no model calls.`);
 } finally { await rm(dir, { recursive: true, force: true }); }

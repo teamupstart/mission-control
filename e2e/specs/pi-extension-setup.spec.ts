@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readlinkSync, chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
@@ -7,7 +7,7 @@ import { openSetupFamily } from "../fixtures/setup-panel.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-test.use({ viewport: { width: 1440, height: 1100 }, daemonEnv: { MISSION_POLL_MS: "300", MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js") } });
+test.use({ viewport: { width: 1440, height: 1100 }, daemonEnv: { MISSION_POLL_MS: "300", MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
 test.describe.configure({ timeout: 120_000 });
 
 // Opt-in source-mapped browser coverage for the focused review proof. Ordinary runs
@@ -23,43 +23,41 @@ test.afterEach(async ({ page }, info) => {
   writeFileSync(join(coverageDir, `${info.testId.replaceAll(/[^a-z0-9-]/gi, "_")}.json`), JSON.stringify(coverage));
 });
 
-test("Setup installs Pi only on first use, reports a dangling link without repair, and clears after manual correction", async ({ daemon, page }) => {
+test("Setup installs and repairs Pi from its bundled generation without a repository command", async ({ daemon, page }) => {
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await openSetupFamily(page, "extensions");
-  await expect(page.getByRole("heading", { name: "Agent extensions" })).toBeVisible();
   const install = page.getByRole("button", { name: "Install Pi integration" });
+  const repair = page.getByRole("button", { name: "Repair Pi integration" });
   await expect(install).toBeVisible();
   const evidence = artifactsDir("pi-extension-setup"); mkdirSync(evidence, { recursive: true });
   await page.mouse.move(0, 0);
-  await expect(page.locator(".tooltip")).toHaveCount(0);
   await page.locator(".setup-panel").screenshot({ path: join(evidence, "first-install.png") });
-  await install.click();
-  await expect(install).toHaveCount(0);
-  await expect(page.getByRole("article", { name: "Install Pi integration" })).toHaveCount(0);
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/setup/install") && r.ok()), install.click()]); await expect(install).toHaveCount(0);
   const link = join(daemon.home, "pi-extensions", "mission-control.js");
-  const expected = resolve("dist/pi-extension/index.js");
-  const config = JSON.parse(readFileSync(join(daemon.home, "pi-extension.json"), "utf8"));
-  expect(config.enabled).toBe(true);
-  rmSync(link); symlinkSync(join(daemon.home, "gone.js"), link);
+  const target = readlinkSync(link);
+  expect(target.startsWith(join(daemon.home, "integrations", "pi"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(daemon.home, "pi-extension.json"), "utf8")).enabled).toBe(true);
+  // A deleted legacy build is still owned. Re-check reports it; the explicit repair publishes.
+  rmSync(link); symlinkSync(join(daemon.home, "deleted/dist/pi-extension/index.js"), link);
   await page.getByRole("button", { name: "Re-check" }).click();
   const warning = page.getByRole("article").filter({ has: page.locator("strong", { hasText: /^Pi extension$/ }) });
   await expect(warning).toContainText("Pi reports nothing");
-  await expect(warning).toContainText("npm run install-pi-extension");
-  await expect(warning.getByRole("button")).toHaveText(["Copy"]);
-  await expect(install).toHaveCount(0);
-  const refused = await fetch(`${daemon.baseURL}/api/setup/install`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "pi-integration" }) });
-  expect(refused.status).toBe(409);
+  await expect(repair).toBeVisible();
+  await expect(warning).not.toContainText("npm");
   await page.mouse.move(0, 0);
-  await expect(page.locator(".tooltip")).toHaveCount(0);
-  await page.locator(".setup-panel").screenshot({ path: join(evidence, "dangling-report.png") });
-  // A manual correction is external to the check. Re-check must see it without a restart.
-  rmSync(link); symlinkSync(expected, link);
+  await page.locator(".setup-panel").screenshot({ path: join(evidence, "repair-available.png") });
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/setup/install") && r.ok()), repair.click()]); await expect(repair).toHaveCount(0); await expect(warning).toHaveCount(0);
+  expect(readlinkSync(link)).toBe(target);
+  // Damaged owned artifacts can be repaired too, without editing an app bundle.
+  writeFileSync(target, "damaged integration");
   await page.getByRole("button", { name: "Re-check" }).click();
-  await expect(warning).toHaveCount(0);
+  await expect(warning).toContainText("manifest or artifact hashes");
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/setup/install") && r.ok()), repair.click()]); await expect(warning).toHaveCount(0); await expect(repair).toHaveCount(0);
+  const again = await fetch(`${daemon.baseURL}/api/setup/install`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "pi-integration" }) });
+  expect(again.ok, await again.text()).toBe(true);
   await page.mouse.move(0, 0);
-  await expect(page.locator(".tooltip")).toHaveCount(0);
   await page.locator(".setup-panel").screenshot({ path: join(evidence, "healthy.png") });
-  console.log("Setup first install published the isolated link; dangling warning offered only Copy; server refused repair; manual correction cleared the warning without restart.");
+  console.log("Setup installed an app-owned generation, repaired a dangling legacy link and damaged artifacts, and repeated installation idempotently without npm or a terminal.");
 });
 
 test("Setup reports a module-scope load failure and enabled missing link", async ({ daemon, page }) => {
@@ -87,9 +85,9 @@ test("Setup reports a cyclic Pi extension link with manual guidance and no repai
   await page.goto(`${daemon.baseURL}/#/settings/setup`); await openSetupFamily(page, "extensions");
   const warning = page.getByRole("article").filter({ has: page.locator("strong", { hasText: /^Pi extension$/ }) });
   await expect(warning).toContainText("cannot be resolved");
-  await expect(warning).toContainText("npm run install-pi-extension");
+  await expect(warning).toContainText("Settings > Setup");
   await expect(warning).toContainText("required");
-  await expect(warning.getByRole("button")).toHaveText(["Copy"]);
+  await expect(warning.getByRole("link", { name: "Pi integration help" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Install Pi integration" })).toHaveCount(0);
   const evidence = artifactsDir("pi-extension-setup"); mkdirSync(evidence, { recursive: true });
   await page.mouse.move(0, 0);
@@ -100,7 +98,7 @@ test("Setup reports a cyclic Pi extension link with manual guidance and no repai
 test("Setup reports inaccessible extension entries and baked MCP bundles without repair", async ({ daemon, page }) => {
   test.skip(process.getuid?.() === 0, "root bypasses filesystem permission denial");
   const dir = join(daemon.home, "pi-extensions"); mkdirSync(dir, { recursive: true });
-  const link = join(dir, "mission-control.js"); symlinkSync(resolve("dist/pi-extension/index.js"), link);
+  const link = join(dir, "mission-control.js"); symlinkSync(resolve("dist/pi-integration/extension.js"), link);
   writeFileSync(join(daemon.home, "pi-extension.json"), '{"enabled":true}');
   const evidence = artifactsDir("pi-extension-setup"); mkdirSync(evidence, { recursive: true });
   const warning = page.getByRole("article").filter({ has: page.locator("strong", { hasText: /^Pi extension$/ }) });
@@ -110,7 +108,7 @@ test("Setup reports inaccessible extension entries and baked MCP bundles without
     await expect(warning).toContainText("extension entry");
     await expect(warning).toContainText("cannot be inspected");
     await expect(warning).toContainText("permissions");
-    await expect(warning.getByRole("button")).toHaveText(["Copy"]);
+    await expect(warning.getByRole("link", { name: "Pi integration help" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Install Pi integration" })).toHaveCount(0);
     await page.mouse.move(0, 0); await expect(page.locator(".tooltip")).toHaveCount(0);
     await page.locator(".setup-panel").screenshot({ path: join(evidence, "inaccessible-entry.png") });
@@ -122,15 +120,15 @@ test("Setup reports inaccessible extension entries and baked MCP bundles without
   rmSync(link); symlinkSync(bundle, link); chmodSync(restricted, 0);
   try {
     await page.getByRole("button", { name: "Re-check" }).click();
-    await expect(warning).toContainText("baked MCP bundle");
+    await expect(warning).toContainText("bundled MCP bundle");
     await expect(warning).toContainText("cannot be inspected");
     await expect(warning).toContainText("Lifecycle reports may still work");
-    await expect(warning.getByRole("button")).toHaveText(["Copy"]);
+    await expect(warning.getByRole("link", { name: "Pi integration help" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Install Pi integration" })).toHaveCount(0);
     await page.mouse.move(0, 0); await expect(page.locator(".tooltip")).toHaveCount(0);
     await page.locator(".setup-panel").screenshot({ path: join(evidence, "inaccessible-baked-mcp.png") });
   } finally { chmodSync(restricted, 0o700); }
-  rmSync(link); symlinkSync(resolve("dist/pi-extension/index.js"), link);
+  rmSync(link); symlinkSync(resolve("dist/pi-integration/extension.js"), link);
   await page.getByRole("button", { name: "Re-check" }).click();
   await expect(warning).toHaveCount(0);
 });
@@ -191,43 +189,27 @@ test("a healthy installed extension admits a Pi plan dispatch through the real d
 
 
 test.describe("first-install preflight failure", () => {
-  const candidate = join(tmpdir(), `mission-pi-preflight-${process.pid}.js`);
+  const candidateDir = join(tmpdir(), `mission-pi-preflight-${process.pid}`);
+  const candidate = join(candidateDir, "extension.js");
   test.use({ daemonEnv: { MISSION_PI_EXTENSION: candidate } });
   test.beforeAll(() => {
     mkdirSync(artifactsDir("pi-extension-setup"), { recursive: true });
+    cpSync(resolve("dist/pi-integration"), candidateDir, { recursive: true });
     writeFileSync(candidate, 'throw Error("candidate fixture cannot load");');
   });
-  test.afterAll(() => rmSync(candidate, { force: true }));
-  test("Setup explains that a rejected candidate was never installed", async ({ daemon, page }) => {
-    await page.goto(`${daemon.baseURL}/#/settings/setup`);
-    await openSetupFamily(page, "extensions");
+  test.afterAll(() => rmSync(candidateDir, { recursive: true, force: true }));
+  test("Setup explains refusal and retries after the app bundle is repaired", async ({ daemon, page }) => {
+    await page.goto(`${daemon.baseURL}/#/settings/setup`); await openSetupFamily(page, "extensions");
     const install = page.getByRole("button", { name: "Install Pi integration" });
     await install.click();
     const status = page.getByRole("status");
-    await expect(status).toContainText("Nothing was installed or enabled");
-    await expect(status).toContainText("candidate Pi extension");
-    await expect(status).not.toContainText("Every Pi session on this machine may refuse");
-    await expect(install).toBeEnabled();
-    await page.mouse.move(0, 0);
-    // Focus can survive the failed install even after the pointer leaves its button.
-    await install.focus();
-    await install.blur();
-    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await expect(status).toContainText("not published");
+    await expect(status).toContainText("manifest hashes");
+    expect(existsSync(join(daemon.home, "pi-extension.json"))).toBe(false);
+    expect(existsSync(join(daemon.home, "pi-extensions", "mission-control.js"))).toBe(false);
+    await expect(install).toBeEnabled(); await install.blur(); await page.mouse.move(0, 0);
     await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "candidate-refused.png") });
-    // A manual install must replace the failed attempt's local message with current health.
-    writeFileSync(candidate, readFileSync(resolve("dist/pi-extension/index.js")));
-    const extensions = join(daemon.home, "pi-extensions"); mkdirSync(extensions, { recursive: true });
-    const link = join(extensions, "mission-control.js"); symlinkSync(candidate, link);
-    writeFileSync(join(daemon.home, "pi-extension.json"), '{"enabled":true}');
-    await page.getByRole("button", { name: "Re-check" }).click();
-    await expect(page.getByRole("article", { name: "Install Pi integration" })).toHaveCount(0);
-    await expect(status).toHaveCount(0);
-    await page.mouse.move(0, 0);
-    await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "manual-install-rechecked.png") });
-    // Nor may a later absence resurrect the old failed-attempt notice.
-    rmSync(link); writeFileSync(join(daemon.home, "pi-extension.json"), '{"enabled":false}');
-    await page.getByRole("button", { name: "Re-check" }).click();
-    await expect(install).toBeVisible();
-    await expect(status).toHaveCount(0);
+    cpSync(resolve("dist/pi-integration"), candidateDir, { recursive: true });
+    await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/setup/install") && r.ok()), install.click()]); await expect(install).toHaveCount(0); await expect(status).toHaveCount(0);
   });
 });

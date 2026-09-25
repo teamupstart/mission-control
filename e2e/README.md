@@ -2071,8 +2071,9 @@ is absent. With `MC_E2E_EVIDENCE=1`, the rendered proof is
 `e2e/.artifacts/pi-interrupt-conversation/real-pi-herdr.png` and
 `real-pi-herdr-restart.png` beside it.
 
-`specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
-row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
+`specs/pi-extension-setup.spec.ts` exercises fresh installation, owned repair, rejected
+candidates and report-only warnings for foreign entries. It verifies app-owned generation
+publication and repairs both dangling legacy links and damaged artifact hashes. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
 home. `fixtures/fake-pi-plan.mjs` retains the catalog fake, then runs the pinned Pi CLI against
 a local deterministic provider for the dispatched turn. The provider records the actual model
 tool list, including the planning tools; no external provider or account is used. The test maps

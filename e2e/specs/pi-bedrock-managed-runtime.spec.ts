@@ -10,7 +10,7 @@ import { recordsIn } from "../fixtures/records.ts";
 import { launchedCommand } from "../fixtures/isolated-launch.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
 
-test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js") } });
+test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
 
 /**
  * Pi's managed runtime, on an Amazon Bedrock model, from the picker to the terminal handoff.

@@ -7,8 +7,9 @@ export interface LockOperations {
 }
 export const HELPER_LOCK_DIR_NAME: string;
 export function claimEntryName(entry: {createdAtMs: number; pid: number}): string;
-export function processIdentity(pid: number): string | null;
+export function processIdentity(pid: number, run?: (pid: number) => string): string | null;
 export function processIsAlive(pid: number): boolean;
+export function claimIsLive(entry: ProcessRecord, deps?: { identity?: (pid: number) => string | null }): boolean;
 export function realHelperLockOperations(): LockOperations;
 export function acquireHelperLock(directory: string, ops: LockOperations): { ok: boolean; heldBy: number | null; entryName: string | null };
 export function releaseHelperLock(directory: string, entryName: string, ops: LockOperations): void;

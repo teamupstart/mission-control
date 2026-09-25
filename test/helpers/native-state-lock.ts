@@ -5,6 +5,7 @@ import {
   nativeStateLockAddonPath,
   validateNativeStateLockBinding,
 } from "../../src/server/state-ownership-native.ts";
+import { validateNativeSymlinkPublicationBinding } from "../../src/server/symlink-publication.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -29,13 +30,16 @@ export function ensureNativeStateLockAddon(): string {
   const addon = nativeStateLockAddonPath();
   try {
     validateNativeStateLockBinding(require(addon));
+    validateNativeSymlinkPublicationBinding(require(addon));
     return addon;
   } catch {
+    delete require.cache[addon];
     execFileSync(process.execPath, ["scripts/build-state-lock-native.mjs"], {
       cwd: REPO_ROOT,
       stdio: "pipe",
     });
   }
   validateNativeStateLockBinding(require(addon));
+  validateNativeSymlinkPublicationBinding(require(addon));
   return addon;
 }

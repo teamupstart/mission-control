@@ -630,6 +630,11 @@ export function App(): React.JSX.Element {
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
+  // The session the Return to backlog confirm was showing when it sent its request. Requeueing
+  // a live task cancels it first, which takes its session off the fleet while the request is
+  // still pending, so from that moment the dialog renders from this snapshot and is no longer
+  // closed by the session leaving - a failed re-file must still be read in the dialog.
+  const [requeueSentFor, setRequeueSentFor] = useState<Session | null>(null);
   const [workflowBindingTarget, setWorkflowBindingTarget] = useState<WorkflowBindingTarget | null>(null);
   // Bumped for a session each time it's reset. The compose boxes are uncontrolled
   // (their text is parked in the draft map, not React state), so clearing the map
@@ -1830,7 +1835,10 @@ export function App(): React.JSX.Element {
   }, [route.page]);
   const closeReset = useCallback(() => setResetSessionId(null), []);
   const closeKill = useCallback(() => setKillSessionId(null), []);
-  const closeRequeue = useCallback(() => setRequeueSessionId(null), []);
+  const closeRequeue = useCallback(() => {
+    setRequeueSessionId(null);
+    setRequeueSentFor(null);
+  }, []);
   const closeFiles = useCallback(() => {
     if (filesSessionId) files.flush(filesSessionId);
     setFilesSessionId(null);
@@ -2038,7 +2046,7 @@ export function App(): React.JSX.Element {
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: completeSessionId, close: closeComplete },
       { sessionId: killSessionId, close: closeKill },
-      { sessionId: requeueSessionId, close: closeRequeue },
+      { sessionId: requeueSentFor ? null : requeueSessionId, close: closeRequeue },
       { sessionId: filesSessionId, close: closeFiles },
       { sessionId: filePickerSessionId, close: closeFilePicker },
       {
@@ -2051,6 +2059,7 @@ export function App(): React.JSX.Element {
       completeSessionId,
       killSessionId,
       requeueSessionId,
+      requeueSentFor,
       filesSessionId,
       filePickerSessionId,
       workflowBindingTarget,
@@ -2655,7 +2664,7 @@ export function App(): React.JSX.Element {
     : null;
   const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
   const requeueSession = requeueSessionId
-    ? sessions.find((s) => s.id === requeueSessionId) ?? null
+    ? sessions.find((s) => s.id === requeueSessionId) ?? requeueSentFor
     : null;
   const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
   const filePickerSession = filePickerSessionId
@@ -4330,6 +4339,7 @@ export function App(): React.JSX.Element {
         {requeueSession && (
           <RequeueModal
             session={requeueSession}
+            onSent={() => setRequeueSentFor(requeueSession)}
             onRequeued={() => onKilled(requeueSession.id)}
             onClose={closeRequeue}
           />

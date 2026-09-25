@@ -19,10 +19,17 @@ import { containTourTab } from "../tour/focus-containment.ts";
  */
 export function RequeueModal({
   session,
+  onSent,
   onRequeued,
   onClose,
 }: {
   session: Session;
+  /**
+   * Fired as the request goes out. A live task is cancelled first, which can take this
+   * session off the fleet before the reply arrives, so App keeps the dialog mounted from here
+   * until it is closed rather than letting the session's departure unmount it.
+   */
+  onSent?: () => void;
   /** Fired once the task is back in the backlog, so App can drop the detail it came from. */
   onRequeued?: () => void;
   onClose: () => void;
@@ -48,6 +55,7 @@ export function RequeueModal({
     if (busy || !task) return;
     setBusy(true);
     setError(null);
+    onSent?.();
     const r = await api.requeueTask(task.id);
     setBusy(false);
     if (!r.ok) {

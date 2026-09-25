@@ -158,6 +158,47 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await shoot(dashboard, "requeued-in-sitrep-backlog");
 });
 
+test("a requeue that fails after its session left still reports in the dialog", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  const task = await file(daemon, "Requeue that fails late");
+  await api(daemon, `/api/tasks/${task.id}/dispatch`, {});
+  const row = dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row", { hasText: task.title });
+  await expect(row).toHaveCount(1, { timeout: 60_000 });
+  await row.click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.locator("span.badge").first()).toHaveText("idle", { timeout: 60_000 });
+
+  // The real request goes through - so the cancel really takes the session off the fleet
+  // while the dialog is waiting - and its reply is then swapped for the refusal a re-file can
+  // return after the cancel already landed. Held until the session is gone, which is the
+  // window in which the dialog used to unmount.
+  await dashboard.route("**/api/tasks/*/requeue", async (route) => {
+    await route.fetch();
+    await expect(row).toHaveCount(0, { timeout: 60_000 });
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: "could not reclaim task resources: simulated" }),
+    });
+  });
+
+  await detail.locator(".actions").getByRole("button", { name: "backlog", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Return to backlog" });
+  await dialog.getByRole("button", { name: "Return to backlog", exact: true }).click();
+
+  await expect(row).toHaveCount(0, { timeout: 60_000 });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("could not reclaim task resources: simulated");
+  await shoot(dashboard, "requeue-failure-reported");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test("a stopped task with nothing waiting on it is rescheduled from its own Sitrep row", async ({
   dashboard,
   daemon,

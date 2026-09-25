@@ -314,6 +314,26 @@ test("a write made while the edit was being checked refuses it, even in the same
   assert.equal(h.get("b").priority, null);
 });
 
+test("a list edit is built from the row titling leaves behind, so it keeps what titling wrote", async () => {
+  const h = setup([{ id: "a", labels: [], updatedAt: 5000 }]);
+  // Titling is in flight for `a` when the bulk edit arrives, and it rewrites the row when it
+  // lands. Here that rewrite also adds a label, standing in for any write in that window.
+  let release!: () => void;
+  const titling = (h.tasks as unknown as { titling: Map<string, Promise<void>> }).titling;
+  titling.set("a", new Promise<void>((resolve) => (release = resolve)));
+  const pending = h.update({ taskIds: ["a"], labels: { add: ["q4"] } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  h.registry.upsertTask({ ...h.get("a"), labels: ["concurrent"], updatedAt: 5000 });
+  titling.delete("a");
+  release();
+
+  const res = await pending;
+  assert.equal(res.status, 200, await res.clone().text());
+  // The bulk label joins the concurrent one instead of replacing the list it replaced.
+  assert.deepEqual(h.get("a").labels, ["concurrent", "q4"]);
+});
+
 test("a task that has left the backlog refuses the whole edit", async () => {
   const h = setup([
     { id: "a", priority: null },

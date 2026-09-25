@@ -3664,6 +3664,10 @@ export class TaskManager {
     // up as a different row here, whatever its timestamp says.
     const prepared: Array<{ task: Task; base: Task; seen: string }> = [];
     for (const id of input.taskIds) {
+      // Titling rewrites the whole row when it lands, so wait it out BEFORE reading the row
+      // the label and dependency lists are built from. Reading first would build them from a
+      // row that `prepareUpdate` (which waits too) then no longer prepares from.
+      await this.titling.get(id);
       const t = this.registry.getTask(id);
       if (!t) return { ok: false, error: "no such task", taskId: id };
       if (t.status !== "backlog") {
@@ -3671,6 +3675,7 @@ export class TaskManager {
       }
       const share = bulkTaskPatch(t, input);
       if (!share.ok) return { ok: false, error: `"${t.title}" ${share.error}`, taskId: id };
+      const built = JSON.stringify(t);
       const r = await this.prepareUpdate(id, share.patch);
       if (!r.ok) {
         return {
@@ -3679,7 +3684,19 @@ export class TaskManager {
           taskId: id,
         };
       }
-      prepared.push({ task: r.task, base: r.base, seen: JSON.stringify(r.base) });
+      // The lists in the patch replace the task's own, so they are only right for the row
+      // they were built from. A write that landed between building them and preparing would
+      // be erased by them, and the final check below compares against the PREPARED row, so
+      // it would not see it. Refuse here instead.
+      const seen = JSON.stringify(r.base);
+      if (seen !== built) {
+        return {
+          ok: false,
+          error: `"${t.title}" changed while this edit was being checked - apply it again`,
+          taskId: id,
+        };
+      }
+      prepared.push({ task: r.task, base: r.base, seen });
     }
     for (const { task, base, seen } of prepared) {
       const live = this.registry.getTask(task.id);

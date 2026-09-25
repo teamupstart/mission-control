@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.26.0](https://github.com/teamupstart/mission-control/compare/v1.25.0...v1.26.0) (2026-09-25)
+
+
+### Features
+
+* **backlog:** select several backlog cards and edit or delete them together ([#1140](https://github.com/teamupstart/mission-control/issues/1140)) ([dbd19f7](https://github.com/teamupstart/mission-control/commit/dbd19f7f0c47193990744c4b30e8d3eca8ca2b0f))
+* **board:** collapse an empty needs you column to a slim rail and add an empty-column stash setting ([#1141](https://github.com/teamupstart/mission-control/issues/1141)) ([0c677db](https://github.com/teamupstart/mission-control/commit/0c677db771921fdd0a9640cdc81edde8534cc7a5))
+* **conversation:** add a working-turn clock and opt-in working indicator ([#1134](https://github.com/teamupstart/mission-control/issues/1134)) ([adc67c2](https://github.com/teamupstart/mission-control/commit/adc67c223a3dc8ead2acff179a5dc26436969449))
+* **models:** update Mission Control defaults to GPT-6 and Opus 5.5 ([#1139](https://github.com/teamupstart/mission-control/issues/1139)) ([1b01afe](https://github.com/teamupstart/mission-control/commit/1b01afe612e42c96df904447ccfcd4b08c37bec2))
+* **sessions:** keep a steered message in view until the agent reads it ([#1135](https://github.com/teamupstart/mission-control/issues/1135)) ([638cdb6](https://github.com/teamupstart/mission-control/commit/638cdb640f56c6de99a6c69985dc3ff2c1219d06))
+* **worktrees:** run cleanups in the background and add bulk destroy ([#1138](https://github.com/teamupstart/mission-control/issues/1138)) ([7db363f](https://github.com/teamupstart/mission-control/commit/7db363f462737dfb428ce40252dbcc9de667166c))
+
+
+### Bug Fixes
+
+* **dispatch:** give the dispatch form exactly one operating mode ([#1133](https://github.com/teamupstart/mission-control/issues/1133)) ([bf73581](https://github.com/teamupstart/mission-control/commit/bf735815e84cad013ddfcae360ac64494caa827a))
+* **dispatch:** refuse a clone with no refs before fetching origin ([#1136](https://github.com/teamupstart/mission-control/issues/1136)) ([ed7d469](https://github.com/teamupstart/mission-control/commit/ed7d469f7fc78fcffebf8d9e402c3f9157fae336))
+* **executables:** prioritize version-manager paths over inherited PATH ([#1143](https://github.com/teamupstart/mission-control/issues/1143)) ([5d7dff6](https://github.com/teamupstart/mission-control/commit/5d7dff630c0b8659d1045cf24fa1f4ed9582a01e))
+* **skills:** enable shipped skills on fresh installs ([#1142](https://github.com/teamupstart/mission-control/issues/1142)) ([ecba877](https://github.com/teamupstart/mission-control/commit/ecba87774dff6fe7de59648638b7be031dafa4f6))
+
 ## [1.25.0](https://github.com/teamupstart/mission-control/compare/v1.24.0...v1.25.0) (2026-09-25)
 
 

@@ -37,8 +37,13 @@ import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
  * panel renders one section per distinct group it finds, so those entries arrived with no
  * panel restructuring - and a group with no entries draws no section, so a third surface
  * would add a third group and be sectioned the same way.
+ *
+ * `"working"` is that third surface: the marks a conversation adds while its session is
+ * working. It is the one group with a preview of its own, because unlike the band's two
+ * cells its items change how something MOVES, and a sentence describes motion worse than a
+ * picture of it.
  */
-export type DisplayItemGroup = "card" | "conversation";
+export type DisplayItemGroup = "card" | "conversation" | "working";
 
 export interface DisplayItem {
   id: string;
@@ -204,6 +209,31 @@ export const DISPLAY_ITEMS = [
     description:
       "The git branch above the conversation. Independent of the card's Branch item, so you can keep the branch on the card and drop it here.",
   },
+  /**
+   * The conversation's working indicator, beyond its base row.
+   *
+   * The base is not here and cannot be switched off: while a session is working, the log's
+   * last row says what it reports doing and how long the current turn has run. These two
+   * add to that, and both ship OFF (`DISPLAY_ITEM_HIDDEN_SEEDS`), so with neither checked
+   * the conversation draws exactly what it did before they existed, plus the clock.
+   *
+   * Both mount on the same gate as the row itself, `liveActivity(session)`, so neither can
+   * claim the session is working while the row has gone.
+   */
+  {
+    id: "workingPinned",
+    group: "working",
+    label: "Pin the working row",
+    description:
+      "Keeps the row saying what the session is doing, with its spinner and clock, on the bottom edge of the conversation while you scroll back through it. Unchecked, the row is the last line of the log and scrolls away with it.",
+  },
+  {
+    id: "workingProgressBar",
+    group: "working",
+    label: "Reply box progress bar",
+    description:
+      "A thin moving bar along the top of the reply box while the session is working, visible without reading anything. Unchecked, the reply box looks the same whether the session is working or not.",
+  },
 ] as const satisfies readonly DisplayItem[];
 
 export type DisplayItemId = (typeof DISPLAY_ITEMS)[number]["id"];
@@ -230,6 +260,11 @@ export const DISPLAY_GROUP_COPY: Record<
     heading: "Conversation header",
     blurb:
       "What the console detail states above the conversation. Hiding a cell does not always give its height back: the band it sits in is also home to a task's chip and its pull requests, and it only collapses when nothing else is in it.",
+  },
+  working: {
+    heading: "Working indicator",
+    blurb:
+      "How a conversation shows that its session is working. The last row of the log always says what the session reports doing and how long the current turn has run; these add to it, and neither takes any height while the session is idle.",
   },
 };
 

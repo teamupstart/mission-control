@@ -90,28 +90,53 @@ function comparableText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** Whether this transcript turn is the agent's record of having read this steer. */
+function isSteerReceipt(turn: SteeredTurn, wanted: string, message: TranscriptMessage): boolean {
+  if (message.role !== "user") return false;
+  if (message.ts && message.ts < turn.acceptedAt - STEER_RECEIPT_SKEW_MS) return false;
+  return comparableText(message.text).includes(wanted);
+}
+
 /**
- * The transcript turn that shows this steered message was read, or null while none does.
+ * Pair each steer with the transcript turn that is its receipt.
  *
  * An agent writes a user message to its transcript when it takes it, so that line is the
- * receipt. The daemon runs this over what the transcript appended since the steer was
- * accepted and retires the steer on a match; the dashboard runs the same rule only to label
+ * receipt. The daemon runs this over what the transcript appended since a steer was
+ * accepted and retires each steer it pairs; the dashboard runs the same rule only to label
  * the turn that replaced a retired row. One definition, so the two can never disagree.
+ *
+ * Steers are taken in the order given, which is delivery order, and each takes the EARLIEST
+ * matching turn nobody has claimed. One turn therefore answers at most one steer: two
+ * steers that say the same thing need two turns, because the agent reads them one at a
+ * time. `claimed` carries turns an earlier pass already paired, for a caller that reads the
+ * same turns again.
+ *
  * `includes` rather than equality because a harness may wrap what it records around the
- * text it was given. A turn older than the steer is an earlier message that happens to say
- * the same thing ("yes"), and is never taken for it.
+ * text it was given. A turn more than a few seconds older than the steer is an earlier
+ * message that happens to say the same thing ("yes"), and is never taken for it.
  */
+export function assignSteerReceipts(
+  turns: readonly SteeredTurn[],
+  messages: readonly TranscriptMessage[],
+  claimed: ReadonlySet<string> = new Set(),
+): Map<string, string> {
+  const paired = new Map<string, string>();
+  const taken = new Set(claimed);
+  for (const turn of turns) {
+    const wanted = comparableText(turn.text);
+    if (!wanted) continue;
+    const hit = messages.find((message) => !taken.has(message.id) && isSteerReceipt(turn, wanted, message));
+    if (!hit) continue;
+    taken.add(hit.id);
+    paired.set(turn.id, hit.id);
+  }
+  return paired;
+}
+
+/** The receipt of one steer on its own, or null while no turn shows it was read. */
 export function steeredTurnReceipt(
   turn: SteeredTurn,
   messages: readonly TranscriptMessage[],
 ): string | null {
-  const wanted = comparableText(turn.text);
-  if (!wanted) return null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]!;
-    if (message.role !== "user") continue;
-    if (message.ts && message.ts < turn.acceptedAt - STEER_RECEIPT_SKEW_MS) continue;
-    if (comparableText(message.text).includes(wanted)) return message.id;
-  }
-  return null;
+  return assignSteerReceipts([turn], messages).get(turn.id) ?? null;
 }

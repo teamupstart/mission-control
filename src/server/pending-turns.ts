@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
 import {
   MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
-  steeredTurnReceipt, supportsDeliveryAction, type MessageDeliveryAction,
+  assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
@@ -76,6 +76,11 @@ interface SteerReceiptScan {
   /** Null until the transcript can be located; the scan then reads it from the start. */
   path: string | null;
   pos: number;
+  /**
+   * Transcript turns already paired with a steer. A later steer can rewind `pos` over turns
+   * this scan has read before, and one of those must never answer a second steer.
+   */
+  claimed: Set<string>;
 }
 
 interface PickupCandidate {
@@ -793,7 +798,7 @@ export class PendingTurnManager {
     try {
       const located = this.deps.messagesFor(session);
       const size = located ? located.read.size(located.path) : null;
-      return located && size !== null ? { path: located.path, pos: size } : null;
+      return located && size !== null ? { path: located.path, pos: size, claimed: new Set() } : null;
     } catch {
       return null;
     }
@@ -802,9 +807,14 @@ export class PendingTurnManager {
   /** Start, or keep, reading this conversation's transcript for the steers it holds. */
   private watchSteerReceipt(key: string, from: SteerReceiptScan | null): void {
     const scan = this.steerScans.get(key);
-    // An existing scan is at or before this steer's anchor, so it will see its line too.
     if (!scan || (from && scan.path !== from.path)) {
-      this.steerScans.set(key, from ?? { path: null, pos: 0 });
+      this.steerScans.set(key, from ?? { path: null, pos: 0, claimed: new Set() });
+    } else if (from && from.pos < scan.pos) {
+      // The scan kept reading for an earlier steer while this one's `send` was in flight,
+      // and the agent may already have written this steer's line behind the cursor. Rewind
+      // to where the transcript ended before this send; `claimed` keeps the turns it passes
+      // again from answering a steer twice.
+      scan.pos = from.pos;
     }
     if (!this.steerTimer && !this.stopped) {
       this.steerTimer = unref(setTimeout(() => this.scanSteerReceipts(), this.deps.steerReceiptPollMs));
@@ -847,8 +857,9 @@ export class PendingTurnManager {
       } catch {
         continue; // unreadable this pass; the next one, or the turn's end, settles it
       }
-      const read = waiting.filter((turn) => steeredTurnReceipt(turn, messages) !== null);
-      if (read.length > 0) this.registry.retireSteeredTurns(key, read.map((turn) => turn.id));
+      const paired = assignSteerReceipts(waiting, messages, scan.claimed);
+      for (const messageId of paired.values()) scan.claimed.add(messageId);
+      if (paired.size > 0) this.registry.retireSteeredTurns(key, [...paired.keys()]);
       if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
     }
     if (this.steerScans.size > 0) {

@@ -15,8 +15,10 @@ import {
   recallPendingTurnIntoDraft,
   sentAgo,
   shouldRecallPendingTurn,
+  trackSteers,
+  type WatchedSteer,
 } from "../src/web/lib/pending-turns.ts";
-import { steeredTurnReceipt } from "../src/shared/message-delivery.ts";
+import { assignSteerReceipts, steeredTurnReceipt } from "../src/shared/message-delivery.ts";
 
 function turn(over: Partial<PendingTurn> = {}): PendingTurn {
   return {
@@ -415,4 +417,35 @@ test("sent time reads as minutes and seconds and never goes negative", () => {
   assert.equal(sentAgo(0, 42_999), "0:42");
   assert.equal(sentAgo(0, 125_000), "2:05");
   assert.equal(sentAgo(5_000, 1_000), "0:00");
+});
+
+test("one transcript turn answers at most one steer, oldest steer first", () => {
+  const a = steer({ id: "a" });
+  const b = steer({ id: "b", acceptedAt: 100_200 });
+  // Two steers with the same words, one turn: only the first delivered is read.
+  assert.deepEqual([...assignSteerReceipts([a, b], [said("Skip e2e for now.", 101_000)])],
+    [["a", "user-101000"]]);
+  // A second turn answers the second steer, and each takes the earliest turn left.
+  assert.deepEqual(
+    [...assignSteerReceipts([a, b], [said("Skip e2e for now.", 101_000), said("Skip e2e for now.", 102_000)])],
+    [["a", "user-101000"], ["b", "user-102000"]],
+  );
+  // A turn an earlier pass already paired is never paired again.
+  assert.deepEqual(
+    [...assignSteerReceipts([b], [said("Skip e2e for now.", 101_000)], new Set(["user-101000"]))],
+    [],
+  );
+});
+
+test("a retired steer waits for its turn from when it left, not from when it was sent", () => {
+  const watched = new Map<string, WatchedSteer>();
+  const old = steer({ id: "old", acceptedAt: 0 });
+  trackSteers(watched, [old], 5 * 60_000, 30_000);
+  // Retired after waiting five minutes for the agent's next step: still watched.
+  trackSteers(watched, [], 5 * 60_000 + 1, 30_000);
+  assert.equal(watched.get("old")?.goneAt, 5 * 60_000 + 1);
+  trackSteers(watched, [], 5 * 60_000 + 30_001, 30_000);
+  assert.ok(watched.has("old"), "inside the grace window measured from departure");
+  trackSteers(watched, [], 5 * 60_000 + 30_002, 30_000);
+  assert.equal(watched.has("old"), false, "dropped once the window from departure has passed");
 });

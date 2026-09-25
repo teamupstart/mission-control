@@ -35,8 +35,10 @@ import {
   recallPendingTurnIntoDraft,
   sentAgo,
   shouldRecallPendingTurn,
+  trackSteers,
+  type WatchedSteer,
 } from "../lib/pending-turns.ts";
-import { steeredTurnReceipt } from "@shared/message-delivery.ts";
+import { assignSteerReceipts } from "@shared/message-delivery.ts";
 import {
   appendLive,
   backAnchor,
@@ -117,8 +119,12 @@ const NO_STEERED_TURNS: readonly SteeredTurn[] = [];
 const NO_IDS: ReadonlySet<string> = new Set();
 /** How long a transcript turn says "received" after it replaced a steered row. */
 const STEER_RECEIVED_MS = 4000;
-/** How long a steer the daemon stopped tracking can still be matched to the turn it became. */
-const STEER_WATCH_MS = 120_000;
+/**
+ * How long after a steer leaves the session this log still waits for the turn it became.
+ * Counted from the departure, not from acceptance: a steer can wait minutes for the agent's
+ * next step, and its turn reaches this log on a different stream from its retirement.
+ */
+const STEER_WATCH_MS = 30_000;
 
 /** A clock for "sent 0:42 ago", running only while something on screen is counting. */
 function useSecondClock(active: boolean): number {
@@ -145,21 +151,23 @@ function useSteerReceipts(
   steered: readonly SteeredTurn[],
   messages: readonly TranscriptMessage[],
 ): ReadonlySet<string> {
-  const watched = useRef(new Map<string, SteeredTurn>());
+  /** Every steer seen, in delivery order. */
+  const watched = useRef(new Map<string, WatchedSteer>());
+  /** Log turns already labelled, so two steers with the same words never label one turn. */
+  const claimed = useRef(new Set<string>());
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const [received, setReceived] = useState<ReadonlySet<string>>(NO_IDS);
   useEffect(() => {
-    for (const turn of steered) watched.current.set(turn.id, turn);
-    const hits: string[] = [];
-    const now = Date.now();
-    for (const [id, turn] of watched.current) {
-      const hit = steeredTurnReceipt(turn, messages);
-      if (hit) {
-        hits.push(hit);
-        watched.current.delete(id);
-      } else if (now - turn.acceptedAt > STEER_WATCH_MS && !steered.some((row) => row.id === id)) {
-        watched.current.delete(id);
-      }
+    trackSteers(watched.current, steered, Date.now(), STEER_WATCH_MS);
+    const paired = assignSteerReceipts(
+      [...watched.current.values()].map((entry) => entry.turn),
+      messages,
+      claimed.current,
+    );
+    const hits = [...paired.values()];
+    for (const [id, hit] of paired) {
+      watched.current.delete(id);
+      claimed.current.add(hit);
     }
     if (hits.length === 0) return;
     setReceived((prev) => new Set([...prev, ...hits]));

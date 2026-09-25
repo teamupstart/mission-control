@@ -1,4 +1,4 @@
-import type { PendingTurn } from "@shared/types.ts";
+import type { PendingTurn, SteeredTurn } from "@shared/types.ts";
 import { activePaneDialog, type DialogBearing } from "@shared/session.ts";
 
 interface PendingTurnRecallResponse {
@@ -149,4 +149,31 @@ export const PENDING_TURN_HELD_STATUS = "queued · held";
 export function sentAgo(since: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - since) / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** A steer the conversation has seen, and when it left the session (null while it has not). */
+export interface WatchedSteer {
+  turn: SteeredTurn;
+  goneAt: number | null;
+}
+
+/**
+ * Bring the conversation's record of steers up to date with the session's current list.
+ *
+ * A steer that leaves the session is kept for `graceMs` FROM THAT MOMENT, so the turn it
+ * became can still be labelled when it reaches this log on its own, later stream. Counting
+ * from acceptance instead would drop a steer that waited minutes for the agent's next step
+ * the instant it was retired, and its turn would never be marked received.
+ */
+export function trackSteers(
+  watched: Map<string, WatchedSteer>,
+  current: readonly SteeredTurn[],
+  now: number,
+  graceMs: number,
+): void {
+  for (const turn of current) watched.set(turn.id, { turn, goneAt: null });
+  for (const [id, entry] of watched) {
+    if (entry.goneAt === null && !current.some((row) => row.id === id)) entry.goneAt = now;
+    if (entry.goneAt !== null && now - entry.goneAt > graceMs) watched.delete(id);
+  }
 }

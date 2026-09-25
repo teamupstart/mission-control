@@ -18,7 +18,7 @@ import { envVar, stateDir } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { SkillsSpec, ExtensionsSpec } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
-import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
+import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName, skillEnabled } from "@shared/skills.ts";
 import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
 import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
 import { commitExtensionIntent, publishExtensionLink, removeExtensionLink, type ExtensionIntentCommit } from "../extensions/pi-link-publication.ts";
@@ -300,9 +300,12 @@ export interface ReconcileResult {
  * to drop the skills. A master switch that skipped the reconciler instead would leave
  * the symlinks on disk and every session still using skills the panel says are off.
  */
-export function desiredSkillIds(cfg: SkillsConfig, present: ReadonlySet<string>): Set<string> {
+export function desiredSkillIds(cfg: SkillsConfig, catalog: Catalog): Set<string> {
   if (!cfg.enabled) return new Set();
-  return new Set(Object.keys(cfg.skills).filter((id) => cfg.skills[id] === true && present.has(id)));
+  const parsed = new Set(catalog.skills.map((skill) => skill.id));
+  return new Set([...catalog.present].filter((id) =>
+    skillEnabled(cfg, id) && (cfg.skills[id] === true || parsed.has(id))
+  ));
 }
 
 /** How an existing `~/.claude/skills` entry stands relative to what we want. */
@@ -385,7 +388,7 @@ function reconcileOneDir(
     return out;
   }
 
-  const desired = desiredSkillIds(cfg, catalog.present);
+  const desired = desiredSkillIds(cfg, catalog);
   // Enabled, but its directory is gone from the repo. The link is correctly removed
   // above; this makes the panel say so rather than leaving a toggle that looks on.
   for (const id of Object.keys(cfg.skills)) {
@@ -587,15 +590,18 @@ function msg(err: unknown): string {
  */
 export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dirs: string[] = skillsDirs()): Map<string, string> {
   const out = new Map<string, string>();
-  const enabledIds = Object.keys(cfg.skills).filter((id) => cfg.skills[id] === true);
 
   // Nothing to refuse: switching off needs no knowledge of what's in the catalog.
   if (!cfg.enabled) return out;
 
   if (!catalog.readable) {
-    for (const id of enabledIds) out.set(id, catalog.problems[0] ?? "the skills catalog can't be read");
+    const problem = catalog.problems[0] ?? "the skills catalog can't be read";
+    for (const id of Object.keys(cfg.skills)) if (cfg.skills[id] === true) out.set(id, problem);
+    if (cfg.defaultSkillEnabled) out.set("<catalog>", problem);
     return out;
   }
+
+  const enabledIds = [...desiredSkillIds(cfg, catalog)];
 
   // Across EVERY harness's directory, and the first blocker found wins. A skill that
   // cannot be installed for one harness is refused outright rather than half-installed:
@@ -637,7 +643,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dirs: string[
 export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dirs: string[] = skillsDirs()): string[] {
   if (!cfg.enabled || !catalog.readable) return [];
   const out: string[] = [];
-  for (const id of desiredSkillIds(cfg, catalog.present)) {
+  for (const id of desiredSkillIds(cfg, catalog)) {
     // Once per skill, not once per skill per harness: "alpha is switched on but isn't
     // installed" is the same sentence whichever directory is missing it, and the panel
     // rendering it twice reads as two separate faults.
@@ -680,7 +686,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dirs: string[] =
  */
 export function uninstallSkillLinks(dirs: string[] = skillsDirs()): ReconcileResult {
   return reconcileSkillLinks(
-    { enabled: false, skills: {}, generation: 0, generationAt: 0 },
+    { enabled: false, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0 },
     { readable: true, skills: [], present: new Set(), problems: [] },
     dirs,
   );

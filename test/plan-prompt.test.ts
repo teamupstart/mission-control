@@ -94,6 +94,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
 /** Both planning skills on, one generation old, catalog healthy. */
 const config: SkillsConfig = {
   enabled: true,
+  defaultSkillEnabled: false,
   skills: Object.fromEntries(PLAN_SKILL_IDS.map((id) => [id, true])),
   generation: 3,
   generationAt: 100,

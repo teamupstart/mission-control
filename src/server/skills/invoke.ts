@@ -4,6 +4,7 @@ import {
   skillCommand,
 } from "@shared/harness-capabilities.ts";
 import type { SkillsConfig } from "@shared/protocol.ts";
+import { skillEnabled } from "@shared/skills.ts";
 import type { AgentType, Session } from "@shared/types.ts";
 import { getSkillsAcks } from "../db.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -60,7 +61,7 @@ export function skillInvocationForAgent(
   deps: RequiredSkillCommandDeps = defaultDeps,
 ): RequiredSkillCommand {
   const config = deps.config();
-  if (!config.enabled || config.skills[id] !== true) {
+  if (!config.enabled || !skillEnabled(config, id)) {
     return {
       ok: false,
       // "this instruction", not "this pull request". This function gates every skill-backed

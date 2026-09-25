@@ -421,7 +421,8 @@ import {
 import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
-import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { skillEnabled } from "@shared/skills.ts";
+import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -6440,13 +6441,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const catalog = readCatalog();
     return {
       enabled: cfg.enabled,
-      skills: catalog.skills.map((s) => ({ ...s, enabled: cfg.skills[s.id] === true })),
+      skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
       // failed STARTUP reconcile from being invisible: its problems had no PUT to answer,
       // so they went to a console nobody reads, and every toggle would render on while
       // the sessions had none of them.
-      problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
+      problems: [skillsConfigProblem(), ...catalog.problems, ...skillDrift(cfg, catalog)].filter((p): p is string => p !== null),
     };
   };
 

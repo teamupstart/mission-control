@@ -1,8 +1,9 @@
 import { SkillsConfigSchema } from "@shared/protocol.ts";
 import type { SkillsConfig, SkillsConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { getAppConfig, setAppConfig } from "../db.ts";
-import { readCatalog } from "./catalog.ts";
+import { skillEnabled } from "@shared/skills.ts";
+import { openDb, setAppConfig } from "../db.ts";
+import { readCatalog, type Catalog } from "./catalog.ts";
 import { reconcileSkillLinks, skillBlockers } from "./reconcile.ts";
 import type { ReconcileResult } from "./reconcile.ts";
 
@@ -17,9 +18,31 @@ import type { ReconcileResult } from "./reconcile.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.skills;
 
-/** The current config, with schema defaults applied over whatever was stored. */
+const UNCONFIGURED = SkillsConfigSchema.parse({ enabled: true, defaultSkillEnabled: true });
+const INVALID = SkillsConfigSchema.parse({});
+const INVALID_PROBLEM = "Stored Skills settings are invalid; skill links were left unchanged.";
+
+function readSkillsConfig(): { config: SkillsConfig; missing: boolean; problem: string | null } {
+  const row = openDb().prepare("SELECT value FROM app_config WHERE key = ?").get(CONFIG_ENTRY.key) as
+    | { value: string }
+    | undefined;
+  if (!row) return { config: UNCONFIGURED, missing: true, problem: null };
+  try {
+    const parsed = SkillsConfigSchema.safeParse(JSON.parse(row.value));
+    if (parsed.success) return { config: parsed.data, missing: false, problem: null };
+  } catch {
+    // A present but corrupt record is never a new installation.
+  }
+  return { config: INVALID, missing: false, problem: INVALID_PROBLEM };
+}
+
+/** The effective config; a corrupt stored record fails closed. */
 export function getSkillsConfig(): SkillsConfig {
-  return SkillsConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+  return readSkillsConfig().config;
+}
+
+export function skillsConfigProblem(): string | null {
+  return readSkillsConfig().problem;
 }
 
 /**
@@ -31,8 +54,8 @@ export function getSkillsConfig(): SkillsConfig {
  * click. Which sounds survivable until two dashboards are open: the second tab's
  * toggle carries a map from its last 4-second poll, and silently switches off a skill
  * the first tab just enabled across every session. A per-key merge makes concurrent
- * toggles of different skills commute, and there's nothing to lose by it - `false` and
- * absent are the same fact to `desiredSkillIds`, so nothing needs deleting.
+ * toggles of different skills commute. A stored `false` is an explicit opt-out when
+ * the catalog default is on, so patches must never drop another row's override.
  */
 function merge(before: SkillsConfig, patch: SkillsConfigPatch): SkillsConfig {
   return SkillsConfigSchema.parse({
@@ -53,21 +76,16 @@ export function setSkillsConfig(patch: SkillsConfigPatch): SkillsConfig {
   return next;
 }
 
-/** Make the disk match one config. No DB writes - the caller owns those. */
-function reconcileTo(cfg: SkillsConfig): ReconcileResult {
-  return reconcileSkillLinks(cfg, readCatalog());
-}
-
 /** The ids whose desired state a patch actually moves. */
-function touchedBy(before: SkillsConfig, asked: SkillsConfig): Set<string> {
+function touchedBy(before: SkillsConfig, asked: SkillsConfig, catalog: Catalog): Set<string> {
   const ids = new Set<string>();
-  // A master-switch flip changes the desired state of every enabled skill at once, so
-  // it owns all of them; otherwise only the rows whose flag moved.
+  const candidates = new Set([...catalog.skills.map((skill) => skill.id), ...Object.keys(asked.skills)]);
+  // A master-switch flip also owns default-on rows with no explicit override.
   if (before.enabled !== asked.enabled) {
-    for (const id of Object.keys(asked.skills)) if (asked.skills[id] === true) ids.add(id);
+    for (const id of candidates) if (skillEnabled(asked, id)) ids.add(id);
   }
-  for (const id of Object.keys(asked.skills)) {
-    if (before.skills[id] !== asked.skills[id]) ids.add(id);
+  for (const id of candidates) {
+    if (skillEnabled(before, id) !== skillEnabled(asked, id)) ids.add(id);
   }
   return ids;
 }
@@ -111,10 +129,20 @@ function persist(cfg: SkillsConfig, changed: boolean, now: number): SkillsConfig
  * It also closes the one crash window `applySkillsConfig` leaves open - see there.
  */
 export function reconcileSkills(now = Date.now()): SkillsSyncResult {
-  const cfg = getSkillsConfig();
-  const result = reconcileTo(cfg);
-  if (!result.changed) return { ...result, config: cfg, refused: [] };
-  return { ...result, config: persist(cfg, true, now), refused: [] };
+  const stored = readSkillsConfig();
+  const catalog = readCatalog();
+  if (stored.problem) {
+    return { changed: false, linked: [], unlinked: [], blocked: [], problems: [stored.problem], config: stored.config, refused: [] };
+  }
+  if (stored.missing && !catalog.readable) {
+    return { changed: false, linked: [], unlinked: [], blocked: [], problems: catalog.problems, config: stored.config, refused: [] };
+  }
+  // Persist the default intent before linking. A partial filesystem failure is healed
+  // on the next startup, without reinterpreting this as a fresh installation.
+  if (stored.missing) setAppConfig(CONFIG_ENTRY, stored.config);
+  const result = reconcileSkillLinks(stored.config, catalog);
+  if (!result.changed) return { ...result, config: stored.config, refused: [] };
+  return { ...result, config: persist(stored.config, true, now), refused: [] };
 }
 
 /** Known restore blockers, computed without touching the filesystem. */
@@ -152,13 +180,21 @@ export function preflightSkillsReconcile(config: SkillsConfig): string[] {
  * that the disk doesn't have it yet.
  */
 export function applySkillsConfig(patch: SkillsConfigPatch, now = Date.now()): SkillsSyncResult {
-  const before = getSkillsConfig();
+  const stored = readSkillsConfig();
+  const before = stored.config;
+  if (stored.problem) {
+    return { changed: false, linked: [], unlinked: [], blocked: [], problems: [stored.problem], config: before, refused: [stored.problem] };
+  }
   const asked = merge(before, patch);
   const catalog = readCatalog();
 
   // Only what the patch actually moves. Everything else is somebody else's problem -
   // reported by `skillDrift` on the panel, not thrown at whoever clicked next.
-  const touched = touchedBy(before, asked);
+  const touched = touchedBy(before, asked, catalog);
+  if (asked.enabled && !catalog.readable && (touched.size > 0 || before.enabled !== asked.enabled)) {
+    const problem = catalog.problems[0] ?? "the skills catalog can't be read";
+    return { changed: false, linked: [], unlinked: [], blocked: [...touched], problems: catalog.problems, config: before, refused: [problem] };
+  }
   const blockers = skillBlockers(asked, catalog);
   const refused = [...touched].filter((id) => blockers.has(id)).map((id) => blockers.get(id) ?? id);
   if (refused.length > 0) {

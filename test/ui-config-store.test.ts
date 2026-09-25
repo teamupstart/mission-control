@@ -182,7 +182,7 @@ test("an existing profile that stored its own hidden list still gets a ships-hid
   const upgraded = getUiConfig();
   assert.deepEqual(
     upgraded.hiddenDisplayItems,
-    ["cost", "workflowDetails"],
+    ["cost", "workflowDetails", "workingPinned", "workingProgressBar"],
     "a ships-hidden item arrived switched ON for an operator who had customised this panel",
   );
   // Their own answer survives, and an item that shipped before the marker is not re-hidden.
@@ -194,8 +194,27 @@ test("an existing profile that stored its own hidden list still gets a ships-hid
   // migration that only ever answered in memory would re-run on every read, and the marker
   // it writes is what makes switching the item on stick.
   const stored = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
-  assert.deepEqual(stored.hiddenDisplayItems, ["cost", "workflowDetails"]);
+  assert.deepEqual(stored.hiddenDisplayItems, [
+    "cost",
+    "workflowDetails",
+    "workingPinned",
+    "workingProgressBar",
+  ]);
   assert.equal(stored.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+});
+
+test("a profile the previous build seeded is given only the rungs it has not had", () => {
+  // Today's operator: seeded once, for `workflowDetails`, and since then free to switch it
+  // on. This build owes them the working marks and nothing else - re-offering the first
+  // rung would switch Workflow details back off for everyone who had turned it on.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, {
+    layout: "board",
+    hiddenDisplayItems: ["cost"],
+    hiddenDisplayItemsSeed: 1,
+  });
+  const upgraded = getUiConfig();
+  assert.deepEqual(upgraded.hiddenDisplayItems, ["cost", "workingPinned", "workingProgressBar"]);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
 });
 
 test("switching a ships-hidden item on is not undone by the next read", () => {
@@ -224,7 +243,12 @@ test("a fresh profile is born fully seeded and never migrates", () => {
   // An absent record must not look like an un-seeded one, or the item could never be
   // switched on: the schema default already carries every ships-hidden id.
   const fresh = getUiConfig();
-  assert.deepEqual(fresh.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.deepEqual(fresh.hiddenDisplayItems, [
+    "worktree",
+    "workflowDetails",
+    "workingPinned",
+    "workingProgressBar",
+  ]);
   assert.equal(fresh.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
   assert.equal(
     getAppConfig(APP_CONFIG_ENTRIES.ui),

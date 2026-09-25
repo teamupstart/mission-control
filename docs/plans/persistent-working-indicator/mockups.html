@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Persistent working indicator &middot; four approaches</title>
+    <style>
+      /* ==========================================================================
+         Tokens, copied verbatim from src/web/styles.css so these mockups are the
+         real palette rather than an approximation of it. Nothing new is invented
+         here: a working session is --working blue everywhere in the product, and
+         a signal that has gone quiet is --attention, which already means "this
+         session needs you to look".
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --exited: #707a88;
+        --neutral: #8b94a3;
+        --select: #35c08a;
+        --purple: #a371f7;
+        --foreman: var(--purple);
+
+        --radius: 13px;
+        --shadow:
+          0 1px 2px rgba(0, 0, 0, 0.4),
+          0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+          radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+          var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ==========================================================================
+         Presentation chrome for this document only. `mk-` prefix so nothing here
+         could ever be mistaken for a class the app ships.
+         ========================================================================== */
+      .mk-page { max-width: 1180px; margin: 0 auto; padding: 40px 32px 120px; }
+      .mk-masthead { border-bottom: 1px solid var(--border); padding-bottom: 26px; margin-bottom: 30px; }
+      .mk-eyebrow { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin: 0 0 10px; }
+      .mk-masthead h1 { margin: 0 0 14px; font-size: 30px; letter-spacing: -0.02em; }
+      .mk-lede { margin: 0 0 8px; max-width: 78ch; color: var(--muted); }
+      .mk-lede strong { color: var(--fg); font-weight: 600; }
+      .mk-lede code, .mk-note code, .mk-li code, td code { font: 12px var(--mono); color: var(--fg); background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 5px; padding: 0 4px; }
+
+      .mk-constraints { margin: 22px 0 0; padding: 14px 16px; border: 1px solid var(--border); border-left: 3px solid var(--attention); border-radius: 10px; background: color-mix(in srgb, var(--attention) 5%, var(--panel)); }
+      .mk-constraints h2 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--attention); }
+      .mk-constraints ul { margin: 0; padding-left: 18px; }
+      .mk-li, .mk-constraints li { color: var(--muted); margin: 0 0 6px; max-width: 92ch; }
+      .mk-constraints li:last-child { margin-bottom: 0; }
+
+      .mk-opt { margin: 44px 0 0; padding-top: 30px; border-top: 1px solid var(--border-soft); }
+      .mk-opt-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+      .mk-opt-head h2 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
+      .mk-tag { font: 10px/1.7 var(--mono); text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); }
+      .mk-tag.is-rec { border-color: color-mix(in srgb, var(--idle) 50%, var(--border)); color: var(--idle); }
+      .mk-opt > p { margin: 0 0 14px; max-width: 84ch; color: var(--muted); }
+      .mk-caption { margin: 8px 0 20px; font-size: 12px; color: var(--dim); }
+      .mk-caption b { color: var(--muted); font-weight: 600; }
+
+      .mk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin: 0 0 6px; }
+      .mk-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 18px 0 0; }
+      .mk-fact { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 11px 13px; }
+      .mk-fact h3 { margin: 0 0 5px; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
+      .mk-fact p { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+      .mk-state { font: 10px/1.8 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); margin: 0 0 6px; }
+
+      table.mk-cmp { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 12.5px; }
+      table.mk-cmp th, table.mk-cmp td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+      table.mk-cmp th { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); border-bottom-color: var(--border); }
+      table.mk-cmp td { color: var(--muted); }
+      table.mk-cmp td:first-child { color: var(--fg); font-weight: 600; white-space: nowrap; }
+
+      /* ==========================================================================
+         The conversation frame. A faithful reduction of the Conversation tab:
+         a scrolling log, the 184px secondary rail beside it (244px in the app,
+         narrowed here so four frames fit a page), and the composer row whose
+         Send sits on the edge the rail shares with it.
+         ========================================================================== */
+      .conv { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 12px; display: flex; flex-direction: column; gap: 9px; box-shadow: var(--shadow); }
+      .conv-split { display: flex; gap: 10px; align-items: stretch; }
+      .conv-log { position: relative; flex: 1; min-width: 0; height: 168px; overflow: hidden; display: flex; flex-direction: column; gap: 9px; padding-right: 4px; }
+      .conv-log.is-scrolled { justify-content: flex-start; }
+
+      .turn { margin: 0; display: flex; gap: 9px; align-items: baseline; font-size: 12.5px; }
+      .turn .who { flex: none; width: 46px; font: 10.5px/1.6 var(--mono); color: var(--dim); text-align: right; }
+      .turn .who.is-you { color: var(--muted); }
+      .turn .who.is-agent { color: #d97757; }
+      .turn .txt { min-width: 0; color: var(--fg); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+      .turn.is-you .txt { color: var(--muted); }
+      .chip { display: inline-flex; gap: 5px; align-items: baseline; font: 10.5px/1.7 var(--mono); padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); color: var(--muted); margin-right: 5px; }
+      .chip b { color: var(--fg); font-weight: 600; }
+
+      .conv-rail { flex: none; width: 184px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); padding: 8px 9px; }
+      .conv-rail h4 { margin: 0 0 7px; font: 10px/1.6 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); }
+      .conv-rail p { margin: 0 0 4px; font: 10.5px/1.7 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .conv-rail p span { color: var(--dim); }
+
+      .compose-row { display: flex; gap: 6px; align-items: flex-end; }
+      .pty-prompt { flex: none; align-self: flex-start; margin-top: 4px; color: var(--working); font: 700 12.5px/1 var(--mono); }
+      .fake-input { position: relative; flex: 1; min-width: 0; min-height: 38px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-2); color: var(--dim); font-size: 13px; line-height: 1.45; padding: 8px 10px; overflow: hidden; }
+      .btn-send { flex: none; align-self: flex-end; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--fg); font-size: 12px; padding: 8px 14px; }
+      .sendkey { flex: none; width: 184px; font: 9.5px/1.5 var(--mono); color: var(--dim); }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes dot { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
+      @keyframes sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+      @keyframes breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+      @keyframes rise { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+
+      .glyph-spin { display: inline-block; color: var(--working); animation: spin 1.6s linear infinite; }
+      .dots { display: inline-flex; gap: 3px; }
+      .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--working); animation: dot 1.25s ease-in-out infinite; }
+      .dots i:nth-child(2) { animation-delay: 0.18s; }
+      .dots i:nth-child(3) { animation-delay: 0.36s; }
+      .bars { display: inline-flex; gap: 2px; align-items: center; height: 11px; }
+      .bars i { width: 2px; height: 11px; border-radius: 1px; background: var(--working); animation: rise 1.1s ease-in-out infinite; }
+      .bars i:nth-child(2) { animation-delay: 0.14s; }
+      .bars i:nth-child(3) { animation-delay: 0.28s; }
+      .bars i:nth-child(4) { animation-delay: 0.42s; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .glyph-spin, .dots i, .bars i, .strip-sweep i, .heartbeat i { animation: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mk-page">
+    <style>
+      /* ==========================================================================
+         The four candidate indicators. Each is scoped to its own prefix so the
+         frames above can be read side by side without one leaking into another.
+         ========================================================================== */
+
+      /* ---- A. Status strip above the composer -------------------------------- */
+      .ind-strip {
+        display: flex; align-items: center; gap: 8px;
+        flex: none;
+        padding: 5px 10px;
+        border: 1px solid color-mix(in srgb, var(--working) 30%, var(--border));
+        border-radius: 9px;
+        background: color-mix(in srgb, var(--working) 7%, var(--panel-2));
+        font-size: 11.5px; color: var(--muted);
+        position: relative; overflow: hidden;
+      }
+      .ind-strip .st-what { color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ind-strip .st-meta { margin-left: auto; flex: none; font: 10.5px/1.6 var(--mono); color: var(--dim); }
+      .ind-strip .st-stop { flex: none; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted); font: 10px/1.6 var(--mono); padding: 1px 9px; }
+      .strip-sweep { position: absolute; inset: auto 0 0 0; height: 1.5px; background: color-mix(in srgb, var(--working) 18%, transparent); overflow: hidden; }
+      .strip-sweep i { display: block; width: 28%; height: 100%; background: var(--working); animation: sweep 2.2s ease-in-out infinite; }
+      .ind-strip.is-stale { border-color: color-mix(in srgb, var(--attention) 40%, var(--border)); background: color-mix(in srgb, var(--attention) 7%, var(--panel-2)); }
+      .ind-strip.is-stale .glyph-spin { color: var(--attention); }
+      .ind-strip.is-stale .dots i { background: var(--attention); }
+      .ind-strip.is-stale .strip-sweep i { background: var(--attention); }
+      .ind-strip.is-queued .st-meta { color: var(--attention); }
+
+      /* ---- B. Floating pill over the log tail --------------------------------- */
+      .ind-pill {
+        position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%);
+        display: inline-flex; align-items: center; gap: 8px;
+        max-width: calc(100% - 16px);
+        padding: 5px 13px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--working) 38%, var(--border));
+        background: color-mix(in srgb, var(--panel) 86%, transparent);
+        backdrop-filter: blur(8px);
+        box-shadow: var(--shadow);
+        font-size: 11.5px; color: var(--fg);
+        white-space: nowrap;
+      }
+      .ind-pill .pl-meta { font: 10.5px/1.6 var(--mono); color: var(--dim); }
+      .ind-pill.is-stale { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
+      .ind-pill.is-stale .dots i { background: var(--attention); }
+      .ind-pill .pl-jump { border: 0; background: none; color: var(--working); font-size: 11.5px; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+      .log-fade { position: absolute; inset: auto 0 0 0; height: 46px; background: linear-gradient(to top, var(--panel), transparent); pointer-events: none; }
+
+      /* ---- C. The composer itself carries it ---------------------------------- */
+      .fake-input.is-working { border-color: color-mix(in srgb, var(--working) 42%, var(--border)); }
+      .fake-input.is-working::after {
+        content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+        background: color-mix(in srgb, var(--working) 20%, transparent);
+      }
+      .fake-input .inp-sweep { position: absolute; inset: 0 0 auto 0; height: 2px; overflow: hidden; z-index: 1; }
+      .fake-input .inp-sweep i { display: block; width: 26%; height: 100%; background: var(--working); animation: sweep 2.4s ease-in-out infinite; }
+      .pty-prompt.is-working { animation: breathe 1.7s ease-in-out infinite; }
+      .sendkey.is-working { color: var(--muted); font-size: 10px; }
+      .sendkey.is-working .sk-what { display: flex; gap: 5px; align-items: baseline; color: var(--fg); }
+      .sendkey.is-working .sk-what span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sendkey.is-working .sk-meta { color: var(--dim); }
+      .sendkey.is-stale .sk-what { color: var(--attention); }
+
+      /* ---- D. The existing in-progress row, pinned ---------------------------- */
+      .turn-progress {
+        margin: 0; display: flex; gap: 9px; align-items: baseline; font-size: 12.5px; color: var(--muted);
+      }
+      .turn-progress .who { flex: none; width: 46px; font: 10.5px/1.6 var(--mono); color: var(--dim); text-align: right; }
+      .turn-progress.is-pinned {
+        position: sticky; bottom: 0; z-index: 2;
+        margin-top: auto;
+        padding: 5px 8px 5px 0;
+        background: linear-gradient(to top, var(--panel) 62%, color-mix(in srgb, var(--panel) 70%, transparent));
+        border-top: 1px solid color-mix(in srgb, var(--working) 22%, var(--border-soft));
+      }
+      .turn-progress .tp-meta { margin-left: auto; font: 10.5px/1.6 var(--mono); color: var(--dim); }
+      .turn-progress.is-stale .glyph-spin { color: var(--attention); }
+      .turn-progress.is-stale .tp-meta { color: var(--attention); }
+      .turn-progress.is-pinned.is-stale { border-top-color: color-mix(in srgb, var(--attention) 42%, var(--border-soft)); }
+      .turn-progress.is-stale .txt { color: var(--attention); }
+
+      /* ---- E. D's pinned row and C's bar together ----------------------------- */
+      .fake-input.is-working.is-stale { border-color: color-mix(in srgb, var(--attention) 42%, var(--border)); }
+      .fake-input.is-working.is-stale::after { background: color-mix(in srgb, var(--attention) 20%, transparent); }
+      .fake-input.is-working.is-stale .inp-sweep i { background: var(--attention); }
+
+      /* Idle frames: what the surface costs when nothing is running. */
+      .mk-idle-note { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--dim); padding: 3px 0; }
+      .mk-idle-note i { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); flex: none; }
+    </style>
+
+      <header class="mk-masthead">
+        <p class="mk-eyebrow">Mission Control &middot; issue #1116 &middot; mockups</p>
+        <h1>A persistent &ldquo;working&rdquo; indicator near the bottom of the chat</h1>
+        <p class="mk-lede">
+          Today the only live signal that a session is moving is <code>InProgressRow</code>, drawn at
+          the <strong>tail of the transcript</strong> (<code>TranscriptPanel.tsx:1479</code>). It says the right
+          thing and it scrolls away: read three turns back and the one element that answers
+          &ldquo;is this still going?&rdquo; is off screen. Five ways to fix that - four single moves and the combination that was chosen,
+          <a href="#option-e" style="color: var(--working)">Option E</a> - all reading the same signals, all
+          costing nothing while the session is idle.
+        </p>
+        <p class="mk-lede">
+          Every frame below is the real conversation geometry: the log, the 184px secondary rail
+          (244px in the app), and the composer row whose Send sits on the edge the rail shares with
+          it. Colour, type and radii are the shipped tokens.
+        </p>
+
+        <div class="mk-constraints">
+          <h2>What any answer has to respect</h2>
+          <ul>
+            <li>
+              <b>Zero cost when idle.</b> <code>ConsoleDetail.tsx:800</code> records a rejected activity
+              band above the conversation: it &ldquo;cost the conversation its height whether or not
+              anything was running, and described the present at the top of a pane whose present is
+              at the bottom.&rdquo; None of these draw anything on an idle session.
+            </li>
+            <li>
+              <b>One signal, not a second cache.</b> The gate is
+              <code>liveActivity(session)</code> (<code>src/shared/session.ts</code>), already shared by the
+              board tile and the in-progress row: it answers only while the session is instrumented
+              <i>and</i> actually driving work, so a settled session's stale <code>activity</code> label is
+              never animated.
+            </li>
+            <li>
+              <b>Working vs stalled is the actual ask.</b> <code>session.lastActivity</code> is the epoch ms
+              of the last hook, report or driver event. Past a threshold the indicator should stop
+              claiming progress and say the signal has gone quiet, in <code>--attention</code>, rather than
+              spinning forever.
+            </li>
+            <li>
+              <b>Two renderings.</b> The chat frame and the terminal frame
+              (<code>.transcript[data-view="terminal"]</code>) both need it. The frames below show chat;
+              each option notes its terminal treatment.
+            </li>
+            <li>
+              <b>Copy discipline.</b> The Observed-activity rail's rule is that a row means a record was
+              <i>observed</i>, never that a tool is running. The indicator is a different claim - a live
+              report from the session - so it says <i>what the agent reports it is doing</i>, and the
+              elapsed number is time since the turn began, not a duration for a tool.
+            </li>
+          </ul>
+        </div>
+      </header>
+      <!-- ====================================================================== -->
+      <section class="mk-opt" style="border-top: 0; padding-top: 0">
+        <div class="mk-opt-head">
+          <h2>Today</h2>
+          <span class="mk-tag">baseline</span>
+        </div>
+        <p>
+          The in-progress row exists, and it is the last thing in the log. Scroll back to re-read
+          what you asked for and it is gone; the composer below tells you nothing. Both frames are
+          the same working session, one second apart, differing only in scroll position.
+        </p>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">at the bottom &middot; you can see it</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <p class="turn-progress"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Editing src/web/styles.css</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">scrolled back three turns &middot; nothing says it is alive</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116. Keep it out of the scroll and make it say what the agent reports it is doing.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>The defect, precisely:</b> the only live element in the pane is bound to a scroll
+          position. The Observed-activity rail is not a substitute - by its own contract a row there
+          means a record was seen, not that anything is running now.
+        </p>
+      </section>
+
+      <!-- ====================================================================== -->
+      <section class="mk-opt" id="option-e">
+        <div class="mk-opt-head">
+          <h2>Option E &middot; The pinned status row, plus a loading bar on the reply box</h2>
+          <span class="mk-tag is-rec">chosen</span>
+        </div>
+        <p>
+          The combination: <b>D</b>'s row - the one the log already draws - pinned to the bottom edge
+          of the transcript so it survives any scroll position, carrying the current status, a
+          spinner and an elapsed clock; and <b>C</b>'s 2px indeterminate bar along the top edge of the
+          reply box. Two marks, one claim, and they answer at different distances: the row says
+          <i>what</i> is happening, the bar says <i>something is</i> happening and is visible in
+          peripheral vision from across the room.
+        </p>
+        <p>
+          Nothing new is invented above the composer and nothing is duplicated. At the bottom of the
+          log the row is simply the last line, exactly as today.
+        </p>
+        <div class="mk-constraints" style="border-left-color: var(--idle); margin-bottom: 18px">
+          <h2 style="color: var(--idle)">As built</h2>
+          <ul>
+            <li>
+              <b>The clock is the base experience.</b> Every working row carries how long the
+              current turn has run, counted from the prompt that started it, with nothing to switch on.
+            </li>
+            <li>
+              <b>The two marks are opt-in Display items</b>, under Settings &rarr; Display &rarr;
+              Session display &rarr; <b>Working indicator</b>, with a live preview beside them:
+              <b>Pin the working row</b> and <b>Reply box progress bar</b>. Both ship unchecked, so
+              with neither checked the conversation is what it was, plus the clock.
+            </li>
+            <li>
+              <b>Queue ordering needed no change.</b> A row pinned by its own overflow has every
+              queued turn after it below the fold too, so the pin never covers the queue.
+            </li>
+            <li>
+              <b>The quiet-signal amber below was not built.</b> A long tool call sends no hooks
+              while it runs, so "quiet for 3m" would flag a healthy <code>npm test</code>. The clock
+              says how long the turn has run and leaves the judgement to the reader.
+            </li>
+          </ul>
+        </div>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">working &middot; at the bottom, the row is just the last line</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <p class="turn-progress"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Editing src/web/styles.css</span><span class="tp-meta">2m 14s</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input is-working">
+                  <span class="inp-sweep"><i></i></span>
+                  Reply to this session&hellip;
+                </div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">working &middot; scrolled back, the same row now pinned</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116. Keep it out of the scroll and make it say what the agent reports it is doing.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn-progress is-pinned"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Editing src/web/styles.css</span><span class="tp-meta">2m 14s</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input is-working">
+                  <span class="inp-sweep"><i></i></span>
+                  Reply to this session&hellip;
+                </div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mk-grid" style="margin-top: 18px">
+          <div>
+            <p class="mk-state">working &middot; signal has gone quiet</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Run the full suite and report what fails.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Running <code>npm test</code> across six workers. This takes a while on a cold cache.</span></p>
+                  <p class="turn-progress is-pinned is-stale"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Running npm test &middot; quiet for 3m</span><span class="tp-meta">8m&nbsp;41s</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>bash <span>npm test</span></p>
+                  <p>read <span>ci.yml</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input is-working is-stale">
+                  <span class="inp-sweep"><i></i></span>
+                  Reply to this session&hellip;
+                </div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">idle &middot; no row, no bar, no reserved height</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Done. The row pins to the log's bottom edge while the turn runs, and the reply box carries the bar.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">edit <b>TranscriptPanel.tsx</b></span><span class="chip">bash <b>npm run lint</b></span></span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>edit <span>TranscriptPanel.tsx</span></p>
+                  <p>edit <span>styles.css</span></p>
+                  <p>bash <span>npm run lint</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>The two marks are one state, and they are driven by one predicate.</b> Both mount on
+          <code>liveActivity(session)</code> and both take the amber treatment past the quiet-signal
+          threshold, so there is no arrangement where the bar sweeps while the row says the session
+          has gone quiet.
+        </p>
+        <div class="mk-facts">
+          <div class="mk-fact"><h3>Idle cost</h3><p>Nothing, and no reflow either: the row only exists while a turn runs, and the bar is a class on the reply box that is already there.</p></div>
+          <div class="mk-fact"><h3>Terminal frame</h3><p>The row already takes <code>.pty-entry</code>. The reply box has no border there, so the bar rides the top of the prompt line instead.</p></div>
+          <div class="mk-fact"><h3>To settle in implementation</h3><p>Queued turns render after the in-progress row on purpose; the sticky row has to sit below them, or fold the count in (&ldquo;Editing styles.css &middot; 2 queued&rdquo;). And the elapsed clock needs a turn-start timestamp - <code>lastActivity</code> is the last event, which is what the stale rule reads.</p></div>
+        </div>
+      </section>
+
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head">
+          <h2>Option A &middot; Status strip above the composer</h2>
+          <span class="mk-tag">loudest</span>
+        </div>
+        <p>
+          One full-width row between the log and the reply box, mounted exactly while
+          <code>liveActivity()</code> answers. It carries the live report, an elapsed clock, and a Stop
+          affordance - the thing you most often want the instant you notice a session is still
+          going. Idle, the row does not exist and the log reclaims its height.
+        </p>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">working &middot; fresh signal</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="ind-strip" role="status">
+                <span class="glyph-spin">&#10227;</span>
+                <span class="st-what">Claude is editing src/web/styles.css</span>
+                <span class="st-meta">2m 14s</span>
+                <button class="st-stop">Stop</button>
+                <span class="strip-sweep"><i></i></span>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">working &middot; signal has gone quiet</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Run the full suite and report what fails.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Running <code>npm test</code> across six workers. This takes a while on a cold cache.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">bash <b>npm test</b></span></span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>bash <span>npm test</span></p>
+                  <p>read <span>ci.yml</span></p>
+                </div>
+              </div>
+              <div class="ind-strip is-stale" role="status">
+                <span class="glyph-spin">&#10227;</span>
+                <span class="st-what">Still running npm test &middot; no signal for 3m</span>
+                <span class="st-meta">8m 41s</span>
+                <button class="st-stop">Stop</button>
+                <span class="strip-sweep"><i></i></span>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>Amber is the whole point of the second frame.</b> A spinner that never changes cannot
+          tell &ldquo;thinking&rdquo; from &ldquo;wedged&rdquo;, which is the complaint in the issue.
+          Past the threshold the strip stops asserting progress and reports the gap instead.
+        </p>
+        <div class="mk-facts">
+          <div class="mk-fact"><h3>Idle cost</h3><p>Nothing. The row unmounts and the log grows back into its height.</p></div>
+          <div class="mk-fact"><h3>Terminal frame</h3><p>Same row, mono type, no fill - a <code>.pty-status</code>-weight line above the prompt.</p></div>
+          <div class="mk-fact"><h3>Risk</h3><p>A ~28px reflow each time a turn starts and ends. The log is bottom-anchored, so content does not jump, but the box does move.</p></div>
+        </div>
+      </section>
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head">
+          <h2>Option B &middot; Floating pill over the log tail</h2>
+          <span class="mk-tag">zero reflow</span>
+        </div>
+        <p>
+          The indicator floats above the bottom of the transcript rather than sitting in the column,
+          so it takes no layout height at all and the composer never moves. It is the pattern the
+          reader already knows from a &ldquo;jump to latest&rdquo; affordance, and it can carry that
+          job too: while you are scrolled back, the pill is both the proof of life and the way home.
+        </p>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">working &middot; at the bottom</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Adding the strip's tokens next to the composer rules.</span></p>
+                  <span class="log-fade"></span>
+                  <span class="ind-pill" role="status">
+                    <span class="dots"><i></i><i></i><i></i></span>
+                    <span>Editing src/web/styles.css</span>
+                    <span class="pl-meta">2m 14s</span>
+                  </span>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">working &middot; scrolled back, so the pill offers the way home</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116. Keep it out of the scroll and make it say what the agent reports it is doing.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <span class="log-fade"></span>
+                  <span class="ind-pill" role="status">
+                    <span class="dots"><i></i><i></i><i></i></span>
+                    <span>Editing src/web/styles.css</span>
+                    <button class="pl-jump">Latest</button>
+                  </span>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>Three dots rather than a spinner</b> so the pill does not read as the same element as the
+          rail's rotating glyph, which means something weaker. The stale treatment is the same amber
+          rule as Option A.
+        </p>
+        <div class="mk-facts">
+          <div class="mk-fact"><h3>Idle cost</h3><p>Nothing, and nothing moves either: the pill is out of flow, so no turn boundary ever reflows the composer.</p></div>
+          <div class="mk-fact"><h3>Terminal frame</h3><p>Square corners and mono type; a floating pill over a terminal reads as an overlay, which it is.</p></div>
+          <div class="mk-fact"><h3>Risk</h3><p>It occludes the last line of the log, which is the line most worth reading. The fade helps; it does not eliminate it.</p></div>
+        </div>
+      </section>
+
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head">
+          <h2>Option C &middot; The composer carries it</h2>
+          <span class="mk-tag">no new chrome</span>
+        </div>
+        <p>
+          No new row and no overlay. The reply box itself reports: the <code>mission (s) &gt;</code>
+          prompt breathes in <code>--working</code>, a 2px indeterminate sweep runs along the box's top
+          edge, and the key legend in the rail's column - which is dead space on the chat rendering -
+          becomes the live report and the clock. The indicator lands exactly where the eye already
+          goes to act.
+        </p>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">working &middot; fresh signal</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Adding the tokens next to the composer rules.</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt is-working">mission (s) &gt;</span>
+                <div class="fake-input is-working">
+                  <span class="inp-sweep"><i></i></span>
+                  Reply to this session&hellip; it will be queued until this turn ends
+                </div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey is-working" role="status">
+                  <span class="sk-what"><span class="glyph-spin">&#10227;</span><span>Editing styles.css</span></span>
+                  <span class="sk-meta">working &middot; 2m 14s</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">working &middot; signal has gone quiet</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Run the full suite and report what fails.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Running <code>npm test</code> across six workers. This takes a while on a cold cache.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">bash <b>npm test</b></span></span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>bash <span>npm test</span></p>
+                  <p>read <span>ci.yml</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt is-working" style="color: var(--attention)">mission (s) &gt;</span>
+                <div class="fake-input is-working" style="border-color: color-mix(in srgb, var(--attention) 42%, var(--border))">
+                  <span class="inp-sweep"><i style="background: var(--attention)"></i></span>
+                  Reply to this session&hellip; it will be queued until this turn ends
+                </div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey is-working is-stale" role="status">
+                  <span class="sk-what"><span class="glyph-spin" style="color: var(--attention)">&#10227;</span><span>Running npm test</span></span>
+                  <span class="sk-meta" style="color: var(--attention)">no signal for 3m &middot; 8m 41s</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>The legend column is the trade.</b> On the chat rendering it is empty today, so this is
+          free; on the terminal rendering it holds the send-key hint, and the report would have to
+          share the column or replace the hint while a turn is running.
+        </p>
+        <div class="mk-facts">
+          <div class="mk-fact"><h3>Idle cost</h3><p>Nothing. Every mark is a class on chrome that is already there.</p></div>
+          <div class="mk-fact"><h3>Terminal frame</h3><p>Already native to it: the breathing prompt is what a shell does, and the legend column is the same 244px.</p></div>
+          <div class="mk-fact"><h3>Risk</h3><p>Quietest of the four. Someone glancing from across the room may not see a 2px sweep and a dim line at all.</p></div>
+        </div>
+      </section>
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head">
+          <h2>Option D &middot; Pin the row that already exists</h2>
+          <span class="mk-tag">smallest diff</span>
+        </div>
+        <p>
+          Keep <code>InProgressRow</code> exactly where it is in the log and give it
+          <code>position: sticky; bottom: 0</code>. At the bottom of the transcript it is the last line,
+          unchanged. Scroll back and it detaches, holding the log's bottom edge with a rule above it,
+          so the same element answers the same question from any scroll position. One CSS block and
+          a wrapper; no new component, no new copy, no second place the claim can drift.
+        </p>
+        <div class="mk-grid">
+          <div>
+            <p class="mk-state">at the bottom &middot; just the last line of the log</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">read <b>TranscriptPanel.tsx</b></span><span class="chip">grep <b>liveActivity</b></span></span></p>
+                  <p class="turn-progress"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Editing src/web/styles.css</span><span class="tp-meta">2m 14s</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="mk-state">scrolled back &middot; the same row, now pinned</p>
+            <div class="conv">
+              <div class="conv-split">
+                <div class="conv-log">
+                  <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116. Keep it out of the scroll and make it say what the agent reports it is doing.</span></p>
+                  <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Reading the transcript panel and the shared session predicates first.</span></p>
+                  <p class="turn-progress is-pinned"><span class="who">Claude</span><span class="glyph-spin">&#10227;</span><span class="txt">Editing src/web/styles.css</span><span class="tp-meta">2m 14s</span></p>
+                </div>
+                <div class="conv-rail">
+                  <h4>Observed activity</h4>
+                  <p>read <span>TranscriptPanel.tsx</span></p>
+                  <p>grep <span>liveActivity</span></p>
+                  <p>edit <span>styles.css</span></p>
+                </div>
+              </div>
+              <div class="compose-row">
+                <span class="pty-prompt">mission (s) &gt;</span>
+                <div class="fake-input">Reply to this session&hellip;</div>
+                <button class="btn-send">Send</button>
+                <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          <b>The ordering problem to settle if this wins:</b> queued messages render <i>after</i> the
+          in-progress row on purpose - the work has to finish before any of them is delivered - so a
+          row pinned to the bottom edge would float over the queue it is supposed to precede. Either
+          the sticky row moves below the pending turns, or the queue count folds into it
+          (&ldquo;Editing styles.css &middot; 2 queued&rdquo;).
+        </p>
+        <div class="mk-facts">
+          <div class="mk-fact"><h3>Idle cost</h3><p>Nothing, and unchanged from today - the row only exists while <code>liveActivity()</code> answers.</p></div>
+          <div class="mk-fact"><h3>Terminal frame</h3><p>Free: the row already takes <code>.pty-entry</code> there and would keep the spine's rhythm.</p></div>
+          <div class="mk-fact"><h3>Risk</h3><p>It is inside the scrollport, so it sits above the composer rather than beside it, and it cannot carry a Stop button without becoming a control in the log.</p></div>
+        </div>
+      </section>
+
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head"><h2>Idle, in all five</h2></div>
+        <p>
+          The state that decides whether this is worth shipping. On an idle session every option,
+          the chosen one included, draws the same thing - nothing - and the conversation keeps the
+          height it has today.
+        </p>
+        <div class="conv" style="max-width: 640px">
+          <div class="conv-split">
+            <div class="conv-log">
+              <p class="turn is-you"><span class="who is-you">You</span><span class="txt">Add the persistent working indicator from #1116.</span></p>
+              <p class="turn"><span class="who is-agent">Claude</span><span class="txt">Done. The strip mounts on <code>liveActivity()</code> and carries the elapsed clock; the stale threshold flips it to amber.</span></p>
+              <p class="turn"><span class="who is-agent">Claude</span><span class="txt"><span class="chip">edit <b>TranscriptPanel.tsx</b></span><span class="chip">bash <b>npm run lint</b></span></span></p>
+            </div>
+            <div class="conv-rail">
+              <h4>Observed activity</h4>
+              <p>edit <span>TranscriptPanel.tsx</span></p>
+              <p>edit <span>styles.css</span></p>
+              <p>bash <span>npm run lint</span></p>
+            </div>
+          </div>
+          <div class="compose-row">
+            <span class="pty-prompt">mission (s) &gt;</span>
+            <div class="fake-input">Reply to this session&hellip;</div>
+            <button class="btn-send">Send</button>
+            <span class="sendkey">&#9166; send &middot; &#8679;&#9166; newline</span>
+          </div>
+        </div>
+        <p class="mk-idle-note" style="margin-top: 10px"><i></i> idle &middot; no indicator, no reserved row, no overlay</p>
+      </section>
+
+      <!-- ====================================================================== -->
+      <section class="mk-opt">
+        <div class="mk-opt-head"><h2>Side by side</h2></div>
+        <table class="mk-cmp">
+          <thead>
+            <tr><th>Option</th><th>Glanceable</th><th>Reflow</th><th>Can carry Stop / elapsed</th><th>Spec + CSS surface</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A &middot; strip</td>
+              <td>Highest - a full-width band in the fixed footer region</td>
+              <td>~28px in and out per turn</td>
+              <td>Yes, both</td>
+              <td>New component, new block, one e2e spec</td>
+            </tr>
+            <tr>
+              <td>B &middot; pill</td>
+              <td>High - centred and floating, but narrow</td>
+              <td>None</td>
+              <td>Elapsed yes; Stop crowds it</td>
+              <td>New component, overlay geometry, scroll-position state</td>
+            </tr>
+            <tr>
+              <td>C &middot; composer</td>
+              <td>Lowest - a 2px sweep and a dim line</td>
+              <td>None</td>
+              <td>Elapsed yes; Stop no</td>
+              <td>Classes on existing chrome; smallest visual footprint</td>
+            </tr>
+            <tr>
+              <td>E &middot; D + bar <b style="color: var(--idle)">&#9679;</b></td>
+              <td>High - a log-type line that never leaves, plus a bar readable from across the room</td>
+              <td>None</td>
+              <td>Elapsed yes; Stop no</td>
+              <td>One CSS block plus classes on the composer; queue ordering to settle</td>
+            </tr>
+            <tr>
+              <td>D &middot; pinned row</td>
+              <td>Medium - log type, inside the scrollport</td>
+              <td>None</td>
+              <td>Elapsed yes; Stop no</td>
+              <td>One CSS block; queue ordering to settle</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="mk-caption" style="margin-top: 18px">
+          <b>Chosen: E</b> - the current status in D's pinned row, with a spinner and an elapsed
+          clock, and C's loading bar on the top edge of the reply box. It reaches glanceability the
+          way A does without A's reflow, because neither mark takes layout height: the row already
+          exists in the log and only changes how it behaves when you scroll away from it, and the bar
+          is a class on chrome that is there whether or not a turn is running. The cost it does carry
+          is A's Stop button, which stays where it already is.
+        </p>
+        <p class="mk-caption">
+          <b>Open question for whichever wins.</b> The elapsed clock needs a turn-start timestamp.
+          <code>session.lastActivity</code> is the last <i>event</i>, which is what the stale rule reads;
+          turn start has to come from the transcript's last user turn or from
+          <code>workCycle</code>. Worth settling before implementation rather than during it.
+        </p>
+      </section>
+    </div>
+  </body>
+</html>

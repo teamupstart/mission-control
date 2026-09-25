@@ -254,7 +254,11 @@ async function renderHiding(
   }
 }
 
-const BOTH_OFF = ["detailPath", "detailBranch"];
+// Both band cells unchecked ON TOP of the shipped defaults, which is the list an operator
+// actually holds after unchecking them. A bare two-id list would also switch every
+// ships-hidden item back on, so a comparison against the default render would be measuring
+// those items as well as the band.
+const BOTH_OFF = [...UI_CONFIG_DEFAULTS.hiddenDisplayItems, "detailPath", "detailBranch"];
 
 /** A dispatched session whose task pill is silent - the ordinary case F4 describes. */
 function silentTaskSession(over: Partial<Session> = {}): Session {

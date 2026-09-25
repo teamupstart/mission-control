@@ -149,5 +149,5 @@ test("Inspector persists Codex and resolves its Codex default after restart-styl
   const cfg = getInspectorConfig();
   assert.equal(cfg.runner, "codex");
   assert.equal(cfg.model, "");
-  assert.equal(inspectorModel(cfg).id, "gpt-5.6-sol");
+  assert.equal(inspectorModel(cfg).id, "gpt-6-sol");
 });

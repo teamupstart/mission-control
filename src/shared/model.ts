@@ -136,14 +136,18 @@ export interface ShippedHarnessModelChoice extends ModelChoice {
  */
 export const MODEL_CATALOG: Record<AgentType, readonly ShippedHarnessModelChoice[]> = {
   claude: [
-    { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
-    { id: "claude-opus-5", label: "Opus 5", hint: "strong all-rounder", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-fable-5-1", label: "Fable 5.1", hint: "most capable, hardest work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-opus-5-5", label: "Opus 5.5", hint: "strong all-rounder", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-fable-5", label: "Fable 5", hint: "previous-generation Fable", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "claude-opus-5", label: "Opus 5", hint: "previous-generation Opus", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "claude-opus-4-8", label: "Opus 4.8", hint: "previous-generation Opus", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
   ],
   codex: [
     { id: "gpt-6-astra", label: "GPT-6 Astra", hint: "most capable, hardest end-to-end work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-6-sol", label: "GPT-6 Sol", hint: "strong everyday workhorse", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-6-luna", label: "GPT-6 Luna", hint: "fastest, focused work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "reliable everyday workhorse", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
@@ -153,9 +157,9 @@ export const MODEL_CATALOG: Record<AgentType, readonly ShippedHarnessModelChoice
   // catalog mirrors the configured account; these three current tiers are deliberately a
   // compact usable fallback rather than a checked-in copy of Pi's full catalog.
   pi: [
-    { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
-    { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
-    { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "openai/gpt-6-astra", label: "GPT-6 Astra", hint: "most capable", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "openai/gpt-6-sol", label: "GPT-6 Sol", hint: "strong everyday workhorse", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "openai/gpt-6-luna", label: "GPT-6 Luna", hint: "fastest", provider: "openai", contextWindow: null, reasoning: null, inputModes: [] },
   ],
 };
 
@@ -201,9 +205,9 @@ export function providerModelDefault(
   tier: "deep" | "balanced" | "cheap",
 ): string {
   if (provider === "codex") {
-    return tier === "deep" ? "gpt-5.6-sol" : tier === "balanced" ? "gpt-5.6-terra" : "gpt-5.6-luna";
+    return tier === "cheap" ? "gpt-6-luna" : "gpt-6-sol";
   }
-  return tier === "deep" ? "claude-opus-5" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
+  return tier === "deep" ? "claude-opus-5-5" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
 }
 
 /** A model id a provider can actually run, and the one it could not, when they differ. */

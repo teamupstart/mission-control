@@ -268,5 +268,5 @@ test("changing the app provider refreshes effective Persona values in the SSE sn
   assert.equal(changed.status, 200);
   const execution = registry.snapshot().personas[0]?.execution;
   assert.equal(execution?.runner.id, "codex");
-  assert.equal(execution?.model.id, "gpt-5.6-terra");
+  assert.equal(execution?.model.id, "gpt-6-sol");
 });

@@ -1151,6 +1151,7 @@ rl.on("line", (line) => {
         account: {},
         models: [
           { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Account default" },
+          { value: "fable", resolvedModel: "claude-fable-5-1", displayName: "Fable 5.1", description: "Most capable", supportsEffort: true },
           { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Newest Opus", supportsEffort: true },
           { value: "claude-opus-5", resolvedModel: "claude-opus-5", displayName: "Opus 5", description: "Previous Opus", supportsEffort: true },
           { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5", description: "Sonnet", supportsEffort: true },

@@ -479,8 +479,8 @@ keeps the one-shot `claude -p` path available as an operator-pinned escape hatch
 
 | Call | Default | Config key | What it does |
 |---|---|---|---|
-| Review | `claude-opus-5` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |
-| Verify | `claude-opus-5` | `verifyModel` | Reads the diff and decides whether a queued work item is done |
+| Review | `claude-opus-5-5` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |
+| Verify | `claude-opus-5-5` | `verifyModel` | Reads the diff and decides whether a queued work item is done |
 | Triage | `claude-haiku-4-5` | `triageModel` | The [cheap tier](#the-cheap-tier)'s Tier 1 router - buckets the ask, never solves it |
 | Backlog | `claude-sonnet-5` | `backlogModel` | Reads the [backlog](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) once per change and says what depends on what. It supplies edges, never position - [the order is yours](dispatch-and-backlog.md#the-backlog-order-is-the-one-you-set) |
 

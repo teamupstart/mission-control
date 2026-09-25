@@ -237,7 +237,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 19),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 20),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -277,7 +277,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 19);
+  assert.equal(builtin.versions.length, 20);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -403,7 +403,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 19, "one workflow, nineteen versions");
+  assert.equal(builtin.versions.length, 20, "one workflow, twenty versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -698,7 +698,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 19);
+  assert.equal(builtin.versions.length, 20);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -871,7 +871,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 19);
+  assert.equal(builtin.versions.length, 20);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1266,10 +1266,10 @@ test("the review presets ship the agreed judges and delivery boundaries", () => 
 
 test("Plan Validation appends publication without changing its existing version", () => {
   const builtin = BUILTIN_WORKFLOWS.find((entry) => entry.definition.id === builtinWorkflowId("plan-validation"))!;
-  assert.equal(builtin.versions.length, 2);
+  assert.equal(builtin.versions.length, 3);
   assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions[0])).digest("hex"),
     "a58d4a956619419b693461dffd9e48f42110a69545b2b2d39b216d6ef8995899");
-  assert.equal(builtin.definition.currentVersionId, builtinWorkflowVersionId("plan-validation", 2));
+  assert.equal(builtin.definition.currentVersionId, builtinWorkflowVersionId("plan-validation", 3));
   const graph = builtin.versions[1]!.graph;
   assert.ok(graph.nodes.some((node) => node.id === "pv-pull-request" && node.kind === "session_action"));
   assert.ok(graph.edges.some((edge) => edge.source === "pv-pull-request" && edge.sourcePort === "complete" && edge.target === "pv-end"));
@@ -1302,18 +1302,18 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
 ] as const) {
   test(`${slug} gates every reviewer on typecheck, test, and lint in its first stage`, () => {
     const builtin = BUILTIN_WORKFLOWS.find((entry) => entry.definition.id === builtinWorkflowId(slug))!;
-    const current = builtin.versions.at(-1)!;
-    assert.equal(current.version, versionNumber);
-    assert.deepEqual(builtin.definition.draft, asDraft(current.graph));
-    const pipeline = projectStages(builtin.definition.draft)!;
+    const version = builtin.versions[versionNumber - 1]!;
+    assert.equal(version.version, versionNumber);
+    assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
+    const pipeline = projectStages(asDraft(version.graph))!;
     assert.ok(pipeline.sessionId);
     const gate = evaluation(pipeline.stages[0]);
-    assert.deepEqual(shapeOf(builtin.definition.draft)[0], [
+    assert.deepEqual(shapeOf(asDraft(version.graph))[0], [
       "check:typecheck", "check:test", "check:lint",
     ]);
     assert.ok(gate.joinId);
     assert.equal(gate.members[2]!.nodeId, lintId);
-    const route = (source: string, port: string) => current.graph.edges
+    const route = (source: string, port: string) => version.graph.edges
       .filter((edge) => edge.source === source && edge.sourcePort === port)
       .map((edge) => `${edge.target}:${edge.targetPort}`)
       .sort();
@@ -1331,25 +1331,50 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
 
     // Only lint and the join's layout change. Every earlier node, route, Persona snapshot,
     // later stage, and delivery policy keeps the previous version's semantics.
-    const prior = builtin.versions.at(-2)!;
+    const prior = builtin.versions[versionNumber - 2]!;
     const withoutPositions = (graph: PublishedWorkflowGraph) => graph.nodes
       .filter((node) => node.id !== lintId)
       .map(({ position: _position, ...node }) => node);
-    assert.deepEqual(withoutPositions(current.graph), withoutPositions(prior.graph));
-    assert.deepEqual(current.graph.edges.filter((edge) =>
+    assert.deepEqual(withoutPositions(version.graph), withoutPositions(prior.graph));
+    assert.deepEqual(version.graph.edges.filter((edge) =>
       edge.source !== lintId && edge.target !== lintId), prior.graph.edges);
-    assert.deepEqual(current.completionPolicy, prior.completionPolicy);
-    assert.equal(current.resumptionPolicy, prior.resumptionPolicy);
-    assert.equal(current.evidenceReadinessPolicy, prior.evidenceReadinessPolicy);
-    assert.deepEqual(current.bindingDefaults, prior.bindingDefaults);
-    assert.equal(current.sourceDraftRevision, prior.sourceDraftRevision + 1);
+    assert.deepEqual(version.completionPolicy, prior.completionPolicy);
+    assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
+    assert.equal(version.evidenceReadinessPolicy, prior.evidenceReadinessPolicy);
+    assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+    assert.equal(version.sourceDraftRevision, prior.sourceDraftRevision + 1);
     // Captured from the shipped catalog before adding lint, including all snapshots and IDs.
     assert.equal(createHash("sha256")
       .update(JSON.stringify(builtin.versions.slice(0, versionNumber - 1)))
       .digest("hex"), historicalDigest, "a previously shipped version changed");
-    for (const historical of builtin.versions.slice(0, -1)) {
+    for (const historical of builtin.versions.slice(0, versionNumber - 1)) {
       assert.equal(historical.graph.nodes.some((node) =>
         node.kind === "check" && node.slot === "lint"), false, historical.id);
     }
   });
 }
+
+test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", () => {
+  for (const builtin of BUILTIN_WORKFLOWS) {
+    const previous = builtin.versions.at(-2)!;
+    const current = builtin.versions.at(-1)!;
+    assert.equal(current.version, previous.version + 1);
+    assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
+    assert.equal(builtin.definition.currentVersionId, current.id);
+    assert.deepEqual(asDraft(current.graph), asDraft(previous.graph));
+    assert.deepEqual(current.graph.edges, previous.graph.edges);
+    assert.deepEqual(current.completionPolicy, previous.completionPolicy);
+    assert.equal(current.resumptionPolicy, previous.resumptionPolicy);
+    assert.equal(current.evidenceReadinessPolicy, previous.evidenceReadinessPolicy);
+    assert.deepEqual(current.bindingDefaults, previous.bindingDefaults);
+    for (const graphNode of current.graph.nodes) {
+      if (graphNode.kind !== "persona") continue;
+      const old = previous.graph.nodes.find((node) => node.id === graphNode.id);
+      assert.ok(old && old.kind === "persona");
+      assert.equal(old.persona.model?.startsWith("gpt-5.6-"), true);
+      assert.equal(graphNode.persona.runner, "codex");
+      assert.equal(graphNode.persona.model, "gpt-6-sol");
+      assert.deepEqual({ ...graphNode.persona, model: old.persona.model }, old.persona);
+    }
+  }
+});

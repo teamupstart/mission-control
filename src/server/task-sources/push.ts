@@ -48,7 +48,7 @@ export interface PushDeps {
   ) => Promise<PushResult>;
   /** Remember that this source has filed this item, so its next sweep does not re-file it. */
   remember?: (sourceId: string, externalId: string, url: string | null) => void;
-  /** Run the two writes together. */
+  /** Commit the seen marker, task link, and pushed provenance together. */
   transaction?: <T>(fn: () => T) => T;
   log?: (msg: string) => void;
 }
@@ -253,10 +253,10 @@ export async function pushTask(
     //    was created for it and provenance is not a provisioning field (`attachSource`).
     let attached: { ok: boolean; error?: string; task?: Task };
     try {
-      attached = transaction(() => {
+      attached = tasks.attachSource(task.id, ref, (link) => transaction(() => {
         remember(inst.id, ref.externalId, ref.url);
-        return tasks.attachSource(task.id, ref);
-      });
+        return link();
+      }));
     } catch (err) {
       // The transaction rolled back, so neither write landed - but the ISSUE still exists.
       // Reported as an unknown outcome rather than as a refusal for exactly that reason: a

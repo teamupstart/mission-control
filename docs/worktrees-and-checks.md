@@ -43,6 +43,17 @@ checkout's cached `refs/remotes/origin/HEAD`, because a fetch does not refresh t
 server-side default-branch rename. When another fetch wins Git's remote-tracking-ref update race,
 Mission Control retries that known-safe local refusal up to two times. Authentication, network,
 timeout, overflow, and every other fetch failure still fail closed without an automatic retry.
+A fetch stopped by its 30-second limit says so, with the limit, rather than reporting an exit
+status Git never returned.
+
+A repository with `origin` configured but no refs at all is refused before anything is fetched.
+That is what a `git clone` looks like while it is still downloading, since it writes config and
+`origin` first and its refs only once the whole pack has arrived. It is also what a repository
+that was initialized and given a remote but never fetched looks like. Fetching either would
+download the entire history inside a limit sized for an incremental update, beside any clone
+still writing the same object store, and a large repository cannot finish. The task returns to
+Backlog saying the repository has no commits yet: let a running clone finish, or run
+`git fetch origin` in it once, then launch again.
 
 Bare clones are fetched into `refs/remotes/origin/*` explicitly, since `git clone --bare`
 does not create that fetch mapping. The same rule keeps mirror fetch configuration from

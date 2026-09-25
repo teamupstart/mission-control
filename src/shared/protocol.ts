@@ -6,6 +6,7 @@ import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
+  MAX_TASK_DEPENDENCIES,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
@@ -764,7 +765,7 @@ const McpCreateTaskBaseSchema = z.object({
   repoRoot: z.string().min(1),
   title: z.string().min(1).max(200),
   intent: z.string().min(1),
-  dependsOnTaskIds: z.array(z.string().min(1)).max(50).optional().default([]),
+  dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
 });
 
@@ -916,7 +917,7 @@ export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
 const TaskDependenciesSchema = z
   .array(TaskDependencyInputSchema)
-  .max(50)
+  .max(MAX_TASK_DEPENDENCIES)
   .superRefine((dependencies, ctx) => {
     const seen = new Set<string>();
     for (let i = 0; i < dependencies.length; i++) {
@@ -1331,6 +1332,84 @@ export const UpdateTaskSchema = z
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
+/**
+ * How many backlog tasks one bulk request may name. Generous for a hand-made selection and
+ * small enough that a runaway client cannot hold the task writer for long.
+ */
+export const BULK_TASK_LIMIT = 200;
+
+const BulkTaskIdsSchema = z
+  .array(z.string().min(1))
+  .min(1)
+  .max(BULK_TASK_LIMIT)
+  .refine((ids) => new Set(ids).size === ids.length, { message: "duplicate task id" });
+
+/**
+ * Change the fixed-choice fields of several backlog tasks at once: the board's bulk edit.
+ *
+ * `set` carries the fields every selected task takes as-is, with `UpdateTaskSchema`'s own
+ * meanings: absent leaves a task's value alone, and `null` clears an override back to the
+ * default. Freeform fields (title, intent) and repositories are not here. They describe one
+ * task, and writing one value over a selection of them would erase the thing that told the
+ * tasks apart.
+ *
+ * `labels` and `dependencies` are EDITS rather than replacements, because the selected
+ * tasks rarely share a list. A replacement would strip every label the operator did not
+ * name. Each task's resulting list is its own list, minus `remove`, plus `add`.
+ *
+ * The daemon applies the change to every task or to none. See `TaskManager.bulkUpdate`.
+ */
+export const BulkUpdateTasksSchema = z
+  .object({
+    taskIds: BulkTaskIdsSchema,
+    set: z
+      .object({
+        kind: z
+          .enum(TASK_KINDS)
+          .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+          .optional(),
+        agent: z.enum(AGENT_TYPES).optional(),
+        enabled: z.boolean().optional(),
+        priority: z.enum(TASK_PRIORITIES).nullable().optional(),
+        model: ModelIdSchema.nullable().optional(),
+        effort: EffortLevelSchema.nullable().optional(),
+        workflowId: z.string().min(1).max(500).nullable().optional(),
+      })
+      .refine(
+        (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
+        { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+      )
+      .optional()
+      .default({}),
+    labels: z
+      .object({
+        add: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
+        remove: z.array(z.string()).max(50).optional().default([]),
+      })
+      .optional(),
+    dependencies: z
+      .object({
+        add: z.array(TaskDependencyInputSchema).max(MAX_TASK_DEPENDENCIES).optional().default([]),
+        remove: z.array(TaskDependencyInputSchema).max(MAX_TASK_DEPENDENCIES).optional().default([]),
+      })
+      .optional(),
+  })
+  .refine(
+    (o) =>
+      Object.keys(o.set).length > 0 ||
+      (o.labels !== undefined && o.labels.add.length + o.labels.remove.length > 0) ||
+      (o.dependencies !== undefined &&
+        o.dependencies.add.length + o.dependencies.remove.length > 0),
+    { message: "empty bulk task update" },
+  );
+export type BulkUpdateTasks = z.infer<typeof BulkUpdateTasksSchema>;
+/** What a caller sends, before the schema's defaults and label normalization run. */
+export type BulkUpdateTasksInput = z.input<typeof BulkUpdateTasksSchema>;
+
+/** Delete several backlog tasks. See `TaskManager.bulkRemove` for why this is not atomic. */
+export const BulkDeleteTasksSchema = z.object({ taskIds: BulkTaskIdsSchema });
+export type BulkDeleteTasks = z.infer<typeof BulkDeleteTasksSchema>;
 
 /** True when this patch only re-describes a task, so no status guard applies. */
 export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {

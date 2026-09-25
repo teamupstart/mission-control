@@ -79,6 +79,9 @@ export const OVERLAY_IDS = {
   // FROM a text field: the field it opens from is behind it, so while it is up the fleet's
   // `k` and `r` must reach neither that field nor the session it belongs to.
   composerEditor: "composer-editor",
+  // The backlog column's bulk edit. Its own id so the Escape registry can close it without
+  // also clearing the selection it was opened over.
+  backlogBulkEdit: "backlog-bulk-edit",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

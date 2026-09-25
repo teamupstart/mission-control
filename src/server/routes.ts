@@ -150,6 +150,8 @@ import {
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
+  BulkUpdateTasksSchema,
+  BulkDeleteTasksSchema,
   UpdatePersonaSchema,
   ArchivePersonaSchema,
   CreateWorkflowSchema,
@@ -7638,6 +7640,37 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
     }
     return c.json({ ok: true, task: completed, ...(resourceWarning ? { warning: resourceWarning } : {}) });
+  });
+
+  /**
+   * The board's bulk edit: one change to several backlog tasks, applied to all of them or
+   * to none. Refusals mirror the single edit, with the task named in the message. The
+   * workflow gate is asked once, of the workflow being SET. Tasks that keep their own
+   * workflow are not re-judged by an edit that never touched it.
+   */
+  app.post("/api/tasks/bulk-update", async (c) => {
+    const parsed = await parseBody(c, BulkUpdateTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const workflowId = parsed.data.set.workflowId;
+    if (workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.workflowSelectionBlock(workflowId);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+    }
+    const r = await tasks.bulkUpdate(parsed.data);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  /**
+   * Delete several backlog tasks. Checked up front and then removed one by one, so a late
+   * failure answers 409 with the ids that did and did not go. See `TaskManager.bulkRemove`.
+   */
+  app.post("/api/tasks/bulk-delete", async (c) => {
+    const parsed = await parseBody(c, BulkDeleteTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.bulkRemove(parsed.data.taskIds);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

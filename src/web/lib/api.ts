@@ -80,6 +80,7 @@ import type {
   TaskSourcesConfigPatch,
   ReorderTask,
   UpdateTask,
+  BulkUpdateTasksInput,
   TaskDependencyInput,
   EnsembleActionBody,
   StandingInstructionsUpdate,
@@ -1904,6 +1905,20 @@ export const api = {
       ...(confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
     }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
+  /**
+   * The board's bulk edit: one change to several backlog tasks, written to all of them or
+   * to none. A refusal names the task that stopped it.
+   */
+  bulkUpdateTasks: (body: BulkUpdateTasksInput) => post(`/api/tasks/bulk-update`, body),
+  /**
+   * Delete several backlog tasks. Not atomic (see `TaskManager.bulkRemove`), so a late
+   * refusal carries the ids that did and did not go.
+   */
+  bulkDeleteTasks: (taskIds: string[]) =>
+    post<ActionResult & { removed?: string[]; failed?: Array<{ taskId: string; error: string }> }>(
+      `/api/tasks/bulk-delete`,
+      { taskIds },
+    ),
   /**
    * File this backlog task as an item in the tracker a configured source points at - the one
    * outward write in the task-sources feature, and the only call here that PUBLISHES.

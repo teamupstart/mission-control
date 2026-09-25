@@ -320,5 +320,5 @@ export async function resolveWith(
 export async function readLinkedSource(inst: TaskSourceInstance, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
   if (refs.length > 25) return { items: [], error: "a linked refresh may read at most 25 items" };
   try { return await TASK_SOURCES[inst.kind].readLinked(inst.config, refs, ctx); }
-  catch (error) { return { items: [], error: error instanceof Error ? error.message : String(error) }; }
+  catch { return { items: [], error: "The linked source items could not be read. Check the source settings and sweep again." }; }
 }

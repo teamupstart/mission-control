@@ -140,7 +140,7 @@ test("a per-item linked-read error preserves that task while valid siblings upda
     "The linked item belongs to another Jira site.");
   assert.equal(sourceSyncReviews([src]).find((review) => review.taskId === sibling.id)!.error, null);
 });
-test("GitHub linked failures never persist command output or parser details in reviews or the API", async () => {
+test("GitHub linked failures never persist command output or parser details in reviews or the API", async (t) => {
   const { src, registry, tasks, task } = await setup();
   const dir = mkdtempSync(join(tmpdir(), "mission-linked-gh-"));
   const bin = join(dir, "gh");
@@ -165,6 +165,12 @@ test("GitHub linked failures never persist command output or parser details in r
       const body = await response.text();
       for (const fragment of secret.split(" ")) assert.ok(!body.includes(fragment), fragment);
     }
+    t.mock.method(TASK_SOURCES["github-issues"], "readLinked", async () => { throw new Error(secret); });
+    assert.equal((await refresh(localSource, tasks, [])).skipped, 1);
+    assert.equal(getSourceSync(task.id)!.error,
+      "The linked source items could not be read. Check the source settings and sweep again.");
+    const response = await app.request("/api/task-sources/config", { headers: { host: "127.0.0.1:7317" } });
+    assert.ok(!(await response.text()).includes(secret));
   } finally {
     if (before === undefined) delete process.env.MISSION_GH_BIN;
     else process.env.MISSION_GH_BIN = before;

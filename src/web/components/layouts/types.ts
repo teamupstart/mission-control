@@ -11,7 +11,7 @@ import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle, TranscriptScrollDistance } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
-import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowBindingSummary, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import {
   pipelineRunKeyOf,
@@ -69,6 +69,8 @@ export interface SessionViewProps {
   backlogTrust?: BacklogTrustView | null;
   /** Route task-local trust explanations to the existing Trust matrix. */
   onManageForemanTrust?: () => void;
+  /** Every workflow summary; the backlog bulk edit offers the published ones as After work. */
+  workflowSummaries?: WorkflowSummary[];
   selectedId: string | null;
   /**
    * Which half of the Console holds the keyboard - the rail selector or the open

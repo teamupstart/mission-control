@@ -16,12 +16,18 @@ export function prunePiGenerations(currentBuildId: string): void {
     .sort((a, b) => b.published - a.published || a.name.localeCompare(b.name));
   for (const { name } of prior.slice(1)) removeIdlePiGeneration(piGenerationPath(name));
   const damaged = directories.filter(name => name.startsWith(".damaged-"))
+    .filter(name => {
+      const directory = join(root, name);
+      removeRetiredPiGenerations(directory);
+      if (readdirSync(directory).length > 0) return true;
+      rmdirSync(directory);
+      return false;
+    })
     .sort((a, b) => lstatSync(join(root, b)).mtimeMs - lstatSync(join(root, a)).mtimeMs);
-  for (const [index, name] of damaged.entries()) {
+  for (const name of damaged.slice(1)) {
     const directory = join(root, name);
-    removeRetiredPiGenerations(directory);
     const contents = readdirSync(directory);
-    if (contents.length === 0 || (index > 0 && contents.length === 1 && /^[a-f0-9]{64}$/.test(contents[0]!)
-      && removeIdlePiGeneration(join(directory, contents[0]!)))) rmdirSync(directory);
+    if (contents.length === 1 && /^[a-f0-9]{64}$/.test(contents[0]!)
+      && removeIdlePiGeneration(join(directory, contents[0]!))) rmdirSync(directory);
   }
 }

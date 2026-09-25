@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { inspectMissionMcpTools } from "../src/server/mission-mcp.ts";
 import { execFileSync } from "node:child_process";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+const nativeAddon = ensureNativeStateLockAddon();
 
 test("two absolute source roots produce identical integration bytes that load after source removal", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-relocation-"));
@@ -15,6 +18,8 @@ test("two absolute source roots produce identical integration bytes that load af
       const source = join(root, name); mkdirSync(source);
       for (const path of ["src", "scripts", "package.json", "tsconfig.json"]) cpSync(resolve(path), join(source, path), { recursive: true });
       symlinkSync(resolve("node_modules"), join(source, "node_modules"), "dir");
+      mkdirSync(join(source, "dist/native"), { recursive: true });
+      cpSync(nativeAddon, join(source, "dist/native/state-lock.node"));
       execFileSync(process.execPath, ["--import", "tsx", "scripts/build-pi-extension.ts"], { cwd: source, env: { ...process.env, MISSION_PI_EXTENSION: join(source, "dist/pi-integration/extension.js") }, stdio: "pipe" });
       const copied = join(root, `${name}-app`);
       cpSync(join(source, "dist/pi-integration"), copied, { recursive: true });

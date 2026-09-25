@@ -73,7 +73,10 @@ for (const location of ["generation", "damaged backup"] as const) {
     } finally { fault.mock.restore(); syncBuiltinESMExports(); }
     prunePiGenerations(current);
     assert.equal(existsSync(tombstone!), false);
-    if (location === "damaged backup") assert.equal(existsSync(container), false);
+    if (location === "damaged backup") {
+      assert.equal(existsSync(container), false);
+      assert.equal(existsSync(join(piIntegrationRoot(), ".damaged-newest", prior)), true, "cleanup retry must retain the actual newest backup");
+    }
     for (const id of [current, prior]) assert.equal(readFileSync(join(piGenerationPath(id), "mcp-server.mjs"), "utf8"), id);
     assert.equal(readFileSync(join(unknown, "keep"), "utf8"), "foreign");
     assert.equal(lstatSync(foreignLink).isSymbolicLink(), true);

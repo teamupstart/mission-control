@@ -10,6 +10,73 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { verifyPiIntegration } from "../src/server/extensions/pi-artifact.ts";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { writePiIntegration } from "./helpers/pi-integration.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+
+ensureNativeStateLockAddon();
+
+test("directory publication refuses to discard unrelated output-directory contents", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-build-foreign-"));
+  const dir = join(root, "integration"); writePiIntegration(dir);
+  const prior = verifyPiIntegration(dir);
+  await writeFile(join(dir, "operator.txt"), "keep me");
+  try {
+    await assert.rejects(buildPiExtension(join(dir, "extension.js")), /contains unrelated files/);
+    assert.deepEqual(verifyPiIntegration(dir), prior);
+    assert.equal(await readFile(join(dir, "operator.txt"), "utf8"), "keep me");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const failure of ["swap", "rollback"] as const) {
+  test(`failed build ${failure} preserves the previous integration for recovery`, async t => {
+    const root = await mkdtemp(join(tmpdir(), "pi-build-swap-"));
+    const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
+    const prior = verifyPiIntegration(dir);
+    let calls = 0, retained = "";
+    const swap = mockSymlinkPublication(t, "exchangePaths", (exchange, from, to) => {
+      calls++; retained = from;
+      if (calls === (failure === "swap" ? 1 : 2)) throw new Error("injected swap failure");
+      exchange(from, to);
+    });
+    const read = fs.readFileSync;
+    const fault = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+      if (failure === "rollback" && String(args[0]) === join(dir, "manifest.json")) throw new Error("verification denied");
+      return read(...args);
+    }); syncBuiltinESMExports();
+    try {
+      await assert.rejects(buildPiExtension(join(dir, "extension.js")), error => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, failure === "swap" ? /injected swap failure/ : /previous integration retained at/);
+        if (failure === "rollback") assert.ok(error.message.includes(retained));
+        return true;
+      });
+    } finally { swap.restore(); fault.mock.restore(); syncBuiltinESMExports(); }
+    try {
+      assert.equal(calls, failure === "swap" ? 1 : 2);
+      assert.deepEqual(verifyPiIntegration(failure === "swap" ? dir : retained), prior);
+      if (failure === "swap") assert.equal(fs.existsSync(retained), false, "failed candidate is cleaned");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test("failed final build verification restores the previous complete integration", async t => {
+  const root = await mkdtemp(join(tmpdir(), "pi-build-rollback-"));
+  const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
+  const prior = verifyPiIntegration(dir);
+  const read = fs.readFileSync;
+  let failed = false;
+  const fault = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+    if (String(args[0]) === join(dir, "manifest.json") && !failed) { failed = true; throw new Error("final verification I/O failure"); }
+    return read(...args);
+  }); syncBuiltinESMExports();
+  try { await assert.rejects(buildPiExtension(join(dir, "extension.js")), /final verification I\/O failure/); }
+  finally { fault.mock.restore(); syncBuiltinESMExports(); }
+  try { assert.equal(failed, true); assert.deepEqual(verifyPiIntegration(dir), prior); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("configured and explicit non-.js targets are rejected before touching the destination", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-suffix-"));
@@ -97,19 +164,20 @@ test("different process builds cannot interleave integration publication", { tim
       await appendFile(join(source, file), `\nexport const buildRaceTag = ${JSON.stringify(tag)};\n`);
     }
   }
-  // Pause A after its first public rename; B must wait even after compilation finishes.
+  // Pause A after its directory swap; B must wait until A verifies the complete set.
   const program = `
-    import { syncBuiltinESMExports } from 'node:module';
+    import { createRequire, syncBuiltinESMExports } from 'node:module';
     import fs from 'node:fs';
     import promises from 'node:fs/promises';
     const [tag, output, release, builder] = process.argv.slice(1);
+    const require = createRequire(import.meta.url);
     const writeFile = promises.writeFile;
     promises.writeFile = async (...args) => {
       await writeFile(...args);
       if (String(args[0]).endsWith('/manifest.json')) console.log('compiled');
     };
     const published = to => {
-      if (!String(to).endsWith('/extension.js')) return;
+      if (!String(to).endsWith('/integration')) return;
       fs.writeSync(1, 'publishing\\n');
       if (tag === 'A') {
         const deadline = Date.now() + 10000;
@@ -119,10 +187,11 @@ test("different process builds cannot interleave integration publication", { tim
         }
       }
     };
-    const renameSync = fs.renameSync;
-    fs.renameSync = (from, to) => { renameSync(from, to); published(to); };
-    const rename = promises.rename;
-    promises.rename = async (from, to) => { await rename(from, to); published(to); };
+    const addon = ${JSON.stringify(ensureNativeStateLockAddon())};
+    const native = require(addon);
+    require.cache[addon].exports = Object.create(native, { exchangePaths: { value: (from, to) => {
+      native.exchangePaths(from, to); published(to);
+    }}});
     syncBuiltinESMExports();
     const { buildPiExtension } = await import(builder);
     await buildPiExtension(output);
@@ -149,6 +218,7 @@ test("different process builds cannot interleave integration publication", { tim
   };
   try {
     await waitFor(first, "publishing");
+    verifyPiIntegration(join(dir, "integration"));
     second = launch("B"); await waitFor(second, "compiled");
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(second.lines.includes("publishing"), false, "B cannot publish while A holds the output lock");

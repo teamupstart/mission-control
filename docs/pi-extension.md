@@ -9,7 +9,11 @@ Start a fresh Pi session after installation or repair so it loads the current ex
 `extension.js`, `mcp-server.mjs`, and `manifest.json`. Building installs nothing.
 Concurrent builds serialize artifact publication using a process-identity lock beside the
 canonical output directory, including when callers use different symlink aliases. Each build
-verifies the final manifest and both artifacts before releasing the lock and reporting success.
+atomically exchanges the complete staged directory, retaining the previous directory until
+the final manifest and both artifacts verify. Verification failure swaps the prior directory
+back; a failed rollback retains it at the reported staging path. The builder releases the lock
+only after that transaction. It uses the native filesystem addon built by `npm run build:native`,
+which runs first in `npm run build`.
 Setup, the configuration API, the installed CLI and enabled daemon startup all use the same
 publisher. Source development uses that contract too.
 

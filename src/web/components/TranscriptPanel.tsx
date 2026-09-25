@@ -201,20 +201,30 @@ function useSteerReceipts(
  * log then pins a pill to its bottom edge instead. Observed rather than computed from
  * scroll offsets, because a row's height changes with wrapping and nothing else here needs
  * to know it.
+ *
+ * Follows the rendered ELEMENTS, not the ids. A row keeps its id when React replaces its
+ * element - a `sending` row becoming the steered row, or the conversation switching drawing -
+ * and an observer keyed on ids would go on watching a detached node. So after every render
+ * the current elements are looked up (a handful of attribute queries) and the observer is
+ * rebuilt only when they differ from the ones it watches.
  */
 function useOffscreenInFlight(
   logRef: React.RefObject<HTMLDivElement | null>,
   ids: readonly string[],
 ): boolean {
   const [offscreen, setOffscreen] = useState(false);
-  const key = ids.join("\n");
+  const watching = useRef<{ observer: IntersectionObserver; rows: Element[] } | null>(null);
   useEffect(() => {
     const root = logRef.current;
-    const rows = key && root
-      ? key.split("\n")
+    const rows = root
+      ? ids
         .map((id) => root.querySelector(`[data-in-flight="${CSS.escape(id)}"]`))
         .filter((row): row is Element => row !== null)
       : [];
+    const current = watching.current;
+    if (current && current.rows.length === rows.length && current.rows.every((row, i) => row === rows[i])) return;
+    current?.observer.disconnect();
+    watching.current = null;
     if (!root || rows.length === 0 || typeof IntersectionObserver === "undefined") {
       setOffscreen(false);
       return;
@@ -228,8 +238,9 @@ function useOffscreenInFlight(
       setOffscreen(visible.size === 0);
     }, { root });
     for (const row of rows) observer.observe(row);
-    return () => observer.disconnect();
-  }, [logRef, key]);
+    watching.current = { observer, rows };
+  });
+  useEffect(() => () => watching.current?.observer.disconnect(), []);
   return offscreen;
 }
 

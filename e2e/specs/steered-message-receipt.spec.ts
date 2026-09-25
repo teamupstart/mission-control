@@ -186,3 +186,25 @@ test("Jump to it brings the steer into view when queued turns below it fill the 
   await expect(steered).toBeInViewport();
   await expect(pill).toHaveCount(0);
 });
+
+test("the pill follows the steer's row when the conversation redraws it", async ({ dashboard, daemon }) => {
+  test.setTimeout(120000);
+  const { card, log } = await steerIntoHeldTurn(dashboard, daemon, "follow a redrawn steer");
+  const steered = card.locator(".pending-turn").filter({ hasText: STEER });
+  await expect(steered.getByRole("status")).toHaveText("steered · waiting for claude to read it");
+  await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect(steered).toBeInViewport();
+  const pill = card.getByRole("button", { name: /^Steered \d:\d\d/ });
+  await expect(pill).toHaveCount(0);
+  // Switching drawing replaces the row's element while its id stays the same. The pill must
+  // follow the new element, which is still in view, rather than the detached old one.
+  await card.getByRole("button", { name: "Terminal view" }).click();
+  await expect(card.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect(steered).toBeInViewport();
+  await dashboard.waitForTimeout(500);
+  expect(await pill.count(), "no pill while the steer is in view").toBe(0);
+  // And it still works on the new element: scrolled away, the pill appears.
+  await log.evaluate((el) => { el.scrollTop = 0; });
+  await expect(pill).toBeVisible();
+});

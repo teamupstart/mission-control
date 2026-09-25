@@ -134,9 +134,15 @@ export async function inspectWorktreeOccupancy(
       return result;
     }
     const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
+    // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
+    // process caught mid-exit - its cwd already released, so the cwd reader omits it - is
+    // listed again as a zombie with the same start time. A zombie holds no cwd and cannot
+    // occupy anything; counting it as alive turned every busy moment of this daemon's own Git
+    // reads into unknown occupancy and a refused cleanup.
+    const confirmedScope = new Set(confirmation.cwdScopePids);
     unresolved = unresolved.filter((process) => {
       const current = confirmed.get(process.pid);
-      return current?.startRaw === process.startRaw;
+      return current?.startRaw === process.startRaw && confirmedScope.has(process.pid);
     });
   }
   if (unresolved.length > 0) {

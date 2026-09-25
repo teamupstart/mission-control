@@ -236,3 +236,42 @@ test("an oversized occupancy request fails closed without spawning system reads"
     reason: "occupancy query exceeds 256 paths",
   });
 });
+
+test("an omitted PID that the fresh snapshot shows exiting as a zombie is not left unresolved", async () => {
+  // Caught mid-exit: ps lists it, its cwd is already gone so the cwd reader omits it, and the
+  // confirming ps lists it again - same start time, now a zombie and therefore out of scope.
+  const { one } = fixture();
+  let processReads = 0;
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => {
+      processReads++;
+      return {
+        processes: [process(10), process(20)],
+        unknownReason: null,
+        cwdScopePids: processReads === 1 ? [10, 20] : [10],
+        completedCollectorPids: [],
+      };
+    },
+    readCwds: async () => ({ cwds: new Map([[10, one]]), unknownReason: null }),
+  });
+  assert.equal(processReads, 2);
+  const occupancy = result.get(one);
+  assert.equal(occupancy?.status, "known");
+  if (occupancy?.status === "known") {
+    assert.deepEqual(occupancy.occupants.map((entry) => entry.pid), [10]);
+  }
+});
+
+test("an omitted PID that is still live and in scope keeps occupancy unknown", async () => {
+  const { one } = fixture();
+  const result = await inspectWorktreeOccupancy([one], {
+    listProcesses: async () => ({
+      processes: [process(10), process(20)],
+      unknownReason: null,
+      cwdScopePids: [10, 20],
+      completedCollectorPids: [],
+    }),
+    readCwds: async () => ({ cwds: new Map([[10, one]]), unknownReason: null }),
+  });
+  assert.deepEqual(result.get(one), { status: "unknown", reason: "cwd listing omitted 1 ps-listed PID: 20" });
+});

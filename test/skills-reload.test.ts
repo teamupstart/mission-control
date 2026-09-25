@@ -60,7 +60,7 @@ function mkSession(over: Partial<Session> = {}): Session {
 
 /** A generation that moved at NOW - 100_000, i.e. before every default session. */
 function mkCfg(over: Partial<SkillsConfig> = {}): SkillsConfig {
-  return { enabled: true, skills: {}, generation: 3, generationAt: NOW - 100_000, ...over };
+  return { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: NOW - 100_000, ...over };
 }
 
 const acks = (m: Record<string, number> = {}): Map<string, number> => new Map(Object.entries(m));

@@ -56,7 +56,7 @@ const CATALOG: Catalog = {
 };
 
 function mkCfg(over: Partial<SkillsConfig> = {}): SkillsConfig {
-  return { enabled: true, skills: {}, generation: 0, generationAt: 0, ...over };
+  return { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0, ...over };
 }
 
 beforeEach(() => {

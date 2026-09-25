@@ -2135,14 +2135,14 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * have been told about it. Same partial-patch shape as ForemanConfig, over the same
  * `app_config` KV, so a new key needs no migration.
  *
- * Ships with the master switch OFF and nothing enabled: this writes into the
- * operator's global claude config and changes what the model does in every session
- * on the machine, including ones the harness never launched. That is the point of
- * the feature, and it is also why it is never on by default.
+ * An absent Skills record is initialized by the daemon with both switches on.
+ * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
+  /** Missing row overrides use this policy. Legacy stored rows default to off. */
+  defaultSkillEnabled: z.boolean().default(false),
   /** Catalog id -> enabled. Ids absent from the catalog are ignored, not an error. */
   skills: z.record(z.boolean()).default({}),
   /**

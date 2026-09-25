@@ -52,13 +52,19 @@ switch it on, and it applies to **every** session on this machine whose harness 
 skills directory - including sessions this app never launched. How a running session notices
 the change depends on its harness.
 
+On an installation with no saved Skills settings, the master switch and every valid shipped
+skill start on. Mission Control saves that default when the daemon starts. A saved master-off
+choice or per-skill off choice stays off across restarts and updates. New valid catalog skills
+follow the default-on policy unless explicitly disabled. A stored configuration from an older
+build keeps its original sparse-map meaning: rows it never enabled stay off.
+
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
 Claude, `~/.agents/skills` for Codex, and `~/.pi/agent/skills` for Pi - which is that
 agent's own loading path; the harness never reimplements it.
 
-The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
+The **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. GitHub Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
 than left to model selection. Its reviewer-ready description contract has two sections: a
@@ -69,7 +75,7 @@ handled failure modes. It does not inventory changed tests or repeat design deta
 covered by the linked documents. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
-The opt-in **Retro** row carries the retrospective procedure: read a finished session back
+The **Retro** row carries the retrospective procedure: read a finished session back
 from its transcript, propose at most three durable memories, have each one approved, edited,
 or rejected, and commit the approved ones into the target repository's
 [`.agents/memory`](repository-memory.md). It is what the retro request delivers into a session,
@@ -81,7 +87,7 @@ than merely describing it. A post-merge follow-up also requires the **Pull Reque
 approved changes can open their own review. Switch both on for that path. The procedure lives in
 [`skills/retro/SKILL.md`](../skills/retro/SKILL.md).
 
-The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
+The **Phased Plan** row investigates an approved plan against the repository, writes
 merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
 phase. It estimates total non-test implementation effort and complexity before choosing the fewest
 viable phases. Work estimated at 200 implementation lines or fewer becomes one phase and one
@@ -114,7 +120,7 @@ backlog while the skills are off and dispatch cleanly once they are on. A pointe
 that is not installed points at nothing, and an agent left to improvise a plan looks exactly
 like one that followed a procedure.
 
-The opt-in **HTML Report** row applies to the other half of the work - the sessions that are
+The **HTML Report** row applies to the other half of the work - the sessions that are
 asked to find something out rather than to change something. An investigation, scout, audit or
 research answer is written as one self-contained page at `docs/reports/<slug>/report.html` and
 the session logs its checkout-relative path, which the conversation turns into a link that opens
@@ -123,7 +129,7 @@ purpose: the Files preview is a sandboxed iframe that runs only its own two brid
 report that built itself at runtime would be blank in the one place it is most likely to be read.
 The contract lives in [`skills/html-report/SKILL.md`](../skills/html-report/SKILL.md).
 
-This row is opt-in and a **scout task does not depend on it**. A scout is told to write and
+This row can be switched off and a **scout task does not depend on it**. A scout is told to write and
 submit its page by its own prompt, composed by the daemon at the moment the task is delivered,
 so the requirement arrives with the global toggle off and with no skills installed at all. The
 skill is how to write a good report; the scout contract is whether one exists, and it is

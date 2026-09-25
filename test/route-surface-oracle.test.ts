@@ -46,6 +46,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { reconcileSkills } = await import("../src/server/skills/config.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
 after(() => {
@@ -259,6 +260,9 @@ const SETUP_PROBES = {
 
 async function surveyRouteSurface(): Promise<Record<string, string>> {
   openDb();
+  // Match daemon startup before asking Settings for its effective default. This
+  // installs only into the test home's isolated skill directories.
+  reconcileSkills();
   // Real managers, not bare stubs. With `{}` in their place a third of the surface answers
   // 500 because a handler reached into the registry and threw, which records the fixture
   // rather than the route. These four construct against the temp home above and leave every

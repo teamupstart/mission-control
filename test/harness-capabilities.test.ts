@@ -408,7 +408,7 @@ test("a newer conflicting metadata read clears an optimistic effort", () => {
 // ---- skills ----
 
 test("a harness with no skills is never owed a reload, however healthy the session", async () => {
-  const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
+  const cfg = { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
   await withCapabilityNull("codex", "skills", () => {
     // Everything else about this session is perfect: a pane, hooks seen, idle, started
     // before the generation. The only reason it is excluded is the capability - which is
@@ -421,7 +421,7 @@ test("a harness with no skills is never owed a reload, however healthy the sessi
 });
 
 test("a harness with skills but NO reload command is owed nothing either", () => {
-  const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
+  const cfg = { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 3, generationAt: 0 };
   const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
   assert.deepEqual(owed, ["codex"]);
   for (const agent of owed) {

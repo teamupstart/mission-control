@@ -137,6 +137,7 @@ const worktreesFields = {
 
 const skillsFields = {
   enabled: "setting",
+  defaultSkillEnabled: "setting",
   skills: "setting",
   generation: "derived",
   generationAt: "derived",

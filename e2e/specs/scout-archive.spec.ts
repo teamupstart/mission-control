@@ -95,9 +95,9 @@ async function disableSkills(daemon: DaemonHandle): Promise<void> {
   const view = (await res.json()) as { enabled: boolean; skills: Array<{ id: string; enabled: boolean }> };
   expect(view.enabled, "skills are globally off for this daemon").toBe(false);
   expect(
-    view.skills.find((skill) => skill.id === "html-report")?.enabled ?? false,
-    "and the HTML Report skill in particular is not what asks for the page",
-  ).toBe(false);
+    view.skills.find((skill) => skill.id === "html-report")?.enabled,
+    "the row's default-on choice remains saved while the master switch is off",
+  ).toBe(true);
 }
 
 async function dispatchScout(page: Page, daemon: DaemonHandle, task: string): Promise<void> {

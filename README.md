@@ -164,6 +164,14 @@ prompt changed.
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
+## Mission Control skills
+
+On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,
+and Pi. Settings → Skills shows the machine-wide selection and lets you switch off the
+whole catalog or individual skills. Existing saved choices stay in force after updates.
+
+Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-session-mixed-reload-behavior).
+
 ## Scouts and the archive
 
 Not every valuable result is a code change. A Scout investigates a question and produces one

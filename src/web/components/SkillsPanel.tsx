@@ -128,6 +128,8 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
   return (
     <section className="settings-section">
       <p className="settings-hint skills-blurb">
+        Shipped skills start enabled on a new installation. You can switch off all of them
+        here or switch off individual rows. {" "}
         Skills switched on here are symlinked into{" "}
         {SKILLED_DIRS.map((dir, i) => (
           <span key={dir}>

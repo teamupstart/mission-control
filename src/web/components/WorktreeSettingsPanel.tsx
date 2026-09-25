@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreesConfigPatch } from "@shared/protocol.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 import type {
   NativeWorktreeSlotView,
   WorktreeActionPreview,
   WorktreeActionRequest,
+  WorktreeOperationView,
   WorktreeRepositoryView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
@@ -29,6 +30,78 @@ function shortSha(value: string | null): string {
 
 function StateChip({ label, tone = "neutral" }: { label: string; tone?: string }): React.JSX.Element {
   return <span className={`wt-chip wt-chip-${tone}`}>{label}</span>;
+}
+
+const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
+  return: "Return",
+  prune: "Prune",
+  reconcile: "Reconcile",
+  destroy: "Destroy",
+  legacyReturn: "Legacy return",
+};
+
+/** One line naming what an accepted cleanup touches: its path, or how many paths. */
+function operationSubject(operation: WorktreeOperationView): string {
+  if (operation.targets.length === 1) return operation.targets[0]!.path;
+  if (operation.targets.length === 0) return "pool";
+  return `${operation.targets.length} worktrees`;
+}
+
+/**
+ * Accepted cleanups that have not finished, and failures nobody has read yet.
+ *
+ * Execute answers as soon as the preview is claimed, so this is where the rest of the work
+ * is reported. A stale preview is the ordinary failure and gets the ordinary remedy: preview
+ * the same request again from current state.
+ */
+function OperationList({
+  operations,
+  onRetry,
+  onDismiss,
+}: {
+  operations: WorktreeOperationView[];
+  onRetry: (operation: WorktreeOperationView, trigger: HTMLButtonElement) => void;
+  onDismiss: (operation: WorktreeOperationView) => void;
+}): React.JSX.Element | null {
+  if (operations.length === 0) return null;
+  const pending = operations.filter((operation) => operation.state !== "failed");
+  const failed = operations.filter((operation) => operation.state === "failed");
+  return (
+    <section className="wt-operations" aria-label="Background cleanup">
+      {pending.length > 0 && (
+        <ul className="wt-operation-list" role="status">
+          {pending.map((operation) => (
+            <li key={operation.id} className="wt-operation">
+              <StateChip label={operation.state === "running" ? "in progress" : "queued"} tone="working" />
+              <span><strong>{ACTION_VERBS[operation.request.action]}</strong> <code>{operationSubject(operation)}</code></span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {failed.length > 0 && (
+        <ul className="wt-operation-list">
+          {failed.map((operation) => (
+            <li key={operation.id} className="wt-operation wt-operation-failed">
+              <StateChip label="failed" tone="danger" />
+              <span>
+                <strong>{ACTION_VERBS[operation.request.action]}</strong> <code>{operationSubject(operation)}</code>
+                {operation.changed ? <em>State changed after this preview.</em> : null}
+                <span className="wt-operation-error">{operation.error}</span>
+              </span>
+              <span className="wt-operation-actions">
+                <Tooltip label="Build a new safety preview for the same request from current state">
+                  <button className="btn btn-secondary" type="button" onClick={(event) => onRetry(operation, event.currentTarget)}>Preview again</button>
+                </Tooltip>
+                <Tooltip label="Hide this failure; nothing was changed by it">
+                  <button className="btn btn-ghost" type="button" onClick={() => onDismiss(operation)}>Dismiss</button>
+                </Tooltip>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 /**
@@ -93,9 +166,16 @@ function CapacityLegend({ geometry }: { geometry: CapacityGeometry }): React.JSX
 
 function SlotCard({
   slot,
+  pending,
+  selected,
+  onSelect,
   onAction,
 }: {
   slot: NativeWorktreeSlotView;
+  /** A queued or running cleanup already covers this slot; no second one may be started. */
+  pending: WorktreeOperationView | null;
+  selected: boolean;
+  onSelect: (slotId: string, selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   const copy = useCopyFeedback({ resetOn: slot.path });
@@ -126,8 +206,23 @@ function SlotCard({
   return (
     <article className={`wt-slot wt-slot-${tone}`} aria-label={`Slot ${slot.ordinal}`}>
       <div className="wt-slot-head">
+        {slot.actions.includes("destroy") && (
+          <Tooltip label={pending ? "A cleanup for this slot is already queued" : "Include this slot in the next bulk destroy preview"}>
+            <input
+              className="wt-slot-select"
+              type="checkbox"
+              aria-label={`Select slot ${slot.ordinal} for bulk destroy`}
+              checked={selected}
+              // A pending slot cannot be newly added, but one already in the selection can
+              // still be unticked: the selection is only ever changed by the operator.
+              disabled={pending !== null && !selected}
+              onChange={(event) => onSelect(slot.id, event.target.checked)}
+            />
+          </Tooltip>
+        )}
         <strong>Slot {slot.ordinal}</strong>
         <StateChip label={slot.state} tone={tone} />
+        {pending && <StateChip label={`${ACTION_VERBS[pending.request.action].toLowerCase()} ${pending.state === "running" ? "in progress" : "queued"}`} tone="working" />}
         {slot.dirty === true && <StateChip label="dirty" tone="danger" />}
         {slot.defaultRelation === "unmerged" && <StateChip label="unlanded" tone="attention" />}
         {slot.processes.state === "unknown" && <StateChip label="processes unknown" tone="danger" />}
@@ -165,14 +260,14 @@ function SlotCard({
         <Tooltip label={terminal?.blurb ?? "No terminal backend is currently available"}>
           <button className="btn btn-ghost" type="button" disabled={!terminal} onClick={() => void openTerminal()}>Open terminal</button>
         </Tooltip>
-        {slot.actions.includes("return") && (
+        {!pending && slot.actions.includes("return") && (
           <Tooltip label="Preview returning this slot through its current task, check, or manual lease owner">
             <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "return", slotId: slot.id }, event.currentTarget)}>
               Return
             </button>
           </Tooltip>
         )}
-        {slot.actions.includes("destroy") && (
+        {!pending && slot.actions.includes("destroy") && (
           <Tooltip label="Preview permanently removing this manager-owned slot">
             <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "destroy", target: { kind: "slot", slotId: slot.id } }, event.currentTarget)}>
               Destroy
@@ -197,11 +292,17 @@ function PoolRow({
   repo,
   overridden,
   updateConfig,
+  pendingBySlot,
+  selected,
+  onSelect,
   onAction,
 }: {
   repo: WorktreeRepositoryView;
   overridden: boolean;
   updateConfig: (patch: WorktreesConfigPatch) => Promise<void>;
+  pendingBySlot: ReadonlyMap<string, WorktreeOperationView>;
+  selected: ReadonlySet<string>;
+  onSelect: (slotIds: string[], selected: boolean) => void;
   onAction: (request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(repo.status !== "ready");
@@ -210,6 +311,8 @@ function PoolRow({
   useEffect(() => setSetup(repo.policy.setupArgv ?? []), [repo.policy.setupArgv]);
   const tone = repo.status === "ready" ? "ready" : repo.status === "attention" ? "attention" : "danger";
   const geometry = capacityGeometry(repo.counts, repo.policy.maxSlots);
+  const selectable = repo.slots.filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id));
+  const allSelected = selectable.length > 0 && selectable.every((slot) => selected.has(slot.id));
 
   function repoPatch(value: NonNullable<WorktreesConfigPatch["repositories"]>[string]): WorktreesConfigPatch {
     return { repositories: { [repo.commonDirectory]: value } };
@@ -305,6 +408,13 @@ function PoolRow({
             <Tooltip label="Preview removing only safe, unused native slots">
               <button className="btn btn-ghost" type="button" onClick={(event) => onAction({ action: "prune", poolId: repo.id, mode: "safe" }, event.currentTarget)}>Preview safe prune</button>
             </Tooltip>
+            {selectable.length > 0 && (
+              <Tooltip label={allSelected ? `Remove every ${repo.name} slot from the bulk destroy selection` : `Add every destroyable ${repo.name} slot to the bulk destroy selection`}>
+                <button className="btn btn-ghost" type="button" onClick={() => onSelect(selectable.map((slot) => slot.id), !allSelected)}>
+                  {allSelected ? "Deselect all slots" : "Select all slots"}
+                </button>
+              </Tooltip>
+            )}
             {repo.slots.length > 0 && (
               <Tooltip label="Preview destroying the fixed set of slots currently in this pool">
                 <button className="btn btn-danger" type="button" onClick={(event) => onAction({ action: "destroy", target: { kind: "pool", poolId: repo.id } }, event.currentTarget)}>Destroy fixed pool set</button>
@@ -313,7 +423,16 @@ function PoolRow({
           </div>
           <div className="wt-slot-scroll" role="region" aria-label={`${repo.name} native slot details`} tabIndex={0}>
             <div className="wt-slots">
-              {repo.slots.slice(0, slotLimit).map((slot) => <SlotCard key={slot.id} slot={slot} onAction={onAction} />)}
+              {repo.slots.slice(0, slotLimit).map((slot) => (
+                <SlotCard
+                  key={slot.id}
+                  slot={slot}
+                  pending={pendingBySlot.get(slot.id) ?? null}
+                  selected={selected.has(slot.id)}
+                  onSelect={(slotId, next) => onSelect([slotId], next)}
+                  onAction={onAction}
+                />
+              ))}
             </div>
           </div>
           {repo.slots.length > slotLimit && (
@@ -339,6 +458,15 @@ function PoolSkeleton(): React.JSX.Element {
       ))}
     </div>
   );
+}
+
+function dialogTitle(request: WorktreeActionRequest): string {
+  if (request.action === "legacyReturn") return "Return legacy worktree";
+  if (request.action === "destroy" && request.target.kind === "slots") {
+    const count = request.target.slotIds.length;
+    return `Destroy ${count} selected ${count === 1 ? "worktree" : "worktrees"}`;
+  }
+  return `${ACTION_VERBS[request.action]} worktree`;
 }
 
 function ActionDialog({
@@ -392,7 +520,7 @@ function ActionDialog({
     <Overlay id={OVERLAY_IDS.worktreeAction} onClose={onClose} className="modal wt-action-modal" role="dialog" ariaLabel={`${preview.request.action} worktree preview`} closable={!busy}>
       <div ref={dialog}>
         <header className="modal-head">
-          <div><span className="wt-eyebrow">Preview first</span><h3>{preview.request.action === "legacyReturn" ? "Return legacy worktree" : `${preview.request.action[0]!.toUpperCase()}${preview.request.action.slice(1)} worktree`}</h3></div>
+          <div><span className="wt-eyebrow">Preview first</span><h3>{dialogTitle(preview.request)}</h3></div>
           <Tooltip label="Close this action preview without changing the worktree">
             <button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Close</button>
           </Tooltip>
@@ -405,7 +533,7 @@ function ActionDialog({
           {preview.consequences.length > 0 && <section><h4>What happens</h4><ul>{preview.consequences.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {preview.requiredAcknowledgements.length > 0 && <fieldset className="wt-acknowledgements"><legend>Required acknowledgements</legend>{preview.risks.filter((item) => item.acknowledgeable).map((item) => <Tooltip key={item.key} label={`Acknowledge this previewed risk: ${item.label}`}><label><input type="checkbox" checked={acks.has(item.key)} onChange={(event) => setAcks((current) => { const next = new Set(current); if (event.target.checked) next.add(item.key); else next.delete(item.key); return next; })} />I understand: {item.label}</label></Tooltip>)}</fieldset>}
         </div>
-        <footer className="modal-foot"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label="Execute this exact preview after every safety check passes"><button className="btn btn-danger" type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Executing…" : "Execute"}</button></Tooltip></footer>
+        <footer className="modal-foot"><Tooltip label="Cancel without changing the worktree"><button className="btn btn-ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button></Tooltip><Tooltip label="Queue this exact preview; it is rechecked against current state and runs in the background"><button className="btn btn-danger" type="button" disabled={busy || changed || !preview.allowed || !acknowledged} onClick={() => onExecute(currentAcks)}>{busy ? "Queueing…" : "Execute"}</button></Tooltip></footer>
       </div>
     </Overlay>
   );
@@ -414,9 +542,40 @@ function ActionDialog({
 const LEGACY_KINDS = ["ownedExact", "identityUnverifiable", "foreign", "unreadable"] as const;
 
 export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): React.JSX.Element {
-  const { inventory, loading, error, preview, previewError, previewChanged, busy } = state;
+  const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const [lastRequest, setLastRequest] = useState<WorktreeActionRequest | null>(null);
+  const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
+  const pendingBySlot = useMemo(() => {
+    const pending = new Map<string, WorktreeOperationView>();
+    for (const operation of operations) {
+      if (operation.state === "failed") continue;
+      for (const target of operation.targets) if (target.provider === "mission") pending.set(target.id, operation);
+    }
+    return pending;
+  }, [operations]);
+  // The selection is exactly what the operator ticked, and it is never narrowed behind their
+  // back. A slot that vanished or picked up a cleanup of its own stays in it and is counted
+  // here, so the bulk preview still names it and the server blocks the changed set; only
+  // Clear selection, unticking, or a successful bulk Execute removes an id.
+  const selected = chosen;
+  const unavailable = useMemo(() => {
+    const destroyable = new Set(inventory?.repositories.flatMap((repo) => repo.slots)
+      .filter((slot) => slot.actions.includes("destroy") && !pendingBySlot.has(slot.id))
+      .map((slot) => slot.id) ?? []);
+    return [...chosen].filter((id) => !destroyable.has(id)).length;
+  }, [chosen, inventory, pendingBySlot]);
+
+  function select(slotIds: string[], next: boolean): void {
+    setChosen((current) => {
+      const updated = new Set(current);
+      for (const id of slotIds) {
+        if (next) updated.add(id);
+        else updated.delete(id);
+      }
+      return updated;
+    });
+  }
   const config = inventory?.config;
   const exactLegacy = inventory?.legacy.items.filter((item) => item.classification === "ownedExact") ?? [];
   const legacyBlocked = inventory?.legacy.items.filter((item) => item.classification !== "ownedExact") ?? [];
@@ -434,12 +593,23 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
     setTrigger(null);
   }
 
+  function execute(acks: WorktreeRiskKey[]): void {
+    const submitted = preview?.request;
+    void state.executePreview(acks).then((ok) => {
+      if (!ok) return;
+      if (submitted?.action === "destroy" && submitted.target.kind === "slots") setChosen(new Set());
+      trigger?.focus();
+      setTrigger(null);
+    });
+  }
+
   return (
     <section className="settings-section wt-settings">
       <p className="settings-hint settings-blurb">
         Mission Control owns these checkouts, and only these. Every cleanup is{" "}
         <strong>previewed and rechecked</strong> against task, check, manual lease, Git, and
-        process ownership before it can mutate a path.
+        process ownership before it can mutate a path. Executed cleanups run in the background,
+        one after another, so you can keep queueing more.
       </p>
 
       {inventory && error && <p className="settings-error">{error}</p>}
@@ -454,6 +624,30 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <button type="button" className="btn btn-ghost" onClick={() => void state.refresh()} disabled={loading}>Refresh</button>
           </Tooltip>
         </div>
+        <OperationList
+          operations={operations}
+          onRetry={(operation, source) => {
+            void state.dismissOperation(operation.id);
+            request(operation.request, source);
+          }}
+          onDismiss={(operation) => void state.dismissOperation(operation.id)}
+        />
+        {selected.size > 0 && (
+          <div className="wt-bulk-bar" role="region" aria-label="Bulk destroy selection">
+            <span>
+              <strong>{selected.size}</strong> {selected.size === 1 ? "slot" : "slots"} selected
+              {unavailable > 0 && <em className="wt-bulk-changed">{unavailable} no longer available</em>}
+            </span>
+            <Tooltip label="Preview destroying exactly the selected slots as one fixed set">
+              <button className="btn btn-danger" type="button" onClick={(event) => request({ action: "destroy", target: { kind: "slots", slotIds: [...selected] } }, event.currentTarget)}>
+                Destroy selected
+              </button>
+            </Tooltip>
+            <Tooltip label="Clear the bulk destroy selection without changing any worktree">
+              <button className="btn btn-ghost" type="button" onClick={() => setChosen(new Set())}>Clear selection</button>
+            </Tooltip>
+          </div>
+        )}
         {!inventory && error && (
           <div className="wt-state wt-state-unavailable">
             <p><strong>Pool capacity could not be observed.</strong> {error}</p>
@@ -471,7 +665,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
             <p><strong>No pools yet.</strong> Mission Control creates one the first time something needs a checkout in a repository.</p>
           </div>
         )}
-        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} onAction={request} />)}</div>
+        <div className="wt-pools">{inventory?.repositories.map((repo) => <PoolRow key={repo.id} repo={repo} overridden={Boolean(inventory.config.repositories[repo.commonDirectory])} updateConfig={state.updateConfig} pendingBySlot={pendingBySlot} selected={selected} onSelect={select} onAction={request} />)}</div>
       </section>
 
       <section className="wt-group" data-anchor="worktrees/policy">
@@ -544,7 +738,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
         </div>
       </section>
 
-      {preview && <ActionDialog preview={preview} error={previewError} changed={previewChanged} busy={busy} onClose={close} onExecute={(acks) => void state.executePreview(acks).then((ok) => { if (ok) { trigger?.focus(); setTrigger(null); } })} onRefresh={() => { if (lastRequest) void state.requestPreview(lastRequest); }} />}
+      {preview && <ActionDialog preview={preview} error={previewError} changed={previewChanged} busy={busy} onClose={close} onExecute={execute} onRefresh={() => { if (lastRequest) void state.requestPreview(lastRequest); }} />}
       {!preview && busy && <p className="wt-preview-loading" role="status">Building a fresh safety preview…</p>}
       {!preview && previewError && <p className="settings-error">{previewError}</p>}
     </section>

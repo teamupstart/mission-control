@@ -150,11 +150,28 @@ this order:
   exact durable owner with a clean, process-free checkout offers Return.
 
 All mutations begin with a server preview. The dialog lists the fixed paths, owners, disk estimate,
-risks, blockers, and consequences. Dirty or unlanded exact targets require an explicit
-acknowledgement. Execution consumes the short-lived token once and observes the lease, task or
-check owner, processes, Git state, and slot version again. A changed target fact or affected set
-refuses with a stale preview message. Process churn in unrelated slots and inventory reconciliation
-timestamps do not invalidate an unchanged target. Unknown process occupancy is never acknowledgeable.
+risks, blockers, and consequences. The disk estimate has a short budget: a warm slot with its
+dependency install can take seconds to measure, so a preview measures at most four paths at a
+time within one budget for the whole set, and any path it could not measure in time reads
+"size unknown" instead of holding the dialog. Dirty or unlanded exact targets require an explicit
+acknowledgement.
+
+**Execute runs in the background.** The daemon answers as soon as it has consumed the
+short-lived token and checked that it is still allowed and that the acknowledgements are exactly
+the ones the preview asked for. The dialog then closes, and the rest of the work goes into one
+ordered queue: it observes the lease, task or check owner, processes, Git state, and slot version
+again, then mutates. You can keep previewing and executing while earlier cleanups finish. Queued
+and running cleanups are listed above the pools, and each affected slot shows the pending action
+and offers no second one. A path that already has a cleanup queued cannot be executed again until
+that one finishes. At most 64 cleanups may be queued or running at once; beyond that, Execute
+says so and leaves the preview open, so it can be executed again once earlier cleanups finish.
+
+A changed target fact or affected set refuses with a stale preview message. Because the recheck
+runs after Execute has answered, that refusal appears in the same list above the pools, with
+**Preview again** to build a new preview of the same request from current state, and **Dismiss**.
+A failure changes nothing on disk. Process churn in unrelated slots and inventory reconciliation
+timestamps do not invalidate an unchanged target. Unknown process occupancy is never
+acknowledgeable.
 
 The operations have deliberately narrow meanings:
 
@@ -170,8 +187,14 @@ The operations have deliberately narrow meanings:
   maximum.
 - **Reconcile** re-observes durable state, Git registration, ownership, and processes. It repairs
   only states whose result is positively proven and keeps uncertainty quarantined.
-- **Destroy** removes one exact manager-owned slot or the fixed slot set enumerated for one pool.
-  It may discard dirty or unlanded work only after those risks are acknowledged. It has no target
+- **Destroy** removes one exact manager-owned slot, the fixed slot set enumerated for one pool, or
+  a bulk selection. Each destroyable slot has a checkbox, and a pool's **Select all slots** adds
+  every destroyable slot in it; the selection may span pools. **Destroy selected** previews exactly
+  the ticked slots as one fixed set, so one Execute queues the whole cleanup. The selection is
+  exactly what you ticked and is never narrowed for you: a selected slot that has since
+  disappeared stays in it, the selection bar counts it as no longer available, and the preview
+  names it and is blocked until you clear or change the selection.
+  Destroy may discard dirty or unlanded work only after those risks are acknowledged. It has no target
   meaning every pool and cannot override unknown identity, ownership, registration, or process
   state.
 - **Return legacy lease** delegates to the task or check owner and then the conditional Treehouse

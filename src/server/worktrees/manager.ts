@@ -163,6 +163,23 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   poolsDirectory: WORKTREE_POOLS_DIR,
 };
 
+const SLOT_OBSERVATION_CONCURRENCY = 8;
+
+/** Maps with at most `limit` callbacks in flight, keeping the input order in the output. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
+  const output: R[] = Array.from({ length: items.length });
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      output[index] = await map(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return output;
+}
+
 function bounded(value: string): string {
   return Buffer.from(value, "utf8").subarray(0, MAX_ERROR_BYTES).toString("utf8");
 }
@@ -1156,7 +1173,9 @@ export class WorktreeManager {
   async status(): Promise<NativePoolStatus[]> {
     const pools = this.store.pools();
     const allSlots = this.store.slots();
-    const occupancy = await this.occupancy(
+    // One system-wide process read, overlapped with the per-pool Git reads below instead of
+    // run ahead of them: it is the single slowest observation on a loaded machine.
+    const occupancyRead = this.occupancy(
       allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path),
     );
     const output: NativePoolStatus[] = [];
@@ -1172,18 +1191,16 @@ export class WorktreeManager {
       let listed: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
       let observedDefaultSha: string | null = null;
       if (identityValid && identity) {
-        try {
-          listed = await this.deps.git.list(identity);
-        } catch {
-          listed = null;
-        }
-        try {
-          const observed = await this.deps.git.observedDefaultSha(identity);
-          if (observed.ok) observedDefaultSha = observed.value;
-        } catch {}
+        const [registrations, observed] = await Promise.all([
+          (async () => this.deps.git.list(identity))().catch(() => null),
+          (async () => this.deps.git.observedDefaultSha(identity))().catch(() => null),
+        ]);
+        listed = registrations;
+        if (observed?.ok) observedDefaultSha = observed.value;
       }
-      const slots: NativeSlotStatus[] = [];
-      for (const slot of allSlots.filter((candidate) => candidate.poolId === pool.id)) {
+      // Each slot's reads are independent Git processes, so a pool of sixteen slots is
+      // observed concurrently rather than as sixteen serial waits. Order is preserved.
+      const slots = await mapBounded(allSlots.filter((candidate) => candidate.poolId === pool.id), SLOT_OBSERVATION_CONCURRENCY, async (slot): Promise<NativeSlotStatus> => {
         let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
         if (existsSync(slot.path)) {
           try {
@@ -1215,7 +1232,7 @@ export class WorktreeManager {
             if (merged.ok) mergedIntoDefault = merged.value;
           } catch {}
         }
-        slots.push({
+        return {
           slot,
           nativePath,
           registered: listed?.ok === true
@@ -1228,11 +1245,11 @@ export class WorktreeManager {
             : null,
           observedHead: inspection?.ok === true ? inspection.value.head : null,
           dirty: inspection?.ok === true ? inspection.value.dirty : null,
-          occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
+          occupancy: (await occupancyRead).get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,
-        });
-      }
+        };
+      });
       output.push({
         pool,
         policy: this.deps.resolvePolicy(pool.gitCommonDirectory),
@@ -1242,6 +1259,8 @@ export class WorktreeManager {
         slots,
       });
     }
+    // A machine with no slots never awaited the read above; settle it here, not as a stray.
+    await occupancyRead;
     return output;
   }
 

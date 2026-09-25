@@ -7,6 +7,10 @@ export const WORKTREE_INVENTORY_LIMITS = {
   legacyItems: 256,
   textBytes: 2048,
   previewTokens: 128,
+  /** One bulk destroy selection. Matches one pool's slot bound; a selection may span pools. */
+  bulkSlots: 128,
+  /** Queued, running, and unacknowledged failed background operations kept for display. */
+  operations: 64,
 } as const;
 
 export type WorktreeRiskKey =
@@ -113,6 +117,8 @@ export interface WorktreeInventory {
   revision: string;
   repositories: WorktreeRepositoryView[];
   legacy: LegacyWorktreeInventory;
+  /** Executed previews still queued or running in the background, and failures not yet dismissed. */
+  operations: WorktreeOperationView[];
 }
 
 export type WorktreeActionRequest =
@@ -121,7 +127,10 @@ export type WorktreeActionRequest =
   | { action: "reconcile"; poolId: string }
   | {
       action: "destroy";
-      target: { kind: "slot"; slotId: string } | { kind: "pool"; poolId: string };
+      target:
+        | { kind: "slot"; slotId: string }
+        | { kind: "slots"; slotIds: string[] }
+        | { kind: "pool"; poolId: string };
     }
   | {
       action: "legacyReturn";
@@ -167,6 +176,28 @@ export interface WorktreeActionExecuteResult {
   ok: true;
   action: WorktreeActionRequest["action"];
   message: string;
+}
+
+/**
+ * An accepted Execute. The token and acknowledgements were checked before the daemon
+ * answered; the safety recheck and the mutation run afterwards, in order, in the background.
+ */
+export interface WorktreeActionSubmitResult {
+  ok: true;
+  operation: WorktreeOperationView;
+}
+
+export interface WorktreeOperationView {
+  id: string;
+  request: WorktreeActionRequest;
+  state: "queued" | "running" | "failed";
+  /** The exact paths the accepted preview showed. Pending ones are withheld from new actions. */
+  targets: Array<{ provider: WorktreeActionAffected["provider"]; id: string; path: string }>;
+  error: string | null;
+  /** The failure was a stale preview: state moved after it was shown, so preview again. */
+  changed: boolean;
+  queuedAt: number;
+  finishedAt: number | null;
 }
 
 export interface OpenWorktreeRequest {

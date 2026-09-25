@@ -2,6 +2,7 @@ import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
+import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
@@ -2712,6 +2713,12 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
       action: z.literal("destroy"),
       target: z.discriminatedUnion("kind", [
         z.object({ kind: z.literal("slot"), slotId: WorktreeStableIdSchema }).strict(),
+        z
+          .object({
+            kind: z.literal("slots"),
+            slotIds: z.array(WorktreeStableIdSchema).min(1).max(WORKTREE_INVENTORY_LIMITS.bulkSlots),
+          })
+          .strict(),
         z.object({ kind: z.literal("pool"), poolId: WorktreeStableIdSchema }).strict(),
       ]),
     })

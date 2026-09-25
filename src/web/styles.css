@@ -786,6 +786,71 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-chip-attention { border-color: color-mix(in oklab, var(--wt-attention) 34%, var(--border)); color: var(--wt-attention); background: color-mix(in oklab, var(--wt-attention) 9%, transparent); }
 .wt-chip-danger { border-color: color-mix(in oklab, var(--wt-danger) 34%, var(--border)); color: var(--wt-danger); background: color-mix(in oklab, var(--wt-danger) 9%, transparent); }
 
+/* ---- Background cleanup and bulk selection ----
+   Execute answers once the preview is claimed; what is still queued or running, and what
+   failed, is listed above the pools it belongs to. The bulk bar only exists while a
+   selection does. */
+.wt-operations {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.wt-operation-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wt-operation {
+  align-items: center;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 9px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.wt-operation code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wt-operation-failed { border-left-color: var(--wt-danger); }
+.wt-operation-failed > span:nth-child(2) { display: grid; flex: 1 1 240px; gap: 2px; min-width: 0; }
+.wt-operation-failed em { color: var(--wt-attention); font-style: normal; font-weight: 600; }
+.wt-operation-error { color: var(--muted); overflow-wrap: anywhere; }
+.wt-operation-actions { display: flex; gap: 6px; margin-left: auto; }
+
+.wt-bulk-bar {
+  align-items: center;
+  background: color-mix(in oklab, var(--wt-danger) 7%, var(--bg-2));
+  border: 1px solid color-mix(in oklab, var(--wt-danger) 32%, var(--border));
+  border-radius: 9px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.wt-bulk-bar > span { color: var(--muted); font-size: 11.5px; margin-right: auto; }
+.wt-bulk-bar strong { color: var(--fg); }
+.wt-bulk-changed { color: var(--wt-attention); font-style: normal; font-weight: 600; margin-left: 8px; }
+
+.wt-slot-select { margin: 0; }
+
 /* ---- Pool disclosure: overrides, maintenance, and bounded slot detail ---- */
 .wt-pool-detail {
   border-top: 1px solid var(--border);

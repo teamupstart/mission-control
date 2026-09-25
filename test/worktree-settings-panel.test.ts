@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorktreeSettingsPanel } from "../src/web/components/WorktreeSettingsPanel.tsx";
 import { capacityGeometry } from "../src/web/lib/worktree-capacity.ts";
-import type { WorktreeInventory, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
+import type { WorktreeInventory, WorktreeOperationView, WorktreeRepositoryView } from "../src/shared/worktrees.ts";
 import type { WorktreesState } from "../src/web/useWorktrees.ts";
 
 const noop = async () => {};
@@ -69,6 +69,7 @@ const inventory: WorktreeInventory = {
   observedAt: 1,
   revision: "a".repeat(64),
   repositories: [overCapacityPool, roomToGrowPool],
+  operations: [],
   legacy: {
     capability: { kind: "diagnostic-only", version: "2.0.0", diagnostic: "conditional cleanup requires v2.1.1 or newer" },
     totals: { ownedExact: 0, identityUnverifiable: 1, foreign: 0, unreadable: 0 },
@@ -97,11 +98,13 @@ const state: WorktreesState = {
   previewError: null,
   previewChanged: false,
   busy: false,
+  operations: [],
   refresh: noop,
   updateConfig: noop,
   requestPreview: noop,
   executePreview: async () => true,
   discardPreview: () => {},
+  dismissOperation: noop,
 };
 
 function render(next: Partial<WorktreesState> = {}): string {
@@ -291,4 +294,53 @@ test("Treehouse states its classification counts only when at least one is non-z
   });
   assert.match(drained, /Nothing left to drain\./);
   assert.doesNotMatch(drained, /wt-legacy-totals/);
+});
+
+const queuedDestroy: WorktreeOperationView = {
+  id: "op-1",
+  request: { action: "destroy", target: { kind: "slot", slotId: "slot-1" } },
+  state: "queued",
+  targets: [{ provider: "mission", id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
+  error: null,
+  changed: false,
+  queuedAt: 1,
+  finishedAt: null,
+};
+
+test("a destroyable slot offers a bulk selection checkbox and no bulk bar until one is ticked", () => {
+  const html = render();
+  assert.match(html, /aria-label="Select slot 1 for bulk destroy"/);
+  assert.match(html, />Select all slots</);
+  assert.doesNotMatch(html, /Bulk destroy selection/);
+  assert.doesNotMatch(html, /Background cleanup/);
+});
+
+test("a slot with a queued cleanup says so and offers no second action", () => {
+  const html = render({ operations: [queuedDestroy] });
+  assert.match(html, /aria-label="Background cleanup"/);
+  assert.match(html, /role="status"/);
+  assert.match(html, /destroy queued/);
+  assert.match(html, /<input[^>]*aria-label="Select slot 1 for bulk destroy"[^>]*disabled/);
+  // Neither Return nor Destroy is offered while the slot's own cleanup is pending.
+  assert.doesNotMatch(html, /Preview permanently removing this manager-owned slot/);
+  assert.doesNotMatch(html, /Preview returning this slot/);
+  // The pool's "Select all" has nothing left it could add.
+  assert.doesNotMatch(html, />Select all slots</);
+});
+
+test("a failed background cleanup explains a stale preview and offers to preview again", () => {
+  const html = render({
+    operations: [{
+      ...queuedDestroy,
+      state: "failed",
+      changed: true,
+      error: "worktree state changed after preview; refresh before executing",
+      finishedAt: 2,
+    }],
+  });
+  assert.match(html, /State changed after this preview\./);
+  assert.match(html, />Preview again</);
+  assert.match(html, />Dismiss</);
+  // A failure leaves the slot actionable again.
+  assert.match(html, /Preview permanently removing this manager-owned slot/);
 });

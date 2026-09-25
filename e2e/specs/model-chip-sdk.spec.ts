@@ -10,7 +10,7 @@ test.use({ actionTimeout: 15_000, daemonEnv: {
   MC_E2E_CODEX_EFFORT: "medium",
   MC_E2E_CODEX_HELD_TURN_MS: "14000",
   MISSION_RUNTIME_META_POLL_MS: "400",
-  MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js"),
+  MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js"),
 } });
 
 const cases = [

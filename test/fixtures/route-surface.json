@@ -233,6 +233,7 @@
   "POST /api/tasks/:id/push": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"sourceId\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/tasks/:id/reclaim": "404 {\"error\":\"no such task\",\"ok\":false}",
   "POST /api/tasks/:id/reorder": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_union_discriminator\\\",\\n    \\\"options\\\": [\\n      \\\"top\\\",\\n      \\\"bottom\\\",\\n      \\\"before\\\",\\n      \\\"after\\\"\\n    ],\\n    \\\"path\\\": [\\n      \\\"position\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid discriminator value. Expected 'top' | 'bottom' | 'before' | 'after'\\\"\\n  }\\n]\"}",
+  "POST /api/tasks/:id/requeue": "404 {\"error\":\"no such task\",\"ok\":false}",
   "POST /api/tasks/:id/reschedule": "404 {\"error\":\"no such task\",\"ok\":false}",
   "POST /api/tasks/:id/update": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty task update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
   "POST /api/tasks/bulk-delete": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"array\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"taskIds\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",

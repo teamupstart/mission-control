@@ -74,7 +74,8 @@ test("Pi terminal interrupts reach the conversation from the dashboard and direc
       if (turn === 1) {
         // Provider bytes must reach Pi before the interrupt, otherwise it is an empty abort.
         await expect.poll(() => execFileSync("tmux", ["capture-pane", "-p", "-t", session], { encoding: "utf8" })).toContain("Pi terminal partial response");
-        await detail.getByRole("button", { name: /^interrupt\b/ }).click();
+        // The footer has no interrupt button; ⌃C on the selected session is the control.
+        await dashboard.keyboard.press("Control+c");
       } else {
         execFileSync("tmux", ["send-keys", "-t", session, "Escape"]);
       }

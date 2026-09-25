@@ -611,7 +611,8 @@ tells you the exact resume command to run yourself.
 
 ### Interrupt: stop the turn without ending the session
 
-<kbd>⌃</kbd><kbd>C</kbd>, or the **Interrupt** button beside Kill. It stops what the agent is
+<kbd>⌃</kbd><kbd>C</kbd> in the session detail. It has no button in the footer, so the chord
+is the whole control; rebind it under **Settings → Keyboard**. It stops what the agent is
 doing right now, drops every message still queued behind it, and puts the cursor in that
 session's composer so the replacement instruction can be typed immediately.
 
@@ -671,8 +672,8 @@ that is a half-written draft in the composer or a transcript line, a diff hunk o
 terminal output you have dragged across. With nothing selected, it stops the agent. Like
 every other shortcut it is rebindable in **Settings → Keyboard**.
 
-The button is disabled when there is nothing to stop - an idle agent - and the tooltip says
-which of the two reasons applies.
+With nothing to stop - an idle agent - the chord does nothing, and the session keeps
+everything it had.
 
 ### What each agent can do is declared, not assumed
 

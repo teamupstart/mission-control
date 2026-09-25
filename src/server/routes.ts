@@ -84,6 +84,7 @@ import {
   PendingTurnDeliverSchema,
   ReattachQueueSchema,
   ReorderTaskSchema,
+  RequeueTaskSchema,
   RescheduleTaskSchema,
   RenameSchema,
   ReorderQueueSchema,
@@ -7942,6 +7943,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, RescheduleTaskSchema);
     if (!parsed.ok) return parsed.res;
     const r = await tasks.reschedule(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // Send a dispatched task back to the backlog from its own session: a live one is cancelled
+  // first, a stopped one is re-filed as it stands. The same status mapping as reschedule, so
+  // a done task, a chat task, or a Pipeline commission is a 409 the operator can read.
+  app.post("/api/tasks/:id/requeue", async (c) => {
+    const parsed = await parseBody(c, RequeueTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.requeue(c.req.param("id"));
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 

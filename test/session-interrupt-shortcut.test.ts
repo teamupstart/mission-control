@@ -216,39 +216,23 @@ function actionBar(session = mkSession({ runtime: "sdk", task: null })): string 
   );
 }
 
-/** The interrupt button's opening tag, so `disabled` can be read off it alone. */
-function interruptButton(html: string): string {
-  const at = html.indexOf("act-interrupt");
-  assert.notEqual(at, -1, `no interrupt control was drawn: ${html}`);
-  return html.slice(html.lastIndexOf("<button", at), html.indexOf(">", at) + 1);
-}
-
-test("a working embedded session gets a live control", () => {
-  const html = actionBar();
-  assert.doesNotMatch(interruptButton(html), /disabled/);
-  assert.match(html, /> interrupt<\/button>/);
+test("the footer draws no interrupt button; the chord is the whole control", () => {
+  // The button came off the footer on purpose. The gesture did not: ⌃C still reaches
+  // `requestInterrupt` through the handle ActionBar registers, which is asserted below.
+  for (const session of [
+    mkSession({ runtime: "sdk", task: null }),
+    mkSession({ runtime: "terminal", task: null }),
+    mkSession({ runtime: "terminal", agent: "pi", task: null }),
+  ]) {
+    const html = actionBar(session);
+    assert.doesNotMatch(html, /act-interrupt/, html);
+    assert.doesNotMatch(html, /> interrupt<\/button>/, html);
+  }
 });
 
-test("a working terminal session gets the same live control, with no component change", () => {
-  // The point of routing the offer through a capability: this component was written once,
-  // for the embedded runtime, and terminal session details lit up when `interrupt.runtimes`
-  // gained `"terminal"`. If this ever needs a runtime test in the component, the capability
-  // has stopped being the single gate.
-  const html = actionBar(mkSession({ runtime: "terminal", task: null }));
-  assert.doesNotMatch(interruptButton(html), /disabled/);
-  assert.match(html, /> interrupt<\/button>/);
-  assert.doesNotMatch(html, /can&#x27;t yet stop/);
-});
-
-test("a pi session gets it too, on the only runtime pi has", () => {
-  const html = actionBar(mkSession({ runtime: "terminal", agent: "pi", task: null }));
-  assert.doesNotMatch(interruptButton(html), /disabled/);
-});
-
-test("an idle session's control says there is nothing to stop, rather than failing on click", () => {
-  const html = actionBar(mkSession({ runtime: "sdk", state: "idle", task: null }));
-  assert.match(interruptButton(html), /disabled/);
-  assert.match(html, /isn&#x27;t running a turn, so there is nothing to stop/);
+test("the registered handle still carries requestInterrupt for the chord", () => {
+  const bar = readFileSync(new URL("../src/web/components/ActionBar.tsx", import.meta.url), "utf8");
+  assert.match(bar, /requestInterrupt: \(\) => void latest\.current\.requestInterrupt\(\)/);
 });
 
 // ---- the transient presentation ---------------------------------------------------

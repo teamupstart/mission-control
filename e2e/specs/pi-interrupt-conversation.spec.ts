@@ -43,7 +43,12 @@ for (const view of ["chat", "terminal"] as const) {
       await composer.press("Enter");
       await expect(detail.locator("span.badge").first()).toHaveText("working");
       if (index === 0) await composer.press("Control+c");
-      else await detail.getByRole("button", { name: /^interrupt\b/ }).click();
+      // The footer has no interrupt button, so the second stop is the chord from outside the
+      // composer - the path App's typing guard does not bypass.
+      else {
+        await composer.blur();
+        await dashboard.keyboard.press("Control+c");
+      }
       await expect(marker).toHaveCount(index + 1);
       await expect(marker.last()).toBeVisible();
     }

@@ -11662,36 +11662,42 @@ select:not([multiple]) option:focus-visible {
 /* Both share the reset dialog's measure and rhythm - they are the same kind of
    object (a per-session confirm), and three widths would read as three designs. */
 .complete-modal,
-.kill-modal {
+.kill-modal,
+.requeue-modal {
   width: min(520px, 100%);
 }
 .complete-body,
-.kill-body {
+.kill-body,
+.requeue-body {
   padding: 16px 18px 18px;
   font-size: 13px;
   line-height: 1.55;
   color: var(--fg);
 }
 .complete-lead,
-.kill-lead {
+.kill-lead,
+.requeue-lead {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0 0 14px;
 }
 .complete-lead .agent-dot,
-.kill-lead .agent-dot {
+.kill-lead .agent-dot,
+.requeue-lead .agent-dot {
   flex: none;
 }
 .complete-name,
-.kill-name {
+.kill-name,
+.requeue-name {
   font-weight: 620;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .complete-task,
-.kill-what {
+.kill-what,
+.requeue-what {
   margin: 0 0 12px;
 }
 .complete-field {
@@ -11755,7 +11761,8 @@ select:not([multiple]) option:focus-visible {
   color: var(--muted);
 }
 .complete-error,
-.kill-error {
+.kill-error,
+.requeue-error {
   margin: 8px 0 0;
   color: #e5877f;
 }
@@ -11790,6 +11797,12 @@ select:not([multiple]) option:focus-visible {
 /* Killing a session that carries a task strands everything declared behind it, and
    that is the one thing this dialog exists to say out loud. */
 .kill-task-warn {
+  margin: 0;
+  color: var(--attention);
+}
+/* Returning to the backlog deletes the checkout, and that is the one cost worth reading
+   before the click - the task itself is kept. */
+.requeue-warn {
   margin: 0;
   color: var(--attention);
 }

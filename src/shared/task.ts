@@ -310,6 +310,12 @@ export const LABEL_MAX = 32;
 export const MAX_LABELS = 12;
 
 /**
+ * How many prerequisites one task may carry. The one owner of the rule: the single-task and
+ * MCP create schemas, the bulk edit's schema, and `bulkTaskPatch` all read it from here.
+ */
+export const MAX_TASK_DEPENDENCIES = 50;
+
+/**
  * Clean a caller's labels into the canonical set stored on a task: trimmed, empties
  * dropped, deduped, capped.
  *

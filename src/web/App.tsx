@@ -2668,6 +2668,7 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
+    workflowSummaries,
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,

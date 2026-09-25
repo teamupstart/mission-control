@@ -27858,6 +27858,310 @@ span.line-run-prov {
   cursor: default;
   opacity: 0.35;
 }
+
+/* ---- backlog selection ----
+   Several cards selected at once for a bulk edit. Selection wears --select, the app's
+   keyboard-selection green, so a selected card reads the same way a selected session does
+   and never like a state tone. */
+.board-backlog .board-col-body {
+  position: relative;
+  /* Fills the column, so the space under the last card is empty space a marquee can start
+     on. */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.bl-card.is-selected {
+  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
+  background: linear-gradient(
+    color-mix(in oklab, var(--select) 9%, var(--panel)),
+    color-mix(in oklab, var(--select) 6%, var(--panel-2))
+  );
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--select) 40%, transparent);
+}
+.bl-card.is-selected::before {
+  background: var(--select);
+  opacity: 1;
+}
+/* Room for the checkbox in the top-right corner. */
+.bl-card .bl-title {
+  padding-right: 20px;
+}
+/* Quiet until it matters: shown on hover, on focus, and on every card once anything is
+   selected, so the column says it is in a selecting state. It is never removed, so Tab
+   still reaches it on a card nobody is pointing at. */
+.bl-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: transparent;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    border-color 0.12s ease;
+}
+.bl-card:hover .bl-check,
+.bl-check:focus-visible,
+.board-backlog.has-selection .bl-check {
+  opacity: 1;
+}
+.bl-check:hover {
+  border-color: var(--muted);
+}
+.bl-check:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.bl-check[aria-checked="true"] {
+  color: #06140e;
+  background: var(--select);
+  border-color: var(--select);
+}
+.bl-marquee {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  border: 1px dashed var(--select);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--select) 8%, transparent);
+}
+/* Docked under the cards rather than floating over them, so it never hides the card a
+   person is about to select. Wraps: the column is 232px wide by default. */
+.bl-selbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 9px 9px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--select) 14%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--select) 55%, var(--border));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.bl-selbar-n {
+  flex: 1 0 100%;
+  font-size: 12px;
+  font-weight: 650;
+}
+.bl-selbar .btn {
+  font-size: 11.5px;
+  padding: 4px 9px;
+}
+
+/* ---- backlog bulk edit dialog ---- */
+.bulk-edit-modal {
+  width: min(600px, 100%);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.bulk-edit-modal > form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.bulk-edit-modal .modal-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+.bulk-edit-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px var(--modal-inset, 18px) 14px;
+}
+.bulk-edit-lead {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.bulk-edit-titles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.bulk-edit-titles li {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+}
+.bulk-edit-group {
+  margin: 14px 0 4px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.bulk-row {
+  display: grid;
+  grid-template-columns: 14px 86px minmax(0, 190px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  margin: 0 -8px;
+  border-radius: 7px;
+}
+/* Labels and prerequisites hold chips, so they take the control and hint columns and put
+   the hint underneath. */
+.bulk-row.has-chips {
+  grid-template-columns: 14px 86px minmax(0, 1fr);
+}
+.bulk-row.has-chips .bulk-row-hint {
+  grid-column: 3;
+}
+.bulk-row.is-changed {
+  background: color-mix(in oklab, var(--select) 8%, transparent);
+}
+.bulk-row-mark {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--select);
+}
+.bulk-row-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+.bulk-row.is-changed .bulk-row-name {
+  color: var(--fg);
+  font-weight: 600;
+}
+.bulk-row-control .field-input {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.bulk-row-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--dim);
+}
+.bulk-edit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.bulk-chip {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.bulk-chip:hover {
+  color: var(--fg);
+}
+.bulk-chip-n {
+  font-size: 10px;
+  color: var(--dim);
+}
+.bulk-chip.is-removing {
+  color: var(--danger);
+  text-decoration: line-through;
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+}
+.bulk-chip.is-adding {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 45%, transparent);
+  background: color-mix(in oklab, var(--idle) 10%, transparent);
+}
+.bulk-edit-chips .bulk-label-input,
+.bulk-edit-chips .bulk-dep-add {
+  width: auto;
+  min-width: 120px;
+  max-width: 220px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+}
+.bulk-seg {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.bulk-seg button {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+.bulk-seg button:last-child {
+  border-right: 0;
+}
+.bulk-seg button.is-on {
+  color: var(--fg);
+  font-weight: 600;
+  background: color-mix(in oklab, var(--select) 22%, var(--panel-2));
+}
+.bulk-seg button:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+.bulk-edit-warn,
+.bulk-edit-note {
+  margin: 2px 0 4px 110px;
+  font-size: 11px;
+}
+.bulk-edit-warn {
+  color: var(--attention);
+}
+.bulk-edit-note {
+  color: var(--dim);
+}
+.bulk-edit-error {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  border: 1px solid color-mix(in oklab, var(--danger) 40%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+}
+.bulk-edit-modal .modal-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bulk-edit-sum {
+  font-size: 11.5px;
+  color: var(--muted);
+}
 /* The priority control is styled AS the chip rather than beside one - see the comment in
    BacklogColumn.tsx. It keeps the shared CSS-painted picker but replaces the closed
    control's chrome, so the same priority looks identical whether you are reading it in

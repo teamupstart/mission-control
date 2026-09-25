@@ -2,7 +2,7 @@ import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
 import type { ReorderTask } from "@shared/protocol.ts";
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
@@ -17,6 +17,8 @@ import {
   type BacklogTrustView,
 } from "../../lib/backlog-copy.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
+import { boxFrom, boxesOverlap, rangeBetween, toggled } from "../../lib/backlog-selection.ts";
+import { BacklogBulkEditModal } from "../BacklogBulkEditModal.tsx";
 import {
   ColumnWidthToggle,
   BacklogTaskNotice,
@@ -76,6 +78,14 @@ import { Tooltip } from "../Tooltip.tsx";
  * mode, and deliberately no second MIME type: a second payload would mean the card had to
  * know at `dragstart` what the drag was FOR, which is exactly the mode this avoids. Adding
  * a third destination later means adding a drop target, not a second kind of drag.
+ *
+ * SEVERAL CARDS CAN BE SELECTED AND EDITED TOGETHER. `Cmd`/`Ctrl`-click toggles a card,
+ * `Shift`-click takes the range from the last card clicked, and a drag that starts on empty
+ * column space draws a marquee. Each card also carries a checkbox, which is the keyboard
+ * route. A drag that starts ON a card is still the reorder/assign drag above, so the two
+ * gestures never compete for one pointer-down. A selection docks a bar under the column
+ * that opens the bulk edit (`BacklogBulkEditModal`) or deletes the selection. A plain click
+ * still opens the one card, selection or not, so nothing a person already does changes.
  */
 export function BacklogColumn({
   tasks,
@@ -90,6 +100,8 @@ export function BacklogColumn({
   scheduleNameById,
   backlogTrust = null,
   onManageTrust,
+  sessions = [],
+  workflowSummaries = [],
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -118,8 +130,116 @@ export function BacklogColumn({
   backlogTrust?: BacklogTrustView | null;
   /** Open the existing Trust matrix. Omitted in isolated renders with no App router. */
   onManageTrust?: () => void;
+  /** Live sessions, offered by the bulk edit as prerequisites. */
+  sessions?: Session[];
+  /** Published workflows, offered by the bulk edit as After work. */
+  workflowSummaries?: WorkflowSummary[];
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
+  /**
+   * The selection, by id. Read through `selectedTasks` below, never directly: a selected card
+   * that dispatches or is deleted leaves the column, and a selection that still counted it
+   * would offer to edit a task that is no longer in the backlog.
+   */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  /** The card a `Shift`-click extends from: the last one clicked or toggled. */
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  /** The marquee being drawn, in the body's own coordinates, or null. */
+  const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const cardEls = useRef(new Map<string, HTMLElement>());
+  const selectedTasks = tasks.filter((t) => picked.has(t.id));
+  const order = tasks.map((t) => t.id);
+
+  const clearSelection = (): void => {
+    setPicked(new Set());
+    setAnchor(null);
+    setConfirmDelete(false);
+  };
+
+  /** A card's toggle or range click, from the card itself or from its checkbox. */
+  const selectCard = (id: string, mode: "toggle" | "range"): void => {
+    setConfirmDelete(false);
+    if (mode === "range") {
+      const span = rangeBetween(order, anchor, id);
+      setPicked((prev) => new Set([...prev, ...span]));
+    } else {
+      setPicked((prev) => toggled(prev, id));
+    }
+    setAnchor(id);
+  };
+
+  /**
+   * Start a marquee on EMPTY column space. A pointer-down on a card returns at once, which
+   * leaves that card's own drag (reorder or assign) exactly as it was. The gaps between cards
+   * take no pointer events outside a drag, so a press there lands on the body and counts as
+   * empty space. A press that never moves is a click on empty space, which clears the
+   * selection. With a modifier held the marquee adds to the selection instead of replacing it.
+   */
+  const startMarquee = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0 || (e.target as Element).closest(".bl-card")) return;
+    const el = body.current;
+    if (!el) return;
+    // A press on the column's own scrollbar is a scroll, not a marquee. `clientWidth` stops
+    // short of a classic scrollbar, so anything past it is the bar.
+    if (e.clientX >= el.getBoundingClientRect().left + el.clientLeft + el.clientWidth) return;
+    e.preventDefault();
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    const base = additive ? new Set(picked) : new Set<string>();
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let moved = false;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent): void => {
+      if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+      moved = true;
+      const box = boxFrom(x0, y0, ev.clientX, ev.clientY);
+      const hits = [...cardEls.current.entries()]
+        .filter(([, card]) => {
+          const r = card.getBoundingClientRect();
+          return boxesOverlap(box, { left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+        })
+        .map(([id]) => id);
+      setPicked(new Set([...base, ...hits]));
+      const frame = el.getBoundingClientRect();
+      setMarquee({
+        left: box.left - frame.left + el.scrollLeft,
+        top: box.top - frame.top + el.scrollTop,
+        width: box.right - box.left,
+        height: box.bottom - box.top,
+      });
+    };
+    const end = (): void => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", end);
+      el.removeEventListener("pointercancel", end);
+      setMarquee(null);
+      setConfirmDelete(false);
+      if (!moved && !additive) clearSelection();
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  };
+
+  async function deleteSelected(): Promise<void> {
+    if (deleting || selectedTasks.length === 0) return;
+    setDeleting(true);
+    const r = await api.bulkDeleteTasks(selectedTasks.map((t) => t.id));
+    setDeleting(false);
+    setConfirmDelete(false);
+    if (!r.ok) {
+      onAssignError(r.error ?? "could not delete those tasks");
+      // Whatever did go is gone from the column already; keep the rest selected.
+      const gone = new Set(r.removed ?? []);
+      setPicked((prev) => new Set([...prev].filter((id) => !gone.has(id))));
+      return;
+    }
+    clearSelection();
+  }
   const index = backlogIndex(allTasks, plan);
   /**
    * The card in the air, by id, or null when nothing is being dragged.
@@ -222,7 +342,25 @@ export function BacklogColumn({
     <section
       className={`board-col board-backlog${wide ? " is-wide" : ""}${
         inAir === null ? "" : " is-reordering"
-      }`}
+      }${selectedTasks.length > 0 ? " has-selection" : ""}`}
+      // Keys for the selection, only while focus is inside this column, so neither one
+      // reaches past it: Escape here does not also close the board's drill-in, and
+      // Cmd/Ctrl-A selects cards rather than the page's text. A form control keeps both
+      // keys for itself.
+      onKeyDown={(e) => {
+        const target = e.target as HTMLElement;
+        // The bulk edit renders inside this section, so its keys bubble here too. Escape
+        // there closes the dialog and must leave the selection it was opened over alone.
+        if (target.closest("input, select, textarea, [role='dialog']")) return;
+        if (e.key === "Escape" && selectedTasks.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          clearSelection();
+        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && tasks.length > 0) {
+          e.preventDefault();
+          setPicked(new Set(order));
+        }
+      }}
     >
       {/* The same two ways in as every other column head - see BoardView. */}
       <header className="board-col-head" onDoubleClick={onToggleWide}>
@@ -236,6 +374,8 @@ export function BacklogColumn({
       </header>
       <div
         className="board-col-body"
+        ref={body}
+        onPointerDown={startMarquee}
         // Over the column but not over a gap - a card, or the space beside one. The mark
         // is cleared here rather than by each gap's own `dragleave`, so travelling from
         // one gap to the next can never leave two lines drawn or none.
@@ -278,6 +418,12 @@ export function BacklogColumn({
                 // actually see - the same place a drag would land it.
                 above={tasks[i - 1] ?? null}
                 below={tasks[i + 1] ?? null}
+                selected={picked.has(t.id)}
+                onSelect={(mode) => selectCard(t.id, mode)}
+                cardRef={(el) => {
+                  if (el) cardEls.current.set(t.id, el);
+                  else cardEls.current.delete(t.id);
+                }}
                 onAssignError={onAssignError}
                 onDragging={reportDragging}
                 onEdit={() => onEdit(t.id)}
@@ -296,7 +442,65 @@ export function BacklogColumn({
             </Fragment>
           ))
         )}
+        {marquee && <div className="bl-marquee" aria-hidden style={marquee} />}
       </div>
+      {selectedTasks.length > 0 && (
+        <div className="bl-selbar" role="toolbar" aria-label="Selected backlog tasks">
+          {confirmDelete ? (
+            <>
+              <span className="bl-selbar-n">
+                Delete {selectedTasks.length} {selectedTasks.length === 1 ? "task" : "tasks"}?
+              </span>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={deleting}
+                onClick={() => void deleteSelected()}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={deleting}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Keep
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="bl-selbar-n">{selectedTasks.length} selected</span>
+              <button type="button" className="btn btn-primary" onClick={() => setBulkOpen(true)}>
+                Edit {selectedTasks.length} {selectedTasks.length === 1 ? "task" : "tasks"}…
+              </button>
+              <Tooltip label="Delete the selected tasks from the backlog">
+                <button
+                  type="button"
+                  className="btn btn-danger-ghost"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Delete…
+                </button>
+              </Tooltip>
+              <Tooltip label="Clear the selection (Escape)">
+                <button type="button" className="btn btn-ghost" onClick={clearSelection}>
+                  Clear
+                </button>
+              </Tooltip>
+            </>
+          )}
+        </div>
+      )}
+      {bulkOpen && selectedTasks.length > 0 && (
+        <BacklogBulkEditModal
+          tasks={selectedTasks}
+          allTasks={allTasks}
+          sessions={sessions}
+          workflowSummaries={workflowSummaries}
+          onClose={() => setBulkOpen(false)}
+        />
+      )}
       {/* Only once there IS a plan: before autopilot has ever run, this line would be
           a footer explaining a feature that isn't doing anything. */}
       {plan?.note && <p className="bl-plan-note">{plan.note}</p>}
@@ -397,6 +601,9 @@ function BacklogCard({
   scheduleNameById,
   notice,
   onManageTrust,
+  selected,
+  onSelect,
+  cardRef,
 }: {
   task: Task;
   blockers: BacklogBlocker[];
@@ -422,6 +629,12 @@ function BacklogCard({
   scheduleNameById?: ReadonlyMap<string, string>;
   notice: BacklogTaskNoticeView | null;
   onManageTrust?: () => void;
+  /** Whether this card is in the column's selection. */
+  selected: boolean;
+  /** A modifier click or a checkbox press: toggle this card, or take the range to it. */
+  onSelect: (mode: "toggle" | "range") => void;
+  /** The column measures each card for its marquee. */
+  cardRef: (el: HTMLElement | null) => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   /** The move-control group, so focus can be put back on it after a move redraws it. */
@@ -570,7 +783,8 @@ function BacklogCard({
         nextUp ? " is-next" : ""
       }${task.enabled ? "" : " is-disabled"}${deadBlockerOpen ? " is-deadblock-open" : ""}${
         lifted ? " is-lifted" : ""
-      }`}
+      }${selected ? " is-selected" : ""}`}
+      ref={cardRef}
       // Foreman's inferred edge remains overridable. An operator-declared dependency is
       // policy, so both drag-to-assign and launch are disabled until it completes.
       draggable={!busy && !declaredBlocked}
@@ -593,18 +807,54 @@ function BacklogCard({
         onDragging(task.extraRepos.length > 0 ? null : task.repoRoot, task.id);
       }}
       onDragEnd={() => onDragging(null, null)}
+      // Shift-press would otherwise start a text selection across the column on the way
+      // to a range click.
+      onMouseDown={(e) => {
+        if (e.shiftKey) e.preventDefault();
+      }}
       // Anywhere on the card opens it, so the gesture matches what the whole card looks
       // like: one object. A drag doesn't fire this - the browser suppresses the click
       // that ends one - so dragging a card to an agent still only ever assigns it.
-      onClick={onEdit}
+      // A modifier click selects instead of opening: Shift for a range, Cmd/Ctrl to toggle.
+      onClick={(e) => {
+        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          onSelect(e.shiftKey ? "range" : "toggle");
+          return;
+        }
+        onEdit();
+      }}
     >
+      {/* The selection's keyboard route, and its pointer route for anyone who never holds a
+          modifier. Both stop propagation for the reasons the priority picker below gives:
+          the card is draggable and click-to-edit. */}
+      <button
+        type="button"
+        role="checkbox"
+        className="bl-check"
+        aria-checked={selected}
+        aria-label={`Select "${task.title}"`}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(e.shiftKey ? "range" : "toggle");
+        }}
+      >
+        <span aria-hidden>✓</span>
+      </button>
       {/* The real, focusable control behind the card-wide click: a card is not a button
           (it contains one), so the title carries the keyboard route in - and it carries
           the card's tooltip too. The `<article>` held `title={task.intent}` until this
           became a Tooltip; wrapping the card itself would have put a second bubble on
           screen every time you reached for the switch or the launch button inside it. */}
       <Tooltip label={task.intent || "Open this task for editing"}>
-        <button className="bl-title" onClick={onEdit}>
+        <button
+          className="bl-title"
+          // A modifier click is a selection, which the card's own handler takes.
+          onClick={(e) => {
+            if (!(e.shiftKey || e.metaKey || e.ctrlKey)) onEdit();
+          }}
+        >
           {task.title}
         </button>
       </Tooltip>

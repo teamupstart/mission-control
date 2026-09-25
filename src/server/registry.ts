@@ -256,6 +256,7 @@ import {
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  inTransaction,
   upsertUsageCell,
   loadInspectorInspections,
   hasHumanResolvedReview,
@@ -6528,6 +6529,18 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     this.publishTask(task, dbUpsertTask(task), deferDependencyCleanup);
+  }
+
+  /**
+   * Persist several tasks in ONE SQLite transaction, then broadcast each.
+   *
+   * The bulk edit's write. Every row lands or none does, so a failure halfway through a
+   * selection cannot leave some cards edited and the rest not. Broadcasting waits until
+   * the commit, so no dashboard is shown a row that was then rolled back.
+   */
+  upsertTasks(tasks: readonly Task[]): void {
+    const displaced = inTransaction(() => tasks.map((task) => dbUpsertTask(task)));
+    tasks.forEach((task, i) => this.publishTask(task, displaced[i] ?? [], false));
   }
 
   /**

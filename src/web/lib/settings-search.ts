@@ -158,6 +158,19 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    // Somebody looking for this types what they saw beside the last column ("empty", "stash")
+    // or what they want gone ("hide empty columns").
+    id: "board-empty-columns",
+    label: "Show the empty-column stash",
+    description:
+      "Show or hide the chips the Board's empty columns fold into, beside the last column.",
+    category: "display",
+    anchor: "display/board-empty-columns",
+    keywords: ["empty", "stash", "column", "columns", "hide", "board", "chip", "all clear"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",
@@ -246,6 +259,34 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "band",
       "hide",
       "show",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    // The panel's third subject. Somebody looking for this types what they saw, or what they
+    // wanted to see: a spinner, a progress bar, a timer, "is it still running".
+    id: "working-indicator",
+    label: "Working indicator",
+    description:
+      "Choose whether a working session's status row stays pinned while you scroll back, and whether the reply box shows a progress bar.",
+    category: "display",
+    anchor: "display/board-card",
+    keywords: [
+      "working",
+      "busy",
+      "thinking",
+      "running",
+      "spinner",
+      "progress",
+      "progress bar",
+      "loading",
+      "timer",
+      "elapsed",
+      "pin",
+      "sticky",
+      "reply box",
+      "conversation",
     ],
     kind: "jump",
     backup: backupDomains("ui"),

@@ -150,6 +150,8 @@ import {
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
+  BulkUpdateTasksSchema,
+  BulkDeleteTasksSchema,
   UpdatePersonaSchema,
   ArchivePersonaSchema,
   CreateWorkflowSchema,
@@ -419,7 +421,8 @@ import {
 import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
-import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { skillEnabled } from "@shared/skills.ts";
+import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -5311,6 +5314,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
+      // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
+      // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.
@@ -6435,13 +6441,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const catalog = readCatalog();
     return {
       enabled: cfg.enabled,
-      skills: catalog.skills.map((s) => ({ ...s, enabled: cfg.skills[s.id] === true })),
+      skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
       // failed STARTUP reconcile from being invisible: its problems had no PUT to answer,
       // so they went to a console nobody reads, and every toggle would render on while
       // the sessions had none of them.
-      problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
+      problems: [skillsConfigProblem(), ...catalog.problems, ...skillDrift(cfg, catalog)].filter((p): p is string => p !== null),
     };
   };
 
@@ -7629,6 +7635,37 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
     }
     return c.json({ ok: true, task: completed, ...(resourceWarning ? { warning: resourceWarning } : {}) });
+  });
+
+  /**
+   * The board's bulk edit: one change to several backlog tasks, applied to all of them or
+   * to none. Refusals mirror the single edit, with the task named in the message. The
+   * workflow gate is asked once, of the workflow being SET. Tasks that keep their own
+   * workflow are not re-judged by an edit that never touched it.
+   */
+  app.post("/api/tasks/bulk-update", async (c) => {
+    const parsed = await parseBody(c, BulkUpdateTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const workflowId = parsed.data.set.workflowId;
+    if (workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.workflowSelectionBlock(workflowId);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+    }
+    const r = await tasks.bulkUpdate(parsed.data);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  /**
+   * Delete several backlog tasks. Checked up front and then removed one by one, so a late
+   * failure answers 409 with the ids that did and did not go. See `TaskManager.bulkRemove`.
+   */
+  app.post("/api/tasks/bulk-delete", async (c) => {
+    const parsed = await parseBody(c, BulkDeleteTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.bulkRemove(parsed.data.taskIds);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,

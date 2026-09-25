@@ -43,7 +43,7 @@ const { reconcileSkillLinks, uninstallSkillLinks, desiredSkillIds, skillDrift, s
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function mkCfg(over: Partial<SkillsConfig> = {}): SkillsConfig {
-  return { enabled: true, skills: {}, generation: 0, generationAt: 0, ...over };
+  return { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0, ...over };
 }
 
 function mkSkill(id: string): SkillCatalogEntry {
@@ -267,7 +267,17 @@ test("desiredSkillIds ignores an id whose directory is gone from the repo", () =
   // A stale enabled flag for a skill deleted from the repo must not become a symlink
   // pointing at nothing.
   const cfg = mkCfg({ skills: { alpha: true, "deleted-last-year": true } });
-  assert.deepEqual([...desiredSkillIds(cfg, CATALOG.present)], ["alpha"]);
+  assert.deepEqual([...desiredSkillIds(cfg, CATALOG)], ["alpha"]);
+});
+
+test("catalog default enables parsed rows, preserves explicit off, and skips malformed new rows", () => {
+  const unparsed = mkCatalog({
+    skills: [mkSkill("beta")],
+    problems: ["skills/alpha/SKILL.md could not be parsed"],
+  });
+  assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true }), unparsed)], ["beta"]);
+  assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true, skills: { beta: false } }), CATALOG)], ["alpha"]);
+  assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true, skills: { alpha: true } }), unparsed)], ["alpha", "beta"]);
 });
 
 test("THE regression: a skill we can't PARSE is still desired, and stays linked", () => {
@@ -283,7 +293,7 @@ test("THE regression: a skill we can't PARSE is still desired, and stays linked"
     problems: ["skills/alpha/SKILL.md has no 'description'"],
   };
   const cfg = mkCfg({ skills: { alpha: true } });
-  assert.deepEqual([...desiredSkillIds(cfg, unparsed.present)], ["alpha"]);
+  assert.deepEqual([...desiredSkillIds(cfg, unparsed)], ["alpha"]);
 
   reconcileSkillLinks(cfg, CATALOG, onlyClaude);
   const r = reconcileSkillLinks(cfg, unparsed, onlyClaude);

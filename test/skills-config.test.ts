@@ -26,7 +26,7 @@ process.env.PI_SKILLS_DIR = piSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
-const { applySkillsConfig, getSkillsConfig, reconcileSkills } = await import(
+const { applySkillsConfig, getSkillsConfig, reconcileSkills, skillsConfigProblem } = await import(
   "../src/server/skills/config.ts"
 );
 const { skillDrift } = await import("../src/server/skills/reconcile.ts");
@@ -46,6 +46,9 @@ function writeSkill(id: string): void {
 
 beforeEach(() => {
   openDb().exec("DELETE FROM app_config");
+  // Most existing cases exercise a saved legacy configuration. Fresh installs remove
+  // this row explicitly, so default-on does not rewrite the meaning of these cases.
+  setAppConfig(APP_CONFIG_ENTRIES.skills, { enabled: false, skills: {}, generation: 0, generationAt: 0 });
   rmSync(claudeSkills, { recursive: true, force: true });
   rmSync(codexSkills, { recursive: true, force: true });
   rmSync(piSkills, { recursive: true, force: true });
@@ -80,13 +83,69 @@ test("migration's daemon request passes the real patch schema and preserves disa
   }
 });
 
-test("ships off, with nothing enabled and nothing owed", () => {
+test("a missing Skills record initializes every valid shipped skill on every harness", () => {
+  openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
   const cfg = getSkillsConfig();
-  // Never on by default: this writes into the operator's global claude config and
-  // changes what the model does in every session on the machine.
-  assert.equal(cfg.enabled, false);
+  assert.equal(cfg.enabled, true);
+  assert.equal(cfg.defaultSkillEnabled, true);
   assert.deepEqual(cfg.skills, {});
   assert.equal(cfg.generation, 0, "generation 0 means nobody is owed a reload");
+  const first = reconcileSkills(NOW);
+  assert.deepEqual(first.linked.sort(), ["alpha", "beta"]);
+  for (const dir of [claudeSkills, codexSkills, piSkills]) {
+    assert.deepEqual(readdirSync(dir).sort(), ["mission-alpha", "mission-beta"]);
+  }
+  assert.equal(first.config.generation, 1);
+  const again = reconcileSkills(NOW + 1);
+  assert.equal(again.changed, false);
+  assert.equal(again.config.generation, 1);
+});
+
+test("legacy sparse and explicit off choices remain off", () => {
+  const legacy = getSkillsConfig();
+  assert.equal(legacy.enabled, false);
+  assert.equal(legacy.defaultSkillEnabled, false);
+  assert.deepEqual(legacy.skills, {});
+  assert.equal(reconcileSkills(NOW).changed, false);
+  assert.deepEqual(links(), []);
+  applySkillsConfig({ enabled: true, skills: { alpha: false, beta: true } }, NOW + 1);
+  assert.deepEqual(links(), ["mission-beta"]);
+});
+
+test("a default-on row can be disabled and future valid catalog rows start on", () => {
+  openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
+  reconcileSkills(NOW);
+  applySkillsConfig({ skills: { alpha: false } }, NOW + 1);
+  writeSkill("gamma");
+  const grown = reconcileSkills(NOW + 2);
+  assert.deepEqual(links(), ["mission-beta", "mission-gamma"]);
+  assert.equal(grown.config.skills.alpha, false);
+  assert.equal(grown.config.defaultSkillEnabled, true);
+});
+
+test("a corrupt stored record is never treated as a fresh install", () => {
+  for (const raw of ["{broken", JSON.stringify({ enabled: "yes" })]) {
+    openDb().prepare("UPDATE app_config SET value = ? WHERE key = 'skills'").run(raw);
+    assert.equal(getSkillsConfig().enabled, false);
+    assert.match(skillsConfigProblem() ?? "", /invalid/);
+    assert.equal(reconcileSkills(NOW).changed, false);
+    assert.deepEqual(links(), []);
+    assert.equal(applySkillsConfig({ enabled: true }, NOW).refused.length, 1);
+    assert.equal((openDb().prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string }).value, raw);
+  }
+});
+
+test("an unreadable catalog does not finalize a missing Skills record", () => {
+  openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
+  const previous = process.env.FLEET_SKILLS_DIR;
+  process.env.FLEET_SKILLS_DIR = join(home, "missing-catalog");
+  try {
+    assert.equal(reconcileSkills(NOW).changed, false);
+    assert.equal(openDb().prepare("SELECT 1 FROM app_config WHERE key = 'skills'").get(), undefined);
+  } finally {
+    if (previous === undefined) delete process.env.FLEET_SKILLS_DIR;
+    else process.env.FLEET_SKILLS_DIR = previous;
+  }
 });
 
 test("enabling a skill links it and bumps the generation once", () => {

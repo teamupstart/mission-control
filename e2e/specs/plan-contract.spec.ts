@@ -57,9 +57,7 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
 /**
  * Switch the two planning skills on BEFORE anything is dispatched.
  *
- * Not incidental ordering. A fresh daemon starts with the master switch OFF (`SkillsConfig`
- * defaults), which is the state the refusal case below relies on - so the happy path has to
- * ask for the opposite explicitly rather than inheriting it.
+ * Set the precondition explicitly so this contract does not depend on the shipped default.
  */
 async function enablePlanningSkills(daemon: DaemonHandle): Promise<void> {
   const res = await fetch(`${daemon.baseURL}/api/skills/config`, {
@@ -176,8 +174,12 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   dashboard,
   daemon,
 }) => {
-  // No `enablePlanningSkills` here: a fresh daemon has the master switch off, which is the
-  // real state an operator meets this in.
+  const disabled = await fetch(`${daemon.baseURL}/api/skills/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: false }),
+  });
+  expect(disabled.ok).toBe(true);
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
   // Plan selects its review; opt out here to isolate the planning-skill contract.

@@ -101,6 +101,13 @@ const HELD_TURN_MS = Number(process.env.MC_E2E_CLAUDE_HELD_TURN_MS ?? 5_000);
 // without adding ten seconds to every spec that uses the ordinary held turn.
 const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
 const REVIEW_HELD_TURN_MS = 15_000;
+// A steer this CLI takes into the open turn at once but only READS later, which is what the
+// real CLI does when it folds a message in at its next step boundary. The transcript line is
+// the receipt the dashboard waits for, so it is the part held back - until the spec writes
+// this file into the record dir (the one directory both it and this fake are handed),
+// rather than after a timer a slow run could outlast.
+const DEFERRED_STEER = "read this steer at your next step";
+const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -1151,6 +1158,7 @@ rl.on("line", (line) => {
         account: {},
         models: [
           { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Account default" },
+          { value: "fable", resolvedModel: "claude-fable-5-1", displayName: "Fable 5.1", description: "Most capable", supportsEffort: true },
           { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Newest Opus", supportsEffort: true },
           { value: "claude-opus-5", resolvedModel: "claude-opus-5", displayName: "Opus 5", description: "Previous Opus", supportsEffort: true },
           { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5", description: "Sonnet", supportsEffort: true },
@@ -1191,6 +1199,16 @@ rl.on("line", (line) => {
           ? raw.filter((b) => b?.type === "text").map((b) => b.text).join("\n")
           : "";
 
+    if (openTurn && prompt.includes(DEFERRED_STEER)) {
+      openTurn.prompts.push(prompt);
+      const waiting = setInterval(() => {
+        if (!existsSync(READ_STEERS_SIGNAL)) return;
+        clearInterval(waiting);
+        appendTurn("user", prompt);
+      }, 100);
+      waiting.unref();
+      return;
+    }
     appendTurn("user", prompt);
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 

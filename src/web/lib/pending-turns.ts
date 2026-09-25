@@ -1,4 +1,4 @@
-import type { PendingTurn } from "@shared/types.ts";
+import type { PendingTurn, SteerReceipt } from "@shared/types.ts";
 import { activePaneDialog, type DialogBearing } from "@shared/session.ts";
 
 interface PendingTurnRecallResponse {
@@ -144,3 +144,29 @@ export const PENDING_TURN_HELD_REASON: Record<NonNullable<PendingTurnHold>, stri
 
 /** The status a held row reports, replacing the bare "queued" it would otherwise show. */
 export const PENDING_TURN_HELD_STATUS = "queued · held";
+
+/** `m:ss` since a message left, for a row whose whole claim is how long it has waited. */
+export function sentAgo(since: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - since) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * The steer receipts to label now: each once, the first time its turn is in this log, and
+ * only while the receipt is recent.
+ *
+ * Which turn to mark is the daemon's answer, never re-derived here: the daemon pairs a steer
+ * only with a turn written after it was sent, while this log also holds everything before,
+ * including an earlier message with the same words. The receipt and the turn reach this log
+ * on different streams, in either order, so a receipt waits up to `windowMs` for its turn.
+ */
+export function receiptsToLabel(
+  receipts: readonly SteerReceipt[],
+  present: ReadonlySet<string>,
+  labelled: ReadonlySet<string>,
+  now: number,
+  windowMs: number,
+): SteerReceipt[] {
+  return receipts.filter((receipt) =>
+    !labelled.has(receipt.steerId) && present.has(receipt.messageId) && now - receipt.at <= windowMs);
+}

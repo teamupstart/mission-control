@@ -13,6 +13,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 
 const config: SkillsConfig = {
   enabled: true,
+  defaultSkillEnabled: false,
   skills: { "pull-request": true },
   generation: 3,
   generationAt: 100,
@@ -54,6 +55,24 @@ test("a required workflow skill uses each harness's native invocation", () => {
     );
     assert.deepEqual(result, { ok: true, command: expected[agent] }, agent);
   }
+});
+
+test("a required skill can be invoked from the catalog default without a row override", () => {
+  const defaultOn = { ...config, defaultSkillEnabled: true, skills: {} };
+  const fromDefault = deps({ config: () => defaultOn });
+
+  assert.deepEqual(
+    skillInvocationForAgent("claude", "pull-request", fromDefault),
+    { ok: true, command: "/pull-request" },
+  );
+  assert.deepEqual(
+    requiredSkillCommand(
+      mkSession({ agent: "claude", startedAt: defaultOn.generationAt }),
+      "pull-request",
+      fromDefault,
+    ),
+    { ok: true, command: "/pull-request" },
+  );
 });
 
 test("a required workflow skill fails closed when disabled, drifted, or not loaded", () => {

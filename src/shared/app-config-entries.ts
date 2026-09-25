@@ -137,6 +137,7 @@ const worktreesFields = {
 
 const skillsFields = {
   enabled: "setting",
+  defaultSkillEnabled: "setting",
   skills: "setting",
   generation: "derived",
   generationAt: "derived",
@@ -253,6 +254,7 @@ const uiFields = {
   hiddenDisplayItems: "setting",
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
+  showEmptyColumnStash: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {

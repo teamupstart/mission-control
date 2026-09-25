@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InjectResult } from "../src/server/actions.ts";
-import type { PaneDialog, SessionState } from "../src/shared/types.ts";
+import type { PaneDialog, SessionState, TranscriptMessage } from "../src/shared/types.ts";
+import type { TranscriptMessages } from "../src/server/harness/types.ts";
+import type { SessionMessages } from "../src/server/harness/index.ts";
 import { activePaneDialog } from "../src/shared/session.ts";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
@@ -1688,6 +1690,8 @@ test("a session running no scout journals nothing at all", async () => {
 function steeringFixture(name: string, options: {
   sendError?: boolean; interruptFails?: boolean; interruptTimeoutMs?: number;
   beforeSteer?: () => Promise<void>; beforeInterrupt?: () => Promise<void>;
+  messagesFor?: () => SessionMessages | null;
+  steerReceiptPollMs?: number;
 } = {}) {
   const registry = new Registry();
   const id = `sdk:steering:${name}`;
@@ -1719,7 +1723,12 @@ function steeringFixture(name: string, options: {
       interrupts++;
       if (!options.interruptFails) idle(registry, id);
     },
-  }, { idleSettleMs: 0, interruptTimeoutMs: options.interruptTimeoutMs ?? 100 });
+  }, {
+    idleSettleMs: 0,
+    interruptTimeoutMs: options.interruptTimeoutMs ?? 100,
+    messagesFor: options.messagesFor ?? (() => null),
+    steerReceiptPollMs: options.steerReceiptPollMs ?? 5,
+  });
   manager.start();
   return { registry, id, manager, sends, interrupts: () => interrupts };
 }
@@ -1749,6 +1758,214 @@ test("ambiguous steering is uncertain and never replayed by timers or idle", asy
   await tick();
   assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "uncertain");
   assert.deepEqual(f.sends, []);
+  f.manager.stop();
+});
+
+test("an accepted steer stays on the session until the turn that must read it ends", async () => {
+  const f = steeringFixture("receipt");
+  const row = f.manager.submit(f.id, "skip e2e for now").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.sends.length === 1, "the steer");
+  // The outbox row retired at acceptance; the steer is what keeps the message on screen.
+  const session = f.registry.getSession(f.id)!;
+  assert.deepEqual(session.pendingTurns, []);
+  assert.deepEqual(session.steeredTurns?.map((t) => [t.id, t.text]), [[row.id, "skip e2e for now"]]);
+  assert.equal(typeof session.steeredTurns?.[0]?.acceptedAt, "number");
+  // More output from the same turn is not a reason to forget it.
+  working(f.registry, f.id);
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns?.length, 1);
+  // The turn ended: the agent has read it or begun a new turn with it.
+  idle(f.registry, f.id);
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns, undefined);
+  f.manager.stop();
+});
+
+/** A transcript whose byte offsets are record indexes: enough for the receipt scan. */
+function fakeTranscript(records: TranscriptMessage[]): SessionMessages {
+  const read = {
+    size: () => records.length,
+    appended: (_path: string, pos: number) => ({ messages: records.slice(pos), pos: records.length }),
+  } as unknown as TranscriptMessages;
+  return { read, path: "/fake/transcript.jsonl" };
+}
+
+test("a steer leaves the moment the transcript shows it, while its turn is still running", async () => {
+  const records: TranscriptMessage[] = [
+    // The same words, said before the steer: never its receipt.
+    { id: "earlier", role: "user", text: "read me mid-turn", tools: [], ts: 1 },
+  ];
+  const f = steeringFixture("receipt-live", { messagesFor: () => fakeTranscript(records) });
+  const row = f.manager.submit(f.id, "read me mid-turn").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  records.push({ id: "assistant-1", role: "assistant", text: "still working", tools: [], ts: Date.now() });
+  await tick(30);
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns?.length, 1, "not read yet");
+  // The agent reads it at its next step and writes it down; the turn keeps running.
+  records.push({ id: "read", role: "user", text: "read me mid-turn", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the receipt");
+  assert.equal(f.registry.getSession(f.id)?.state, "working");
+  f.manager.stop();
+});
+
+test("a retired steer publishes the exact turn that is its receipt, and a reset forgets it", async () => {
+  const records: TranscriptMessage[] = [
+    // The same words, written just before the steer: never its receipt, never labelled.
+    { id: "earlier", role: "user", text: "same words", tools: [], ts: Date.now() },
+  ];
+  const f = steeringFixture("receipt-published", { messagesFor: () => fakeTranscript(records) });
+  const row = f.manager.submit(f.id, "same words").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  await tick(30);
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts, undefined, "the earlier turn is not a receipt");
+  records.push({ id: "later", role: "user", text: "same words", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the receipt");
+  assert.deepEqual(
+    f.registry.getSession(f.id)?.steerReceipts?.map((r) => [r.steerId, r.messageId]),
+    [[row.id, "later"]],
+  );
+  // The turn ending keeps the receipt, so its label is still owed.
+  idle(f.registry, f.id);
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts?.length, 1);
+  f.registry.clearPendingTurns("steering:receipt-published");
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts, undefined);
+  f.manager.stop();
+});
+
+test("a turn that ends before the next scan still records the steer it read", async () => {
+  const records: TranscriptMessage[] = [];
+  // A poll far longer than the test: only the read at turn end can find this receipt.
+  const f = steeringFixture("receipt-at-idle", {
+    messagesFor: () => fakeTranscript(records),
+    steerReceiptPollMs: 60_000,
+  });
+  const row = f.manager.submit(f.id, "read then finish").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  records.push({ id: "read-then-idle", role: "user", text: "read then finish", tools: [], ts: Date.now() });
+  idle(f.registry, f.id);
+  const session = f.registry.getSession(f.id)!;
+  assert.equal(session.steeredTurns, undefined);
+  assert.deepEqual(session.steerReceipts?.map((r) => [r.steerId, r.messageId]), [[row.id, "read-then-idle"]]);
+  f.manager.stop();
+});
+
+test("only the steer the transcript shows is retired; the other keeps waiting", async () => {
+  const records: TranscriptMessage[] = [];
+  const f = steeringFixture("receipt-partial", { messagesFor: () => fakeTranscript(records) });
+  const first = f.manager.submit(f.id, "first steer").pendingTurn!;
+  const second = f.manager.submit(f.id, "second steer").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, first.id, first.revision, "steer"));
+  assert.ok(f.manager.expedite(f.id, second.id, second.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 2, "both steers");
+  records.push({ id: "read-second", role: "user", text: "second steer", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "one receipt");
+  assert.deepEqual(f.registry.getSession(f.id)?.steeredTurns?.map((t) => t.text), ["first steer"]);
+  f.manager.stop();
+});
+
+test("two steers with the same words are not both retired by one transcript turn", async () => {
+  const records: TranscriptMessage[] = [];
+  const f = steeringFixture("receipt-twins", { messagesFor: () => fakeTranscript(records) });
+  const first = f.manager.submit(f.id, "check again").pendingTurn!;
+  const second = f.manager.submit(f.id, "check again").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, first.id, first.revision, "steer"));
+  assert.ok(f.manager.expedite(f.id, second.id, second.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 2, "both steers");
+  records.push({ id: "read-1", role: "user", text: "check again", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "one receipt");
+  await tick(30);
+  assert.deepEqual(f.registry.getSession(f.id)?.steeredTurns?.map((t) => t.id), [second.id]);
+  records.push({ id: "read-2", role: "user", text: "check again", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the second receipt");
+  f.manager.stop();
+});
+
+test("a steer read while its send is in flight is found behind an advanced scan", async () => {
+  const records: TranscriptMessage[] = [];
+  let steers = 0;
+  const f = steeringFixture("receipt-rewind", {
+    messagesFor: () => fakeTranscript(records),
+    beforeSteer: async () => {
+      steers += 1;
+      if (steers !== 2) return;
+      // The agent reads the second steer before the driver acknowledges it, and the scan
+      // still running for the first steer reads past that line meanwhile.
+      records.push({ id: "read-second", role: "user", text: "second, read early", tools: [], ts: Date.now() });
+      records.push({ id: "assistant-2", role: "assistant", text: "on it", tools: [], ts: Date.now() });
+      await tick(40);
+    },
+  });
+  const recorded = new Set<string>();
+  f.registry.subscribe((event) => {
+    if (event.type !== "session_upsert") return;
+    for (const turn of event.session.steeredTurns ?? []) recorded.add(turn.text);
+  });
+  const first = f.manager.submit(f.id, "first, never read").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, first.id, first.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the first steer");
+  const second = f.manager.submit(f.id, "second, read early").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, second.id, second.revision, "steer"));
+  await until(() => f.sends.length === 2, "the second steer's acceptance");
+  // Recorded once the driver acknowledged it, then retired off the line written before that.
+  await until(
+    () => recorded.has("second, read early") &&
+      f.registry.getSession(f.id)?.steeredTurns?.map((t) => t.text).join() === "first, never read",
+    "the early receipt",
+  );
+  assert.equal(f.registry.getSession(f.id)?.state, "working");
+  f.manager.stop();
+});
+
+test("a steer waiting to be read never holds the outbox", async () => {
+  const f = steeringFixture("non-blocking");
+  const first = f.manager.submit(f.id, "first correction").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, first.id, first.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the first steer");
+  // A later message can still be steered, and the one after it still waits for the next
+  // turn: the unread steer is not an outbox row, so no drain gate can see it.
+  const second = f.manager.submit(f.id, "second correction").pendingTurn!;
+  const later = f.manager.submit(f.id, "after the turn").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, second.id, second.revision, "steer"));
+  await until(() => f.sends.length === 2, "the second steer");
+  assert.deepEqual(
+    f.registry.getSession(f.id)?.steeredTurns?.map((t) => t.text),
+    ["first correction", "second correction"],
+  );
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns.map((t) => t.id), [later.id]);
+  idle(f.registry, f.id);
+  await until(() => f.sends.length === 3, "the next turn");
+  assert.equal(f.sends[2], "after the turn");
+  f.manager.stop();
+});
+
+test("a session that exits forgets the steers it never read", async () => {
+  const f = steeringFixture("exit-steer");
+  const row = f.manager.submit(f.id, "never read").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  f.registry.applyDriverEvent(f.id, { kind: "exited", reason: "done", resumable: false });
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns, undefined);
+  f.manager.stop();
+});
+
+test("a message delivered as a new turn is never tracked as steered", async () => {
+  const f = steeringFixture("started");
+  idle(f.registry, f.id);
+  f.manager.submit(f.id, "fresh turn");
+  await until(() => f.sends.length === 1, "the new turn");
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns, undefined);
+  f.manager.stop();
+});
+
+test("a reset forgets steers the discarded conversation accepted", async () => {
+  const f = steeringFixture("reset-steer");
+  const row = f.manager.submit(f.id, "forget me").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  f.registry.clearPendingTurns(`steering:reset-steer`);
+  assert.equal(f.registry.getSession(f.id)?.steeredTurns, undefined);
   f.manager.stop();
 });
 

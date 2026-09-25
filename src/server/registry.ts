@@ -16,6 +16,8 @@ import type {
   OrphanedQueueHint,
   PaneDialog,
   PendingTurn,
+  SteeredTurn,
+  SteerReceipt,
   PermissionMode,
   RateLimits,
   RateLimitWindow,
@@ -256,6 +258,7 @@ import {
   type StandingInstructionsSnapshot,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  inTransaction,
   upsertUsageCell,
   loadInspectorInspections,
   hasHumanResolvedReview,
@@ -758,6 +761,10 @@ function bucketedAge(ms: number | null): number | null {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
+  private readonly steered = new Map<string, SteeredTurn[]>();
+  /** The last few receipts per note key, for the conversation's "received" label. */
+  private readonly steerReceipts = new Map<string, SteerReceipt[]>();
   /**
    * Driverless startup views, kept apart from `sessions` so no live-session consumer can
    * mistake a persisted row for an adopted driver. Bounded by the one startup restore read.
@@ -2537,6 +2544,8 @@ export class Registry extends EventEmitter {
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
     base.pendingTurns = this.pendingTurnsFor(base);
+    base.steeredTurns = this.steeredTurnsFor(base);
+    base.steerReceipts = this.steerReceiptsFor(base);
     this.resolveInspectionSummaries(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -2673,6 +2682,8 @@ export class Registry extends EventEmitter {
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
     s.pendingTurns = this.pendingTurnsFor(s);
+    s.steeredTurns = this.steeredTurnsFor(s);
+    s.steerReceipts = this.steerReceiptsFor(s);
     s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
     // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
     // the one that matters most: a driver session's questions are answered natively, so its
@@ -2917,6 +2928,8 @@ export class Registry extends EventEmitter {
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
+    next.steeredTurns = this.steeredTurnsFor(next);
+    next.steerReceipts = this.steerReceiptsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     this.resolveInspectionSummaries(next);
     this.sessions.set(next.id, next);
@@ -3197,6 +3210,8 @@ export class Registry extends EventEmitter {
       if (noteKeyFor(next) !== noteKeyFor(target)) next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
       next.pendingTurns = this.pendingTurnsFor(next);
+      next.steeredTurns = this.steeredTurnsFor(next);
+      next.steerReceipts = this.steerReceiptsFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
       // so resolving here is what makes the chip appear on the same event that
@@ -3345,6 +3360,8 @@ export class Registry extends EventEmitter {
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
     next.pendingTurns = this.pendingTurnsFor(next);
+    next.steeredTurns = this.steeredTurnsFor(next);
+    next.steerReceipts = this.steerReceiptsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     this.rememberAgentSession(next, s.agentSessionId);
     this.ensureWorkEpisode(next);
@@ -6531,6 +6548,18 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Persist several tasks in ONE SQLite transaction, then broadcast each.
+   *
+   * The bulk edit's write. Every row lands or none does, so a failure halfway through a
+   * selection cannot leave some cards edited and the rest not. Broadcasting waits until
+   * the commit, so no dashboard is shown a row that was then rolled back.
+   */
+  upsertTasks(tasks: readonly Task[]): void {
+    const displaced = inTransaction(() => tasks.map((task) => dbUpsertTask(task)));
+    tasks.forEach((task, i) => this.publishTask(task, displaced[i] ?? [], false));
+  }
+
+  /**
    * Broadcast a task that has ALREADY been persisted, without writing it again.
    *
    * The one caller is restart settlement, which has to commit the task row and the adoption
@@ -8337,9 +8366,89 @@ export class Registry extends EventEmitter {
 
   /** Reset cleanup for human turns authored against discarded conversation state. */
   clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
+    // A steer the discarded conversation accepted will never be read by the new one.
+    this.forgetSteers(key);
     const changed = clearPendingTurnsDb(key, preserveIds) > 0;
     if (changed) this.syncSessionsForPendingTurns(key);
     return changed;
+  }
+
+  /**
+   * Keep a steered message on screen after its outbox row retires.
+   *
+   * The outbox manager calls this at the moment it deletes a row the driver accepted as
+   * `steered`, and is the one owner of what happens next: it retires the row when the
+   * transcript shows the message (`retireSteeredTurns`), or clears it when the turn can no
+   * longer read it (`clearSteeredTurns`). Memory only: a restart drops the indicator rather
+   * than resurrecting a message whose receipt nobody is watching for any more.
+   */
+  recordSteeredTurn(key: string, turn: SteeredTurn): void {
+    const list = this.steered.get(key) ?? [];
+    if (list.some((row) => row.id === turn.id)) return;
+    this.steered.set(key, [...list, turn]);
+    this.syncSessionsForSteeredTurns(key);
+  }
+
+  /**
+   * The agent read these: each steer id maps to the transcript turn that shows it.
+   *
+   * The receipt is kept (the last `STEER_RECEIPTS_KEPT`) so the conversation labels the turn
+   * the daemon actually matched, rather than searching its whole log and finding an earlier
+   * message with the same words.
+   */
+  retireSteeredTurns(key: string, receipts: ReadonlyMap<string, string>, at: number): void {
+    const list = this.steered.get(key);
+    if (!list) return;
+    const retired = list.filter((row) => receipts.has(row.id));
+    if (retired.length === 0) return;
+    const remaining = list.filter((row) => !receipts.has(row.id));
+    if (remaining.length > 0) this.steered.set(key, remaining);
+    else this.steered.delete(key);
+    const kept = [
+      ...(this.steerReceipts.get(key) ?? []),
+      ...retired.map((row) => ({ steerId: row.id, messageId: receipts.get(row.id)!, at })),
+    ];
+    this.steerReceipts.set(key, kept.slice(-STEER_RECEIPTS_KEPT));
+    this.syncSessionsForSteeredTurns(key);
+  }
+
+  steeredTurns(key: string): readonly SteeredTurn[] {
+    return this.steered.get(key) ?? [];
+  }
+
+  /**
+   * The agent can no longer read them: its turn ended. Receipts stay, because a turn often
+   * ends right after the step that read the steer, and its label is still owed.
+   */
+  clearSteeredTurns(key: string): void {
+    if (!this.steered.delete(key)) return;
+    this.syncSessionsForSteeredTurns(key);
+  }
+
+  /** The conversation went away or was reset: nothing about its steers applies any more. */
+  forgetSteers(key: string): void {
+    const had = this.steered.delete(key);
+    if (!this.steerReceipts.delete(key) && !had) return;
+    this.syncSessionsForSteeredTurns(key);
+  }
+
+  /** Follow a conversation whose note key rotated, the way its outbox rows do. */
+  moveSteeredTurns(fromKey: string, toKey: string): void {
+    const list = this.steered.get(fromKey);
+    const receipts = this.steerReceipts.get(fromKey);
+    if (!list && !receipts) return;
+    this.steered.delete(fromKey);
+    this.steerReceipts.delete(fromKey);
+    if (list) this.steered.set(toKey, [...(this.steered.get(toKey) ?? []), ...list]);
+    if (receipts) {
+      this.steerReceipts.set(toKey, [...(this.steerReceipts.get(toKey) ?? []), ...receipts].slice(-STEER_RECEIPTS_KEPT));
+    }
+    this.syncSessionsForSteeredTurns(fromKey);
+    this.syncSessionsForSteeredTurns(toKey);
+  }
+
+  hasSteeredTurns(key: string): boolean {
+    return this.steered.has(key);
   }
 
   /** The compact queue view denormalized onto a session card. */
@@ -8358,6 +8467,15 @@ export class Registry extends EventEmitter {
   /** The complete editable outbox projection for one conversation. */
   private pendingTurnsFor(s: Session): PendingTurn[] {
     return listPendingTurns(noteKeyFor(s));
+  }
+
+  /** Absent rather than empty, so the field costs nothing on the sessions without one. */
+  private steeredTurnsFor(s: Session): SteeredTurn[] | undefined {
+    return this.steered.get(noteKeyFor(s));
+  }
+
+  private steerReceiptsFor(s: Session): SteerReceipt[] | undefined {
+    return this.steerReceipts.get(noteKeyFor(s));
   }
 
   /**
@@ -9100,6 +9218,21 @@ export class Registry extends EventEmitter {
     }
   }
 
+  private syncSessionsForSteeredTurns(key: string): void {
+    const steeredTurns = this.steered.get(key);
+    const steerReceipts = this.steerReceipts.get(key);
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      if (
+        JSON.stringify(s.steeredTurns) === JSON.stringify(steeredTurns) &&
+        JSON.stringify(s.steerReceipts) === JSON.stringify(steerReceipts)
+      ) continue;
+      const next = { ...s, steeredTurns, steerReceipts };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   private syncSessionsForPendingTurns(key: string): void {
     const pendingTurns = listPendingTurns(key);
     for (const [id, s] of this.sessions) {
@@ -9394,6 +9527,9 @@ const byJson = <T>(a: T, b: T): boolean => JSON.stringify(a) === JSON.stringify(
  */
 const alwaysEqual = (): boolean => true;
 
+/** Receipts kept per conversation: enough for a burst of steers, never an unbounded log. */
+const STEER_RECEIPTS_KEPT = 5;
+
 /**
  * The identity fields (`id`, `agent`, `tty`, `startedAt`, `firstSeen`) are grouped
  * into a deliberate block up top since they share one reason; everything after
@@ -9479,6 +9615,8 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // quiet, and never surfaces the stranded batch.
   queue: byJson,
   pendingTurns: byJson,
+  steeredTurns: byJson,
+  steerReceipts: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp

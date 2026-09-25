@@ -13,6 +13,12 @@
 
 import { AGENT_IDENTITY } from "./agent.ts";
 import { skillLoadingAgents } from "./harness-capabilities.ts";
+import type { SkillsConfig } from "./protocol.ts";
+
+/** An explicit row choice wins over the catalog-wide default. */
+export function skillEnabled(config: SkillsConfig, id: string): boolean {
+  return config.skills[id] ?? config.defaultSkillEnabled;
+}
 
 /**
  * Every prefix the reconciler has ever created a `~/.claude/skills` directory under,

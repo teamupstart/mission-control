@@ -380,7 +380,7 @@ export function defaultSetupDeps(): SetupDeps {
       return {
         enabled: config.enabled,
         readable: catalog.readable,
-        configured: desiredSkillIds(config, catalog.present).size,
+        configured: desiredSkillIds(config, catalog).size,
         directories,
         problems: [...catalog.problems, ...skillDrift(config, catalog, directories)],
       };

@@ -5,6 +5,7 @@ import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
+  MAX_TASK_DEPENDENCIES,
   TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
@@ -763,7 +764,7 @@ const McpCreateTaskBaseSchema = z.object({
   repoRoot: z.string().min(1),
   title: z.string().min(1).max(200),
   intent: z.string().min(1),
-  dependsOnTaskIds: z.array(z.string().min(1)).max(50).optional().default([]),
+  dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
 });
 
@@ -915,7 +916,7 @@ export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
 
 const TaskDependenciesSchema = z
   .array(TaskDependencyInputSchema)
-  .max(50)
+  .max(MAX_TASK_DEPENDENCIES)
   .superRefine((dependencies, ctx) => {
     const seen = new Set<string>();
     for (let i = 0; i < dependencies.length; i++) {
@@ -1330,6 +1331,84 @@ export const UpdateTaskSchema = z
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
+/**
+ * How many backlog tasks one bulk request may name. Generous for a hand-made selection and
+ * small enough that a runaway client cannot hold the task writer for long.
+ */
+export const BULK_TASK_LIMIT = 200;
+
+const BulkTaskIdsSchema = z
+  .array(z.string().min(1))
+  .min(1)
+  .max(BULK_TASK_LIMIT)
+  .refine((ids) => new Set(ids).size === ids.length, { message: "duplicate task id" });
+
+/**
+ * Change the fixed-choice fields of several backlog tasks at once: the board's bulk edit.
+ *
+ * `set` carries the fields every selected task takes as-is, with `UpdateTaskSchema`'s own
+ * meanings: absent leaves a task's value alone, and `null` clears an override back to the
+ * default. Freeform fields (title, intent) and repositories are not here. They describe one
+ * task, and writing one value over a selection of them would erase the thing that told the
+ * tasks apart.
+ *
+ * `labels` and `dependencies` are EDITS rather than replacements, because the selected
+ * tasks rarely share a list. A replacement would strip every label the operator did not
+ * name. Each task's resulting list is its own list, minus `remove`, plus `add`.
+ *
+ * The daemon applies the change to every task or to none. See `TaskManager.bulkUpdate`.
+ */
+export const BulkUpdateTasksSchema = z
+  .object({
+    taskIds: BulkTaskIdsSchema,
+    set: z
+      .object({
+        kind: z
+          .enum(TASK_KINDS)
+          .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+          .optional(),
+        agent: z.enum(AGENT_TYPES).optional(),
+        enabled: z.boolean().optional(),
+        priority: z.enum(TASK_PRIORITIES).nullable().optional(),
+        model: ModelIdSchema.nullable().optional(),
+        effort: EffortLevelSchema.nullable().optional(),
+        workflowId: z.string().min(1).max(500).nullable().optional(),
+      })
+      .refine(
+        (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
+        { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+      )
+      .optional()
+      .default({}),
+    labels: z
+      .object({
+        add: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
+        remove: z.array(z.string()).max(50).optional().default([]),
+      })
+      .optional(),
+    dependencies: z
+      .object({
+        add: z.array(TaskDependencyInputSchema).max(MAX_TASK_DEPENDENCIES).optional().default([]),
+        remove: z.array(TaskDependencyInputSchema).max(MAX_TASK_DEPENDENCIES).optional().default([]),
+      })
+      .optional(),
+  })
+  .refine(
+    (o) =>
+      Object.keys(o.set).length > 0 ||
+      (o.labels !== undefined && o.labels.add.length + o.labels.remove.length > 0) ||
+      (o.dependencies !== undefined &&
+        o.dependencies.add.length + o.dependencies.remove.length > 0),
+    { message: "empty bulk task update" },
+  );
+export type BulkUpdateTasks = z.infer<typeof BulkUpdateTasksSchema>;
+/** What a caller sends, before the schema's defaults and label normalization run. */
+export type BulkUpdateTasksInput = z.input<typeof BulkUpdateTasksSchema>;
+
+/** Delete several backlog tasks. See `TaskManager.bulkRemove` for why this is not atomic. */
+export const BulkDeleteTasksSchema = z.object({ taskIds: BulkTaskIdsSchema });
+export type BulkDeleteTasks = z.infer<typeof BulkDeleteTasksSchema>;
 
 /** True when this patch only re-describes a task, so no status guard applies. */
 export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
@@ -2135,14 +2214,14 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * have been told about it. Same partial-patch shape as ForemanConfig, over the same
  * `app_config` KV, so a new key needs no migration.
  *
- * Ships with the master switch OFF and nothing enabled: this writes into the
- * operator's global claude config and changes what the model does in every session
- * on the machine, including ones the harness never launched. That is the point of
- * the feature, and it is also why it is never on by default.
+ * An absent Skills record is initialized by the daemon with both switches on.
+ * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
+  /** Missing row overrides use this policy. Legacy stored rows default to off. */
+  defaultSkillEnabled: z.boolean().default(false),
   /** Catalog id -> enabled. Ids absent from the catalog are ignored, not an error. */
   skills: z.record(z.boolean()).default({}),
   /**
@@ -3113,6 +3192,9 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  */
 export const DISPLAY_ITEM_HIDDEN_SEEDS: readonly (readonly string[])[] = [
   ["workflowDetails"],
+  // The conversation's opt-in working marks: with neither checked, the conversation draws
+  // what it drew before they existed.
+  ["workingPinned", "workingProgressBar"],
 ];
 
 /**
@@ -3245,6 +3327,13 @@ export const UI_CONFIG_DEFAULTS = {
    * one flat list per column unchecks it.
    */
   groupBoardByRepo: true,
+  /**
+   * TRUE, so an upgrade changes nothing on screen: the Board has always stowed its empty
+   * columns as chips in an "empty" stash beside the last column. Unchecking it removes that
+   * stash entirely, for an operator who never brings an empty column back and would rather
+   * the board spent those pixels on the columns that hold sessions.
+   */
+  showEmptyColumnStash: true,
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3375,6 +3464,14 @@ export const UiConfigSchema = z.object({
    * only the layout moved.
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
+  /**
+   * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
+   * which puts that column back. Off hides the stash and every chip in it, so an empty column
+   * simply leaves the board. It does not govern the empty "needs you" rail, which is not in
+   * the stash: that column stays as a slim all-clear strip so it can widen in place the moment
+   * something needs you.
+   */
+  showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

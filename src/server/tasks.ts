@@ -20,6 +20,7 @@ import type {
   TaskPriority,
 } from "@shared/types.ts";
 import type {
+  BulkUpdateTasks,
   PipelineAdoptSuccessor,
   PipelineRetry,
   PromptedCompletionDisposition,
@@ -37,6 +38,7 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
@@ -3463,6 +3465,24 @@ export class TaskManager {
    * silently reverted a beat later, in front of an operator who watched their text go in.
    */
   async update(id: string, patch: UpdateTask): Promise<Ok & { task?: Task }> {
+    const prepared = await this.prepareUpdate(id, patch);
+    if (!prepared.ok) return prepared;
+    this.registry.upsertTask(prepared.task);
+    return { ok: true, task: prepared.task };
+  }
+
+  /**
+   * Everything `update` decides, without the write: the row this patch would produce, or
+   * the refusal. Split out so a bulk edit can check every task before it writes any of them.
+   *
+   * `base` is the row the result was built from. A caller that holds the result across
+   * another await compares it against the live row before writing, because the result
+   * carries every field of that row and would otherwise put back anything written since.
+   */
+  private async prepareUpdate(
+    id: string,
+    patch: UpdateTask,
+  ): Promise<{ ok: true; task: Task; base: Task } | { ok: false; error: string }> {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
@@ -3598,8 +3618,142 @@ export class TaskManager {
       workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
       updatedAt: Date.now(),
     };
-    this.registry.upsertTask(next);
-    return { ok: true, task: next };
+    return { ok: true, task: next, base: t };
+  }
+
+  /**
+   * Apply one change to several backlog tasks: all of them, or none.
+   *
+   * Every task is checked by `prepareUpdate`, the same checks a single edit gets, before any
+   * row is written. The first refusal ends the request with the task's title in the message,
+   * so the operator can find the card that stopped it. The rows are then written in one
+   * transaction (`Registry.upsertTasks`).
+   *
+   * Two things a single edit cannot meet need checking here.
+   *
+   *  - A prerequisite that is itself in the selection. Each task's cycle check reads the
+   *    STORED graph, so two selected tasks that each gained the other would each pass on
+   *    their own and deadlock together. The selection's own members are refused as
+   *    prerequisites outright instead.
+   *  - A row written while the others were being checked. Preparation awaits (titling, the
+   *    Mission tools probe), and the prepared rows carry every field of the row they were
+   *    built from. Writing one over a newer row would silently undo that newer write, so
+   *    the whole request is refused and the operator can apply it again. The check compares
+   *    the whole row, not `updatedAt`: two writes in one millisecond share a timestamp, and
+   *    a timestamp match would wave the second one through to be overwritten.
+   *
+   * Backlog only, even for priority and labels, which a single edit allows in any status.
+   * The board only lets backlog cards be selected, and a selection that had partly left
+   * the backlog is one the operator is no longer looking at.
+   */
+  async bulkUpdate(
+    input: BulkUpdateTasks,
+  ): Promise<Ok & { taskId?: string; tasks?: Task[] }> {
+    const selected = new Set(input.taskIds);
+    const circular = input.dependencies?.add.find(
+      (dependency) => dependency.type === "task" && selected.has(dependency.taskId),
+    );
+    if (circular) {
+      return {
+        ok: false,
+        error: "a selected task cannot also be a prerequisite of the selection",
+      };
+    }
+    // `seen` is the exact row each result was built from, serialized as it was read. Every
+    // registry write REPLACES a task object rather than editing it, so any write since shows
+    // up as a different row here, whatever its timestamp says.
+    const prepared: Array<{ task: Task; base: Task; seen: string }> = [];
+    for (const id of input.taskIds) {
+      // Titling rewrites the whole row when it lands, so wait it out BEFORE reading the row
+      // the label and dependency lists are built from. Reading first would build them from a
+      // row that `prepareUpdate` (which waits too) then no longer prepares from.
+      await this.titling.get(id);
+      const t = this.registry.getTask(id);
+      if (!t) return { ok: false, error: "no such task", taskId: id };
+      if (t.status !== "backlog") {
+        return { ok: false, error: `"${t.title}" is ${t.status}, not in the backlog`, taskId: id };
+      }
+      const share = bulkTaskPatch(t, input);
+      if (!share.ok) return { ok: false, error: `"${t.title}" ${share.error}`, taskId: id };
+      const built = JSON.stringify(t);
+      const r = await this.prepareUpdate(id, share.patch);
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: r.error === "no such task" ? r.error : `"${t.title}": ${r.error}`,
+          taskId: id,
+        };
+      }
+      // The lists in the patch replace the task's own, so they are only right for the row
+      // they were built from. A write that landed between building them and preparing would
+      // be erased by them, and the final check below compares against the PREPARED row, so
+      // it would not see it. Refuse here instead.
+      const seen = JSON.stringify(r.base);
+      if (seen !== built) {
+        return {
+          ok: false,
+          error: `"${t.title}" changed while this edit was being checked - apply it again`,
+          taskId: id,
+        };
+      }
+      prepared.push({ task: r.task, base: r.base, seen });
+    }
+    for (const { task, base, seen } of prepared) {
+      const live = this.registry.getTask(task.id);
+      if (!live || live.status !== "backlog" || JSON.stringify(live) !== seen) {
+        return {
+          ok: false,
+          error: `"${base.title}" changed while this edit was being checked - apply it again`,
+          taskId: task.id,
+        };
+      }
+    }
+    const tasks = prepared.map(({ task }) => task);
+    this.registry.upsertTasks(tasks);
+    return { ok: true, tasks };
+  }
+
+  /**
+   * Delete several backlog tasks, one at a time.
+   *
+   * NOT all-or-nothing, and it cannot be. `remove` reclaims resources outside SQLite, and a
+   * reclaimed worktree cannot be put back if a later task refuses. So every id is checked
+   * FIRST (it exists and is still in the backlog), which catches the refusals a selection
+   * can predictably meet. Only then are the tasks removed, and any that still fail are
+   * reported by id beside the ones that went, so the caller can say exactly which cards
+   * are still there.
+   */
+  async bulkRemove(
+    ids: readonly string[],
+  ): Promise<Ok & { removed: string[]; failed: Array<{ taskId: string; error: string }> }> {
+    for (const id of ids) {
+      const t = this.registry.getTask(id);
+      if (!t) return { ok: false, error: "no such task", removed: [], failed: [] };
+      if (t.status !== "backlog") {
+        return {
+          ok: false,
+          error: `"${t.title}" is ${t.status}, not in the backlog`,
+          removed: [],
+          failed: [],
+        };
+      }
+    }
+    const removed: string[] = [];
+    const failed: Array<{ taskId: string; error: string }> = [];
+    for (const id of ids) {
+      const r = await this.remove(id);
+      if (r.ok) removed.push(id);
+      else failed.push({ taskId: id, error: r.error ?? "could not delete the task" });
+    }
+    if (failed.length === 0) return { ok: true, removed, failed };
+    const first = failed[0]!;
+    const title = this.registry.getTask(first.taskId)?.title;
+    return {
+      ok: false,
+      error: `${failed.length} of ${ids.length} could not be deleted${title ? ` - "${title}": ${first.error}` : `: ${first.error}`}`,
+      removed,
+      failed,
+    };
   }
 
   /** Apply only source-owned content, atomically with its accepted comparison baseline. */

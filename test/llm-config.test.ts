@@ -143,7 +143,7 @@ test("Codex background-job defaults are persisted and provider-compatible", () =
   assert.equal(getLlmConfig().runner, "codex");
   assert.deepEqual(llmJobModel("goal"), {
     job: "goal",
-    id: "gpt-5.6-luna",
+    id: "gpt-6-luna",
     source: "default",
     unsupported: null,
   });
@@ -249,7 +249,7 @@ test("a job runs on its own provider, and its neighbours do not move", () => {
     assert.equal(llmJobRunner(job).id, DEFAULT_LLM_RUNNER_ID, `${job} followed goal's override`);
   }
   // ...and the MODEL re-bases onto that provider, or the job spawns Codex with a Claude id.
-  assert.equal(llmJobModel("goal").id, "gpt-5.6-luna");
+  assert.equal(llmJobModel("goal").id, "gpt-6-luna");
   assert.equal(llmJobModel("task-title").id, "claude-haiku-4-5");
 });
 
@@ -361,7 +361,7 @@ test("a model pinned to one provider survives an app-wide provider change", () =
   assert.equal(getLlmConfig().models.goal, "claude-sonnet-5", "the app-wide radio cleared a pin");
   assert.equal(llmJobModel("goal").id, "claude-sonnet-5");
   // Only the Inherit slots re-resolved.
-  assert.equal(llmJobModel("task-title").id, "gpt-5.6-luna");
+  assert.equal(llmJobModel("task-title").id, "gpt-6-luna");
 });
 
 test("a model belonging to another provider falls back to that provider's default, and says so", () => {
@@ -370,7 +370,7 @@ test("a model belonging to another provider falls back to that provider's defaul
   // resolution rather than in the write path. Broken on the build before this one, too.
   setAppConfig(APP_CONFIG_ENTRIES.llm, { runners: { goal: "codex" }, models: { goal: "claude-sonnet-5" } });
   const resolved = llmJobModel("goal");
-  assert.equal(resolved.id, "gpt-5.6-luna", "Codex was handed a Claude model id");
+  assert.equal(resolved.id, "gpt-6-luna", "Codex was handed a Claude model id");
   assert.equal(resolved.unsupported, "claude-sonnet-5", "the dropped id must be reported");
   assert.equal(resolved.source, "default", "a substituted default must not be credited to config");
 });
@@ -408,7 +408,7 @@ test("the status route carries each job's provider beside its model, and Foreman
   assert.deepEqual(Object.keys(status.jobRunners).sort(), [...LLM_JOB_IDS].sort());
   assert.equal(status.jobRunners.goal.id, "codex");
   assert.equal(status.jobRunners["task-title"].id, DEFAULT_LLM_RUNNER_ID);
-  assert.equal(status.models.goal.id, "gpt-5.6-luna", "the per-job model must use the per-job provider");
+  assert.equal(status.models.goal.id, "gpt-6-luna", "the per-job model must use the per-job provider");
   // Foreman reads exactly these three off this payload from another process; widening the
   // shape must not move them.
   assert.equal(status.runner.id, DEFAULT_LLM_RUNNER_ID, "the app-wide runner must stay app-wide");

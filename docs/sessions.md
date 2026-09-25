@@ -347,6 +347,29 @@ written returns the row to `queued`. If text may have landed but pickup cannot b
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
 
+A steered message stays on screen until the agent reads it. The agent takes a steer at its
+next step and only then writes it to the transcript the conversation is drawn from, which
+can be minutes after the driver accepted it. So the row is not removed at acceptance: it
+changes in place to `You · steered · waiting for <agent> to read it`, with how long ago it
+was sent. A terminal row waiting for pickup reads the same way,
+`You · sent · waiting for <agent> to pick it up`. If you scroll up past these rows, a pill
+pinned to the bottom of the log shows the oldest one, and **Jump to it** scrolls back down.
+The daemon owns the receipt. While a steer is waiting, it reads what the agent's transcript
+has appended since the steer was accepted, about twice a second. It retires the steer as
+soon as it finds a user turn whose whole text is the steer, ignoring only whitespace, even
+though the turn is still running. A longer message that merely contains the steer's words,
+or one that differs only by tags the operator typed, is not its receipt.
+The turn's timestamp may be up to five seconds earlier than the moment the driver accepted
+the steer, because the agent can write the line just before that acknowledgement returns.
+An older turn with the same words is an earlier message and never counts. A turn with no
+timestamp counts. The daemon publishes which turn it matched, and the conversation marks
+exactly that turn `✓ received by <agent>` for a few seconds, never an earlier one with the
+same words. If no such turn appears, the steer still leaves when the turn ends, the
+session resets, or the session exits. The dashboard's transcript and the daemon's receipt
+check read the file on separate schedules, so the row and the turn that replaces it can
+change hands up to about a second apart. Steered rows are kept in daemon memory only, so a
+daemon restart drops them.
+
 For Codex terminal sessions, passive rollout reads retain the start of the newest turn even
 when it finishes between reads. A start at or after the message's write boundary confirms pickup;
 the matching idle completion releases the next queued message. A completion without its start,
@@ -1305,6 +1328,28 @@ requirement rather than a preference - the log follows its tail only while you a
 bottom of it, and a row free to wrap would push you out of that window and quietly stop the
 conversation following itself. A change to the reported step leaves a reader at the bottom
 of the log still at the bottom of it.
+
+**The row carries a clock.** At its right edge is how long the current turn has been running,
+counted from the prompt that started it - yours, Foreman's or a workflow's - and ticking once a
+second: `42s`, `2m 14s`, `1h 03m`. A spinner says only that something is happening; the clock
+says for how long, which is what lets you judge at a glance whether a step has run longer than
+it should. The clock is part of the row and cannot be switched off. When a turn has run long enough that
+its prompt is no longer in the loaded part of the log, the row draws no clock rather than a
+smaller, wrong one.
+
+**Two more marks are yours to add**, under **Settings → Display → Session display → Working
+indicator**. Both ship off, so with neither checked the conversation looks exactly as it did
+before, plus the clock, and the panel's preview shows each one as you check it:
+
+- **Pin the working row** keeps the row on the bottom edge of the log while you scroll back
+  through the conversation. At the bottom of the log nothing changes - it is still the last
+  line - but read a few turns back and the row stays in view instead of leaving with the tail.
+- **Reply box progress bar** runs a thin moving bar along the top edge of the reply box (the
+  prompt line, in the terminal drawing) while the session is working. It is readable at a
+  glance without reading anything, and with reduced motion it holds still as a steady line.
+
+Both appear and disappear with the row itself, so neither can say a session is working after
+the row has stopped saying it.
 
 **In the Console detail this replaced a band above the transcript.** The line used to sit in
 fixed chrome at the top of the pane, where it cost the conversation its height whether or

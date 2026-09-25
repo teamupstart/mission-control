@@ -22,7 +22,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 const { readCache, readLegacySettings, writeCache } = await import("../src/web/lib/uiCache.ts");
-const { DISPLAY_ITEM_HIDDEN_SEEDS } = await import("../src/shared/protocol.ts");
+const { DISPLAY_ITEM_HIDDEN_SEEDS, UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
 
 beforeEach(() => store.clear());
 
@@ -51,10 +51,18 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
+  // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
+  assert.equal(config.showEmptyColumnStash, true);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
-  // having previously been unconditional. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
-  assert.deepEqual(config.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  // having previously been unconditional; the two working marks are opt-in additions to the
+  // conversation. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
+  assert.deepEqual(config.hiddenDisplayItems, [
+    "worktree",
+    "workflowDetails",
+    "workingPinned",
+    "workingProgressBar",
+  ]);
 });
 
 test("a written cache round-trips", () => {
@@ -80,6 +88,8 @@ test("a written cache round-trips", () => {
     // for the one operator who turned it off. Asserting the non-default value is the only way
     // round-tripping this field says anything.
     groupBoardByRepo: false,
+    // FALSE for the same reason: it defaults to true.
+    showEmptyColumnStash: false,
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -95,6 +105,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
+  assert.equal(config.showEmptyColumnStash, false);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {
@@ -148,7 +159,7 @@ test("the hidden list is handed back as a fresh array the panel can build a patc
   assert.deepEqual(readCache().hiddenDisplayItems, ["cost"]);
   store.clear();
   readCache().hiddenDisplayItems.push("goal");
-  assert.deepEqual(readCache().hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.deepEqual(readCache().hiddenDisplayItems, [...UI_CONFIG_DEFAULTS.hiddenDisplayItems]);
 });
 
 test("a rendering this build does not ship reads as the shipped one", () => {
@@ -265,8 +276,8 @@ test("an upgraded cache that stored its own list is given the ships-hidden ids o
   const upgraded = readCache();
   assert.deepEqual(
     upgraded.hiddenDisplayItems,
-    ["cost", "workflowDetails"],
-    "an operator who had ever hidden another item would have got Workflow details switched ON",
+    ["cost", "workflowDetails", "workingPinned", "workingProgressBar"],
+    "an operator who had ever hidden another item would have got a ships-off item switched ON",
   );
   // Their own choice is preserved rather than replaced by the default list.
   assert.ok(upgraded.hiddenDisplayItems.includes("cost"));
@@ -279,7 +290,7 @@ test("a record with no list of its own takes the marker without gaining ids twic
   // default already carries every ships-hidden id, so seeding must not append them again.
   store.set("mission-control.ui", JSON.stringify({ layout: "board" }));
   const upgraded = readCache();
-  assert.deepEqual(upgraded.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.deepEqual(upgraded.hiddenDisplayItems, [...UI_CONFIG_DEFAULTS.hiddenDisplayItems]);
   assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
 });
 

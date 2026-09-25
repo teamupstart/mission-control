@@ -35,10 +35,28 @@ function failed(result: Awaited<ReturnType<Run>>): boolean {
   return result.code !== 0 || result.outcomeUnknown || result.overflowed;
 }
 
-function failure(step: string, result: Awaited<ReturnType<Run>>): RemoteProbe<never> {
+/**
+ * Why a step did not answer, in words an operator can act on.
+ *
+ * A child killed by our own timeout arrives from `run` as `code: 1` with empty stderr, so
+ * reading the exit code alone reports "exit 1" - a status git never returned. That is the
+ * sentence a dispatch into a repository whose first fetch needed minutes actually showed,
+ * and nothing in it says the command was simply stopped. So a death is named as one, with
+ * the limit it was given; what git did say, if anything, still follows.
+ */
+function failure(
+  step: string,
+  result: Awaited<ReturnType<Run>>,
+  timeoutMs: number,
+): RemoteProbe<never> {
+  const said = result.stderr.trim();
+  const reason = result.outcomeUnknown
+    ? `${step} was stopped before it finished (it is allowed ${timeoutMs / 1000}s)` +
+      (said ? `: ${said}` : "")
+    : `${step} failed: ${said || `exit ${result.code}`}`;
   return {
     ok: false,
-    reason: `${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`,
+    reason,
     // A killed or overflowed child never reported its own outcome. For a read that only
     // matters as "what is true", that is still an unknown rather than a "no".
     outcomeUnknown: result.outcomeUnknown || result.overflowed,
@@ -132,12 +150,41 @@ export async function originConfigured(
   execute: Run = run,
 ): Promise<RemoteProbe<boolean>> {
   const listed = await execute("git", ["-C", root, "remote"], { timeoutMs: LOCAL_TIMEOUT_MS });
-  if (failed(listed)) return failure("git remote", listed);
+  if (failed(listed)) return failure("git remote", listed, LOCAL_TIMEOUT_MS);
   return { ok: true, value: parseRemoteNames(listed.stdout).includes("origin") };
 }
 
-/** Bring `origin`'s refs up to date, or refuse. Never falls back to what is already local. */
+/**
+ * Bring `origin`'s refs up to date, or refuse. Never falls back to what is already local.
+ *
+ * A repository with no refs at all is refused before anything is fetched. That is what a
+ * `git clone` looks like while it is still downloading - config and `origin` are written
+ * first, refs only once the whole pack has arrived - and it is also a repository that was
+ * `init`ed and given a remote but never fetched. In both, this fetch would be a second full
+ * download of the entire history: into the same object store a running clone is writing,
+ * inside a limit sized for an incremental update. A large repository cannot finish it, so
+ * the dispatch fails after the whole limit, reports only that the child died, and leaves a
+ * few hundred MB of abandoned `tmp_pack_*` behind for every retry. Refusing up front costs
+ * nothing and names the state the repository is actually in.
+ */
 export async function fetchOrigin(root: string, execute: Run = run): Promise<RemoteProbe<void>> {
+  const anyRef = await execute(
+    "git",
+    ["-C", root, "for-each-ref", "--count=1", "--format=%(refname)"],
+    { timeoutMs: LOCAL_TIMEOUT_MS },
+  );
+  // An empty listing is also what a killed child prints, so the flags come first.
+  if (failed(anyRef)) return failure("git for-each-ref", anyRef, LOCAL_TIMEOUT_MS);
+  if (anyRef.stdout.trim() === "") {
+    return {
+      ok: false,
+      reason:
+        "this repository has no commits yet, so fetching origin would download its entire history. " +
+        "If a clone into it is still running, let it finish; if it was never fetched, " +
+        "run `git fetch origin` in it once",
+      outcomeUnknown: false,
+    };
+  }
   // `clone --bare` has no remote.origin.fetch mapping. Explicit remote-tracking refs
   // also keep a mirror clone's fetch from rewriting branches held by linked worktrees.
   const refspec = isBareRepository(root) ? ["--refmap=", "+refs/heads/*:refs/remotes/origin/*"] : [];
@@ -147,7 +194,7 @@ export async function fetchOrigin(root: string, execute: Run = run): Promise<Rem
     });
     if (!failed(fetched)) return { ok: true, value: undefined };
     if (!staleRemoteTrackingRef(fetched) || attempt === MAX_FETCH_ATTEMPTS) {
-      return failure("git fetch origin", fetched);
+      return failure("git fetch origin", fetched, NETWORK_TIMEOUT_MS);
     }
     // The conflicting writer already changed the ref before Git emitted this error, so the
     // next fetch can start immediately from that settled value. A delay is unnecessary.
@@ -179,7 +226,7 @@ export async function currentRemoteDefaultSha(
   const symref = await execute("git", ["-C", root, "ls-remote", "--symref", "origin", "HEAD"], {
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
-  if (failed(symref)) return failure("git ls-remote --symref origin HEAD", symref);
+  if (failed(symref)) return failure("git ls-remote --symref origin HEAD", symref, NETWORK_TIMEOUT_MS);
   const branch = parseSymrefHeadBranch(symref.stdout);
   if (!branch) {
     return {
@@ -205,7 +252,7 @@ export async function currentRemoteDefaultSha(
   // `--quiet` makes a genuine miss an exit 1 with empty stderr, which is byte-identical to
   // a killed child - so the uncertainty flags are read before the exit code.
   if (resolved.outcomeUnknown || resolved.overflowed) {
-    return failure(`git rev-parse ${ref}`, resolved);
+    return failure(`git rev-parse ${ref}`, resolved, LOCAL_TIMEOUT_MS);
   }
   const local = resolved.stdout.trim();
   if (resolved.code !== 0 || !FULL_SHA.test(local)) {
@@ -230,7 +277,7 @@ export async function currentRemoteDefaultSha(
     const remembered = await execute("git", ["-C", root, "symbolic-ref", "refs/remotes/origin/HEAD", ref], {
       timeoutMs: LOCAL_TIMEOUT_MS,
     });
-    if (failed(remembered)) return failure("record origin's default branch", remembered);
+    if (failed(remembered)) return failure("record origin's default branch", remembered, LOCAL_TIMEOUT_MS);
   }
   return { ok: true, value: advertised };
 }

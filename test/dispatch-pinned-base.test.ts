@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -224,9 +224,108 @@ test("a configured origin that cannot be fetched fails rather than falling back 
   await assert.rejects(resolveDispatchBase(clone), /could not freeze .*remote default branch/);
 });
 
+type Execute = NonNullable<Parameters<typeof fetchOrigin>[1]>;
+
+/**
+ * A stub for the fetch itself, in a repository that already has refs. `fetchOrigin` asks
+ * for one ref before it fetches anything, and every case below is about what happens after.
+ */
+function withLocalRefs(fetch: Execute): Execute {
+  return async (bin, args, opts) =>
+    args.includes("for-each-ref")
+      ? { stdout: "refs/heads/main\n", stderr: "", code: 0, outcomeUnknown: false, overflowed: false }
+      : fetch(bin, args, opts);
+}
+
+// A `git clone` writes its config and `origin` first and its refs only once the whole pack
+// has arrived. A dispatch into it in between used to start a second full-history download
+// beside the clone's, which a large repository cannot finish inside the fetch limit: the
+// task went back to Backlog 30s later reading "git fetch origin failed: exit 1", with a few
+// hundred MB of abandoned `tmp_pack_*` left in the repository for each attempt.
+for (const layout of ["bare", "non-bare"] as const) {
+  test(`a ${layout} clone that has no refs yet is refused before anything is fetched`, async () => {
+    const { origin } = mkRemote(`still-cloning-${layout}`);
+    const cloning = join(home, `still-cloning-${layout}${layout === "bare" ? ".git" : ""}`);
+    execFileSync("git", ["init", "-q", ...(layout === "bare" ? ["--bare"] : []), cloning]);
+    git(cloning, "remote", "add", "origin", origin);
+
+    await assert.rejects(
+      resolveDispatchBase(cloning),
+      (error: Error) => {
+        assert.match(error.message, /could not freeze .*remote default branch/);
+        assert.match(error.message, /this repository has no commits yet/);
+        assert.match(error.message, /If a clone into it is still running, let it finish/);
+        assert.match(error.message, /nothing was provisioned, so this can be retried/);
+        return true;
+      },
+    );
+    // Refused rather than attempted: no ref arrived and no pack was started.
+    assert.equal(git(cloning, "for-each-ref"), "");
+    const objects = layout === "bare" ? join(cloning, "objects") : join(cloning, ".git", "objects");
+    assert.equal(git(cloning, "count-objects"), "0 objects, 0 kilobytes");
+    assert.deepEqual(readdirSync(join(objects, "pack")), []);
+
+    // Once the clone has its refs, the same repository dispatches normally. A bare clone's
+    // refs are its branches; an ordinary clone's are remote-tracking.
+    if (layout === "bare") git(cloning, "fetch", "-q", "origin", "+refs/heads/*:refs/heads/*");
+    else git(cloning, "fetch", "-q", "origin");
+    assert.equal(await resolveDispatchBase(cloning), git(origin, "rev-parse", "main"));
+  });
+}
+
+test("the empty-repository probe asks git once and never reaches the fetch", async () => {
+  const asked: string[][] = [];
+  const result = await fetchOrigin("/anywhere", async (_bin, args) => {
+    asked.push(args);
+    return { stdout: "", stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.outcomeUnknown, false);
+  assert.deepEqual(asked, [["-C", "/anywhere", "for-each-ref", "--count=1", "--format=%(refname)"]]);
+
+  // An empty listing is also what a killed child prints. That is not proof of an empty
+  // repository, so it is reported as the unanswered question it is.
+  const killed = await fetchOrigin("/anywhere", async () => ({
+    stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false,
+  }));
+  assert.equal(killed.ok, false);
+  assert.equal(killed.ok === false && killed.outcomeUnknown, true);
+  assert.match(killed.ok === false ? killed.reason : "", /^git for-each-ref was stopped before it finished/);
+});
+
+test("a fetch stopped by its time limit says so instead of reporting an exit git never returned", async () => {
+  // Exactly what `run` hands back for a child it killed at `timeoutMs`: code 1, no stderr.
+  const result = await fetchOrigin("/anywhere", withLocalRefs(async () => ({
+    stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false,
+  })));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.outcomeUnknown, true);
+  assert.equal(
+    result.ok === false ? result.reason : "",
+    "git fetch origin was stopped before it finished (it is allowed 30s)",
+  );
+
+  // Whatever git managed to say before it was stopped is kept.
+  const partial = await fetchOrigin("/anywhere", withLocalRefs(async () => ({
+    stdout: "", stderr: "remote: Enumerating objects: 12\n", code: 1, outcomeUnknown: true, overflowed: false,
+  })));
+  assert.equal(
+    partial.ok === false ? partial.reason : "",
+    "git fetch origin was stopped before it finished (it is allowed 30s): remote: Enumerating objects: 12",
+  );
+
+  // A refusal git DID report keeps its own words.
+  const refused = await fetchOrigin("/anywhere", withLocalRefs(async () => ({
+    stdout: "", stderr: "", code: 128, outcomeUnknown: false, overflowed: false,
+  })));
+  assert.equal(refused.ok === false ? refused.reason : "", "git fetch origin failed: exit 128");
+});
+
 test("a stale-ref fetch race is retried because the competing fetch already made progress", async () => {
   let attempts = 0;
-  const result = await fetchOrigin("/anywhere", async () => {
+  const result = await fetchOrigin("/anywhere", withLocalRefs(async () => {
     attempts += 1;
     return attempts === 1
       ? {
@@ -239,7 +338,7 @@ test("a stale-ref fetch race is retried because the competing fetch already made
           overflowed: false,
         }
       : { stdout: "", stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
-  });
+  }));
 
   assert.deepEqual(result, { ok: true, value: undefined });
   assert.equal(attempts, 2);
@@ -247,7 +346,7 @@ test("a stale-ref fetch race is retried because the competing fetch already made
 
 test("a fetch refusal that is not a stale-ref race is not retried", async () => {
   let attempts = 0;
-  const result = await fetchOrigin("/anywhere", async () => {
+  const result = await fetchOrigin("/anywhere", withLocalRefs(async () => {
     attempts += 1;
     return {
       stdout: "",
@@ -256,7 +355,7 @@ test("a fetch refusal that is not a stale-ref race is not retried", async () => 
       outcomeUnknown: false,
       overflowed: false,
     };
-  });
+  }));
 
   assert.equal(result.ok, false);
   assert.equal(attempts, 1);
@@ -264,7 +363,7 @@ test("a fetch refusal that is not a stale-ref race is not retried", async () => 
 
 test("a stale non-origin ref refusal is not retried", async () => {
   let attempts = 0;
-  const result = await fetchOrigin("/anywhere", async () => {
+  const result = await fetchOrigin("/anywhere", withLocalRefs(async () => {
     attempts += 1;
     return {
       stdout: "",
@@ -275,7 +374,7 @@ test("a stale non-origin ref refusal is not retried", async () => {
       outcomeUnknown: false,
       overflowed: false,
     };
-  });
+  }));
 
   assert.equal(result.ok, false);
   assert.equal(attempts, 1);
@@ -283,7 +382,7 @@ test("a stale non-origin ref refusal is not retried", async () => {
 
 test("stale-ref retries stay bounded", async () => {
   let attempts = 0;
-  const result = await fetchOrigin("/anywhere", async () => {
+  const result = await fetchOrigin("/anywhere", withLocalRefs(async () => {
     attempts += 1;
     return {
       stdout: "",
@@ -294,7 +393,7 @@ test("stale-ref retries stay bounded", async () => {
       outcomeUnknown: false,
       overflowed: false,
     };
-  });
+  }));
 
   assert.equal(result.ok, false);
   assert.equal(attempts, 3);

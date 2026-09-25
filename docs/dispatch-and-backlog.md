@@ -648,6 +648,45 @@ launch refusals outside that resource phase also remain failed, and once any lau
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
 
+### Edit or delete several shelved tasks at once
+
+On the [Board](ui.md#layout-console-or-board-in-settings)'s Backlog column, **select several
+cards and change them together**:
+
+- **`Cmd`-click** (or **`Ctrl`-click**) a card to add it to the selection or take it out.
+- **`Shift`-click** a card to select every card between it and the last one you clicked, in
+  the column's order.
+- **Drag from empty column space** to draw a selection box. Every card it touches joins the
+  selection. The box starts from the gaps between cards, the column's side margin, or the space
+  under the last card; a drag that starts on a card still reorders or assigns that card.
+- Each card has a checkbox in its corner. It shows on hover and on focus, and on every card
+  once anything is selected. Tab to it and press `Space` to select without a mouse.
+- `Esc` inside the column, **Clear**, or a click on empty column space clears the selection,
+  and `Cmd`-`A` (or `Ctrl`-`A`) inside the column selects every card. A plain click still
+  opens the one card you clicked, selection or not.
+
+While anything is selected, a bar under the column offers **Edit N tasks…** and **Delete…**.
+
+**Edit N tasks…** opens a dialog over the fixed-choice fields: priority, labels, autopilot,
+kind, agent, model, effort, After work, and dependencies. Every field starts on **Leave as
+is**, and the text beside it says what the selected tasks hold now (`all High`, or
+`Medium ×2, unset ×1`), so a change never lands on a value you didn't know was there. Only the
+fields you change are written. Labels and dependencies are added and removed, never replaced:
+type a label to add it to every task, click an existing label to remove it from every task that
+has it, and a task's other labels stay. The same goes for prerequisites, and a task in the
+selection can't be made a prerequisite of the selection. Model and effort offer specific
+choices only when every selected task will run the same agent, because a model id means nothing
+to a different harness. With mixed agents you can still put them back on the harness default,
+or set **Agent** first. Title, task text, and repositories stay one task at a time.
+
+**Apply** writes the change to every selected task or to none. If any task refuses, for example
+because it left the backlog while the dialog was open or its agent can't run the chosen effort,
+nothing changes and the dialog says which task stopped it.
+
+**Delete…** asks once, in the bar, and then removes the selected tasks. Every task is checked
+before any is removed, so a selection that includes a task that has left the backlog deletes
+nothing. A task that still fails to go after that check is reported, and the rest are removed.
+
 ### When a task's agent goes away
 
 Kill a session with <kbd>k</kbd>, close its terminal, or let the agent exit by itself, and

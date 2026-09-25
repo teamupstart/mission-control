@@ -3,6 +3,7 @@ import type {
   ForemanEpisode,
   PendingTurn,
   ReviewItem,
+  SteeredTurn,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -32,8 +33,10 @@ import {
   type PendingTurnHold,
   RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
   recallPendingTurnIntoDraft,
+  sentAgo,
   shouldRecallPendingTurn,
 } from "../lib/pending-turns.ts";
+import { steeredTurnReceipt } from "@shared/message-delivery.ts";
 import {
   appendLive,
   backAnchor,
@@ -110,6 +113,113 @@ const RECONNECT_MAX_MS = 8000;
  */
 const TURN_FLASH_MS = 2000;
 const EMPTY_FILE_PATHS: ReadonlySet<string> = new Set();
+const NO_STEERED_TURNS: readonly SteeredTurn[] = [];
+const NO_IDS: ReadonlySet<string> = new Set();
+/** How long a transcript turn says "received" after it replaced a steered row. */
+const STEER_RECEIVED_MS = 4000;
+/** How long a steer the daemon stopped tracking can still be matched to the turn it became. */
+const STEER_WATCH_MS = 120_000;
+
+/** A clock for "sent 0:42 ago", running only while something on screen is counting. */
+function useSecondClock(active: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/**
+ * The transcript turns that just replaced a steered row, so each can say it was received.
+ *
+ * Decoration only: whether a steer is still waiting is the daemon's answer, and the row
+ * leaves when the daemon retires it. This names WHICH log turn to mark, with the daemon's
+ * own matching rule. It remembers every steer it has seen, because the daemon's retirement
+ * and this log's copy of the turn arrive on different streams, in either order. The label
+ * is transient on purpose - it marks the handoff, not the message.
+ */
+function useSteerReceipts(
+  steered: readonly SteeredTurn[],
+  messages: readonly TranscriptMessage[],
+): ReadonlySet<string> {
+  const watched = useRef(new Map<string, SteeredTurn>());
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const [received, setReceived] = useState<ReadonlySet<string>>(NO_IDS);
+  useEffect(() => {
+    for (const turn of steered) watched.current.set(turn.id, turn);
+    const hits: string[] = [];
+    const now = Date.now();
+    for (const [id, turn] of watched.current) {
+      const hit = steeredTurnReceipt(turn, messages);
+      if (hit) {
+        hits.push(hit);
+        watched.current.delete(id);
+      } else if (now - turn.acceptedAt > STEER_WATCH_MS && !steered.some((row) => row.id === id)) {
+        watched.current.delete(id);
+      }
+    }
+    if (hits.length === 0) return;
+    setReceived((prev) => new Set([...prev, ...hits]));
+    const timer = setTimeout(() => {
+      timers.current.delete(timer);
+      setReceived((prev) => {
+        const next = new Set(prev);
+        for (const hit of hits) next.delete(hit);
+        return next;
+      });
+    }, STEER_RECEIVED_MS);
+    timers.current.add(timer);
+  }, [steered, messages]);
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      for (const timer of pending) clearTimeout(timer);
+    };
+  }, []);
+  return received;
+}
+
+/**
+ * Whether every message on its way to the agent is scrolled out of the log's view.
+ *
+ * Those rows sit at the log's tail, so a reader who scrolled up has left them behind; the
+ * log then pins a pill to its bottom edge instead. Observed rather than computed from
+ * scroll offsets, because a row's height changes with wrapping and nothing else here needs
+ * to know it.
+ */
+function useOffscreenInFlight(
+  logRef: React.RefObject<HTMLDivElement | null>,
+  ids: readonly string[],
+): boolean {
+  const [offscreen, setOffscreen] = useState(false);
+  const key = ids.join("\n");
+  useEffect(() => {
+    const root = logRef.current;
+    const rows = key && root
+      ? key.split("\n")
+        .map((id) => root.querySelector(`[data-in-flight="${CSS.escape(id)}"]`))
+        .filter((row): row is Element => row !== null)
+      : [];
+    if (!root || rows.length === 0 || typeof IntersectionObserver === "undefined") {
+      setOffscreen(false);
+      return;
+    }
+    const visible = new Set<Element>();
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) visible.add(entry.target);
+        else visible.delete(entry.target);
+      }
+      setOffscreen(visible.size === 0);
+    }, { root });
+    for (const row of rows) observer.observe(row);
+    return () => observer.disconnect();
+  }, [logRef, key]);
+  return offscreen;
+}
 
 /**
  * Imperative surface the detail holds so the send shortcut can reach this panel's reply box.
@@ -930,6 +1040,30 @@ export function TranscriptPanel({
   const latestEditable = latestEditablePendingTurn(session.pendingTurns);
 
   /**
+   * Steered messages the agent has not read yet, exactly as the daemon says. It owns the
+   * receipt: it retires a steer when the transcript shows it, so nothing here re-decides it.
+   */
+  const steered = session.steeredTurns ?? NO_STEERED_TURNS;
+  // A steered row can arrive one upsert before the refresh that retires its outbox row.
+  const outboxRows = session.pendingTurns.filter((turn) => !steered.some((row) => row.id === turn.id));
+  const received = useSteerReceipts(steered, messages);
+  const sendingRows = outboxRows.filter((turn) => turn.state === "sending");
+  const inFlight = [
+    ...steered.map((turn) => ({ id: turn.id, label: "Steered", text: turn.text, since: turn.acceptedAt })),
+    ...sendingRows.map((turn) => ({ id: turn.id, label: "Sent", text: turn.text, since: turn.claimedAt ?? turn.updatedAt })),
+  ];
+  const inFlightPill = inFlight[0] ? { ...inFlight[0], more: inFlight.length - 1 } : null;
+  const pinned = useOffscreenInFlight(logRef, inFlight.map((row) => row.id));
+  const inFlightClock = useSecondClock(inFlight.length > 0);
+
+  function jumpToLatest(): void {
+    const el = logRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    atBottom.current = true;
+  }
+
+  /**
    * The conversation itself - the log and the box you answer it in.
    *
    * Held in a variable rather than duplicated down two branches so the terminal frame can
@@ -1045,6 +1179,7 @@ export function TranscriptPanel({
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                   flashed={row.id === flashedTurnId}
+                  receivedBy={received.has(row.message.id) ? agentLabel : undefined}
                 />
               ),
         )}
@@ -1057,10 +1192,16 @@ export function TranscriptPanel({
             would read as already answered - the log would show messages, then the work
             that supposedly followed them, when in fact that work is what has to finish
             before any of them is delivered. */}
-        {session.pendingTurns.map((turn) => (
+        {/* Before the outbox rows: these were delivered ahead of anything still queued. */}
+        {steered.map((turn) => (
+          <SteeredTurnView key={turn.id} turn={turn} agentLabel={agentLabel} now={inFlightClock} />
+        ))}
+        {outboxRows.map((turn) => (
           <PendingTurnView
             key={turn.id}
             turn={turn}
+            agentLabel={agentLabel}
+            now={inFlightClock}
             editable={latestEditable?.id === turn.id}
             busy={pendingAction === turn.id}
             hold={pendingTurnHold(turn, session)}
@@ -1073,6 +1214,22 @@ export function TranscriptPanel({
           />
         ))}
           </div>
+          {/* A sibling of the log, so it floats over the log's bottom edge instead of
+              scrolling with it: the row it stands for is below the reader, and this is
+              how a message on its way stays in view until the agent reads it. */}
+          {pinned && inFlightPill && (
+            <Tooltip label="Scroll to the message that is on its way to the agent">
+              <button type="button" className="in-flight-pill" onClick={jumpToLatest}>
+                <span className="in-flight-pulse" aria-hidden />
+                <span className="in-flight-pill-label">
+                  {inFlightPill.label} {sentAgo(inFlightPill.since, inFlightClock)}
+                  {inFlightPill.more > 0 && ` · +${inFlightPill.more}`}
+                </span>
+                <span className="in-flight-pill-text">{inFlightPill.text}</span>
+                <span className="in-flight-pill-jump">Jump to it ↓</span>
+              </button>
+            </Tooltip>
+          )}
         </div>
         {/* Sibling of the log wrapper, not a child of it: `.find-split` is the flex row
             that gives the rail its 244px column, and the container query that stacks it
@@ -1507,6 +1664,8 @@ function InProgressRow({
 export function PendingTurnView({
   turn,
   editable,
+  agentLabel,
+  now,
   busy = false,
   hold = null,
   onEdit,
@@ -1517,6 +1676,10 @@ export function PendingTurnView({
 }: {
   turn: PendingTurn;
   editable: boolean;
+  /** Who will read it; a sending row says it is waiting on them by name. */
+  agentLabel?: string;
+  /** The panel's shared clock, for how long a sending row has been on its way. */
+  now?: number;
   busy?: boolean;
   /** What is withholding this row from the agent, if anything. See `pendingTurnHold`. */
   hold?: PendingTurnHold;
@@ -1526,20 +1689,32 @@ export function PendingTurnView({
   onGoToReview?: () => void;
   deliveryControls?: React.ReactNode;
 }): React.JSX.Element {
+  // Crossed the boundary and waiting for pickup: the same claim a steered row makes, drawn
+  // the same way, so a terminal delivery and a steer read alike while they are on their way.
+  const inFlight = turn.state === "sending" && !hold;
   return (
     <div
       className={`turn turn-user pending-turn is-${turn.state}${hold ? " is-held" : ""}`}
       data-pending-state={turn.state}
       data-pending-held={hold ?? undefined}
+      data-in-flight={inFlight ? turn.id : undefined}
     >
       <div className="turn-role pending-turn-role">
         <span>You</span>
+        {inFlight && <span className="in-flight-pulse" aria-hidden />}
         <span className="pending-turn-state" role="status">
-          {hold ? PENDING_TURN_HELD_STATUS : pendingTurnStatus(turn)}
+          {hold
+            ? PENDING_TURN_HELD_STATUS
+            : inFlight
+            ? `sent · waiting for ${agentLabel ?? "the agent"} to pick it up`
+            : pendingTurnStatus(turn)}
         </span>
       </div>
       <div className="turn-text">{turn.text}</div>
       <div className="pending-turn-actions">
+        {inFlight && now !== undefined && (
+          <span className="in-flight-age">Sent {sentAgo(turn.claimedAt ?? turn.updatedAt, now)} ago</span>
+        )}
         {deliveryControls}
         {turn.state === "queued" && editable && (
           <Tooltip label="Move this queued message back into the reply box">
@@ -1600,6 +1775,38 @@ export function PendingTurnView({
   );
 }
 
+/**
+ * A message the agent accepted into its running turn and has not read yet.
+ *
+ * Deliberately the queued row's own shape, in the same place, so the row the operator
+ * steered is the row they watch: only its state line changes, from queued to steered, and
+ * then the transcript turn that proves it was read takes its place.
+ */
+export function SteeredTurnView({ turn, agentLabel, now }: {
+  turn: SteeredTurn;
+  agentLabel: string;
+  now: number;
+}): React.JSX.Element {
+  return (
+    <div className="turn turn-user pending-turn is-steered" data-in-flight={turn.id}>
+      <div className="turn-role pending-turn-role">
+        <span>You</span>
+        <span className="in-flight-pulse" aria-hidden />
+        <span className="pending-turn-state" role="status">
+          steered · waiting for {agentLabel} to read it
+        </span>
+      </div>
+      <div className="turn-text">{turn.text}</div>
+      <div className="pending-turn-actions">
+        <span className="in-flight-age">Sent {sentAgo(turn.acceptedAt, now)} ago</span>
+        {/* Prose, not a byline: the speaker id is lowercase and only the byline's
+            small caps disguise it, so the sentence names the agent properly. */}
+        <span>{agentLabel.charAt(0).toUpperCase() + agentLabel.slice(1)} reads steering at its next step</span>
+      </div>
+    </div>
+  );
+}
+
 function Turn({
   m,
   sessionId,
@@ -1610,6 +1817,7 @@ function Turn({
   filePaths,
   find,
   flashed,
+  receivedBy,
 }: {
   m: TranscriptMessage;
   sessionId: string;
@@ -1621,6 +1829,8 @@ function Turn({
   find?: RowFind | null;
   /** The "Yours" rail just jumped here, so say so briefly. */
   flashed?: boolean;
+  /** This turn just replaced a steered row: who read it, said briefly. */
+  receivedBy?: string;
 }): React.JSX.Element {
   const [richText] = useRichText();
   const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
@@ -1663,7 +1873,7 @@ function Turn({
     // moving between them is told nothing about which is which. The name is the byline
     // already drawn below, so it repeats one word rather than the message.
     <article
-      className={`turn turn-${m.origin ?? m.role}${flashed ? " is-flashed" : ""}`}
+      className={`turn turn-${m.origin ?? m.role}${flashed ? " is-flashed" : ""}${receivedBy ? " is-received" : ""}`}
       aria-label={who}
       data-turn-id={m.id}
     >
@@ -1671,6 +1881,7 @@ function Turn({
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
         {who}
+        {receivedBy && <span className="turn-received" role="status">✓ received by {receivedBy}</span>}
         <ConversationTimestamp at={m.ts} className="turn-time" />
       </div>
       {m.text && (

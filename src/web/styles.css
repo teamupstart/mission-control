@@ -7947,8 +7947,91 @@ kbd {
   border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
   padding-left: 9px;
 }
-.pending-turn.is-sending {
-  opacity: 0.72;
+/* On its way: accepted into the running turn (steered) or pasted and awaiting pickup
+   (sending). The border goes solid - it has left the outbox - and a pulse beside the state
+   line says it is still in motion until the transcript turn that proves it arrives. */
+.pending-turn.is-sending,
+.pending-turn.is-steered {
+  border-left-style: solid;
+  border-left-color: var(--working);
+}
+.in-flight-pulse {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: in-flight-pulse 1.6s ease-out infinite;
+}
+@keyframes in-flight-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--working) 60%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .in-flight-pulse {
+    animation: none;
+  }
+}
+.in-flight-age {
+  color: var(--working);
+  font-weight: 500;
+}
+/* The transcript turn that just replaced a steered row, for the few seconds it says so. */
+.turn-received {
+  margin-left: 7px;
+  color: var(--idle);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.turn.is-received .turn-text {
+  border-color: color-mix(in oklab, var(--idle) 45%, var(--border-soft));
+}
+/* Floats over the log's bottom edge while every in-flight row is scrolled out of view.
+   Anchored to `.find-logwrap` (position: relative), not inside the scroller, so it stays
+   put while the reader scrolls. */
+.in-flight-pill {
+  position: absolute;
+  left: 8px;
+  right: 12px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 12px;
+  font: 11.5px/1.3 var(--sans);
+  color: var(--muted);
+  text-align: left;
+  background: color-mix(in oklab, var(--working) 16%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border));
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+  cursor: pointer;
+}
+.in-flight-pill:hover,
+.in-flight-pill:focus-visible {
+  border-color: var(--working);
+  outline: none;
+}
+.in-flight-pill-label {
+  flex: none;
+  color: var(--working);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.in-flight-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.in-flight-pill-jump {
+  flex: none;
+  margin-left: auto;
+  color: var(--working);
+  white-space: nowrap;
 }
 .pending-turn.is-uncertain {
   border-left-color: var(--attention);

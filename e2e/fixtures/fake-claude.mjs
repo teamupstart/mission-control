@@ -101,6 +101,11 @@ const HELD_TURN_MS = Number(process.env.MC_E2E_CLAUDE_HELD_TURN_MS ?? 5_000);
 // without adding ten seconds to every spec that uses the ordinary held turn.
 const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
 const REVIEW_HELD_TURN_MS = 15_000;
+// A steer this CLI takes into the open turn at once but only READS after a delay, which is
+// what the real CLI does when it folds a message in at its next step boundary. The
+// transcript line is the receipt the dashboard waits for, so it is the part delayed.
+const DEFERRED_STEER = "read this steer at your next step";
+const DEFERRED_STEER_READ_MS = Number(process.env.MC_E2E_CLAUDE_STEER_READ_MS ?? 8_000);
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -1191,6 +1196,11 @@ rl.on("line", (line) => {
           ? raw.filter((b) => b?.type === "text").map((b) => b.text).join("\n")
           : "";
 
+    if (openTurn && prompt.includes(DEFERRED_STEER)) {
+      openTurn.prompts.push(prompt);
+      setTimeout(() => appendTurn("user", prompt), DEFERRED_STEER_READ_MS);
+      return;
+    }
     appendTurn("user", prompt);
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 

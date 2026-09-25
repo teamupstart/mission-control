@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Show a steered message until the agent receives it</title>
+<style>
+  :root {
+    --page-bg: #ffffff; --page-fg: #1c2128; --page-muted: #57606a; --page-border: #d0d7de;
+    --page-code: #f6f8fa; --page-accent: #0969da;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1117; --page-fg: #e6edf3; --page-muted: #8d96a0; --page-border: #30363d;
+      --page-code: #161b22; --page-accent: #4493f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page-bg); color: var(--page-fg); font: 15px/1.6 var(--sans); }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  h2 { font-size: 21px; margin: 40px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--page-border); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  code { font: 13px var(--mono); background: var(--page-code); padding: 1px 5px; border-radius: 5px; }
+  p, li { max-width: 78ch; }
+  .lede { color: var(--page-muted); }
+  .verdict { border-left: 4px solid var(--page-accent); background: var(--page-code); padding: 10px 14px; border-radius: 6px; }
+  .pros li::marker { color: var(--page-accent); }
+
+  /* ---- mock-up frames: always the app's own dark palette ---- */
+  .app {
+    --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --agent: #d97757;
+    color-scheme: dark;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid #2d3440; border-radius: 12px; overflow: hidden;
+    font: 13px/1.5 var(--sans);
+  }
+  .frames { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 14px 0 8px; }
+  .frame-cap { font: 600 12px/1.3 var(--sans); color: var(--page-muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; }
+  .head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--working); flex: none; }
+  .head .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head .state { color: var(--working); font-size: 11px; margin-left: auto; white-space: nowrap; }
+  .log { position: relative; height: 300px; overflow: hidden; padding: 12px; display: flex; flex-direction: column; gap: 10px; justify-content: flex-end; }
+  .log.scrolled { justify-content: flex-start; }
+  .role { display: flex; align-items: baseline; gap: 7px; font: 600 10px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+  .role .t { margin-left: auto; font: 500 9.5px/1 var(--mono); letter-spacing: 0; text-transform: none; }
+  .asst .role { color: color-mix(in oklab, var(--agent) 70%, var(--muted)); }
+  .bubble { white-space: pre-wrap; background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 9px; padding: 7px 10px; font-size: 12.5px; }
+  .user .bubble { background: color-mix(in oklab, var(--working) 10%, var(--bg-2)); border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft)); }
+  .progress { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .progress .who { font: 600 10px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: color-mix(in oklab, var(--agent) 70%, var(--muted)); }
+  .progress .spin { color: var(--working); font-size: 10px; }
+  .compose { border-top: 1px solid var(--border); background: var(--panel); padding: 10px 12px; }
+  .compose .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); color: var(--dim); padding: 8px 10px; font-size: 12.5px; }
+
+  /* pending / steered row (mock-up A) */
+  .pending { border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border)); padding-left: 9px; }
+  .steered { border-left-style: solid; border-left-color: var(--working); }
+  .state-txt { color: var(--working); font-weight: 500; letter-spacing: .04em; }
+  .pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--working); box-shadow: 0 0 0 0 color-mix(in oklab, var(--working) 60%, transparent); animation: pulse 1.6s ease-out infinite; flex: none; align-self: center; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--working) 60%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+  .meta { font-size: 10.5px; color: var(--dim); margin-top: 5px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .meta b { color: var(--working); font-weight: 500; }
+  .ok { color: var(--idle); }
+  .received .bubble { border-color: color-mix(in oklab, var(--idle) 40%, var(--border-soft)); }
+  .received { border-left: 2px solid var(--idle); padding-left: 9px; }
+  .sticky-pill { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; align-items: center; gap: 8px; background: color-mix(in oklab, var(--working) 16%, var(--panel)); border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border)); border-radius: 999px; padding: 6px 12px; font-size: 11.5px; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  .sticky-pill .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); min-width: 0; }
+  .sticky-pill .lbl { color: var(--working); font-weight: 600; white-space: nowrap; }
+  .sticky-pill .jump { margin-left: auto; color: var(--working); white-space: nowrap; }
+  .fade { opacity: .55; }
+
+  /* tray (mock-up B) */
+  .tray { border: 1px solid color-mix(in oklab, var(--working) 40%, var(--border)); border-bottom: 0; background: color-mix(in oklab, var(--working) 9%, var(--panel)); border-radius: 8px 8px 0 0; padding: 7px 10px; margin: 0 2px; display: grid; gap: 5px; }
+  .tray-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; min-width: 0; }
+  .tray-row .lbl { color: var(--working); font-weight: 600; white-space: nowrap; }
+  .tray-row .txt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .tray-row .lbl.ok { color: var(--idle); }
+  .tray-row .age { margin-left: auto; font: 500 10.5px var(--mono); color: var(--dim); white-space: nowrap; }
+  .tray-head { font: 600 9.5px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  .tray.done { border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); background: color-mix(in oklab, var(--idle) 9%, var(--panel)); }
+  .tray + .box { border-top-left-radius: 0; border-top-right-radius: 0; }
+  .flash { outline: 2px solid color-mix(in oklab, #e3b341 85%, transparent); outline-offset: 2px; border-radius: 9px; }
+
+  /* chip (mock-up C) */
+  .chip { display: inline-flex; align-items: center; gap: 6px; font: 600 10.5px/1 var(--sans); color: var(--working); background: color-mix(in oklab, var(--working) 14%, var(--panel)); border: 1px solid color-mix(in oklab, var(--working) 40%, var(--border)); border-radius: 999px; padding: 4px 8px; white-space: nowrap; }
+  .chip.done { color: var(--idle); background: color-mix(in oklab, var(--idle) 12%, var(--panel)); border-color: color-mix(in oklab, var(--idle) 40%, var(--border)); }
+  .pop { position: absolute; right: 12px; top: 8px; width: 240px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font-size: 11.5px; box-shadow: 0 10px 24px rgba(0,0,0,.55); z-index: 2; }
+  .pop .q { color: var(--fg); margin: 4px 0 6px; }
+  .pop .m { color: var(--dim); font-size: 10.5px; }
+  .ghost { border: 1px dashed color-mix(in oklab, var(--working) 35%, var(--border)); border-radius: 9px; padding: 6px 10px; color: var(--dim); font-size: 11.5px; display: flex; gap: 8px; align-items: center; }
+  .board { padding: 12px; display: grid; gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; }
+  .card .top { display: flex; align-items: center; gap: 8px; }
+  .card .name { font-weight: 600; font-size: 12.5px; }
+  .card .sub { color: var(--dim); font-size: 11px; }
+  .card.idle .dot { background: var(--idle); }
+</style>
+</head>
+<body>
+<main>
+<h1>Show a steered message until the agent receives it</h1>
+<p class="lede">Three mock-ups for review. Source: <code>docs/plans/steer-receipt-indicator/plan.md</code>.</p>
+
+<h2>Decisions</h2>
+<p>The operator chose these in the Mission Control plan-decisions form after reviewing the three mock-ups. Nothing was implemented until the form was submitted.</p>
+<ul>
+  <li><strong>Design:</strong> mock-up A. The row stays in the log, and a pill is pinned to the log's edge while you scroll.</li>
+  <li><strong>Terminals:</strong> they share the visual now. A terminal <code>sending</code> row reads <code>sent · waiting for &lt;agent&gt; to pick it up</code>. Real terminal steering is a follow-up task.</li>
+  <li><strong>Follow-up:</strong> implemented in the same session; no phased plan.</li>
+</ul>
+
+<h2>Problem</h2>
+<p>When a queued message steers into a running turn ("Steer now", or the automatic one-minute stage), the queued row disappears from the conversation the moment the driver accepts it. The message itself only appears in the log once the agent actually reads it, which for Claude Code is its next step boundary (after the running tool finishes) and can be minutes later. Between those two moments nothing on screen says the message exists. It reads as lost.</p>
+
+<h2>What the investigation found</h2>
+<h3>Where the gap comes from</h3>
+<ul>
+  <li><code>PendingTurnManager.deliverSdk</code> (<code>src/server/pending-turns.ts</code>) calls <code>deleteClaimedPendingTurn</code> as soon as <code>supervisor.send</code> resolves. For a steer, that resolves with the disposition <code>steered</code>: the driver accepted the input into the active turn. It does not mean the model has read it.</li>
+  <li>The conversation log is read from the agent's own transcript file (Claude JSONL, Codex rollout, Pi session file). The agent writes the user message there only when it consumes it, so the row is gone before its replacement exists.</li>
+  <li>The composer's one-shot flash ("Sent - added to the agent's current turn") is the only acknowledgement, and it fades after a few seconds.</li>
+</ul>
+<h3>Does steering work for terminals?</h3>
+<p class="verdict"><strong>No. It is unique to embedded (Agent SDK) sessions today.</strong></p>
+<ul>
+  <li>Every harness declares <code>steering: { runtimes: ["sdk"] }</code> in <code>src/shared/harness-capabilities.ts</code> (Claude, Codex and Pi). <code>canSteerMessage</code> reads that, so a terminal session shows no <strong>Steer now</strong> button and its delivery schedule skips the one-minute steer stage: it waits for the turn to finish, then interrupts at three minutes. <code>docs/sessions.md</code> states the same rule.</li>
+  <li>Terminal sessions do not have this gap. A terminal delivery keeps its row in the log as <code>You · sending</code> until Mission Control sees prompt-pickup evidence (hook, transcript or rollout state), then retires it. The message is on screen the whole time.</li>
+  <li>The agent CLIs themselves do accept typing while a turn runs (Claude Code folds it into the running turn; the Codex and Pi TUIs steer or queue on Enter while busy). That is inferred from vendor behaviour, not verified in this repository. Mission Control deliberately pastes only into an idle composer, because its pickup proof and its <code>delivery uncertain</code> recovery both assume an idle prompt. Steering a terminal would need a new pickup proof (the transcript line appearing) and a per-harness check of what Enter does while busy.</li>
+</ul>
+<h3>How receipt can be detected</h3>
+<p>The same signal works for every runtime: the agent's transcript gains a user message whose text matches the steered message, timestamped no more than five seconds before acceptance (the agent can write the line just before the driver's acknowledgement returns). <code>originOf</code> in <code>src/server/injections.ts</code> already matches transcript user lines to delivered text this way. Fallbacks clear the indicator if receipt is never seen: the turn ends and a new turn begins, the session resets or exits.</p>
+
+<h2>Proposal (shared by all three mock-ups)</h2>
+<ol>
+  <li>When an SDK steer is accepted, the daemon keeps a small <strong>awaiting receipt</strong> record (message id, text, accepted-at) on the session instead of forgetting the message. It is separate from the editable outbox, so it never blocks later deliveries or offers Edit.</li>
+  <li>The daemon clears the record when the transcript shows the message, or on a fallback above. It reads the transcript tail while a steer is waiting, so the browser renders the record as given and never re-decides receipt.</li>
+  <li>The browser renders the record with one of the three designs below. It shows elapsed time since acceptance and a line saying when the agent will read it.</li>
+  <li>Terminal rows in <code>sending</code> use the same visual, so both runtimes read the same way while a message is on its way.</li>
+</ol>
+
+<!-- ======================= A ======================= -->
+<h2>Mock-up A: the row stays in the log, pinned while you scroll</h2>
+<p>The queued row does not disappear when it steers. It changes state in place: <code>You · steered · waiting for Claude to read it</code>, with a pulsing marker, elapsed time, and "Claude reads steering at its next step". If you scroll up, the row collapses into a one-line pill stuck to the bottom edge of the log, so it never leaves view. When the agent reads it, the row shows "Received" for a moment, then the real transcript turn replaces it.</p>
+<div class="frames">
+  <div>
+    <p class="frame-cap">1 · Waiting, at the bottom</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log">
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <p class="progress"><span class="who">Claude</span><span class="spin">◐</span><span>Bash · npm test</span></p>
+        <div class="user pending steered">
+          <div class="role"><span>You</span><span class="pulse"></span><span class="state-txt">steered · waiting for Claude to read it</span></div>
+          <div class="bubble">Skip e2e for now, just run the unit tests.</div>
+          <div class="meta"><span><b>Sent 0:42 ago</b></span><span>Claude reads steering at its next step</span></div>
+        </div>
+      </div>
+      <div class="compose"><div class="box">Reply to Claude…</div></div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">2 · Scrolled up: pinned</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log scrolled">
+        <div class="user"><div class="role">You <span class="t">13:51</span></div><div class="bubble">Add a receipt indicator for steered messages.</div></div>
+        <div class="asst"><div class="role">Claude <span class="t">13:52</span></div><div class="bubble">Reading pending-turns.ts and the SDK supervisor to see where the row is retired…</div></div>
+        <div class="asst fade"><div class="role">Claude <span class="t">13:58</span></div><div class="bubble">The row is deleted on driver acceptance.</div></div>
+        <div class="sticky-pill"><span class="pulse"></span><span class="lbl">Steered 0:42</span><span class="txt">Skip e2e for now, just run the unit tests.</span><span class="jump">Jump ↓</span></div>
+      </div>
+      <div class="compose"><div class="box">Reply to Claude…</div></div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">3 · Received, then replaced</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log">
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <div class="user received">
+          <div class="role"><span>You</span><span class="ok">✓ received by Claude</span><span class="t">14:03</span></div>
+          <div class="bubble">Skip e2e for now, just run the unit tests.</div>
+        </div>
+        <div class="asst"><div class="role">Claude <span class="t">14:03</span></div><div class="bubble">Understood, skipping e2e. Unit tests only.</div></div>
+      </div>
+      <div class="compose"><div class="box">Reply to Claude…</div></div>
+    </div>
+  </div>
+</div>
+<ul class="pros">
+  <li><strong>Strength:</strong> one continuous object. The row you queued is the row you watch until it lands.</li>
+  <li><strong>Cost:</strong> sticky positioning inside the log scroller and a collapse rule when scrolled up.</li>
+</ul>
+
+<!-- ======================= B ======================= -->
+<h2>Mock-up B: a tray docked above the reply box</h2>
+<p>The row leaves the log as it does today, but a tray docked to the reply box shows "Steering sent · waiting for Claude · 0:42" with a one-line preview. The reply box is always visible, so the tray is too. Several steers stack as one tray with a count. When the agent reads it, the tray item shows "Received" and the new turn in the log flashes.</p>
+<div class="frames">
+  <div>
+    <p class="frame-cap">1 · Waiting: one steer</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log">
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <p class="progress"><span class="who">Claude</span><span class="spin">◐</span><span>Bash · npm test</span></p>
+      </div>
+      <div class="compose">
+        <div class="tray">
+          <div class="tray-row"><span class="pulse"></span><span class="lbl">Steering sent · waiting for Claude</span><span class="age">0:42</span></div>
+          <div class="tray-row"><span class="txt">“Skip e2e for now, just run the unit tests.”</span></div>
+        </div>
+        <div class="box">Reply to Claude…</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">2 · Several steers stack</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log scrolled">
+        <div class="user"><div class="role">You <span class="t">13:51</span></div><div class="bubble">Add a receipt indicator for steered messages.</div></div>
+        <div class="asst"><div class="role">Claude <span class="t">13:52</span></div><div class="bubble">Reading pending-turns.ts and the SDK supervisor…</div></div>
+      </div>
+      <div class="compose">
+        <div class="tray">
+          <div class="tray-head">2 steering messages waiting for Claude</div>
+          <div class="tray-row"><span class="pulse"></span><span class="txt">Skip e2e for now, just run the unit tests.</span><span class="age">1:10</span></div>
+          <div class="tray-row"><span class="pulse"></span><span class="txt">Also keep the diff under 300 lines.</span><span class="age">0:08</span></div>
+        </div>
+        <div class="box">Reply to Claude…</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">3 · Received: turn flashes</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="state">working</span></div>
+      <div class="log">
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <div class="user"><div class="role">You <span class="t">14:03</span></div><div class="bubble flash">Skip e2e for now, just run the unit tests.</div></div>
+      </div>
+      <div class="compose">
+        <div class="tray done">
+          <div class="tray-row"><span class="ok">✓</span><span class="lbl ok">Received by Claude</span><span class="age">14:03</span></div>
+        </div>
+        <div class="box">Reply to Claude…</div>
+      </div>
+    </div>
+  </div>
+</div>
+<ul class="pros">
+  <li><strong>Strength:</strong> always in view with no scroll logic; sits where you just typed.</li>
+  <li><strong>Cost:</strong> the message is visually separated from the conversation while it waits.</li>
+</ul>
+
+<!-- ======================= C ======================= -->
+<h2>Mock-up C: a status chip in the header and on the session card</h2>
+<p>A chip in the session header ("Steer pending 0:42") and the same chip on the session's card in the board. Hovering shows the message; clicking scrolls the log to a dim placeholder row below the current step. When the agent reads it, the chip turns into "Received" briefly and disappears.</p>
+<div class="frames">
+  <div>
+    <p class="frame-cap">1 · Session header chip, hovered</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="chip" style="margin-left:auto"><span class="pulse"></span>Steer pending 0:42</span></div>
+      <div class="log">
+        <div class="pop"><div class="m">Sent 0:42 ago · Claude reads it at its next step</div><div class="q">“Skip e2e for now, just run the unit tests.”</div><div class="m" style="color:var(--working)">Show in conversation ↓</div></div>
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <p class="progress"><span class="who">Claude</span><span class="spin">◐</span><span>Bash · npm test</span></p>
+        <div class="ghost"><span class="pulse"></span>Your steer is on its way · “Skip e2e for now…”</div>
+      </div>
+      <div class="compose"><div class="box">Reply to Claude…</div></div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">2 · On the board</p>
+    <div class="app">
+      <div class="board">
+        <div class="card"><div class="top"><span class="head" style="all:unset;display:contents"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--working);display:inline-block"></span></span><span class="name">steer-receipt-indicator</span></div><div class="sub">Bash · npm test</div><div><span class="chip"><span class="pulse"></span>Steer pending 0:42</span></div></div>
+        <div class="card"><div class="top"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--working);display:inline-block"></span><span class="name">codex-rollout-reader</span></div><div class="sub">Editing rollout.ts</div><div><span class="chip"><span class="pulse"></span>Steer pending 0:05</span></div></div>
+        <div class="card idle"><div class="top"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--idle);display:inline-block"></span><span class="name">docs-sessions-refresh</span></div><div class="sub">Idle</div></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="frame-cap">3 · Received</p>
+    <div class="app">
+      <div class="head"><span class="dot"></span><span class="title">steer-receipt-indicator</span><span class="chip done" style="margin-left:auto">✓ Steer received</span></div>
+      <div class="log">
+        <div class="asst"><div class="role">Claude <span class="t">14:02</span></div><div class="bubble">Running the full test suite, then the e2e shards.</div></div>
+        <div class="user"><div class="role">You <span class="t">14:03</span></div><div class="bubble">Skip e2e for now, just run the unit tests.</div></div>
+        <div class="asst"><div class="role">Claude <span class="t">14:03</span></div><div class="bubble">Understood, skipping e2e.</div></div>
+      </div>
+      <div class="compose"><div class="box">Reply to Claude…</div></div>
+    </div>
+  </div>
+</div>
+<ul class="pros">
+  <li><strong>Strength:</strong> visible from the board without opening the session; good when steering several sessions at once.</li>
+  <li><strong>Cost:</strong> the chip is small, and the header is already dense.</li>
+</ul>
+
+<h2>Terminal scope</h2>
+<p>The indicator design above applies to terminals immediately through their existing <code>sending</code> state. Adding real steering to terminal sessions is a separate change: it needs a spike per harness to prove what Enter does while a turn runs, and a transcript-based pickup proof. Recommended as a follow-up task rather than part of this change.</p>
+
+<h2>Tests</h2>
+<ul>
+  <li>Unit: the awaiting-receipt record is created on <code>steered</code>, cleared by a matching transcript user line, and cleared by each fallback; it never blocks the outbox drain.</li>
+  <li>E2E (<code>e2e/</code>): steer a queued message on a fake SDK session, assert the indicator is visible while the turn runs (including after scrolling up for A), and gone once the fake transcript writes the message.</li>
+</ul>
+</main>
+</body>
+</html>

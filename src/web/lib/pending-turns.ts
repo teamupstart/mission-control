@@ -144,3 +144,9 @@ export const PENDING_TURN_HELD_REASON: Record<NonNullable<PendingTurnHold>, stri
 
 /** The status a held row reports, replacing the bare "queued" it would otherwise show. */
 export const PENDING_TURN_HELD_STATUS = "queued · held";
+
+/** `m:ss` since a message left, for a row whose whole claim is how long it has waited. */
+export function sentAgo(since: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - since) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}

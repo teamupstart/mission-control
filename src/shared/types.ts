@@ -206,6 +206,22 @@ export interface PendingTurn {
 }
 
 /**
+ * A human message an embedded driver accepted INTO the running turn, not yet read.
+ *
+ * Steering is acknowledged when the driver takes the input, but the agent only reads it at
+ * its next step boundary and writes it to its transcript then, which can be minutes later.
+ * The outbox row is retired at acceptance, so this is what keeps the message on screen
+ * until the conversation log shows it. Held in daemon memory only, never persisted.
+ */
+export interface SteeredTurn {
+  /** The retired outbox row's id, so the browser keeps the same row across the handoff. */
+  id: string;
+  text: string;
+  /** When the driver accepted the steer. A transcript turn older than this is not it. */
+  acceptedAt: number;
+}
+
+/**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
  * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
  * dispatch pickers need the same values as the wire schemas and launch adapters.
@@ -704,6 +720,13 @@ export interface Session {
   queue: SessionQueueSummary | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
+  /**
+   * Steered messages the agent has not read yet, oldest first. Authoritative: the daemon
+   * removes one as soon as the agent's transcript shows it (see `steeredTurnReceipt`), or
+   * when the turn that would read it ends. Render it as given. Absent when there are none,
+   * which is every terminal session and nearly every embedded one.
+   */
+  steeredTurns?: SteeredTurn[];
   /**
    * A queue left behind by a PREVIOUS session at this same cwd (its note key died
    * - a `/clear` or a crash-relaunch mints a new agent session id). A hint on a

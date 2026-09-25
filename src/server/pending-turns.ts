@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
 import {
   MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage,
-  supportsDeliveryAction, type MessageDeliveryAction,
+  steeredTurnReceipt, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
@@ -25,6 +25,7 @@ import {
 } from "./db.ts";
 import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
+import { sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 
@@ -58,6 +59,23 @@ interface PendingTurnDeps {
   pickupTimeoutMs: number;
   interruptTimeoutMs: number;
   interruptPane: typeof interruptPaneSession;
+  /** Where a session's transcript is read, for noticing that a steer has been read. */
+  messagesFor: (session: Session) => SessionMessages | null;
+  steerReceiptPollMs: number;
+}
+
+/**
+ * How often a conversation with an unread steer re-reads its transcript tail. Close to the
+ * dashboard's own transcript stream, so the steered row and the turn that replaces it
+ * change hands within about a second of each other. Idle whenever nothing is waiting.
+ */
+const DEFAULT_STEER_RECEIPT_POLL_MS = 500;
+
+/** How far one conversation's receipt scan has read its transcript. */
+interface SteerReceiptScan {
+  /** Null until the transcript can be located; the scan then reads it from the start. */
+  path: string | null;
+  pos: number;
 }
 
 interface PickupCandidate {
@@ -111,6 +129,8 @@ export class PendingTurnManager {
   private readonly activeDeliveries = new Map<string, Promise<void>>();
   private readonly resetPreserve = new Map<string, Set<string>>();
   private readonly knownKeys = new Map<string, string>();
+  private readonly steerScans = new Map<string, SteerReceiptScan>();
+  private steerTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribe: (() => void) | null = null;
   private started = false;
   private stopped = false;
@@ -128,6 +148,8 @@ export class PendingTurnManager {
       pickupTimeoutMs: deps.pickupTimeoutMs ?? DEFAULT_PICKUP_TIMEOUT_MS,
       interruptTimeoutMs: deps.interruptTimeoutMs ?? MESSAGE_INTERRUPT_WATCHDOG_MS,
       interruptPane: deps.interruptPane ?? interruptPaneSession,
+      messagesFor: deps.messagesFor ?? sessionMessages,
+      steerReceiptPollMs: deps.steerReceiptPollMs ?? DEFAULT_STEER_RECEIPT_POLL_MS,
     };
   }
 
@@ -156,6 +178,9 @@ export class PendingTurnManager {
     this.pickup.clear();
     this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
+    if (this.steerTimer) clearTimeout(this.steerTimer);
+    this.steerTimer = null;
+    this.steerScans.clear();
   }
 
   /**
@@ -435,6 +460,7 @@ export class PendingTurnManager {
         }
         const owner = this.registry.sessionForNoteKey(key);
         if (owner) this.observeSession(owner);
+        else this.registry.clearSteeredTurns(key);
       }
       return;
     }
@@ -446,7 +472,16 @@ export class PendingTurnManager {
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
     if (previousKey && previousKey !== key) {
+      this.registry.moveSteeredTurns(previousKey, key);
+      const scan = this.steerScans.get(previousKey);
+      if (scan) {
+        this.steerScans.delete(previousKey);
+        this.steerScans.set(key, scan);
+      }
       this.moveConversationKey(session.id, previousKey, key);
+    }
+    if (steerReadWindowClosed(session) && this.registry.hasSteeredTurns(key)) {
+      this.registry.clearSteeredTurns(key);
     }
     const sdkHandoff = this.sdkHandoffs.get(key);
     if (sdkHandoff && sdkHandoff.sessionId !== session.id && session.state !== "exited") {
@@ -754,7 +789,77 @@ export class PendingTurnManager {
     }
   }
 
+  private transcriptEnd(session: Session): SteerReceiptScan | null {
+    try {
+      const located = this.deps.messagesFor(session);
+      const size = located ? located.read.size(located.path) : null;
+      return located && size !== null ? { path: located.path, pos: size } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Start, or keep, reading this conversation's transcript for the steers it holds. */
+  private watchSteerReceipt(key: string, from: SteerReceiptScan | null): void {
+    const scan = this.steerScans.get(key);
+    // An existing scan is at or before this steer's anchor, so it will see its line too.
+    if (!scan || (from && scan.path !== from.path)) {
+      this.steerScans.set(key, from ?? { path: null, pos: 0 });
+    }
+    if (!this.steerTimer && !this.stopped) {
+      this.steerTimer = unref(setTimeout(() => this.scanSteerReceipts(), this.deps.steerReceiptPollMs));
+    }
+  }
+
+  /**
+   * Retire every steer the agent has now read.
+   *
+   * The transcript is the receipt: the agent writes a user message there when it takes it,
+   * so a steer leaves the moment that line exists, during the turn that read it. Reads only
+   * what was appended since the last pass, and runs only while something is waiting; a
+   * steer whose line never appears still leaves when its turn ends (`observeSession`).
+   */
+  private scanSteerReceipts(): void {
+    this.steerTimer = null;
+    if (this.stopped) return;
+    for (const [key, scan] of this.steerScans) {
+      const waiting = this.registry.steeredTurns(key);
+      if (waiting.length === 0) {
+        this.steerScans.delete(key);
+        continue;
+      }
+      const session = this.registry.sessionForNoteKey(key);
+      let messages;
+      try {
+        const located = session ? this.deps.messagesFor(session) : null;
+        if (!located) continue;
+        if (scan.path !== located.path) {
+          scan.path = located.path;
+          scan.pos = 0;
+        }
+        const size = located.read.size(located.path);
+        if (size === null || size === scan.pos) continue;
+        // Rewritten under us: the offset names a byte that no longer exists.
+        if (size < scan.pos) scan.pos = 0;
+        const read = located.read.appended(located.path, scan.pos);
+        scan.pos = read.pos;
+        messages = read.messages;
+      } catch {
+        continue; // unreadable this pass; the next one, or the turn's end, settles it
+      }
+      const read = waiting.filter((turn) => steeredTurnReceipt(turn, messages) !== null);
+      if (read.length > 0) this.registry.retireSteeredTurns(key, read.map((turn) => turn.id));
+      if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
+    }
+    if (this.steerScans.size > 0) {
+      this.steerTimer = unref(setTimeout(() => this.scanSteerReceipts(), this.deps.steerReceiptPollMs));
+    }
+  }
+
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+    // Where the transcript ends BEFORE the driver can take the steer, so the line the agent
+    // writes when it reads it is always after this point, however soon that is.
+    const receiptFrom = steer ? this.transcriptEnd(session) : null;
     const handoff: SdkHandoff = {
       sessionId: session.id,
       turn,
@@ -807,6 +912,18 @@ export class PendingTurnManager {
           );
         }
         deleteClaimedPendingTurn(turn.id, turn.revision);
+        // Accepted into the running turn is not read: the agent takes it at its next step
+        // and only then writes it to the transcript the log is drawn from. Keep it on
+        // screen until then, unless the turn has already ended and cannot hold it.
+        const current = this.registry.getSession(session.id);
+        if (accepted === "steered" && current && !steerReadWindowClosed(current)) {
+          this.registry.recordSteeredTurn(turn.noteKey, {
+            id: turn.id,
+            text: turn.text,
+            acceptedAt: this.deps.now(),
+          });
+          this.watchSteerReceipt(turn.noteKey, receiptFrom);
+        }
         this.journalDelivered(session.id, turn);
       }
     } catch (err) {
@@ -1199,4 +1316,16 @@ export class PendingTurnManager {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Whether a steer accepted into this session's turn can still be waiting to be read.
+ *
+ * Once the turn is over the agent has either read the message or begun a new turn with it,
+ * and either way the transcript is about to show it. `awaiting_review` is not an end: a
+ * permission question pauses the turn that will read the steer when it resumes.
+ */
+function steerReadWindowClosed(session: Session): boolean {
+  return session.state === "idle" || session.state === "awaiting_input" ||
+    session.state === "starting" || session.state === "stopping" || session.state === "exited";
 }

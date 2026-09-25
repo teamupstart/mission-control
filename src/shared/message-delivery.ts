@@ -1,4 +1,4 @@
-import type { PendingTurn, Session } from "./types.ts";
+import type { PendingTurn, Session, SteeredTurn, TranscriptMessage } from "./types.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 
 /**
@@ -78,3 +78,40 @@ export function deliveryStage(
 
 export const MESSAGE_WAIT_NOTICE_MS = 30_000;
 export const MESSAGE_INTERRUPT_WATCHDOG_MS = 10_000;
+
+/**
+ * How far a transcript clock may trail the daemon's and still be the steer it records.
+ * Both are this machine's clock; the slack only absorbs the write landing a moment before
+ * the driver's acknowledgement returns.
+ */
+const STEER_RECEIPT_SKEW_MS = 5_000;
+
+function comparableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The transcript turn that shows this steered message was read, or null while none does.
+ *
+ * An agent writes a user message to its transcript when it takes it, so that line is the
+ * receipt. The daemon runs this over what the transcript appended since the steer was
+ * accepted and retires the steer on a match; the dashboard runs the same rule only to label
+ * the turn that replaced a retired row. One definition, so the two can never disagree.
+ * `includes` rather than equality because a harness may wrap what it records around the
+ * text it was given. A turn older than the steer is an earlier message that happens to say
+ * the same thing ("yes"), and is never taken for it.
+ */
+export function steeredTurnReceipt(
+  turn: SteeredTurn,
+  messages: readonly TranscriptMessage[],
+): string | null {
+  const wanted = comparableText(turn.text);
+  if (!wanted) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "user") continue;
+    if (message.ts && message.ts < turn.acceptedAt - STEER_RECEIPT_SKEW_MS) continue;
+    if (comparableText(message.text).includes(wanted)) return message.id;
+  }
+  return null;
+}

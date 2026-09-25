@@ -347,6 +347,26 @@ written returns the row to `queued`. If text may have landed but pickup cannot b
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
 
+A steered message stays on screen until the agent reads it. The agent takes a steer at its
+next step and only then writes it to the transcript the conversation is drawn from, which
+can be minutes after the driver accepted it. So the row is not removed at acceptance: it
+changes in place to `You · steered · waiting for <agent> to read it`, with how long ago it
+was sent. A terminal row waiting for pickup reads the same way,
+`You · sent · waiting for <agent> to pick it up`. If you scroll up past these rows, a pill
+pinned to the bottom of the log shows the oldest one, and **Jump to it** scrolls back down.
+The daemon owns the receipt. While a steer is waiting, it reads what the agent's transcript
+has appended since the steer was accepted, about twice a second. It retires the steer as
+soon as it finds a user turn carrying the same text, even though the turn is still running.
+The turn's timestamp may be up to five seconds earlier than the moment the driver accepted
+the steer, because the agent can write the line just before that acknowledgement returns.
+An older turn with the same words is an earlier message and never counts. A turn with no
+timestamp counts. The conversation marks that turn `✓ received by <agent>`
+for a few seconds. If no such turn appears, the steer still leaves when the turn ends, the
+session resets, or the session exits. The dashboard's transcript and the daemon's receipt
+check read the file on separate schedules, so the row and the turn that replaces it can
+change hands up to about a second apart. Steered rows are kept in daemon memory only, so a
+daemon restart drops them.
+
 For Codex terminal sessions, passive rollout reads retain the start of the newest turn even
 when it finishes between reads. A start at or after the message's write boundary confirms pickup;
 the matching idle completion releases the next queued message. A completion without its start,

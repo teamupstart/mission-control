@@ -28202,6 +28202,10 @@ span.line-run-prov {
 .bulk-edit-warn {
   color: var(--attention);
 }
+/* Not indented under a field: it is about the whole selection, not one row. */
+.bulk-edit-departed {
+  margin: 4px 0 0;
+}
 .bulk-edit-note {
   color: var(--dim);
 }

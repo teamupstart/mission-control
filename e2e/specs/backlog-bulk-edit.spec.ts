@@ -258,3 +258,50 @@ test("a plain click still opens the card, and a refused bulk edit says which tas
   await expect(dialog).toBeHidden();
   await expect(bar).toContainText("2 selected");
 });
+
+test("a selected task that leaves the backlog while the dialog is open refuses the whole edit", async ({
+  dashboard,
+  daemon,
+}) => {
+  const survivor = await seedBacklogTask(daemon, "Keep the retry budget");
+  const doomed = await seedBacklogTask(daemon, "Delete me mid-edit");
+  await useBoardLayout(dashboard, daemon);
+
+  await dashboard.getByRole("checkbox", { name: `Select "${survivor.title}"` }).click();
+  await dashboard.getByRole("checkbox", { name: `Select "${doomed.title}"` }).click();
+  const bar = dashboard.getByRole("toolbar", { name: "Selected backlog tasks" });
+  await bar.getByRole("button", { name: "Edit 2 tasks…" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Edit 2 backlog tasks" });
+  await expect(dialog).toBeVisible();
+
+  // Someone else removes one of the selected tasks while the dialog is open.
+  const removed = await fetch(`${daemon.baseURL}/api/tasks/${encodeURIComponent(doomed.id)}`, {
+    method: "DELETE",
+  });
+  expect(removed.ok).toBe(true);
+  await expect(card(dashboard, doomed.title)).toHaveCount(0);
+
+  // The dialog stays over the selection it was opened for, and says it can no longer apply.
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("1 selected task has left the backlog", { exact: false })).toBeVisible();
+
+  await dialog.getByLabel("Priority", { exact: true }).selectOption("blocker");
+  const request = dashboard.waitForRequest(
+    (r) => r.method() === "POST" && r.url().endsWith("/api/tasks/bulk-update"),
+  );
+  await dialog.getByRole("button", { name: "Apply to 2 tasks" }).click();
+  // Both ids go to the daemon, not just the one still on the board.
+  expect(((await request).postDataJSON() as { taskIds: string[] }).taskIds).toEqual([
+    survivor.id,
+    doomed.id,
+  ]);
+  await expect(
+    dialog.getByText("A selected task was deleted while this dialog was open", { exact: false }),
+  ).toBeVisible();
+  await expect(dialog).toBeVisible();
+
+  // Nothing landed on the task that was still there.
+  await expect(dashboard.getByLabel(`Priority for ${survivor.title}`)).toHaveValue("");
+  const stored = await readTasks(daemon);
+  expect(stored.map((t) => [t.title, t.priority])).toEqual([[survivor.title, null]]);
+});

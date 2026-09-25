@@ -57,13 +57,20 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n =
  * so with mixed agents the only choices are "leave" and "back to the default".
  */
 export function BacklogBulkEditModal({
+  taskIds,
   tasks,
   allTasks,
   sessions,
   workflowSummaries,
   onClose,
 }: {
-  /** The selected tasks, in the column's order. */
+  /**
+   * The ids the dialog was opened over, frozen when it opened. The request always names all
+   * of them, so a task that left the backlog meanwhile makes the daemon refuse the edit rather
+   * than letting it land on the rest.
+   */
+  taskIds: string[];
+  /** The rows behind `taskIds` that still exist, in the same order. */
   tasks: Task[];
   /** Every task, for the prerequisite picker. */
   allTasks: Task[];
@@ -83,10 +90,12 @@ export function BacklogBulkEditModal({
     setError(null);
   };
 
-  const n = tasks.length;
+  const n = taskIds.length;
+  /** Opened-over tasks that are gone, or no longer in the backlog. Apply will be refused. */
+  const departed = n - tasks.filter((task) => task.status === "backlog").length;
   const agent = resultingAgent(tasks, draft);
   const changed = changedFieldCount(draft);
-  const selectedIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks]);
+  const selectedIds = useMemo(() => new Set(taskIds), [taskIds]);
   const labels = useMemo(() => labelCounts(tasks), [tasks]);
   const prerequisites = useMemo(() => dependencyCounts(tasks), [tasks]);
   const published = useMemo(
@@ -127,17 +136,19 @@ export function BacklogBulkEditModal({
   }, [allTasks, draft.dependenciesAdd, selectedIds, sessions]);
 
   async function apply(): Promise<void> {
-    const body = bulkEditRequest(
-      tasks.map((task) => task.id),
-      draft,
-    );
+    const body = bulkEditRequest(taskIds, draft);
     if (!body || busy) return;
     setBusy(true);
     setError(null);
     const r = await api.bulkUpdateTasks(body);
     setBusy(false);
     if (!r.ok) {
-      setError(r.error ?? "could not edit those tasks");
+      setError(
+        // The daemon cannot name a task that no longer exists, so say what that means here.
+        r.error === "no such task"
+          ? "A selected task was deleted while this dialog was open, so nothing was changed. Close it and select again."
+          : (r.error ?? "could not edit those tasks"),
+      );
       return;
     }
     onClose();
@@ -217,6 +228,13 @@ export function BacklogBulkEditModal({
               <li key={task.id}>{task.title}</li>
             ))}
           </ul>
+          {departed > 0 && (
+            <p className="bulk-edit-warn bulk-edit-departed" role="alert">
+              {departed === 1 ? "1 selected task has" : `${departed} selected tasks have`} left the
+              backlog since this opened. Apply will be refused and nothing will change. Close this
+              and select again.
+            </p>
+          )}
 
           <h3 className="bulk-edit-group">Triage</h3>
           <BulkRow
@@ -224,23 +242,25 @@ export function BacklogBulkEditModal({
             changed={draft.priority !== undefined}
             hint={valueSummary(tasks.map((task) => priorityWord(task.priority)))}
           >
-            <select
-              aria-label="Priority"
-              className="field-input"
-              value={draft.priority === undefined ? LEAVE : (draft.priority ?? CLEAR)}
-              onChange={(e) => {
-                const v = e.target.value;
-                update({ priority: v === LEAVE ? undefined : v === CLEAR ? null : (v as TaskPriority) });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              {TASK_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-              <option value={CLEAR}>Clear priority</option>
-            </select>
+            <Tooltip label="Set one priority on every selected task, or clear it">
+              <select
+                aria-label="Priority"
+                className="field-input"
+                value={draft.priority === undefined ? LEAVE : (draft.priority ?? CLEAR)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  update({ priority: v === LEAVE ? undefined : v === CLEAR ? null : (v as TaskPriority) });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                {TASK_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {PRIORITY_LABELS[p]}
+                  </option>
+                ))}
+                <option value={CLEAR}>Clear priority</option>
+              </select>
+            </Tooltip>
           </BulkRow>
 
           <BulkRow
@@ -253,28 +273,37 @@ export function BacklogBulkEditModal({
               {labels.map(({ label, count }) => {
                 const removing = draft.labelsRemove.includes(label);
                 return (
-                  <button
+                  <Tooltip
                     key={label}
-                    type="button"
-                    className={`bulk-chip${removing ? " is-removing" : ""}`}
-                    aria-pressed={removing}
-                    aria-label={`Remove label ${label}`}
-                    onClick={() => toggleLabelRemoval(label)}
+                    label={
+                      removing
+                        ? `Keep "${label}" on the tasks that have it`
+                        : `Remove "${label}" from every selected task that has it`
+                    }
                   >
-                    {label} <span className="bulk-chip-n">{count}/{n}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className={`bulk-chip${removing ? " is-removing" : ""}`}
+                      aria-pressed={removing}
+                      aria-label={`Remove label ${label}`}
+                      onClick={() => toggleLabelRemoval(label)}
+                    >
+                      {label} <span className="bulk-chip-n">{count}/{n}</span>
+                    </button>
+                  </Tooltip>
                 );
               })}
               {draft.labelsAdd.map((label) => (
-                <button
-                  key={`add:${label}`}
-                  type="button"
-                  className="bulk-chip is-adding"
-                  aria-label={`Don't add label ${label}`}
-                  onClick={() => update({ labelsAdd: draft.labelsAdd.filter((l) => l !== label) })}
-                >
-                  + {label}
-                </button>
+                <Tooltip key={`add:${label}`} label={`Don't add "${label}" after all`}>
+                  <button
+                    type="button"
+                    className="bulk-chip is-adding"
+                    aria-label={`Don't add label ${label}`}
+                    onClick={() => update({ labelsAdd: draft.labelsAdd.filter((l) => l !== label) })}
+                  >
+                    + {label}
+                  </button>
+                </Tooltip>
               ))}
               <input
                 className="field-input bulk-label-input"
@@ -303,16 +332,26 @@ export function BacklogBulkEditModal({
                 ["On", true],
                 ["Off", false],
               ] as const).map(([text, value]) => (
-                <button
+                <Tooltip
                   key={text}
-                  type="button"
-                  role="radio"
-                  aria-checked={draft.enabled === value}
-                  className={draft.enabled === value ? "is-on" : ""}
-                  onClick={() => update({ enabled: value })}
+                  label={
+                    value === undefined
+                      ? "Leave each task's autopilot switch as it is"
+                      : value
+                        ? "Let Foreman's autopilot schedule every selected task"
+                        : "Park every selected task: the autopilot skips it"
+                  }
                 >
-                  {text}
-                </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={draft.enabled === value}
+                    className={draft.enabled === value ? "is-on" : ""}
+                    onClick={() => update({ enabled: value })}
+                  >
+                    {text}
+                  </button>
+                </Tooltip>
               ))}
             </span>
           </BulkRow>
@@ -323,22 +362,24 @@ export function BacklogBulkEditModal({
             changed={draft.kind !== undefined}
             hint={valueSummary(tasks.map((task) => task.kind))}
           >
-            <select
-              aria-label="Kind"
-              className="field-input"
-              value={draft.kind ?? LEAVE}
-              onChange={(e) => {
-                const v = e.target.value;
-                update({ kind: v === LEAVE ? undefined : (v as TaskKind) });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              {BACKLOG_TASK_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {TASK_KIND_INFO[k].label}
-                </option>
-              ))}
-            </select>
+            <Tooltip label="Set one task kind on every selected task">
+              <select
+                aria-label="Kind"
+                className="field-input"
+                value={draft.kind ?? LEAVE}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  update({ kind: v === LEAVE ? undefined : (v as TaskKind) });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                {BACKLOG_TASK_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {TASK_KIND_INFO[k].label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </BulkRow>
 
           <BulkRow
@@ -346,29 +387,31 @@ export function BacklogBulkEditModal({
             changed={draft.agent !== undefined}
             hint={valueSummary(tasks.map((task) => task.agent))}
           >
-            <select
-              aria-label="Agent"
-              className="field-input"
-              value={draft.agent ?? LEAVE}
-              onChange={(e) => {
-                const v = e.target.value;
-                const next = v === LEAVE ? undefined : (v as AgentType);
-                // A model or effort picked for one harness means nothing to another, so a
-                // harness switch drops them. "Back to the default" is harness-neutral and stays.
-                update({
-                  agent: next,
-                  model: draft.model === null ? null : undefined,
-                  effort: draft.effort === null ? null : undefined,
-                });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              {AGENT_TYPES.map((a) => (
-                <option key={a} value={a}>
-                  {AGENT_IDENTITY[a].label}
-                </option>
-              ))}
-            </select>
+            <Tooltip label="Set which agent runs every selected task">
+              <select
+                aria-label="Agent"
+                className="field-input"
+                value={draft.agent ?? LEAVE}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const next = v === LEAVE ? undefined : (v as AgentType);
+                  // A model or effort picked for one harness means nothing to another, so a
+                  // harness switch drops them. "Back to the default" is harness-neutral and stays.
+                  update({
+                    agent: next,
+                    model: draft.model === null ? null : undefined,
+                    effort: draft.effort === null ? null : undefined,
+                  });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                {AGENT_TYPES.map((a) => (
+                  <option key={a} value={a}>
+                    {AGENT_IDENTITY[a].label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </BulkRow>
           {agentResets && (
             <p className="bulk-edit-warn" role="note">
@@ -382,19 +425,21 @@ export function BacklogBulkEditModal({
             changed={draft.model !== undefined}
             hint={valueSummary(tasks.map((task) => task.model ?? "default"))}
           >
-            <select
-              aria-label="Model"
-              className="field-input"
-              value={draft.model === undefined ? LEAVE : (draft.model ?? CLEAR)}
-              onChange={(e) => {
-                const v = e.target.value;
-                update({ model: v === LEAVE ? undefined : v === CLEAR ? null : v });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              <option value={CLEAR}>Harness default</option>
-              {agent && <ModelCatalogOptions catalog={resolveModels(agent, draft.model ?? null)} />}
-            </select>
+            <Tooltip label="Pin one model on every selected task, or put them back on the harness default">
+              <select
+                aria-label="Model"
+                className="field-input"
+                value={draft.model === undefined ? LEAVE : (draft.model ?? CLEAR)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  update({ model: v === LEAVE ? undefined : v === CLEAR ? null : v });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                <option value={CLEAR}>Harness default</option>
+                {agent && <ModelCatalogOptions catalog={resolveModels(agent, draft.model ?? null)} />}
+              </select>
+            </Tooltip>
           </BulkRow>
 
           <BulkRow
@@ -402,24 +447,26 @@ export function BacklogBulkEditModal({
             changed={draft.effort !== undefined}
             hint={valueSummary(tasks.map((task) => task.effort ?? "default"))}
           >
-            <select
-              aria-label="Effort"
-              className="field-input"
-              value={draft.effort === undefined ? LEAVE : (draft.effort ?? CLEAR)}
-              onChange={(e) => {
-                const v = e.target.value;
-                update({ effort: v === LEAVE ? undefined : v === CLEAR ? null : (v as ThinkingLevel) });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              <option value={CLEAR}>Harness default</option>
-              {agent &&
-                capabilitiesFor(agent).effort?.levels.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-            </select>
+            <Tooltip label="Pin one reasoning effort on every selected task, or put them back on the harness default">
+              <select
+                aria-label="Effort"
+                className="field-input"
+                value={draft.effort === undefined ? LEAVE : (draft.effort ?? CLEAR)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  update({ effort: v === LEAVE ? undefined : v === CLEAR ? null : (v as ThinkingLevel) });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                <option value={CLEAR}>Harness default</option>
+                {agent &&
+                  capabilitiesFor(agent).effort?.levels.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+              </select>
+            </Tooltip>
           </BulkRow>
           {agent === null && (
             <p className="bulk-edit-note">
@@ -434,23 +481,25 @@ export function BacklogBulkEditModal({
             changed={draft.workflowId !== undefined}
             hint={valueSummary(tasks.map((task) => workflowName(task.workflowId)))}
           >
-            <select
-              aria-label="After work"
-              className="field-input"
-              value={draft.workflowId === undefined ? LEAVE : (draft.workflowId ?? CLEAR)}
-              onChange={(e) => {
-                const v = e.target.value;
-                update({ workflowId: v === LEAVE ? undefined : v === CLEAR ? null : v });
-              }}
-            >
-              <option value={LEAVE}>Leave as is</option>
-              <option value={CLEAR}>None (finish without a Workflow)</option>
-              {published.map((workflow) => (
-                <option key={workflow.id} value={workflow.id}>
-                  {workflow.name} · v{workflow.publishedVersion}
-                </option>
-              ))}
-            </select>
+            <Tooltip label="Choose the Workflow that runs after each selected task finishes">
+              <select
+                aria-label="After work"
+                className="field-input"
+                value={draft.workflowId === undefined ? LEAVE : (draft.workflowId ?? CLEAR)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  update({ workflowId: v === LEAVE ? undefined : v === CLEAR ? null : v });
+                }}
+              >
+                <option value={LEAVE}>Leave as is</option>
+                <option value={CLEAR}>None (finish without a Workflow)</option>
+                {published.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name} · v{workflow.publishedVersion}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </BulkRow>
 
           <BulkRow
@@ -464,16 +513,24 @@ export function BacklogBulkEditModal({
                 const key = dependencyInputKey(input);
                 const removing = draft.dependenciesRemove.some((d) => dependencyInputKey(d) === key);
                 return (
-                  <button
+                  <Tooltip
                     key={key}
-                    type="button"
-                    className={`bulk-chip${removing ? " is-removing" : ""}`}
-                    aria-pressed={removing}
-                    aria-label={`Remove prerequisite ${title}`}
-                    onClick={() => toggleDependencyRemoval(input)}
+                    label={
+                      removing
+                        ? `Keep "${title}" as a prerequisite`
+                        : `Stop every selected task waiting for "${title}"`
+                    }
                   >
-                    {title} <span className="bulk-chip-n">{count}/{n}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className={`bulk-chip${removing ? " is-removing" : ""}`}
+                      aria-pressed={removing}
+                      aria-label={`Remove prerequisite ${title}`}
+                      onClick={() => toggleDependencyRemoval(input)}
+                    >
+                      {title} <span className="bulk-chip-n">{count}/{n}</span>
+                    </button>
+                  </Tooltip>
                 );
               })}
               {draft.dependenciesAdd.map((input) => {
@@ -483,45 +540,48 @@ export function BacklogBulkEditModal({
                     ? (allTasks.find((t) => t.id === input.taskId)?.title ?? input.taskId)
                     : (sessions.find((s) => s.id === input.sessionId)?.name ?? input.sessionId);
                 return (
-                  <button
-                    key={`add:${key}`}
-                    type="button"
-                    className="bulk-chip is-adding"
-                    aria-label={`Don't add prerequisite ${title}`}
-                    onClick={() =>
-                      update({
-                        dependenciesAdd: draft.dependenciesAdd.filter((d) => dependencyInputKey(d) !== key),
-                      })
-                    }
-                  >
-                    + {title}
-                  </button>
+                  <Tooltip key={`add:${key}`} label={`Don't add "${title}" as a prerequisite after all`}>
+                    <button
+                      type="button"
+                      className="bulk-chip is-adding"
+                      aria-label={`Don't add prerequisite ${title}`}
+                      onClick={() =>
+                        update({
+                          dependenciesAdd: draft.dependenciesAdd.filter((d) => dependencyInputKey(d) !== key),
+                        })
+                      }
+                    >
+                      + {title}
+                    </button>
+                  </Tooltip>
                 );
               })}
-              <select
-                aria-label="Add a prerequisite"
-                className="field-input bulk-dep-add"
-                value=""
-                onChange={(e) => {
-                  const choice = prerequisiteChoices.find(([key]) => key === e.target.value);
-                  if (choice) update({ dependenciesAdd: [...draft.dependenciesAdd, choice[1].input] });
-                }}
-              >
-                <option value="">+ prerequisite</option>
-                {(["backlog", "session"] as const).map((group) => {
-                  const options = prerequisiteChoices.filter(([, c]) => c.group === group);
-                  if (options.length === 0) return null;
-                  return (
-                    <optgroup key={group} label={group === "backlog" ? "Backlog" : "Live sessions"}>
-                      {options.map(([key, c]) => (
-                        <option key={key} value={key}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-              </select>
+              <Tooltip label="Add a prerequisite every selected task waits for">
+                <select
+                  aria-label="Add a prerequisite"
+                  className="field-input bulk-dep-add"
+                  value=""
+                  onChange={(e) => {
+                    const choice = prerequisiteChoices.find(([key]) => key === e.target.value);
+                    if (choice) update({ dependenciesAdd: [...draft.dependenciesAdd, choice[1].input] });
+                  }}
+                >
+                  <option value="">+ prerequisite</option>
+                  {(["backlog", "session"] as const).map((group) => {
+                    const options = prerequisiteChoices.filter(([, c]) => c.group === group);
+                    if (options.length === 0) return null;
+                    return (
+                      <optgroup key={group} label={group === "backlog" ? "Backlog" : "Live sessions"}>
+                        {options.map(([key, c]) => (
+                          <option key={key} value={key}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+              </Tooltip>
             </span>
           </BulkRow>
 
@@ -537,9 +597,11 @@ export function BacklogBulkEditModal({
             {changed === 0 ? "Nothing changed yet" : `${plural(changed, "field")} on ${plural(n, "task")}`}
           </span>
           <span className="actions-spacer" />
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
+          <Tooltip label="Close without changing anything">
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+          </Tooltip>
           <Tooltip label="Write these changes to every selected task. If any task refuses, none change.">
             <button type="submit" className="btn btn-primary" disabled={busy || changed === 0}>
               {busy ? "Applying…" : `Apply to ${plural(n, "task")}`}

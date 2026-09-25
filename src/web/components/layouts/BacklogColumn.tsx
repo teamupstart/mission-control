@@ -144,7 +144,14 @@ export function BacklogColumn({
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   /** The card a `Shift`-click extends from: the last one clicked or toggled. */
   const [anchor, setAnchor] = useState<string | null>(null);
-  const [bulkOpen, setBulkOpen] = useState(false);
+  /**
+   * The ids the bulk edit was opened over, frozen at the moment it opened, or null when it is
+   * closed. Frozen rather than read from the live selection: a selected task that dispatches
+   * or is deleted while the dialog is open would otherwise drop out of the request, and Apply
+   * would succeed on a smaller selection than the one the operator chose. Sent as-is, the
+   * daemon refuses the stale selection instead.
+   */
+  const [bulkIds, setBulkIds] = useState<string[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   /** The marquee being drawn, in the body's own coordinates, or null. */
@@ -451,29 +458,39 @@ export function BacklogColumn({
               <span className="bl-selbar-n">
                 Delete {selectedTasks.length} {selectedTasks.length === 1 ? "task" : "tasks"}?
               </span>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={deleting}
-                onClick={() => void deleteSelected()}
-              >
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={deleting}
-                onClick={() => setConfirmDelete(false)}
-              >
-                Keep
-              </button>
+              <Tooltip label="Delete the selected tasks from the backlog for good">
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={deleting}
+                  onClick={() => void deleteSelected()}
+                >
+                  {deleting ? "Deleting…" : "Delete"}
+                </button>
+              </Tooltip>
+              <Tooltip label="Keep the selected tasks and go back">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={deleting}
+                  onClick={() => setConfirmDelete(false)}
+                >
+                  Keep
+                </button>
+              </Tooltip>
             </>
           ) : (
             <>
               <span className="bl-selbar-n">{selectedTasks.length} selected</span>
-              <button type="button" className="btn btn-primary" onClick={() => setBulkOpen(true)}>
-                Edit {selectedTasks.length} {selectedTasks.length === 1 ? "task" : "tasks"}…
-              </button>
+              <Tooltip label="Change priority, labels, crew and more on every selected task at once">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setBulkIds(selectedTasks.map((t) => t.id))}
+                >
+                  Edit {selectedTasks.length} {selectedTasks.length === 1 ? "task" : "tasks"}…
+                </button>
+              </Tooltip>
               <Tooltip label="Delete the selected tasks from the backlog">
                 <button
                   type="button"
@@ -492,13 +509,16 @@ export function BacklogColumn({
           )}
         </div>
       )}
-      {bulkOpen && selectedTasks.length > 0 && (
+      {bulkIds !== null && (
         <BacklogBulkEditModal
-          tasks={selectedTasks}
+          taskIds={bulkIds}
+          // Looked up in EVERY task, not the backlog slice, so a task that has since left the
+          // backlog is still named in the dialog, which can then say so.
+          tasks={bulkIds.flatMap((id) => allTasks.find((t) => t.id === id) ?? [])}
           allTasks={allTasks}
           sessions={sessions}
           workflowSummaries={workflowSummaries}
-          onClose={() => setBulkOpen(false)}
+          onClose={() => setBulkIds(null)}
         />
       )}
       {/* Only once there IS a plan: before autopilot has ever run, this line would be
@@ -828,20 +848,22 @@ function BacklogCard({
       {/* The selection's keyboard route, and its pointer route for anyone who never holds a
           modifier. Both stop propagation for the reasons the priority picker below gives:
           the card is draggable and click-to-edit. */}
-      <button
-        type="button"
-        role="checkbox"
-        className="bl-check"
-        aria-checked={selected}
-        aria-label={`Select "${task.title}"`}
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          onSelect(e.shiftKey ? "range" : "toggle");
-        }}
-      >
-        <span aria-hidden>✓</span>
-      </button>
+      <Tooltip label={selected ? `Take "${task.title}" out of the selection` : `Select "${task.title}" for a bulk edit - Shift selects a range`}>
+        <button
+          type="button"
+          role="checkbox"
+          className="bl-check"
+          aria-checked={selected}
+          aria-label={`Select "${task.title}"`}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect(e.shiftKey ? "range" : "toggle");
+          }}
+        >
+          <span aria-hidden>✓</span>
+        </button>
+      </Tooltip>
       {/* The real, focusable control behind the card-wide click: a card is not a button
           (it contains one), so the title carries the keyboard route in - and it carries
           the card's tooltip too. The `<article>` held `title={task.intent}` until this

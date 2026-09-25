@@ -643,6 +643,8 @@ export interface Session {
    * Codex rollout). Null until we've read the session at least once.
    */
   meta: SessionMeta | null;
+  /** SDK launch/accepted model, projected from sdk_sessions.model. Observed turn metadata stays separate. */
+  configuredModel?: string | null;
   /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**

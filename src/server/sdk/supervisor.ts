@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
   AgentType,
   PermissionMode,
@@ -36,6 +37,7 @@ import {
   createDisposableAgentStateHome,
 } from "../agent-subprocess-env.ts";
 import {
+  getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
   sdkSessionIsLive,
@@ -557,6 +559,7 @@ export class SdkSupervisor {
     });
     const session = this.registry.registerSdkSession({
       ...registration,
+      configuredModel: durable.model,
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
@@ -736,11 +739,39 @@ export class SdkSupervisor {
    */
   setModel(id: string, model: string): Promise<void> {
     return this.serialize(id, async (handle) => {
+      const session = this.registry.getSession(id);
+      if (!session || modelBelongsToAnotherHarness(session.agent, model)) {
+        throw new Error("this model is not available for this session's harness");
+      }
       if (!handle.setModel) {
         throw new Error("this session's embedded driver cannot change model");
       }
+      // A prior partial acceptance may have published an unsaved runtime choice.
+      // Only the durable row tells us which model a restart can actually restore.
+      const durable = getSdkSession(id);
+      if (!durable) throw new Error("this session has no saved model configuration");
+      const previous = durable.model;
       await handle.setModel(model);
-      setSdkSessionModel(id, model);
+      try {
+        setSdkSessionModel(id, model);
+      } catch (cause) {
+        // Keep compensation inside the session's control queue, before another turn
+        // can use a model whose persistence failed. A failed rollback is not a refusal.
+        let restored: string | null = null;
+        if (previous) {
+          try {
+            await handle.setModel(previous);
+            restored = previous;
+          } catch { /* Publish the accepted runtime choice below instead of claiming rollback. */ }
+        }
+        if (restored) {
+          this.registry.recordConfiguredModel(id, restored);
+          throw new Error("The model change could not be saved. The previous model was restored.", { cause });
+        }
+        this.registry.recordConfiguredModel(id, model);
+        throw new Error("The model changed in this session but could not be saved, and the previous model could not be restored. A restart may use the previous model. Retry the selection to save it.", { cause });
+      }
+      this.registry.recordConfiguredModel(id, model);
     });
   }
 

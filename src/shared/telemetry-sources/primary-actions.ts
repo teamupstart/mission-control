@@ -42,6 +42,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/sessions/:id/mode/cycle", "permission.mode_cycle", "permissions"],
   ["POST", "/api/sessions/:id/mode", "permission.mode_set", "permissions"],
   ["POST", "/api/sessions/:id/rename", "session.rename", "sessions"],
+  ["POST", "/api/sessions/:id/model", "session.model_set", "sessions"],
   ["POST", "/api/sessions/:id/focus", "session.focus", "sessions"],
   ["POST", "/api/sessions/:id/launch", "session.terminal_launch", "sessions"],
   ["POST", "/api/sessions/:id/retro", "session.retro", "sessions"],

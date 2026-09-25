@@ -1688,6 +1688,8 @@ export const api = {
       `/api/sessions/${encodeURIComponent(id)}/effort`,
       { effort },
     ),
+  setModel: (id: string, model: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/model`, { model }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   /**

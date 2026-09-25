@@ -621,8 +621,13 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await dashboard.reload();
   readiness = await evidencePane(dashboard);
   await expect(readiness).toContainText("ready");
-  await expect(dashboard.getByRole("region", { name: "Rounds" })
+  // The provenance sentence lives behind the round context disclosure now, so reaching it
+  // is a click rather than a read.
+  const repairedRounds = dashboard.getByRole("region", { name: "Rounds" });
+  await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
+  await expect(repairedRounds
     .getByText("captured to repair evidence preflight gaps", { exact: false })).toBeVisible();
+  await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "04-repaired-same-round", readiness);
 
@@ -801,7 +806,12 @@ for (const { round, attempts } of [{ round: 1, attempts: 6 }, { round: 2, attemp
   await dashboard.reload();
   await evidencePane(dashboard);
   const rounds = dashboard.getByRole("region", { name: "Rounds" });
-  await expect(rounds.getByRole("status")).toContainText(`Evidence ${attempts} of round ${round}`);
+  // The line carries the short clause; the sentence naming the evidence and round is one
+  // click away in its disclosure.
+  await expect(rounds.getByRole("status")).toContainText("no repair round spent");
+  await rounds.getByRole("button", { name: "Explain this round" }).click();
+  await expect(rounds.getByText(`Evidence ${attempts} of round ${round}`, { exact: false }))
+    .toBeVisible();
   await expect(rounds.getByRole("group", { name: `Select evidence in round ${round}` })
     .getByRole("button")).toHaveCount(attempts);
   // Scoped to the reconciliation, which is where a reader sees this gap. The same code also

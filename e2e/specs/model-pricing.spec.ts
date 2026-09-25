@@ -34,7 +34,9 @@ test("Astra usage reaches the session chip and fleet, alongside Claude and older
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const chip = dashboard.locator(".console-detail .cost-chip");
   await expect(chip).toHaveText("≈$0.07");
-  await expect(dashboard.locator(".console-detail").getByText("GPT-6 Astra", { exact: true })).toBeVisible();
+  const model = dashboard.locator(".console-detail").getByRole("button", { name: "Model: gpt-6-astra. Change model for this session" });
+  await expect(model).toBeVisible();
+  await expect(model).toContainText("GPT-6 Astra");
   await chip.hover();
   await expect(dashboard.locator(".tooltip").filter({ hasText: "API-equivalent estimate" })).toContainText("gpt-6-astra");
   await expect(dashboard.getByRole("button", { name: /^Spend - / })).toContainText("≈$0.07");

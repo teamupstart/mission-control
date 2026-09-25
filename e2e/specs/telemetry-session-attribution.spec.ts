@@ -153,9 +153,17 @@ test("a dispatched session's model, effort and conversation facts are captured a
   await reply.fill("one more thing");
   await reply.press("Enter");
 
+  // Wait for the DELIVERY as well as the queue. The queued turn reaches the agent once its
+  // opening turn ends, and that delivery is recorded by a different seam than the queue -
+  // which is exactly where the app context can be lost. Reading as soon as the queue fact
+  // lands made this pass or fail on runner speed.
   await expect
-    .poll(() => only(captured(daemon), "mission.session.operation").length, { timeout: 60_000 })
-    .toBeGreaterThan(0);
+    .poll(
+      () =>
+        only(captured(daemon), "mission.session.operation").some((o) => o.facts.operation === "send"),
+      { timeout: 60_000 },
+    )
+    .toBe(true);
   const operations = only(captured(daemon), "mission.session.operation");
   for (const operation of operations) {
     expect(["send", "queued"]).toContain(operation.facts.operation);

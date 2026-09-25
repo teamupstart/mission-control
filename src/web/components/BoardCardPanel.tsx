@@ -17,6 +17,7 @@ import { CARD_SHORTCUT_KEYS, cardShortcutChord } from "../lib/card-shortcuts.ts"
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { SessionTile } from "./layouts/SessionTile.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { WorkingIndicatorPreview } from "./WorkingIndicatorPreview.tsx";
 
 /**
  * What a session draws about itself, as a checklist the operator owns.
@@ -36,6 +37,11 @@ import { Tooltip } from "./Tooltip.tsx";
  * it. That is honest rather than incomplete: the console detail is a full-height pane and
  * a thumbnail of one would say less than the sentence each conversation item already
  * carries.
+ *
+ * The Working indicator group is the exception and gets a customizer of its own, with its
+ * own preview beside it: its items change how a conversation MOVES while the session works,
+ * which a sentence describes worse than a picture - and a picture beside the card's
+ * checklist would sit next to controls that do not move it.
  *
  * No props and no effects, like `DispatchSettingsPanel`: `useUiConfig()` is synchronous
  * with shipped defaults, so the anchor and every control are present on the first paint
@@ -106,6 +112,9 @@ export function BoardCardPanel(): React.JSX.Element {
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),
   );
+  // The groups the card preview sits beside, and the one group that brings its own.
+  const cardGroups = groups.filter((group) => group !== "working");
+  const working = groups.includes("working");
   return (
     <section className="settings-section" data-anchor="display/board-card">
       <div className="settings-section-head">
@@ -118,7 +127,7 @@ export function BoardCardPanel(): React.JSX.Element {
 
       <div className="board-card-customizer">
         <div className="board-card-checklist">
-          {groups.map((group) => (
+          {cardGroups.map((group) => (
             <ItemSection
               key={group}
               group={group}
@@ -165,6 +174,27 @@ export function BoardCardPanel(): React.JSX.Element {
           </div>
         </div>
       </div>
+
+      {working && (
+        <div className="board-card-customizer">
+          <div className="board-card-checklist">
+            <ItemSection group="working" hidden={hidden} showHeading />
+          </div>
+          {/* `inert` for the same reason as the card's: the reply box in it is a real
+              textarea that no session is listening to. */}
+          <div className="board-card-preview">
+            <span className="board-card-preview-cap" aria-hidden>
+              Preview
+            </span>
+            <div className="board-card-preview-stage" inert>
+              <WorkingIndicatorPreview
+                pinned={isDisplayItemShown(hidden, "workingPinned")}
+                progressBar={isDisplayItemShown(hidden, "workingProgressBar")}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <p className="settings-hint">
         These are the runtime and context facts a session states. The flags that ask for you -

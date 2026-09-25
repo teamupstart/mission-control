@@ -1306,6 +1306,28 @@ bottom of it, and a row free to wrap would push you out of that window and quiet
 conversation following itself. A change to the reported step leaves a reader at the bottom
 of the log still at the bottom of it.
 
+**The row carries a clock.** At its right edge is how long the current turn has been running,
+counted from the prompt that started it - yours, Foreman's or a workflow's - and ticking once a
+second: `42s`, `2m 14s`, `1h 03m`. A spinner says only that something is happening; the clock
+says for how long, which is what lets you judge at a glance whether a step has run longer than
+it should. The clock is part of the row and cannot be switched off. When a turn has run long enough that
+its prompt is no longer in the loaded part of the log, the row draws no clock rather than a
+smaller, wrong one.
+
+**Two more marks are yours to add**, under **Settings → Display → Session display → Working
+indicator**. Both ship off, so with neither checked the conversation looks exactly as it did
+before, plus the clock, and the panel's preview shows each one as you check it:
+
+- **Pin the working row** keeps the row on the bottom edge of the log while you scroll back
+  through the conversation. At the bottom of the log nothing changes - it is still the last
+  line - but read a few turns back and the row stays in view instead of leaving with the tail.
+- **Reply box progress bar** runs a thin moving bar along the top edge of the reply box (the
+  prompt line, in the terminal drawing) while the session is working. It is readable at a
+  glance without reading anything, and with reduced motion it holds still as a steady line.
+
+Both appear and disappear with the row itself, so neither can say a session is working after
+the row has stopped saying it.
+
 **In the Console detail this replaced a band above the transcript.** The line used to sit in
 fixed chrome at the top of the pane, where it cost the conversation its height whether or
 not anything was running and described the present at the end of the pane furthest from

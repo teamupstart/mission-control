@@ -290,9 +290,9 @@ test("hiding an item leaves no trace of it in the preview", async () => {
   assert.ok(!(await panelWith(["worktree"])).includes(worktreeLeaf));
 });
 
-const SHIPS_HIDDEN = ["worktree", "workflowDetails"] as const;
+const SHIPS_HIDDEN = ["worktree", "workflowDetails", "workingPinned", "workingProgressBar"] as const;
 
-test("the shipped default hides the worktree and the workflow details, and nothing else", () => {
+test("the shipped default hides the worktree, the workflow details and the working marks, and nothing else", () => {
   // D2, at its narrowest, and the two exceptions are exceptions for DIFFERENT reasons.
   // `workflowProgressBar` deliberately changes an existing card when absent from this list:
   // the whole-pipeline view ships on, with the old rung behind its checkbox. `worktree` is
@@ -301,7 +301,8 @@ test("the shipped default hides the worktree and the workflow details, and nothi
   // by request, because a reviewer's reasoning and an in-place ladder are a paragraph of
   // somebody else's reading per tile, and the card still states the whole stage track and
   // the repair budget without them. Every other visible id preserves a card item that was
-  // already on screen.
+  // already on screen. The two working marks are additions to the conversation, and with
+  // neither checked the conversation draws what it drew before they existed.
   assert.deepEqual([...UI_CONFIG_DEFAULTS.hiddenDisplayItems], [...SHIPS_HIDDEN]);
   for (const item of CARD_ITEMS) {
     assert.equal(
@@ -381,7 +382,7 @@ test("the attention flags are not customizable", () => {
   );
 });
 
-test("registry ids are unique, and both groups carry entries", () => {
+test("registry ids are unique, and every group carries entries", () => {
   const ids = DISPLAY_ITEMS.map((item) => item.id as string);
   assert.equal(new Set(ids).size, ids.length, "two registry entries share an id");
   // One array, two groups. The console detail's band joined as ENTRIES rather than as a
@@ -391,6 +392,7 @@ test("registry ids are unique, and both groups carry entries", () => {
   assert.deepEqual([...new Set(DISPLAY_ITEMS.map((item) => item.group))], [
     "card",
     "conversation",
+    "working",
   ]);
   assert.ok(CONVERSATION_ITEMS.length > 0, "the conversation group lost its entries");
 });

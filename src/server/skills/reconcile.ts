@@ -21,7 +21,7 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { PI_EXTENSION_OUTPUT, piExtensionPath } from "../config.ts";
 import { isManagedPiExtensionTarget } from "../extensions/pi-paths.ts";
-import { commitExtensionIntent, publishExtensionLink, type ExtensionIntentCommit } from "../extensions/pi-link-publication.ts";
+import { commitExtensionIntent, publishExtensionLink, removeExtensionLink, type ExtensionIntentCommit } from "../extensions/pi-link-publication.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -784,8 +784,8 @@ export function reconcileExtensionLink(desired: boolean, output = piExtensionPat
         out.changed = true;
         if (entry) out.unlinked.push(spec.linkName);
         out.linked.push(spec.linkName);
-      } else if (entry) {
-        unlinkSync(path);
+      } else if (previous) {
+        removeExtensionLink(path, previous);
         out.changed = true;
         out.unlinked.push(spec.linkName);
       }

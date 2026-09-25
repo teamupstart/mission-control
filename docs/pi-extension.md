@@ -46,7 +46,9 @@ restoring the exact prior intent bytes, or removing newly created intent. Alread
 remains enabled after a failed update. An intent rollback I/O failure reports its retained recovery
 directory rather than claiming success.
 
-Link rollback withdraws an entry into private staging and verifies it before discarding it.
+Link rollback and disable withdraw an entry into private staging and verify it before discarding it.
+Disable pins the observed owned inode before withdrawal, so a concurrent replacement cannot
+reuse that inode or be mistaken for the owned link.
 Restoration uses an exclusive rename, so it cannot overwrite a later arrival. A foreign entry
 that races with exchange or withdrawal can temporarily move; its inode and bytes are preserved
 and restored to the discovery path when free. If another arrival or I/O failure prevents
@@ -65,6 +67,10 @@ are retained only while a Pi process holds a lease on them. The extension record
 at import time beside its canonical bundle, so isolated agent homes and session switches do
 not lose protection. Process exit releases the lease; after a crash, the next successful
 publication reclaims it using the process identity. Unreadable or unknown leases fail closed.
+After its final lease scan, cleanup renames the retiring generation to a unique `.retired-*`
+directory before deleting its contents, so a new holder cannot enter a partially deleted bundle.
+Later publications retry interrupted tombstone deletion in both the generation root and damaged
+backups, retaining the current and previous generations.
 Cleanup failures defer reclamation until a later publication and never undo a successful install.
 Failed publication or intent commit does not run cleanup. No health read prunes files.
 Failed generation swaps remove empty damaged-backup containers; backups holding recovery

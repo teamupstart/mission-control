@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { claimIsLive, processIdentity, processIsAlive } from "../../scripts/update-lock.mjs";
 import { locateExecutableSync } from "../server/executables/locator.ts";
 
@@ -84,9 +84,23 @@ export function removeIdlePiGeneration(directory: string): boolean {
   if (!lstatSync(directory).isDirectory() || hasLiveLease(directory)) return false;
   const retiring = join(directory, RETIRING);
   writePiGenerationFile(retiring, "");
+  let tombstone: string | undefined;
   try {
     if (hasLiveLease(directory)) return false;
-    rmSync(directory, { recursive: true });
+    const candidate = join(dirname(directory), `.retired-${randomUUID()}`);
+    renameSync(directory, candidate);
+    tombstone = candidate;
+    // No holder can recreate leases at the original path during partial deletion.
+    rmSync(tombstone, { recursive: true });
     return true;
-  } finally { rmSync(retiring, { force: true }); }
+  } finally { if (!tombstone) rmSync(retiring, { force: true }); }
+}
+
+/** Retry only our retired directories, which are no longer loadable generations. */
+export function removeRetiredPiGenerations(directory: string): void {
+  for (const name of readdirSync(directory)) {
+    if (!/^\.retired-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(name)) continue;
+    const path = join(directory, name);
+    if (lstatSync(path).isDirectory()) rmSync(path, { recursive: true });
+  }
 }

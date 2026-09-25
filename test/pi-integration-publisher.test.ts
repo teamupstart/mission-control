@@ -18,6 +18,7 @@ import { buildPiExtension } from "../scripts/build-pi-extension.ts";
 import { piGenerationPath, piIntegrationRoot, isManagedPiExtensionTarget } from "../src/server/extensions/pi-paths.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+import { prunePiGenerations } from "../src/server/extensions/pi-retention.ts";
 
 ensureNativeStateLockAddon();
 
@@ -35,6 +36,49 @@ beforeEach(() => {
 });
 after(() => { process.env = previous; rmSync(root, { recursive: true, force: true }); });
 const enable = async () => { const r = await applyPiExtensionConfig({ enabled: true }); assert.deepEqual(r.problems, []); return readlinkSync(link); };
+
+for (const location of ["generation", "damaged backup"] as const) {
+  test(`retention retries interrupted ${location} tombstone cleanup without touching unknown entries`, t => {
+    const current = "c".repeat(64), prior = "b".repeat(64), old = "a".repeat(64);
+    for (const id of [current, prior, old]) {
+      mkdirSync(piGenerationPath(id), { recursive: true });
+      writeFileSync(join(piGenerationPath(id), "mcp-server.mjs"), id);
+    }
+    writeFileSync(join(piGenerationPath(prior), ".published"), "");
+    let collected = piGenerationPath(old);
+    if (location === "damaged backup") {
+      const older = join(piIntegrationRoot(), ".damaged-older");
+      mkdirSync(older); collected = join(older, old); fs.renameSync(piGenerationPath(old), collected);
+      const newest = join(piIntegrationRoot(), ".damaged-newest");
+      mkdirSync(join(newest, prior), { recursive: true });
+      fs.utimesSync(older, 1, 1); fs.utimesSync(newest, 2, 2);
+    }
+    const container = dirname(collected);
+    const unknown = join(piIntegrationRoot(), ".retired-unknown"); mkdirSync(unknown); writeFileSync(join(unknown, "keep"), "foreign");
+    const foreignLink = join(piIntegrationRoot(), ".retired-11111111-1111-1111-1111-111111111111"); symlinkSync(unknown, foreignLink);
+    const remove = fs.rmSync;
+    let tombstone: string | undefined;
+    const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+      if (args[1]?.recursive && String(args[0]).includes("/.retired-")) {
+        tombstone = String(args[0]); throw new Error("tombstone deletion denied");
+      }
+      return remove(...args);
+    }); syncBuiltinESMExports();
+    try {
+      assert.throws(() => prunePiGenerations(current), /tombstone deletion denied/);
+      assert.ok(tombstone);
+      assert.equal(existsSync(collected), false);
+      assert.equal(existsSync(join(tombstone, ".retiring")), true);
+      assert.equal(readFileSync(join(tombstone, "mcp-server.mjs"), "utf8"), old);
+    } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+    prunePiGenerations(current);
+    assert.equal(existsSync(tombstone!), false);
+    if (location === "damaged backup") assert.equal(existsSync(container), false);
+    for (const id of [current, prior]) assert.equal(readFileSync(join(piGenerationPath(id), "mcp-server.mjs"), "utf8"), id);
+    assert.equal(readFileSync(join(unknown, "keep"), "utf8"), "foreign");
+    assert.equal(lstatSync(foreignLink).isSymbolicLink(), true);
+  });
+}
 
 test("successful updates bound idle generations to the current and previous publication", async () => {
   const targets: string[] = [];

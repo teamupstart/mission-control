@@ -70,6 +70,80 @@ test("off on a new install writes nothing; install, repoint and uninstall are id
   assert.equal(uninstallExtensionLink().changed, false);
 });
 
+for (const replacement of ["file", "directory", "foreign-link", "same-target-link"] as const) {
+  test(`disable preserves a concurrent ${replacement} arriving during withdrawal`, (t) => {
+    mkdirSync(dir); symlinkSync(target, link);
+    const foreign = join(home, "foreign.js"); writeFileSync(foreign, "operator bytes");
+    let arrival: fs.Stats | undefined;
+    const arrive = () => {
+      fs.renameSync(link, join(dir, "displaced.js"));
+      if (replacement === "file") writeFileSync(link, "operator bytes");
+      else if (replacement === "directory") { mkdirSync(link); writeFileSync(join(link, "keep"), "operator bytes"); }
+      else symlinkSync(replacement === "same-target-link" ? target : foreign, link);
+      arrival = lstatSync(link);
+    };
+    const fault = mockSymlinkPublication(t, "renameNoReplace", (rename, from, to) => {
+      if (from === link) arrive();
+      rename(from, to);
+    });
+    try {
+      const result = uninstallExtensionLink();
+      assert.ok(arrival);
+      assert.equal(result.changed, false);
+      assert.deepEqual(result.blocked, [spec.linkName]);
+      assert.equal(lstatSync(link).ino, arrival.ino);
+      if (replacement === "file") assert.equal(readFileSync(link, "utf8"), "operator bytes");
+      if (replacement === "directory") assert.equal(readFileSync(join(link, "keep"), "utf8"), "operator bytes");
+      assert.deepEqual(readdirSync(dir).sort(), ["displaced.js", spec.linkName].sort());
+    } finally { fault.restore(); }
+  });
+}
+
+test("disable refuses a replacement arriving before it pins the observed owned inode", (t) => {
+  mkdirSync(dir); symlinkSync(target, link);
+  let arrival: fs.Stats | undefined;
+  const fault = mockSymlinkPublication(t, "linkSymlinkNoReplace", (publish, from, to) => {
+    fs.renameSync(link, join(dir, "displaced.js"));
+    writeFileSync(link, "operator bytes"); arrival = lstatSync(link);
+    publish(from, to);
+  });
+  try {
+    const result = uninstallExtensionLink();
+    assert.ok(arrival);
+    assert.equal(result.changed, false);
+    assert.deepEqual(result.blocked, [spec.linkName]);
+    assert.equal(lstatSync(link).ino, arrival.ino);
+    assert.equal(readFileSync(link, "utf8"), "operator bytes");
+    assert.deepEqual(readdirSync(dir).sort(), ["displaced.js", spec.linkName].sort());
+  } finally { fault.restore(); }
+});
+
+test("disable retains a captured foreign entry and durable off when another arrival blocks restoration", async (t) => {
+  mkdirSync(dir); symlinkSync(target, link);
+  writeFileSync(join(home, "pi-extension.json"), '{"enabled":true}\n');
+  let arrival: fs.Stats | undefined;
+  const fault = mockSymlinkPublication(t, "renameNoReplace", (rename, from, to) => {
+    if (from === link) {
+      fs.renameSync(link, join(dir, "displaced.js"));
+      writeFileSync(link, "first arrival"); arrival = lstatSync(link);
+    } else if (to === link) { mkdirSync(link); writeFileSync(join(link, "keep"), "second arrival"); }
+    rename(from, to);
+  });
+  try {
+    const result = await applyPiExtensionConfig({ enabled: false });
+    assert.ok(arrival);
+    assert.equal(result.changed, false);
+    assert.equal(getPiExtensionConfig().enabled, false);
+    const stages = readdirSync(dir).filter(name => name.startsWith(".mission-extension-"));
+    assert.equal(stages.length, 1);
+    const recovery = join(dir, stages[0]!);
+    assert.ok(result.problems[0]!.includes(recovery));
+    assert.equal(lstatSync(join(recovery, "withdrawn")).ino, arrival.ino);
+    assert.equal(readFileSync(join(recovery, "withdrawn"), "utf8"), "first arrival");
+    assert.equal(readFileSync(join(link, "keep"), "utf8"), "second arrival");
+  } finally { fault.restore(); }
+});
+
 for (const operation of ["symlinkSync", "exchangePaths"] as const) {
   test(`failed replacement ${operation} preserves the working link and enabled intent`, (t) => {
     const prior = join(home, "previous.js");

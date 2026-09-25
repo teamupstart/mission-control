@@ -81,13 +81,51 @@ test("a lease arriving between collection scans protects the generation", t => {
 
 test("an import after collection claims a generation refuses use without recreating it", t => {
   const remove = fs.rmSync;
+  let attempted = false;
   const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
-    if (String(args[0]) === generation) assert.throws(() => holdPiGeneration(generation, buildId), /being retired/);
+    if (args[1]?.recursive) {
+      attempted = true;
+      assert.equal(existsSync(join(String(args[0]), ".retiring")), true);
+      assert.throws(() => holdPiGeneration(generation, buildId), /ENOENT/);
+    }
     return remove(...args);
   }); syncBuiltinESMExports();
   try {
     assert.equal(removeIdlePiGeneration(generation), true);
+    assert.equal(attempted, true);
     assert.throws(() => holdPiGeneration(generation, buildId), /ENOENT/);
+    assert.equal(existsSync(generation), false);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("a failed retirement rename leaves the generation usable and clears the retiring marker", t => {
+  const fault = t.mock.method(fs, "renameSync", () => { throw new Error("retirement rename denied"); });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => removeIdlePiGeneration(generation), /retirement rename denied/);
+    assert.equal(existsSync(join(generation, ".retiring")), false);
+    holdPiGeneration(generation, buildId);
+    assert.equal(removeIdlePiGeneration(generation), false);
+    assert.equal(fs.readFileSync(join(generation, "mcp-server.mjs"), "utf8"), "bridge");
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("a holder cannot enter a partially removed generation after recursive cleanup removes its marker", t => {
+  const remove = fs.rmSync;
+  let attempted = false;
+  const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+    if (args[1]?.recursive) {
+      attempted = true;
+      // Recursive deletion need not keep the retiring marker until the end.
+      remove(join(String(args[0]), ".leases"), { recursive: true, force: true });
+      remove(join(String(args[0]), ".retiring"), { force: true });
+      assert.throws(() => holdPiGeneration(generation, buildId), /ENOENT|being retired/);
+    }
+    return remove(...args);
+  }); syncBuiltinESMExports();
+  try {
+    assert.equal(removeIdlePiGeneration(generation), true);
+    assert.equal(attempted, true);
     assert.equal(existsSync(generation), false);
   } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });

@@ -180,7 +180,18 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
 
   const dismissOperation = useCallback(async (id: string): Promise<void> => {
     setDismissed((current) => new Set(current).add(id));
-    await dismissWorktreeOperation(id);
+    const result = await dismissWorktreeOperation(id);
+    if (!result.ok) {
+      // The daemon still holds the record, so hiding it here would hide it for good: every
+      // later refresh would filter it out again. Put it back and say why.
+      setDismissed((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      setError(`That cleanup report could not be dismissed: ${result.error}`);
+      return;
+    }
     void refresh();
   }, [refresh]);
 

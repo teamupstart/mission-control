@@ -254,8 +254,23 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   await shoot(dashboard, "15-stale-preview-reported-in-background");
   await background.getByRole("button", { name: "Preview again" }).click();
   await expect(preview.getByText(/Dirty or untracked work will be discarded/)).toBeVisible();
-  await expect(background).toHaveCount(0);
+  // The report survives the retry until that retry is executed: cancelling it loses nothing.
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
   await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
+
+  // A dismissal the daemon refuses leaves the report where it was and says so.
+  await dashboard.route("**/api/worktrees/operations/*/dismiss", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "worktree operations unavailable" }),
+  }));
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(dashboard.getByText("That cleanup report could not be dismissed: worktree operations unavailable")).toBeVisible();
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
+  await dashboard.unroute("**/api/worktrees/operations/*/dismiss");
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(background).toHaveCount(0);
   unlinkSync(staleFile);
 
   // A process whose cwd is the leased path is an unacknowledgeable blocker. The preview
@@ -770,6 +785,9 @@ test("bulk destroy removes exactly the selected slots in the background", async 
   await expect(narrowed.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expectContentClearsBorder(narrowed);
   await narrowed.getByRole("button", { name: "Cancel" }).click();
+  // Cancelling the retry keeps the report and its fixed remaining set; only Execute or Dismiss retires it.
+  await expect(report.getByText("partly done", { exact: true })).toBeVisible();
+  await expect(report.getByRole("button", { name: "Preview again" })).toBeVisible();
   await partialPage.close();
 });
 

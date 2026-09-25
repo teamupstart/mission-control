@@ -573,6 +573,10 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   const { inventory, loading, error, preview, previewError, previewChanged, busy, operations } = state;
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const [lastRequest, setLastRequest] = useState<WorktreeActionRequest | null>(null);
+  // The failed operation the open preview is retrying. Its report - and the fixed set of
+  // slots it left - stays on screen until that retry is accepted, so a cancelled or failed
+  // retry never loses it.
+  const [retrying, setRetrying] = useState<string | null>(null);
   const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
   // How many slots the last tick or Select all could not add because the selection was full.
   const [refused, setRefused] = useState(0);
@@ -606,13 +610,15 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
   const legacyBlocked = inventory?.legacy.items.filter((item) => item.classification !== "ownedExact") ?? [];
   const legacyTotal = LEGACY_KINDS.reduce((sum, kind) => sum + (inventory?.legacy.totals[kind] ?? 0), 0);
 
-  function request(request: WorktreeActionRequest, source: HTMLButtonElement): void {
+  function request(request: WorktreeActionRequest, source: HTMLButtonElement, retryOf: string | null = null): void {
     setTrigger(source);
     setLastRequest(request);
+    setRetrying(retryOf);
     void state.requestPreview(request);
   }
 
   function close(): void {
+    setRetrying(null);
     state.discardPreview();
     trigger?.focus();
     setTrigger(null);
@@ -620,8 +626,12 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
 
   function execute(acks: WorktreeRiskKey[]): void {
     const submitted = preview?.request;
+    const retried = retrying;
     void state.executePreview(acks).then((ok) => {
       if (!ok) return;
+      // The retry was accepted and now has its own record; the old report has served its purpose.
+      if (retried) void state.dismissOperation(retried);
+      setRetrying(null);
       if (submitted?.action === "destroy" && submitted.target.kind === "slots") { setChosen(new Set()); setRefused(0); }
       trigger?.focus();
       setTrigger(null);
@@ -651,10 +661,7 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
         </div>
         <OperationList
           operations={operations}
-          onRetry={(operation, retry, source) => {
-            void state.dismissOperation(operation.id);
-            request(retry, source);
-          }}
+          onRetry={(operation, retry, source) => request(retry, source, operation.id)}
           onDismiss={(operation) => void state.dismissOperation(operation.id)}
         />
         {selected.size > 0 && (

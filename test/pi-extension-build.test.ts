@@ -1,11 +1,15 @@
 // A failed/concurrent build may never truncate the machine-wide load target.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { buildPiExtension } from "../scripts/build-pi-extension.ts";
 import { piExtensionPath } from "../src/server/config.ts";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
+import { verifyPiIntegration } from "../src/server/extensions/pi-artifact.ts";
 
 test("configured and explicit non-.js targets are rejected before touching the destination", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-suffix-"));
@@ -77,4 +81,86 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
     finally { process.chdir(cwd); }
     assert.equal(await readFile(output, "utf8"), final);
   } finally { clearInterval(poll); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("different process builds cannot interleave integration publication", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-build-race-"));
+  const output = join(dir, "integration", "extension.js");
+  const release = join(dir, "release");
+  await mkdir(join(dir, "integration"));
+  await symlink(join(dir, "integration"), join(dir, "alias"), "dir");
+  for (const tag of ["A", "B"]) {
+    const source = join(dir, tag); await mkdir(source);
+    for (const path of ["src", "scripts", "package.json", "tsconfig.json"]) await cp(resolve(path), join(source, path), { recursive: true });
+    await symlink(resolve("node_modules"), join(source, "node_modules"), "dir");
+    for (const file of ["src/pi/extension.ts", "src/mcp/server.ts"]) {
+      await appendFile(join(source, file), `\nexport const buildRaceTag = ${JSON.stringify(tag)};\n`);
+    }
+  }
+  // Pause A after its first public rename; B must wait even after compilation finishes.
+  const program = `
+    import { syncBuiltinESMExports } from 'node:module';
+    import fs from 'node:fs';
+    import promises from 'node:fs/promises';
+    const [tag, output, release, builder] = process.argv.slice(1);
+    const writeFile = promises.writeFile;
+    promises.writeFile = async (...args) => {
+      await writeFile(...args);
+      if (String(args[0]).endsWith('/manifest.json')) console.log('compiled');
+    };
+    const published = to => {
+      if (!String(to).endsWith('/extension.js')) return;
+      fs.writeSync(1, 'publishing\\n');
+      if (tag === 'A') {
+        const deadline = Date.now() + 10000;
+        while (!fs.existsSync(release)) {
+          if (Date.now() > deadline) throw new Error('release timeout');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
+    };
+    const renameSync = fs.renameSync;
+    fs.renameSync = (from, to) => { renameSync(from, to); published(to); };
+    const rename = promises.rename;
+    promises.rename = async (from, to) => { await rename(from, to); published(to); };
+    syncBuiltinESMExports();
+    const { buildPiExtension } = await import(builder);
+    await buildPiExtension(output);
+  `;
+  const launch = (tag: string) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program,
+      tag, tag === "B" ? join(dir, "alias", "extension.js") : output, release,
+      new URL("../scripts/build-pi-extension.ts", import.meta.url).href], { cwd: join(dir, tag), stdio: ["ignore", "pipe", "pipe"] });
+    const lines: string[] = [], outputLines = createInterface({ input: child.stdout });
+    outputLines.on("line", line => lines.push(line));
+    let errors = ""; child.stderr.on("data", chunk => { errors += chunk; });
+    const completed = once(child, "exit").then(([code]) => ({ code, errors }));
+    return { child, lines, outputLines, completed };
+  };
+  const first = launch("A");
+  let second: ReturnType<typeof launch> | undefined;
+  const waitFor = async (run: ReturnType<typeof launch>, line: string) => {
+    const deadline = Date.now() + 10_000;
+    while (!run.lines.includes(line)) {
+      if (run.child.exitCode !== null || run.child.signalCode !== null) assert.fail(JSON.stringify(await run.completed));
+      assert.ok(Date.now() < deadline, `child did not reach ${line}`);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  try {
+    await waitFor(first, "publishing");
+    second = launch("B"); await waitFor(second, "compiled");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(second.lines.includes("publishing"), false, "B cannot publish while A holds the output lock");
+    await writeFile(release, "");
+    for (const run of [first, second]) assert.deepEqual(await run.completed, { code: 0, errors: "" });
+    verifyPiIntegration(join(dir, "integration"));
+    for (const file of [output, join(dir, "integration", "mcp-server.mjs")]) {
+      assert.match(await readFile(file, "utf8"), /buildRaceTag = "B"/);
+    }
+  } finally {
+    await writeFile(release, "");
+    for (const run of [first, second]) if (run) { run.child.kill(); await run.completed; run.outputLines.close(); }
+    await rm(dir, { recursive: true, force: true });
+  }
 });

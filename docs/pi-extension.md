@@ -7,6 +7,9 @@ Start a fresh Pi session after installation or repair so it loads the current ex
 
 `npm run build` produces a deployable `dist/pi-integration/` directory containing
 `extension.js`, `mcp-server.mjs`, and `manifest.json`. Building installs nothing.
+Concurrent builds serialize artifact publication using a process-identity lock beside the
+canonical output directory, including when callers use different symlink aliases. Each build
+verifies the final manifest and both artifacts before releasing the lock and reporting success.
 Setup, the configuration API, the installed CLI and enabled daemon startup all use the same
 publisher. Source development uses that contract too.
 

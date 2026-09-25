@@ -350,7 +350,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         .map((g) => {
           const isRail = focusedTone === g.tone;
           const calm = modes.get(g.tone) === "calm";
-          const wide = wideCol === g.tone;
+          // Never wide while calm. `wideCol` outlives a column emptying (it is the operator's
+          // gesture, kept for when sessions return), and the wide rule outranks the rail's width,
+          // so an all-clear rail would otherwise be drawn as a wide empty column.
+          const wide = wideCol === g.tone && !calm;
           return (
             <section
               key={g.tone}

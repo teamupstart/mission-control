@@ -905,8 +905,8 @@ available:
 - **Empty columns get out of the way.** An empty **needs you** keeps its place but narrows to
   a slim rail: its swatch, its name turned on end, a green tick and a `0`. Hover the rail for
   "All clear. Nothing is waiting on you." The moment a session needs you, the rail widens back
-  into a full column in the same spot, so nothing else on the board jumps. Every other empty
-  column leaves the board and becomes a chip in the **empty** stash beside the last column;
+  into a full column in the same spot, so it keeps its place in the column order. Every other
+  empty column leaves the board and becomes a chip in the **empty** stash beside the last column;
   click a chip to bring that column back. Uncheck **Show the empty-column stash** in
   Settings → Display → Layout to hide the stash entirely, so empty columns simply leave. The
   needs you rail is not in the stash and stays either way.

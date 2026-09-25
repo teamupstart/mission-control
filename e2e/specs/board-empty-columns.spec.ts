@@ -86,26 +86,35 @@ async function dispatch(page: Page, daemon: DaemonHandle, goal: string): Promise
   await expect(dialog).toBeHidden();
 }
 
-/** Post the hook a real Claude install posts when it parks on a permission prompt. */
-async function parkOnPermissionPrompt(daemon: DaemonHandle): Promise<void> {
+/** The one SDK session this spec dispatched: its checkout is what binds a hook to it. */
+async function dispatchedCwd(daemon: DaemonHandle): Promise<string> {
   const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
     cwd: string;
     runtime: string;
   }[];
   const dispatched = sessions.filter((s) => s.runtime === "sdk");
   expect(dispatched.length, "exactly one SDK session was dispatched").toBe(1);
+  return dispatched[0]!.cwd;
+}
+
+/** Post a hook exactly as `hooks/harness-hook.mjs` forwards it. */
+async function postHook(
+  daemon: DaemonHandle,
+  event: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
-  const res = await fetch(`${daemon.baseURL}/hooks/Notification`, {
+  const res = await fetch(`${daemon.baseURL}/hooks/${event}`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
-    body: JSON.stringify({
-      agent: "claude",
-      cwd: dispatched[0]!.cwd,
-      env: {},
-      message: "Claude needs your permission to use Bash",
-    }),
+    body: JSON.stringify({ agent: "claude", cwd: await dispatchedCwd(daemon), env: {}, ...fields }),
   });
-  expect(res.status, "the daemon accepted the hook").toBe(204);
+  expect(res.status, `the daemon accepted the ${event} hook`).toBe(204);
+}
+
+/** The hook a real Claude install posts when it parks on a permission prompt. */
+async function parkOnPermissionPrompt(daemon: DaemonHandle): Promise<void> {
+  await postHook(daemon, "Notification", { message: "Claude needs your permission to use Bash" });
 }
 
 test("an empty needs you column is a slim all-clear rail that widens in place when a session needs you", async ({
@@ -144,6 +153,18 @@ test("an empty needs you column is a slim all-clear rail that widens in place wh
   await expect.poll(() => width(needsYou)).toBeGreaterThanOrEqual(250);
   observed(`with a session waiting it widened to ${Math.round(await width(needsYou))}px`);
   await shoot(page, "widened", page.locator("main.board"));
+
+  // ---- a column widened while full returns to the rail when it empties ----
+  // The widen gesture is remembered across the column emptying, and the wide rule outranks
+  // the rail's width, so an all-clear rail must never carry it.
+  await needsYou.locator(".board-col-head").dblclick();
+  await expect(needsYou).toHaveClass(/is-wide/);
+  await postHook(daemon, "UserPromptSubmit", { prompt: "carry on" });
+  await expect(needsYou.locator(".tile")).toHaveCount(0, { timeout: 30_000 });
+  await expect(needsYou).toHaveClass(/is-calm/);
+  await expect(needsYou).not.toHaveClass(/is-wide/);
+  await expect.poll(() => width(needsYou)).toBeLessThanOrEqual(RAIL_MAX);
+  observed("a needs you column widened while full went back to the slim rail once it emptied");
 });
 
 test("the empty-column stash can be switched off under Settings, Display", async ({

@@ -828,6 +828,7 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .wt-operation-failed > span:nth-child(2) { display: grid; flex: 1 1 240px; gap: 2px; min-width: 0; }
 .wt-operation-failed em { color: var(--wt-attention); font-style: normal; font-weight: 600; }
 .wt-operation-error { color: var(--muted); overflow-wrap: anywhere; }
+.wt-operation-removed { list-style: none; margin: 0; padding: 0; }
 .wt-operation-actions { display: flex; gap: 6px; margin-left: auto; }
 
 .wt-bulk-bar {

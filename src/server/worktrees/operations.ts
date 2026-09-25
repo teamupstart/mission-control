@@ -95,6 +95,8 @@ interface Observation {
   inventory: WorktreeInventory;
   native: NativePoolStatus[];
   legacy: LegacyInventoryItem[];
+  /** Paths an accepted, unfinished cleanup already covers. Set per build, never shared. */
+  pending: ReadonlySet<string>;
 }
 
 interface HeldPreview {
@@ -424,7 +426,7 @@ export class WorktreeOperationsService {
       this.deps.notifyChanged();
     }
     this.legacyVisibleRevision = legacyVisibleRevision;
-    return { inventory, native, legacy };
+    return { inventory, native, legacy, pending: new Set() };
   }
 
   async preview(request: WorktreeActionRequest): Promise<WorktreeActionPreview> {
@@ -700,6 +702,9 @@ export class WorktreeOperationsService {
       slot.registered !== true || slot.repositoryMatches !== true) {
       blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
     }
+    if (observed.pending.has(slot.slot.path)) {
+      blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
+    }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
     if (action === "return" && slot.slot.state !== "leased") {
       blockers.push(`Slot ${slot.slot.ordinal} is ${slot.slot.state}, not leased.`);
@@ -728,10 +733,16 @@ export class WorktreeOperationsService {
     if (action === "return" && !owner) blockers.push("This slot has no active owner to return.");
   }
 
+  /**
+   * `excludeOperation` is the queued operation whose own recheck this is: its targets are
+   * pending precisely because it is the one running, and must not block itself.
+   */
   private async buildPreview(
     request: WorktreeActionRequest,
-    observed: Observation,
+    observation: Observation,
+    excludeOperation: string | null = null,
   ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const observed: Observation = { ...observation, pending: this.pendingPaths(excludeOperation) };
     const affected: WorktreeActionAffected[] = [];
     const risks: WorktreeActionRisk[] = [];
     const blockers: string[] = [];
@@ -819,7 +830,10 @@ export class WorktreeOperationsService {
       const candidates = (await this.manager.planMaintenance())
         .filter((candidate) => candidate.poolId === request.poolId)
         .filter((candidate) => request.mode === "safe" || candidate.rightSize)
-        .filter((candidate) => candidate.safe);
+        .filter((candidate) => candidate.safe)
+        // Already on its way out through an accepted cleanup; pruning it again would only
+        // race that removal.
+        .filter((candidate) => !observed.pending.has(candidate.path));
       for (const candidate of candidates) {
         affected.push({
           provider: "mission",
@@ -963,8 +977,7 @@ export class WorktreeOperationsService {
         "unavailable",
       );
     }
-    const pendingPaths = new Set(pending
-      .flatMap((entry) => entry.view.targets.map((target) => target.path)));
+    const pendingPaths = this.pendingPaths(null);
     const candidate = this.tokens.get(token);
     const overlap = candidate?.preview.affected.find((target) => pendingPaths.has(target.path));
     if (overlap) {
@@ -979,6 +992,7 @@ export class WorktreeOperationsService {
       targets: held.preview.affected.map(({ provider, id, path }) => ({ provider, id, path })),
       error: null,
       changed: false,
+      completed: [],
       queuedAt: this.deps.now(),
       finishedAt: null,
     };
@@ -1008,7 +1022,9 @@ export class WorktreeOperationsService {
   private async runQueued(entry: HeldOperation): Promise<void> {
     entry.view.state = "running";
     try {
-      await this.perform(entry.held, entry.acknowledgements);
+      await this.perform(entry.held, entry.acknowledgements, entry.view.id, (target) => {
+        entry.view.completed.push({ id: target.id, path: target.path });
+      });
       // Success needs no record: the slots are gone or returned, which the inventory shows.
       this.operations.delete(entry.view.id);
     } catch (error) {
@@ -1024,10 +1040,18 @@ export class WorktreeOperationsService {
     }
   }
 
+  /** Every path a queued or running operation covers, optionally without one operation's own. */
+  private pendingPaths(excludeOperation: string | null): Set<string> {
+    return new Set([...this.operations.values()]
+      .filter((entry) => entry.view.state !== "failed" && entry.view.id !== excludeOperation)
+      .flatMap((entry) => entry.view.targets.map((target) => target.path)));
+  }
+
   private operationViews(): WorktreeOperationView[] {
     return [...this.operations.values()].map(({ view }) => ({
       ...view,
       targets: view.targets.map((target) => ({ ...target })),
+      completed: view.completed.map((target) => ({ ...target })),
     }));
   }
 
@@ -1069,9 +1093,11 @@ export class WorktreeOperationsService {
   private async perform(
     held: HeldPreview,
     acknowledgementSet: Set<WorktreeRiskKey>,
+    operationId: string | null = null,
+    removed: (target: WorktreeActionAffected) => void = () => {},
   ): Promise<WorktreeActionExecuteResult> {
     const observed = await this.observe();
-    const rebuilt = await this.buildPreview(held.preview.request, observed);
+    const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
     const currentFingerprint = previewFingerprint(rebuilt);
     if (currentFingerprint !== held.fingerprint) {
       throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
@@ -1080,7 +1106,7 @@ export class WorktreeOperationsService {
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet),
+      () => this.dispatch(held.preview, acknowledgementSet, removed),
       true,
       this.deps.notifyChanged,
     );
@@ -1088,7 +1114,12 @@ export class WorktreeOperationsService {
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }
 
-  private async dispatch(preview: WorktreeActionPreview, acknowledgements: Set<WorktreeRiskKey>): Promise<void> {
+  /** `removed` hears each slot the moment its removal is confirmed, so a later failure is partial, not silent. */
+  private async dispatch(
+    preview: WorktreeActionPreview,
+    acknowledgements: Set<WorktreeRiskKey>,
+    removed: (target: WorktreeActionAffected) => void,
+  ): Promise<void> {
     const request = preview.request;
     if (request.action === "reconcile") {
       if (!(await this.manager.reconcilePoolById(request.poolId))) {
@@ -1105,6 +1136,7 @@ export class WorktreeOperationsService {
           allowUnmerged: false,
         });
         this.assertRemoved(result);
+        removed(target);
       }
       return;
     }
@@ -1161,6 +1193,7 @@ export class WorktreeOperationsService {
           allowUnmerged: acknowledgements.has("unlanded"),
         });
         this.assertRemoved(result);
+        removed(target);
       }
     }
   }

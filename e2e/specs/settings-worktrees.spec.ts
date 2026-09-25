@@ -709,6 +709,7 @@ test("bulk destroy removes exactly the selected slots in the background", async 
         targets: [{ provider: "mission", id: survivor.id, path: survivor.path }],
         error: null,
         changed: false,
+        completed: [],
         queuedAt: Date.now(),
         finishedAt: null,
       }],
@@ -725,6 +726,46 @@ test("bulk destroy removes exactly the selected slots in the background", async 
   await expect(pendingSlot.getByRole("button", { name: "Destroy", exact: true })).toHaveCount(0);
   await shoot(pendingPage, "19-queued-cleanup-pending");
   await pendingPage.close();
+
+  // A bulk destroy that stopped partway says which worktrees are already gone, and Preview
+  // again asks only for what it left in place - never for a slot it removed.
+  const partialPage = await context.newPage();
+  await partialPage.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      operations: [{
+        id: "partial-destroy",
+        request: { action: "destroy", target: { kind: "slots", slotIds: ["already-removed", survivor.id] } },
+        state: "failed",
+        targets: [
+          { provider: "mission", id: "already-removed", path: first!.path },
+          { provider: "mission", id: survivor.id, path: survivor.path },
+        ],
+        error: "git worktree remove failed",
+        changed: false,
+        completed: [{ id: "already-removed", path: first!.path }],
+        queuedAt: Date.now(),
+        finishedAt: Date.now(),
+      }],
+    } satisfies WorktreeInventory),
+  }));
+  await partialPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const report = partialPage.getByRole("region", { name: "Background cleanup" });
+  await expect(report.getByText("partly done", { exact: true })).toBeVisible();
+  await expect(report.getByText("1 worktree was removed before this stopped; 1 left in place.")).toBeVisible();
+  await expect(report.getByRole("list", { name: "Already removed" }).getByText(first!.path)).toBeVisible();
+  await shoot(partialPage, "22-bulk-destroy-partly-done");
+  const retried = partialPage.waitForRequest((request) => request.url().endsWith("/api/worktrees/actions/preview"));
+  await report.getByRole("button", { name: "Preview again" }).click();
+  expect(((await retried).postDataJSON() as { target: { slotIds: string[] } }).target.slotIds).toEqual([survivor.id]);
+  const narrowed = partialPage.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(narrowed.getByRole("heading", { name: "Destroy 1 selected worktree" })).toBeVisible();
+  await expect(narrowed.getByText(survivor.path)).toBeVisible();
+  await expect(narrowed.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expectContentClearsBorder(narrowed);
+  await narrowed.getByRole("button", { name: "Cancel" }).click();
+  await partialPage.close();
 });
 
 /**

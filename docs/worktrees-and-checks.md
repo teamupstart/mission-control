@@ -162,14 +162,17 @@ the ones the preview asked for. The dialog then closes, and the rest of the work
 ordered queue: it observes the lease, task or check owner, processes, Git state, and slot version
 again, then mutates. You can keep previewing and executing while earlier cleanups finish. Queued
 and running cleanups are listed above the pools, and each affected slot shows the pending action
-and offers no second one. A path that already has a cleanup queued cannot be executed again until
-that one finishes. At most 64 cleanups may be queued or running at once; beyond that, Execute
+and offers no second one. A preview that names a slot which already has a cleanup queued is
+blocked for that slot, and Safe prune leaves such a slot to its own cleanup, so no dialog offers
+an Execute that could only be refused. At most 64 cleanups may be queued or running at once; beyond that, Execute
 says so and leaves the preview open, so it can be executed again once earlier cleanups finish.
 
 A changed target fact or affected set refuses with a stale preview message. Because the recheck
 runs after Execute has answered, that refusal appears in the same list above the pools, with
 **Preview again** to build a new preview of the same request from current state, and **Dismiss**.
-A failure changes nothing on disk. Process churn in unrelated slots and inventory reconciliation
+A stale refusal changes nothing on disk. A failure partway through a set of removals is reported
+as **partly done**: it lists each worktree already removed, says how many were left in place, and
+its **Preview again** asks only for the ones it left. Process churn in unrelated slots and inventory reconciliation
 timestamps do not invalidate an unchanged target. Unknown process occupancy is never
 acknowledgeable.
 

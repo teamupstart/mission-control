@@ -9,6 +9,7 @@ import type {
   WorktreeRepositoryView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
+import { worktreeRetryRequest } from "@shared/worktrees.ts";
 import type { WorktreesState } from "../useWorktrees.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { openWorktreeTerminal } from "../lib/api.ts";
@@ -60,7 +61,7 @@ function OperationList({
   onDismiss,
 }: {
   operations: WorktreeOperationView[];
-  onRetry: (operation: WorktreeOperationView, trigger: HTMLButtonElement) => void;
+  onRetry: (operation: WorktreeOperationView, request: WorktreeActionRequest, trigger: HTMLButtonElement) => void;
   onDismiss: (operation: WorktreeOperationView) => void;
 }): React.JSX.Element | null {
   if (operations.length === 0) return null;
@@ -80,24 +81,42 @@ function OperationList({
       )}
       {failed.length > 0 && (
         <ul className="wt-operation-list">
-          {failed.map((operation) => (
-            <li key={operation.id} className="wt-operation wt-operation-failed">
-              <StateChip label="failed" tone="danger" />
-              <span>
-                <strong>{ACTION_VERBS[operation.request.action]}</strong> <code>{operationSubject(operation)}</code>
-                {operation.changed ? <em>State changed after this preview.</em> : null}
-                <span className="wt-operation-error">{operation.error}</span>
-              </span>
-              <span className="wt-operation-actions">
-                <Tooltip label="Build a new safety preview for the same request from current state">
-                  <button className="btn btn-secondary" type="button" onClick={(event) => onRetry(operation, event.currentTarget)}>Preview again</button>
-                </Tooltip>
-                <Tooltip label="Hide this failure; nothing was changed by it">
-                  <button className="btn btn-ghost" type="button" onClick={() => onDismiss(operation)}>Dismiss</button>
-                </Tooltip>
-              </span>
-            </li>
-          ))}
+          {failed.map((operation) => {
+            const retry = worktreeRetryRequest(operation);
+            const removed = operation.completed.length;
+            const remaining = retry?.action === "destroy" && retry.target.kind === "slots" ? retry.target.slotIds.length : null;
+            return (
+              <li key={operation.id} className="wt-operation wt-operation-failed">
+                <StateChip label={removed > 0 ? "partly done" : "failed"} tone="danger" />
+                <span>
+                  <strong>{ACTION_VERBS[operation.request.action]}</strong> <code>{operationSubject(operation)}</code>
+                  {operation.changed ? <em>State changed after this preview.</em> : null}
+                  {removed > 0 && (
+                    <em>
+                      {removed} {removed === 1 ? "worktree was" : "worktrees were"} removed before this stopped
+                      {remaining !== null ? `; ${remaining} left in place` : ""}.
+                    </em>
+                  )}
+                  {removed > 0 && (
+                    <ul className="wt-operation-removed" aria-label="Already removed">
+                      {operation.completed.map((target) => <li key={target.id}><code>{target.path}</code></li>)}
+                    </ul>
+                  )}
+                  <span className="wt-operation-error">{operation.error}</span>
+                </span>
+                <span className="wt-operation-actions">
+                  {retry && (
+                    <Tooltip label={removed > 0 ? "Build a new safety preview for only what this left in place" : "Build a new safety preview for the same request from current state"}>
+                      <button className="btn btn-secondary" type="button" onClick={(event) => onRetry(operation, retry, event.currentTarget)}>Preview again</button>
+                    </Tooltip>
+                  )}
+                  <Tooltip label={removed > 0 ? "Hide this report; the worktrees listed as removed stay removed" : "Hide this failure; nothing was changed by it"}>
+                    <button className="btn btn-ghost" type="button" onClick={() => onDismiss(operation)}>Dismiss</button>
+                  </Tooltip>
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
@@ -626,9 +645,9 @@ export function WorktreeSettingsPanel({ state }: { state: WorktreesState }): Rea
         </div>
         <OperationList
           operations={operations}
-          onRetry={(operation, source) => {
+          onRetry={(operation, retry, source) => {
             void state.dismissOperation(operation.id);
-            request(operation.request, source);
+            request(retry, source);
           }}
           onDismiss={(operation) => void state.dismissOperation(operation.id)}
         />

@@ -303,6 +303,7 @@ const queuedDestroy: WorktreeOperationView = {
   targets: [{ provider: "mission", id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
   error: null,
   changed: false,
+  completed: [],
   queuedAt: 1,
   finishedAt: null,
 };
@@ -343,4 +344,40 @@ test("a failed background cleanup explains a stale preview and offers to preview
   assert.match(html, />Dismiss</);
   // A failure leaves the slot actionable again.
   assert.match(html, /Preview permanently removing this manager-owned slot/);
+});
+
+test("a bulk destroy that stopped partway names what it removed and retries only the rest", () => {
+  const html = render({
+    operations: [{
+      ...queuedDestroy,
+      request: { action: "destroy", target: { kind: "slots", slotIds: ["slot-1", "slot-2"] } },
+      targets: [
+        { provider: "mission", id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" },
+        { provider: "mission", id: "slot-2", path: "/state/worktrees/pool-1/2/mission-control" },
+      ],
+      state: "failed",
+      error: "git worktree remove failed",
+      completed: [{ id: "slot-2", path: "/state/worktrees/pool-1/2/mission-control" }],
+      finishedAt: 2,
+    }],
+  });
+  assert.match(html, /partly done/);
+  assert.match(html, /1 worktree was removed before this stopped; 1 left in place\./);
+  assert.match(html, /aria-label="Already removed"[^]*\/state\/worktrees\/pool-1\/2\/mission-control/);
+  assert.match(html, /only what this left in place/);
+  assert.doesNotMatch(html, /nothing was changed by it/);
+});
+
+test("a failed operation with nothing left to retry offers only Dismiss", () => {
+  const html = render({
+    operations: [{
+      ...queuedDestroy,
+      state: "failed",
+      error: "publication failed after removal",
+      completed: [{ id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
+      finishedAt: 2,
+    }],
+  });
+  assert.doesNotMatch(html, />Preview again</);
+  assert.match(html, />Dismiss</);
 });

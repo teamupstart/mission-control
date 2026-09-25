@@ -196,8 +196,28 @@ export interface WorktreeOperationView {
   error: string | null;
   /** The failure was a stale preview: state moved after it was shown, so preview again. */
   changed: boolean;
+  /**
+   * Slots whose removal was confirmed before this operation stopped. Empty unless a failure
+   * came partway through a set: those slots are gone, and the rest were left in place.
+   */
+  completed: Array<{ id: string; path: string }>;
   queuedAt: number;
   finishedAt: number | null;
+}
+
+/**
+ * What "Preview again" should ask for after a failure. A bulk destroy that failed partway
+ * through asks only for the slots it did not remove - the operator is told which ones went -
+ * and one with nothing left to do returns null.
+ */
+export function worktreeRetryRequest(operation: WorktreeOperationView): WorktreeActionRequest | null {
+  const request = operation.request;
+  if (request.action !== "destroy" || request.target.kind === "pool") return request;
+  const removed = new Set(operation.completed.map((target) => target.id));
+  if (request.target.kind === "slot") return removed.has(request.target.slotId) ? null : request;
+  const remaining = request.target.slotIds.filter((id) => !removed.has(id));
+  if (remaining.length === 0) return null;
+  return { action: "destroy", target: { kind: "slots", slotIds: remaining } };
 }
 
 export interface OpenWorktreeRequest {

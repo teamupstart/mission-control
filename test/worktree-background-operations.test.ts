@@ -8,6 +8,7 @@ import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { worktreeRetryRequest } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -297,4 +298,103 @@ test("a full queue refuses new cleanups without consuming the token or dropping 
   await capped.idle();
   assert.equal(manager.store.slot(slots[2]!.slotId), null);
   assert.deepEqual((await capped.inventory()).operations, []);
+});
+
+test("a preview naming a slot that already has a cleanup queued is blocked for that slot", async (t) => {
+  const [queued, free] = await availableSlots("mission-worktree-bg-pending-preview-", 2);
+  let open = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const removeSlot = manager.removeSlot.bind(manager);
+  t.mock.method(manager, "removeSlot", async (...args: Parameters<typeof removeSlot>) => {
+    await gate;
+    return removeSlot(...args);
+  });
+  const first = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: queued!.slotId } });
+  operations.submit(first.token, []);
+
+  const bulk = await operations.preview({
+    action: "destroy",
+    target: { kind: "slots", slotIds: [queued!.slotId, free!.slotId] },
+  });
+  assert.equal(bulk.allowed, false, "the dialog cannot offer an Execute that would only 409");
+  assert.match(bulk.blockers.join("\n"), /already has a cleanup queued/);
+  const alone = await operations.preview({ action: "destroy", target: { kind: "slot", slotId: free!.slotId } });
+  assert.equal(alone.allowed, true, "an unrelated slot is not blocked by someone else's queue");
+  const prune = await operations.preview({ action: "prune", poolId: manager.store.slot(free!.slotId)!.poolId, mode: "safe" });
+  assert.deepEqual(prune.affected.map((target) => target.path), [free!.path], "prune leaves the queued slot to its own cleanup");
+
+  open();
+  await operations.idle();
+  assert.equal(manager.store.slot(queued!.slotId), null, "the running operation was not blocked by its own targets");
+  assert.deepEqual((await operations.inventory()).operations, []);
+});
+
+test("a bulk destroy that fails partway reports what it removed and retries only the rest", async (t) => {
+  const [first, second] = await availableSlots("mission-worktree-bg-partial-", 2);
+  const preview = await operations.preview({
+    action: "destroy",
+    target: { kind: "slots", slotIds: [first!.slotId, second!.slotId] },
+  });
+  assert.equal(preview.allowed, true, preview.blockers.join("; "));
+  const order = preview.affected.map((target) => target.id);
+  const removeSlot = manager.removeSlot.bind(manager);
+  let calls = 0;
+  t.mock.method(manager, "removeSlot", async (...args: Parameters<typeof removeSlot>) => {
+    calls += 1;
+    if (calls === 2) throw new Error("git worktree remove failed");
+    return removeSlot(...args);
+  });
+  t.mock.method(console, "error", () => {});
+
+  const accepted = operations.submit(preview.token, []);
+  await operations.idle();
+  const [failed] = (await operations.inventory()).operations;
+  assert.equal(failed?.id, accepted.operation.id);
+  assert.equal(failed?.state, "failed");
+  const removedId = order[0]!;
+  const leftId = order[1]!;
+  assert.deepEqual(failed?.completed.map((target) => target.id), [removedId], "the removal that happened is reported");
+  assert.equal(manager.store.slot(removedId), null);
+  assert.equal(manager.store.slot(leftId)?.state, "available", "the rest is left in place");
+
+  const retry = worktreeRetryRequest(failed!);
+  assert.deepEqual(retry, { action: "destroy", target: { kind: "slots", slotIds: [leftId] } });
+  t.mock.restoreAll();
+  operations.dismiss(accepted.operation.id);
+  const again = await operations.preview(retry!);
+  assert.equal(again.allowed, true, "the narrowed retry does not trip over the slot already removed");
+  operations.submit(again.token, []);
+  await operations.idle();
+  assert.equal(manager.store.slot(leftId), null);
+});
+
+test("the retry request narrows bulk destroys, drops finished single slots, and keeps everything else", () => {
+  const base = {
+    id: "op",
+    state: "failed" as const,
+    targets: [],
+    error: "x",
+    changed: false,
+    queuedAt: 1,
+    finishedAt: 2,
+  };
+  const bulk = { action: "destroy" as const, target: { kind: "slots" as const, slotIds: ["a", "b", "c"] } };
+  assert.deepEqual(worktreeRetryRequest({ ...base, request: bulk, completed: [] }), bulk);
+  assert.deepEqual(
+    worktreeRetryRequest({ ...base, request: bulk, completed: [{ id: "b", path: "/b" }] }),
+    { action: "destroy", target: { kind: "slots", slotIds: ["a", "c"] } },
+  );
+  assert.equal(worktreeRetryRequest({
+    ...base,
+    request: bulk,
+    completed: ["a", "b", "c"].map((id) => ({ id, path: `/${id}` })),
+  }), null);
+  const single = { action: "destroy" as const, target: { kind: "slot" as const, slotId: "a" } };
+  assert.equal(worktreeRetryRequest({ ...base, request: single, completed: [{ id: "a", path: "/a" }] }), null);
+  const pool = { action: "destroy" as const, target: { kind: "pool" as const, poolId: "p" } };
+  assert.deepEqual(worktreeRetryRequest({ ...base, request: pool, completed: [{ id: "a", path: "/a" }] }), pool);
+  const prune = { action: "prune" as const, poolId: "p", mode: "safe" as const };
+  assert.deepEqual(worktreeRetryRequest({ ...base, request: prune, completed: [{ id: "a", path: "/a" }] }), prune);
 });

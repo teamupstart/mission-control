@@ -76,7 +76,7 @@ test("Codex is a valid Inspector provider with a Codex default model", () => {
   const cfg = InspectorConfigSchema.parse({ runner: "codex", model: "" });
   assert.equal(cfg.runner, "codex");
   assert.deepEqual(resolveInspectorModel(cfg, undefined, "codex"), {
-    id: "gpt-5.6-sol",
+    id: "gpt-6-sol",
     source: "default",
     unsupported: null,
   });

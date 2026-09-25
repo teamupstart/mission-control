@@ -3192,6 +3192,9 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  */
 export const DISPLAY_ITEM_HIDDEN_SEEDS: readonly (readonly string[])[] = [
   ["workflowDetails"],
+  // The conversation's opt-in working marks: with neither checked, the conversation draws
+  // what it drew before they existed.
+  ["workingPinned", "workingProgressBar"],
 ];
 
 /**

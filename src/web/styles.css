@@ -8092,6 +8092,30 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* How long the current turn has run. Right-aligned and never shrinking, so a long activity
+   clips against it rather than pushing it off the row, and tabular so the second hand does
+   not jitter the line it sits on. */
+.turn-progress-clock {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  font: 10.5px/1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+/* Display > Working indicator > Pin the working row. Sticky to the bottom of the log's own
+   scrollport, which is the row's parent - so at the tail it is just the last line, and
+   scrolled back it holds the edge. Opaque, because the turns scrolling under it would
+   otherwise print through it; the rule above says where the log continues beneath. */
+.turn-progress.is-pinned {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  background: var(--working-row-surface, var(--bg));
+  border-top: 1px solid color-mix(in oklab, var(--working) 22%, var(--border-soft));
+}
 @media (prefers-reduced-motion: reduce) {
   .turn-progress-glyph {
     animation: none;
@@ -9338,6 +9362,44 @@ mark.find-hit.is-current {
 }
 .transcript[data-view="terminal"] .transcript-input:focus {
   outline: 0;
+}
+/* Display > Working indicator > Reply box progress bar. A background layer rather than an
+   element: the textarea stays the compose row's flex child with nothing wrapped round it,
+   and a layer cannot take a hit or a focus ring. Declared for the terminal drawing too, and
+   after it, because that rule resets `background` - there the bar runs along the top of the
+   prompt line, which is the box's top edge in a frame that draws no box. */
+.transcript-input.has-progress-bar,
+.transcript[data-view="terminal"] .transcript-input.has-progress-bar {
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    var(--working) 35%,
+    var(--working) 65%,
+    transparent
+  );
+  background-repeat: no-repeat;
+  background-size: 30% 2px;
+  background-position: -43% 0;
+  animation: reply-progress 1.8s ease-in-out infinite;
+}
+/* With a 30% layer, -43% and 143% put it one full width off either edge. */
+@keyframes reply-progress {
+  to {
+    background-position: 143% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Still there, just not moving: a steady rule across the top edge. */
+  .transcript-input.has-progress-bar,
+  .transcript[data-view="terminal"] .transcript-input.has-progress-bar {
+    animation: none;
+    background-image: linear-gradient(
+      color-mix(in oklab, var(--working) 70%, transparent),
+      color-mix(in oklab, var(--working) 70%, transparent)
+    );
+    background-size: 100% 2px;
+    background-position: 0 0;
+  }
 }
 /* Send stays - it is the only control that can say "waiting for an upload", and a pointer
    user should not have to learn a key to send. It just stops being the loudest thing in a
@@ -29764,6 +29826,36 @@ span.line-run-prov {
 }
 .board-card-preview-stage .tile:hover {
   transform: none;
+}
+/* Display > Working indicator's preview: two short logs and a reply box, drawn with the
+   conversation's own classes. The logs are fixed-height and unscrollable, because the
+   second one's whole point is a scroll position - the top - that the stage holds still. */
+.working-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* What a pinned row paints behind itself, matched to the stage it is read against. */
+  --working-row-surface: var(--bg);
+}
+.working-preview-label {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.working-preview-log {
+  max-height: none;
+  overflow: hidden;
+  gap: 6px;
+  padding-right: 0;
+  font-size: 12px;
+}
+/* Short enough that its last turns and the row are below the fold: "scrolled back". */
+.working-preview-log.is-scrolled-back {
+  height: 112px;
+}
+.working-preview .transcript-input {
+  resize: none;
+  min-height: 34px;
+  margin-top: 4px;
 }
 @media (max-width: 900px) {
   .board-card-customizer {

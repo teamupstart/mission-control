@@ -103,6 +103,21 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
     });
   }
 
+  await dashboard.getByRole("button", { name: /Version 20/ }).click();
+  const latest = dashboard.locator(".workflow-version-detail");
+  await expect(latest).toBeVisible();
+  const latestReviewer = latest.locator("details.workflow-version-persona").first();
+  await latestReviewer.locator("summary").click();
+  await expect(latestReviewer.getByText("codex · gpt-6-sol")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await latestReviewer.screenshot({
+      path: `${EVIDENCE}version-20-codex-models.png`,
+      animations: "disabled",
+    });
+  }
+
   await dashboard.getByRole("button", { name: /Version 15/ }).click();
   const currentVersion = dashboard.locator(".workflow-version-detail");
   await expect(currentVersion).toBeVisible();

@@ -96,6 +96,7 @@ function latestModelAndTokens(
 
 export function piContextWindowSize(modelId: string | null): number {
   const id = modelId?.toLowerCase().split("/").at(-1) ?? "";
+  if (id.startsWith("gpt-6-")) return 1_050_000;
   if (id === "gpt-5.5-pro" || id === "gpt-5.4-pro") return 1_050_000;
   if (id === "gpt-5.5" || id.startsWith("gpt-5.6-")) return 272_000;
   if (id.startsWith("gpt-5")) return 400_000;

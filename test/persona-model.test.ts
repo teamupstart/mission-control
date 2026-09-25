@@ -32,13 +32,13 @@ const CODEX = { id: "codex", source: "config", unknown: null } as const;
 test("a Persona runner override wins over the app runner", () => {
   const execution = resolvePersonaExecution({ ...BASE, runner: "codex" }, CLAUDE, undefined);
   assert.deepEqual(execution.runner, { id: "codex", source: "config", unknown: null });
-  assert.deepEqual(execution.model, { id: "gpt-5.6-terra", source: "default" });
+  assert.deepEqual(execution.model, { id: "gpt-6-sol", source: "default" });
 });
 
 test("a blank Persona runner follows the resolved app runner", () => {
   const execution = resolvePersonaExecution(BASE, CODEX, undefined);
   assert.equal(execution.runner, CODEX);
-  assert.deepEqual(execution.model, { id: "gpt-5.6-terra", source: "default" });
+  assert.deepEqual(execution.model, { id: "gpt-6-sol", source: "default" });
 });
 
 test("a stored Persona model wins over the environment and default", () => {
@@ -65,12 +65,12 @@ test("Persona defaults expose the complete server-side model ladder to new draft
 
   const fallbacks = resolvePersonaDefaults(CODEX, undefined);
   assert.deepEqual(fallbacks.models.claude, { id: "claude-sonnet-5", source: "default" });
-  assert.deepEqual(fallbacks.models.codex, { id: "gpt-5.6-terra", source: "default" });
+  assert.deepEqual(fallbacks.models.codex, { id: "gpt-6-sol", source: "default" });
 });
 
 test("the fallback is compatible with the resolved provider", () => {
   assert.equal(resolvePersonaExecution(BASE, CLAUDE, undefined).model.id, "claude-sonnet-5");
-  assert.equal(resolvePersonaExecution(BASE, CODEX, undefined).model.id, "gpt-5.6-terra");
+  assert.equal(resolvePersonaExecution(BASE, CODEX, undefined).model.id, "gpt-6-sol");
 });
 
 test("an unknown stored runner falls back through the shared resolver and is reported", () => {

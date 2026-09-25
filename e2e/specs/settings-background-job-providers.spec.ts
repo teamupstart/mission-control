@@ -147,7 +147,7 @@ test("a row's own provider change resets only that row's stranded model, and say
   // Resolved through the new provider's own cheap default rather than left holding a Claude id.
   await expect(
     dashboard.getByRole("combobox", { name: "Goal model" }).getByRole("option").first(),
-  ).toHaveText(/Default - gpt-5\.6-luna/);
+  ).toHaveText(/Default - gpt-6-luna/);
 
   // The neighbour is untouched. A blanket clear and a targeted reset differ only here.
   await expect(dashboard.getByRole("combobox", { name: "Task title model" })).toHaveValue(

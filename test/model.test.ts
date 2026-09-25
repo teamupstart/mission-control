@@ -10,23 +10,41 @@ import {
   providerModelDefault,
 } from "../src/shared/model.ts";
 
-test("Claude catalog offers Opus 5 before the preserved previous-generation Opus", () => {
+test("Claude catalog leads with current Fable and Opus while preserving older choices", () => {
+  assert.deepEqual(MODEL_CATALOG.claude.slice(0, 2).map(({ id }) => id), [
+    "claude-fable-5-1", "claude-opus-5-5",
+  ]);
   const opus5 = MODEL_CATALOG.claude.findIndex((choice) => choice.id === "claude-opus-5");
   const opus48 = MODEL_CATALOG.claude.findIndex((choice) => choice.id === "claude-opus-4-8");
 
   assert.ok(opus5 >= 0);
   assert.equal(MODEL_CATALOG.claude[opus5]?.label, "Opus 5");
+  assert.ok(MODEL_CATALOG.claude.some((choice) => choice.id === "claude-fable-5"));
   assert.equal(opus48, opus5 + 1);
   assert.equal(MODEL_CATALOG.claude[opus48]?.hint, "previous-generation Opus");
 });
 
-test("Claude deep calls default to Opus 5 while cheaper tiers stay unchanged", () => {
-  assert.equal(providerModelDefault("claude", "deep"), "claude-opus-5");
+test("Claude deep calls default to Opus 5.5 while cheaper tiers stay unchanged", () => {
+  assert.equal(providerModelDefault("claude", "deep"), "claude-opus-5-5");
   assert.equal(providerModelDefault("claude", "balanced"), "claude-sonnet-5");
   assert.equal(providerModelDefault("claude", "cheap"), "claude-haiku-4-5");
 });
 
+test("Codex defaults use the current model family at each workload tier", () => {
+  assert.deepEqual(MODEL_CATALOG.codex.slice(0, 3).map(({ id }) => id), [
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+  ]);
+  assert.deepEqual(MODEL_CATALOG.pi.map(({ id }) => id), [
+    "openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna",
+  ]);
+  assert.equal(providerModelDefault("codex", "deep"), "gpt-6-sol");
+  assert.equal(providerModelDefault("codex", "balanced"), "gpt-6-sol");
+  assert.equal(providerModelDefault("codex", "cheap"), "gpt-6-luna");
+});
+
 test("modelLabel maps Claude ids to friendly names", () => {
+  assert.equal(modelLabel("claude-fable-5-1"), "Fable 5.1");
+  assert.equal(modelLabel("claude-opus-5-5"), "Opus 5.5");
   assert.equal(modelLabel("claude-opus-5"), "Opus 5");
   assert.equal(modelLabel("claude-opus-4-8"), "Opus 4.8");
   assert.equal(modelLabel("claude-opus-4-8[1m]"), "Opus 4.8"); // 1M marker stripped
@@ -72,6 +90,8 @@ test("isLongContext keys off the 1M threshold", () => {
 });
 
 test("defaultWindowForModel maps long-context Claude families to 1M, else 200k", () => {
+  assert.equal(defaultWindowForModel("claude-fable-5-1"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-opus-5-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-fable-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-opus-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-opus-4-8"), 1_000_000);

@@ -165,6 +165,8 @@ function recordResumePhase(phase) {
  */
 const CATALOG_ROWS = [
   ["gpt-6-astra", "GPT-6-Astra", "Our most capable model for complex, demanding work.", false],
+  ["gpt-6-sol", "GPT-6-Sol", "Strong model for complex coding and agentic workflows.", false],
+  ["gpt-6-luna", "GPT-6-Luna", "Efficient model for focused tasks.", false],
   ["gpt-5.6-sol", "GPT-5.6-Sol", "Reliable agentic workhorse for everyday tasks.", false],
   ["gpt-5.6-terra", "GPT-5.6-Terra", "Balanced agentic coding model.", false],
   ["gpt-5.6-luna", "GPT-5.6-Luna", "Fast and affordable agentic coding model.", false],

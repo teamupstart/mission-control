@@ -209,21 +209,30 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   );
   assertUnknown(added, /git worktree add/);
 
-  const fetched = await new NativeWorktreeGit(async () => unknown()).fetchDefaultSha(identity);
+  // Return fetches only into a repository that already has refs, so every case below
+  // answers that probe and lets the step it is about be the one that dies. A probe that
+  // itself died is its own unknown.
+  const withRefs = (run: (bin: string, args: string[]) => Promise<RunResult>) =>
+    async (bin: string, args: string[]) =>
+      args.includes("for-each-ref") ? known("refs/heads/main\n") : run(bin, args);
+  const probed = await new NativeWorktreeGit(async () => unknown()).fetchDefaultSha(identity);
+  assertUnknown(probed, /git for-each-ref/);
+
+  const fetched = await new NativeWorktreeGit(withRefs(async () => unknown())).fetchDefaultSha(identity);
   assertUnknown(fetched, /git fetch origin/);
 
   // Return asks the REMOTE which branch it currently calls default, so an ls-remote that
   // died is an unknown default rather than a licence to reuse the cached `origin/HEAD`.
-  const symref = await new NativeWorktreeGit(async (_bin, args) =>
+  const symref = await new NativeWorktreeGit(withRefs(async (_bin, args) =>
     args.includes("fetch") ? known() : unknown(`${sha}\n`)
-  ).fetchDefaultSha(identity);
+  )).fetchDefaultSha(identity);
   assertUnknown(symref, /git ls-remote --symref origin HEAD/);
 
-  const resolved = await new NativeWorktreeGit(async (_bin, args) => {
+  const resolved = await new NativeWorktreeGit(withRefs(async (_bin, args) => {
     if (args.includes("fetch")) return known();
     if (args.includes("ls-remote")) return known(`ref: refs/heads/main\tHEAD\n${sha}\tHEAD\n`);
     return unknown(`${sha}\n`);
-  }).fetchDefaultSha(identity);
+  })).fetchDefaultSha(identity);
   assertUnknown(resolved, /git rev-parse refs\/remotes\/origin\/main/);
 
   const observed = await new NativeWorktreeGit(async () => unknown(`${sha}\n`))

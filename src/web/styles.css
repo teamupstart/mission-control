@@ -27973,10 +27973,13 @@ span.line-run-prov {
 .bl-added {
   margin-left: auto;
 }
+/* A launch error usually opens with an absolute repository path - one unbroken word far
+   wider than the card - so it may break anywhere rather than run out across the border. */
 .bl-recovery {
   color: var(--attention);
   font-size: 10.5px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .backlog-task-notice-action {
   padding: 0;

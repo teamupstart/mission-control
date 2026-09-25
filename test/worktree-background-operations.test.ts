@@ -562,3 +562,42 @@ test("observations never overlap, and no process read runs while this daemon's G
   await Promise.all([observed.status(), observed.status(), observed.status()]);
   assert.deepEqual(violations, []);
 });
+
+test("a slow Git removal does not make an unrelated preview wait", async () => {
+  const [removing] = await availableSlots("mission-worktree-bg-slow-remove-", 2);
+  let entered = (): void => {};
+  const removalStarted = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finish = (): void => {};
+  const removalGate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  class SlowRemoveGit extends NativeWorktreeGit {
+    override async remove(...args: Parameters<NativeWorktreeGit["remove"]>) {
+      entered();
+      await removalGate;
+      return super.remove(...args);
+    }
+  }
+  const slow = new WorktreeManager(db, {
+    git: new SlowRemoveGit(),
+    occupancy,
+    resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
+  });
+  const removal = slow.removeSlot({ slotId: removing!.slotId, allowDirty: false, allowUnmerged: false });
+  await removalStarted;
+  // The removal is parked inside `git worktree remove`. An observation - what every preview
+  // and inventory read starts with - must still complete.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    slow.status().then(() => "observed" as const),
+    new Promise<"blocked">((resolve) => {
+      timer = setTimeout(() => resolve("blocked"), 10_000);
+    }),
+  ]);
+  clearTimeout(timer);
+  finish();
+  assert.equal(outcome, "observed", "status() waited behind the removal");
+  assert.equal((await removal).outcome, "removed");
+});

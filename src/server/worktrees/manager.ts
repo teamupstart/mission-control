@@ -394,8 +394,13 @@ export class WorktreeManager {
     return this.occupancyBlocker(path);
   }
 
+  /**
+   * A point check before a mutation. Only the process read itself takes the observation
+   * lock, so it cannot overlap an inventory observation's Git reads inside this slot; the
+   * mutation around it runs unlocked, so a slow removal never holds up a preview.
+   */
   private async occupancyBlocker(path: string): Promise<string | null> {
-    const occupancy = (await this.occupancy([path])).get(path);
+    const occupancy = (await this.withObservation(() => this.occupancy([path]))).get(path);
     if (!occupancy || occupancy.status === "unknown") {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
     }
@@ -1289,10 +1294,11 @@ export class WorktreeManager {
     allowDirty: boolean;
     allowUnmerged: boolean;
   }): Promise<WorktreeRemoveResult> {
-    // Under the observation lock as well: its occupancy checks must not catch an inventory
-    // observation's Git reads inside the very slot being removed. Lock order is slot, then
+    // Its occupancy checks take the observation lock for the process read alone (see
+    // `occupancyBlocker`). The Git removal itself is not under it: a slow `git worktree
+    // remove` must never make an unrelated preview wait. Lock order is slot, then
     // observation; nothing holding the observation lock takes a slot lock.
-    return this.withSlot(input.slotId, () => this.withObservation(async () => {
+    return this.withSlot(input.slotId, async () => {
       const slot = this.store.slot(input.slotId);
       if (!slot) return { outcome: "alreadyRemoved" };
       if (input.expectedVersion !== undefined && slot.version !== input.expectedVersion) {
@@ -1406,7 +1412,7 @@ export class WorktreeManager {
       }
       this.publish();
       return { outcome: "removed" };
-    }));
+    });
   }
 
   /** Preview-only safe prune and right-size candidates. No filesystem mutation occurs. */

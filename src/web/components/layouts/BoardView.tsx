@@ -80,15 +80,19 @@ interface PendingDrop {
  * EMPTY COLUMNS. A column with nothing in it is not always the same kind of nothing,
  * so they aren't treated the same:
  *
- *  - "needs you" empty is the single most valuable sentence this screen can say, and
- *    it says it best out loud. It keeps its column and renders an explicit all-clear
- *    rather than a gap you have to notice the absence of. It does NOT keep an equal
- *    share of the width, though: 250px says "all clear" exactly as well as 700px
- *    does, and the columns holding actual sessions get the difference.
+ *  - "needs you" empty is the single most valuable fact this screen can state, so it
+ *    keeps its place rather than leaving a gap you have to notice the absence of. It
+ *    keeps almost none of the width, though: it narrows to a slim rail - its swatch, a
+ *    tick, its name turned on end and a zero - with the all-clear sentence on hover and
+ *    for a screen reader. Staying mounted is what lets it widen IN PLACE the moment a
+ *    session needs you, on the same flex transition the drill-in rides, instead of a
+ *    column appearing from nowhere and shoving the board sideways.
  *  - every other empty column is noise - four headed boxes reading "nothing here" is
  *    a board reporting on its own schema instead of your fleet. They leave, and the
- *    remaining columns expand into the space. A rail on the right keeps them one
- *    click from coming back, so an empty column is stowed rather than lost.
+ *    remaining columns expand into the space. A stash on the right keeps them one
+ *    click from coming back, so an empty column is stowed rather than lost - unless
+ *    the operator has switched the stash off (`showEmptyColumnStash`), in which case
+ *    they simply leave.
  *
  * Opening a tile doesn't slide a cramped drawer over the board; it morphs the board
  * INTO the console. The clicked column collapses everything either side of it, slides
@@ -147,7 +151,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const groupByRepo = useUiConfig().groupBoardByRepo;
+  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -189,7 +193,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   const pending = provisioningTasks(props.tasks);
 
   const modes = boardColumnModes(groups, revealed, focusedTone != null, pending.length);
-  const stashed = groups.filter((g) => modes.get(g.tone) === "stashed");
+  // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
+  // chip to bring them back from.
+  const stashed = showEmptyColumnStash
+    ? groups.filter((g) => modes.get(g.tone) === "stashed")
+    : [];
 
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
@@ -362,7 +370,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   then surprise you with it on the way back to the board. */}
               <header
                 className="board-col-head"
-                onDoubleClick={isRail ? undefined : () => toggleWide(g.tone)}
+                onDoubleClick={isRail || calm ? undefined : () => toggleWide(g.tone)}
               >
                 {isRail && (
                   <Tooltip label="Back to the board (Esc)">
@@ -385,7 +393,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
                     Not while drilled in: the rail is a fixed-width console fixture, and
                     a widen control there would offer to move something that cannot. */}
-                {!isRail && (
+                {/* Nor on the all-clear rail: there is nothing in it to read wider. */}
+                {!isRail && !calm && (
                   <ColumnWidthToggle
                     wide={wide}
                     label={g.label}
@@ -449,14 +458,18 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {g.tone === "working" && (
                   <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
                 )}
+                {/* The rail's body is this one element, filling it, so hovering anywhere
+                    below the head gives the sentence the rail has no room to print. The
+                    sentence is in the markup too, for a screen reader. */}
                 {calm ? (
-                  <p className="board-allclear">
-                    <span className="board-allclear-tick" aria-hidden>
-                      ✓
-                    </span>
-                    <b>All clear</b>
-                    <span>Nothing is waiting on you</span>
-                  </p>
+                  <Tooltip label="All clear. Nothing is waiting on you.">
+                    <p className="board-allclear">
+                      <span className="board-allclear-tick" aria-hidden>
+                        ✓
+                      </span>
+                      <span className="sr-only">All clear. Nothing is waiting on you.</span>
+                    </p>
+                  </Tooltip>
                 ) : g.sessions.length === 0 ? (
                   g.tone === "working" && pending.length > 0 ? null : (
                     <p className="board-col-empty">Nothing here</p>

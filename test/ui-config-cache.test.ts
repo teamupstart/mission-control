@@ -51,6 +51,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
+  // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
+  assert.equal(config.showEmptyColumnStash, true);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional; the two working marks are opt-in additions to the
@@ -86,6 +88,8 @@ test("a written cache round-trips", () => {
     // for the one operator who turned it off. Asserting the non-default value is the only way
     // round-tripping this field says anything.
     groupBoardByRepo: false,
+    // FALSE for the same reason: it defaults to true.
+    showEmptyColumnStash: false,
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -101,6 +105,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
+  assert.equal(config.showEmptyColumnStash, false);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {

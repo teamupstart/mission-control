@@ -144,6 +144,8 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     // the default - re-grouping the board on every cold paint for the one person who turned it
     // off. The same trap the booleans above avoid the same way.
     groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
+    // `??` for the same reason: a stored `false` is the operator hiding the stash.
+    showEmptyColumnStash: raw?.showEmptyColumnStash ?? UI_CONFIG_DEFAULTS.showEmptyColumnStash,
   };
 }
 

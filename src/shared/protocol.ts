@@ -3248,6 +3248,13 @@ export const UI_CONFIG_DEFAULTS = {
    * one flat list per column unchecks it.
    */
   groupBoardByRepo: true,
+  /**
+   * TRUE, so an upgrade changes nothing on screen: the Board has always stowed its empty
+   * columns as chips in an "empty" stash beside the last column. Unchecking it removes that
+   * stash entirely, for an operator who never brings an empty column back and would rather
+   * the board spent those pixels on the columns that hold sessions.
+   */
+  showEmptyColumnStash: true,
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3378,6 +3385,14 @@ export const UiConfigSchema = z.object({
    * only the layout moved.
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
+  /**
+   * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
+   * which puts that column back. Off hides the stash and every chip in it, so an empty column
+   * simply leaves the board. It does not govern the empty "needs you" rail, which is not in
+   * the stash: that column stays as a slim all-clear strip so it can widen in place the moment
+   * something needs you.
+   */
+  showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

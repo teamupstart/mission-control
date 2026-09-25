@@ -27624,39 +27624,69 @@ span.line-run-prov {
 }
 
 /* ---- empty columns: all-clear, and the stash the rest fold into ----
-   An empty "needs you" keeps its column but not its share of the width: it has one
-   sentence to say, and 250px says it. Everything else that empties leaves the board
-   entirely (BoardView simply stops rendering it) and reappears as a chip in the
-   stash, so the columns that hold sessions get the whole board. */
+   An empty "needs you" keeps its PLACE but not its width: it narrows to a slim rail - the
+   swatch, its name turned on end, a tick and a zero - and says "all clear" on hover and to a
+   screen reader. It stays mounted and sized on the same `flex-*` / `min-width` properties the
+   drill-in animates, so the moment a session needs you it widens in place on that transition
+   rather than arriving from nowhere and shoving every column sideways. Its width sits at
+   `.board-col`'s own specificity on purpose: the drill-in's collapse rule outranks it, so a
+   drill-in still folds this rail to nothing like any other column.
+
+   Everything else that empties leaves the board entirely (BoardView simply stops rendering
+   it) and reappears as a chip in the stash, unless the stash is switched off in Settings. */
 .board-col.is-calm {
   flex-grow: 0;
-  flex-basis: 250px;
-  min-width: 218px;
-}
-.board-allclear {
-  display: flex;
-  flex-direction: column;
+  flex-basis: var(--board-calm-rail);
+  min-width: var(--board-calm-rail);
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  flex: 1;
+  padding: 10px 0 9px;
+  gap: 10px;
+  --board-calm-rail: 34px;
+}
+/* The head and body boxes dissolve, so their leaves line up down the rail as one column.
+   The head's rule and padding belong to a head that runs across a column; a 34px rail has
+   no across. */
+.board-col.is-calm > .board-col-head,
+.board-col.is-calm > .board-col-body {
+  display: contents;
+}
+.board-col.is-calm .board-col-head h2 {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  letter-spacing: 0.9px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+/* The swatch dims and loses its glow: an amber beacon on a column with nothing in it is the
+   one thing an all-clear must not look like. */
+.board-col.is-calm .board-swatch {
+  opacity: 0.6;
+  box-shadow: none;
+}
+/* The zero sits at the foot, bare: a pill 34px wide would touch both borders. */
+.board-col.is-calm .board-col-n {
+  order: 2;
   margin: 0;
-  padding: 22px 10px;
-  text-align: center;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+/* The tick, and the hover target for the sentence: it takes the rail's spare height between
+   the name and the zero, so pointing anywhere down the rail explains it. */
+.board-allclear {
+  order: 1;
+  flex: 1;
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
 }
 .board-allclear-tick {
-  font-size: 17px;
+  font-size: 13px;
   line-height: 1;
   color: var(--idle);
-}
-.board-allclear b {
-  font-size: 12px;
-  font-weight: 640;
-  color: var(--muted);
-}
-.board-allclear span:last-child {
-  font-size: 11px;
-  color: var(--dim);
 }
 /* Put a revealed column back. Sits where the count does on a column that has one. */
 .board-restash {

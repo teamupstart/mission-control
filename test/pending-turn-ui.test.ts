@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { PendingTurn, SteeredTurn, TranscriptMessage } from "../src/shared/types.ts";
+import type { PendingTurn, SteeredTurn, SteerReceipt, TranscriptMessage } from "../src/shared/types.ts";
 import { PendingTurnView, SteeredTurnView } from "../src/web/components/TranscriptPanel.tsx";
 import type { SessionState } from "../src/shared/types.ts";
 import type { DialogBearing } from "../src/shared/session.ts";
@@ -15,8 +15,7 @@ import {
   recallPendingTurnIntoDraft,
   sentAgo,
   shouldRecallPendingTurn,
-  trackSteers,
-  type WatchedSteer,
+  receiptsToLabel,
 } from "../src/web/lib/pending-turns.ts";
 import { assignSteerReceipts, steeredTurnReceipt } from "../src/shared/message-delivery.ts";
 
@@ -391,11 +390,8 @@ test("a steered row keeps the message on screen and says the agent has not read 
 test("the transcript turn that carries a steered message is its receipt", () => {
   assert.equal(steeredTurnReceipt(steer(), []), null);
   assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 100_500)]), "user-100500");
-  // Whitespace and a harness's own wrapping around the text do not hide it.
-  assert.equal(
-    steeredTurnReceipt(steer(), [said("<queued>\n  Skip e2e   for now.\n</queued>", 101_000)]),
-    "user-101000",
-  );
+  // Whitespace the transcript reflowed does not hide it.
+  assert.equal(steeredTurnReceipt(steer(), [said("\n  Skip e2e   for now.\n", 101_000)]), "user-101000");
   // A transcript without timestamps cannot be ordered, so its match is taken.
   assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 0)]), "user-0");
 });
@@ -437,17 +433,16 @@ test("one transcript turn answers at most one steer, oldest steer first", () => 
   );
 });
 
-test("a retired steer waits for its turn from when it left, not from when it was sent", () => {
-  const watched = new Map<string, WatchedSteer>();
-  const old = steer({ id: "old", acceptedAt: 0 });
-  trackSteers(watched, [old], 5 * 60_000, 30_000);
-  // Retired after waiting five minutes for the agent's next step: still watched.
-  trackSteers(watched, [], 5 * 60_000 + 1, 30_000);
-  assert.equal(watched.get("old")?.goneAt, 5 * 60_000 + 1);
-  trackSteers(watched, [], 5 * 60_000 + 30_001, 30_000);
-  assert.ok(watched.has("old"), "inside the grace window measured from departure");
-  trackSteers(watched, [], 5 * 60_000 + 30_002, 30_000);
-  assert.equal(watched.has("old"), false, "dropped once the window from departure has passed");
+test("the conversation labels only the turn the daemon matched, once, while recent", () => {
+  const receipt: SteerReceipt = { steerId: "s1", messageId: "later", at: 1_000 };
+  // An earlier turn with the same words is in the log too; only the matched id is labelled.
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["earlier", "later"]), new Set(), 2_000, 30_000), [receipt]);
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["earlier"]), new Set(), 2_000, 30_000), [],
+    "waits until its own turn reaches the log");
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["later"]), new Set(["s1"]), 2_000, 30_000), [],
+    "never labelled twice");
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["later"]), new Set(), 31_001, 30_000), [],
+    "a receipt older than the window is history, not news");
 });
 
 test("a longer message is never the receipt of a shorter steer it contains", () => {
@@ -463,11 +458,11 @@ test("a longer message is never the receipt of a shorter steer it contains", () 
   );
 });
 
-test("markup a harness wraps around a steer does not hide its receipt", () => {
-  const yes = steer({ id: "yes", text: "yes" });
-  assert.equal(steeredTurnReceipt(yes, [said('<queued_command id="7">yes</queued_command>', 101_000)]), "user-101000");
-  assert.equal(steeredTurnReceipt(yes, [said("<queued_command>yes please</queued_command>", 101_000)]), null);
-  // Tags the operator typed are compared like for like.
+test("a steer's receipt must carry exactly what the operator wrote, tags included", () => {
   const tagged = steer({ id: "tagged", text: "use <Suspense> here" });
   assert.equal(steeredTurnReceipt(tagged, [said("use <Suspense> here", 101_000)]), "user-101000");
+  // Different messages never become equal by losing their tags.
+  assert.equal(steeredTurnReceipt(tagged, [said("use here", 101_000)]), null);
+  assert.equal(steeredTurnReceipt(steer({ id: "plain", text: "use here" }), [said("use <Suspense> here", 101_000)]), null);
+  assert.equal(steeredTurnReceipt(steer({ id: "yes", text: "yes" }), [said("<b>yes</b>", 101_000)]), null);
 });

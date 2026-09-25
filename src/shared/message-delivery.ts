@@ -87,12 +87,13 @@ export const MESSAGE_INTERRUPT_WATCHDOG_MS = 10_000;
 const STEER_RECEIPT_SKEW_MS = 5_000;
 
 /**
- * A message reduced to what a person wrote: markup tags a harness wraps around the text it
- * was given (`<queued_command>…</queued_command>`) removed, and whitespace collapsed. Both
- * sides go through it, so a steer that itself contains tags still compares like for like.
+ * Whitespace collapsed, and nothing else changed. Harness scaffolding around a user turn is
+ * already removed where the transcript is parsed (Claude's `conversationText`, for one), so
+ * the text arriving here is what the operator wrote. Stripping anything more would make
+ * different messages equal: `use <Suspense> here` is not `use here`.
  */
 function comparableText(text: string): string {
-  return text.replace(/<\/?[A-Za-z][\w:-]*(?:\s[^<>]*)?>/g, " ").replace(/\s+/g, " ").trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -121,8 +122,8 @@ function isSteerReceipt(turn: SteeredTurn, wanted: string, message: TranscriptMe
  * time. `claimed` carries turns an earlier pass already paired, for a caller that reads the
  * same turns again.
  *
- * The match is on the whole message, ignoring whitespace and the markup tags a harness may
- * wrap around what it records, so a longer message is never a shorter steer's receipt. A
+ * The match is on the whole message, ignoring only whitespace, so a longer message is never a
+ * shorter steer's receipt and a message the operator did not write never retires one. A
  * turn more than a few seconds older than the steer is an earlier message that happens to
  * say the same thing ("yes"), and is never taken for it.
  */

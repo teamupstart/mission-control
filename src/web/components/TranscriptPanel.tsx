@@ -4,6 +4,7 @@ import type {
   PendingTurn,
   ReviewItem,
   SteeredTurn,
+  SteerReceipt,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -35,10 +36,8 @@ import {
   recallPendingTurnIntoDraft,
   sentAgo,
   shouldRecallPendingTurn,
-  trackSteers,
-  type WatchedSteer,
+  receiptsToLabel,
 } from "../lib/pending-turns.ts";
-import { assignSteerReceipts } from "@shared/message-delivery.ts";
 import {
   appendLive,
   backAnchor,
@@ -116,13 +115,14 @@ const RECONNECT_MAX_MS = 8000;
 const TURN_FLASH_MS = 2000;
 const EMPTY_FILE_PATHS: ReadonlySet<string> = new Set();
 const NO_STEERED_TURNS: readonly SteeredTurn[] = [];
+const NO_STEER_RECEIPTS: readonly SteerReceipt[] = [];
 const NO_IDS: ReadonlySet<string> = new Set();
 /** How long a transcript turn says "received" after it replaced a steered row. */
 const STEER_RECEIVED_MS = 4000;
 /**
- * How long after a steer leaves the session this log still waits for the turn it became.
- * Counted from the departure, not from acceptance: a steer can wait minutes for the agent's
- * next step, and its turn reaches this log on a different stream from its retirement.
+ * How long after the daemon finds a receipt this log still labels its turn on arrival.
+ * Counted from the receipt, not from acceptance: a steer can wait minutes for the agent's
+ * next step, and its turn reaches this log on a different stream from the receipt.
  */
 const STEER_WATCH_MS = 30_000;
 
@@ -141,35 +141,25 @@ function useSecondClock(active: boolean): number {
 /**
  * The transcript turns that just replaced a steered row, so each can say it was received.
  *
- * Decoration only: whether a steer is still waiting is the daemon's answer, and the row
- * leaves when the daemon retires it. This names WHICH log turn to mark, with the daemon's
- * own matching rule. It remembers every steer it has seen, because the daemon's retirement
- * and this log's copy of the turn arrive on different streams, in either order. The label
- * is transient on purpose - it marks the handoff, not the message.
+ * Decoration only, and entirely the daemon's answer: it publishes the exact turn it matched
+ * (`Session.steerReceipts`), and this marks that turn for a few seconds once it is in the
+ * log. Nothing here searches the log for a match, because the log also holds earlier turns
+ * with the same words that the daemon, reading only what came after the steer, never took.
  */
 function useSteerReceipts(
-  steered: readonly SteeredTurn[],
+  receipts: readonly SteerReceipt[],
   messages: readonly TranscriptMessage[],
 ): ReadonlySet<string> {
-  /** Every steer seen, in delivery order. */
-  const watched = useRef(new Map<string, WatchedSteer>());
-  /** Log turns already labelled, so two steers with the same words never label one turn. */
-  const claimed = useRef(new Set<string>());
+  /** Steers already labelled, so a remount or a later upsert never labels one twice. */
+  const labelled = useRef(new Set<string>());
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const [received, setReceived] = useState<ReadonlySet<string>>(NO_IDS);
   useEffect(() => {
-    trackSteers(watched.current, steered, Date.now(), STEER_WATCH_MS);
-    const paired = assignSteerReceipts(
-      [...watched.current.values()].map((entry) => entry.turn),
-      messages,
-      claimed.current,
-    );
-    const hits = [...paired.values()];
-    for (const [id, hit] of paired) {
-      watched.current.delete(id);
-      claimed.current.add(hit);
-    }
-    if (hits.length === 0) return;
+    const present = new Set(messages.map((message) => message.id));
+    const due = receiptsToLabel(receipts, present, labelled.current, Date.now(), STEER_WATCH_MS);
+    if (due.length === 0) return;
+    for (const receipt of due) labelled.current.add(receipt.steerId);
+    const hits = due.map((receipt) => receipt.messageId);
     setReceived((prev) => new Set([...prev, ...hits]));
     const timer = setTimeout(() => {
       timers.current.delete(timer);
@@ -180,7 +170,7 @@ function useSteerReceipts(
       });
     }, STEER_RECEIVED_MS);
     timers.current.add(timer);
-  }, [steered, messages]);
+  }, [receipts, messages]);
   useEffect(() => {
     const pending = timers.current;
     return () => {
@@ -1054,7 +1044,7 @@ export function TranscriptPanel({
   const steered = session.steeredTurns ?? NO_STEERED_TURNS;
   // A steered row can arrive one upsert before the refresh that retires its outbox row.
   const outboxRows = session.pendingTurns.filter((turn) => !steered.some((row) => row.id === turn.id));
-  const received = useSteerReceipts(steered, messages);
+  const received = useSteerReceipts(session.steerReceipts ?? NO_STEER_RECEIPTS, messages);
   const sendingRows = outboxRows.filter((turn) => turn.state === "sending");
   const inFlight = [
     ...steered.map((turn) => ({ id: turn.id, label: "Steered", text: turn.text, since: turn.acceptedAt })),

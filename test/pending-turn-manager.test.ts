@@ -1807,6 +1807,31 @@ test("a steer leaves the moment the transcript shows it, while its turn is still
   f.manager.stop();
 });
 
+test("a retired steer publishes the exact turn that is its receipt, and a reset forgets it", async () => {
+  const records: TranscriptMessage[] = [
+    // The same words, written just before the steer: never its receipt, never labelled.
+    { id: "earlier", role: "user", text: "same words", tools: [], ts: Date.now() },
+  ];
+  const f = steeringFixture("receipt-published", { messagesFor: () => fakeTranscript(records) });
+  const row = f.manager.submit(f.id, "same words").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  await tick(30);
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts, undefined, "the earlier turn is not a receipt");
+  records.push({ id: "later", role: "user", text: "same words", tools: [], ts: Date.now() });
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the receipt");
+  assert.deepEqual(
+    f.registry.getSession(f.id)?.steerReceipts?.map((r) => [r.steerId, r.messageId]),
+    [[row.id, "later"]],
+  );
+  // The turn ending keeps the receipt, so its label is still owed.
+  idle(f.registry, f.id);
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts?.length, 1);
+  f.registry.clearPendingTurns("steering:receipt-published");
+  assert.equal(f.registry.getSession(f.id)?.steerReceipts, undefined);
+  f.manager.stop();
+});
+
 test("only the steer the transcript shows is retired; the other keeps waiting", async () => {
   const records: TranscriptMessage[] = [];
   const f = steeringFixture("receipt-partial", { messagesFor: () => fakeTranscript(records) });

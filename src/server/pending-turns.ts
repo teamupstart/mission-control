@@ -465,7 +465,7 @@ export class PendingTurnManager {
         }
         const owner = this.registry.sessionForNoteKey(key);
         if (owner) this.observeSession(owner);
-        else this.registry.clearSteeredTurns(key);
+        else this.registry.forgetSteers(key);
       }
       return;
     }
@@ -859,7 +859,7 @@ export class PendingTurnManager {
       }
       const paired = assignSteerReceipts(waiting, messages, scan.claimed);
       for (const messageId of paired.values()) scan.claimed.add(messageId);
-      if (paired.size > 0) this.registry.retireSteeredTurns(key, [...paired.keys()]);
+      if (paired.size > 0) this.registry.retireSteeredTurns(key, paired, this.deps.now());
       if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
     }
     if (this.steerScans.size > 0) {

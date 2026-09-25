@@ -222,6 +222,21 @@ export interface SteeredTurn {
 }
 
 /**
+ * The transcript turn the daemon matched as a steer's receipt, kept briefly after the steer
+ * retires so the conversation can mark exactly that turn as received. The daemon only pairs
+ * turns written after the steer was sent, so an earlier turn with the same words is never
+ * the one marked.
+ */
+export interface SteerReceipt {
+  /** The retired steer's id (its outbox row's id). */
+  steerId: string;
+  /** The transcript turn's id, as the harness parser reports it. */
+  messageId: string;
+  /** When the daemon found it. */
+  at: number;
+}
+
+/**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
  * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
  * dispatch pickers need the same values as the wire schemas and launch adapters.
@@ -727,6 +742,11 @@ export interface Session {
    * which is every terminal session and nearly every embedded one.
    */
   steeredTurns?: SteeredTurn[];
+  /**
+   * The most recent steer receipts, newest last and capped at a few, so the conversation
+   * labels the exact turn the daemon matched. Absent when there are none.
+   */
+  steerReceipts?: SteerReceipt[];
   /**
    * A queue left behind by a PREVIOUS session at this same cwd (its note key died
    * - a `/clear` or a crash-relaunch mints a new agent session id). A hint on a

@@ -356,14 +356,15 @@ was sent. A terminal row waiting for pickup reads the same way,
 pinned to the bottom of the log shows the oldest one, and **Jump to it** scrolls back down.
 The daemon owns the receipt. While a steer is waiting, it reads what the agent's transcript
 has appended since the steer was accepted, about twice a second. It retires the steer as
-soon as it finds a user turn whose whole text is the steer, ignoring whitespace and any markup
-tags the harness wraps around it, even though the turn is still running. A longer message
-that merely contains the steer's words is not its receipt.
+soon as it finds a user turn whose whole text is the steer, ignoring only whitespace, even
+though the turn is still running. A longer message that merely contains the steer's words,
+or one that differs only by tags the operator typed, is not its receipt.
 The turn's timestamp may be up to five seconds earlier than the moment the driver accepted
 the steer, because the agent can write the line just before that acknowledgement returns.
 An older turn with the same words is an earlier message and never counts. A turn with no
-timestamp counts. The conversation marks that turn `✓ received by <agent>`
-for a few seconds. If no such turn appears, the steer still leaves when the turn ends, the
+timestamp counts. The daemon publishes which turn it matched, and the conversation marks
+exactly that turn `✓ received by <agent>` for a few seconds, never an earlier one with the
+same words. If no such turn appears, the steer still leaves when the turn ends, the
 session resets, or the session exits. The dashboard's transcript and the daemon's receipt
 check read the file on separate schedules, so the row and the turn that replaces it can
 change hands up to about a second apart. Steered rows are kept in daemon memory only, so a

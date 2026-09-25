@@ -1,4 +1,4 @@
-import type { PendingTurn, SteeredTurn } from "@shared/types.ts";
+import type { PendingTurn, SteerReceipt } from "@shared/types.ts";
 import { activePaneDialog, type DialogBearing } from "@shared/session.ts";
 
 interface PendingTurnRecallResponse {
@@ -151,29 +151,22 @@ export function sentAgo(since: number, now: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-/** A steer the conversation has seen, and when it left the session (null while it has not). */
-export interface WatchedSteer {
-  turn: SteeredTurn;
-  goneAt: number | null;
-}
-
 /**
- * Bring the conversation's record of steers up to date with the session's current list.
+ * The steer receipts to label now: each once, the first time its turn is in this log, and
+ * only while the receipt is recent.
  *
- * A steer that leaves the session is kept for `graceMs` FROM THAT MOMENT, so the turn it
- * became can still be labelled when it reaches this log on its own, later stream. Counting
- * from acceptance instead would drop a steer that waited minutes for the agent's next step
- * the instant it was retired, and its turn would never be marked received.
+ * Which turn to mark is the daemon's answer, never re-derived here: the daemon pairs a steer
+ * only with a turn written after it was sent, while this log also holds everything before,
+ * including an earlier message with the same words. The receipt and the turn reach this log
+ * on different streams, in either order, so a receipt waits up to `windowMs` for its turn.
  */
-export function trackSteers(
-  watched: Map<string, WatchedSteer>,
-  current: readonly SteeredTurn[],
+export function receiptsToLabel(
+  receipts: readonly SteerReceipt[],
+  present: ReadonlySet<string>,
+  labelled: ReadonlySet<string>,
   now: number,
-  graceMs: number,
-): void {
-  for (const turn of current) watched.set(turn.id, { turn, goneAt: null });
-  for (const [id, entry] of watched) {
-    if (entry.goneAt === null && !current.some((row) => row.id === id)) entry.goneAt = now;
-    if (entry.goneAt !== null && now - entry.goneAt > graceMs) watched.delete(id);
-  }
+  windowMs: number,
+): SteerReceipt[] {
+  return receipts.filter((receipt) =>
+    !labelled.has(receipt.steerId) && present.has(receipt.messageId) && now - receipt.at <= windowMs);
 }

@@ -250,6 +250,34 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
     backup: backupDomains("ui"),
   },
+  {
+    // The panel's third subject. Somebody looking for this types what they saw, or what they
+    // wanted to see: a spinner, a progress bar, a timer, "is it still running".
+    id: "working-indicator",
+    label: "Working indicator",
+    description:
+      "Choose whether a working session's status row stays pinned while you scroll back, and whether the reply box shows a progress bar.",
+    category: "display",
+    anchor: "display/board-card",
+    keywords: [
+      "working",
+      "busy",
+      "thinking",
+      "running",
+      "spinner",
+      "progress",
+      "progress bar",
+      "loading",
+      "timer",
+      "elapsed",
+      "pin",
+      "sticky",
+      "reply box",
+      "conversation",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
   ...KEYBOARD_CONTROLS,
   {
     id: "guided-dispatch",

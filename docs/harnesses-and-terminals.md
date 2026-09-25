@@ -17,11 +17,18 @@ daemons, and the separate Foreman worker. Resolution has a fixed order:
 1. A per-tool `MISSION_`, `FLEET_`, or `HARNESS_` override, followed by retained legacy names.
 2. Supported absolute application locations, including `/Applications` and `~/Applications`.
 3. Absolute directories from `MISSION_EXECUTABLE_PATHS` and its legacy prefix forms.
-4. The PATH inherited by the process, then one bounded login-shell PATH reading.
-5. Supported version-manager and OS locations.
-6. Any `node_modules/.bin` directory found in step 4, ranked last.
+4. Supported per-user tool locations: `~/.local/bin`, mise shims, asdf shims, Volta's bin,
+   and `~/go/bin`, in that order.
+5. The PATH inherited by the process, then one bounded login-shell PATH reading.
+6. Supported OS locations.
+7. Any `node_modules/.bin` directory found in step 5, ranked last.
 
-Step 6 is a demotion, not an extra search path. A package manager puts the project's own
+Per-user locations precede inherited and login-shell directories so a Finder or Dock launch
+with `/usr/bin` first cannot shadow managed toolchains. Children inherit the same ordering,
+including hooks whose `#!/usr/bin/env ruby` shebang must find the managed Ruby. Explicit
+operator search directories still take priority.
+
+Step 7 is a demotion, not an extra search path. A package manager puts the project's own
 `node_modules/.bin` at the front of the PATH it gives a lifecycle script, so a daemon started
 with `make start` or `npm run dev` inherits that checkout's bundled agent CLI ahead of the one
 you installed. Mission Control moves those entries below every real installation instead, so
@@ -31,10 +38,9 @@ ladder, because a project-only tool has nowhere else to be found.
 
 No step scans the filesystem. Login-shell reads time out after five seconds, concurrent reads
 coalesce, and misses share a 30-second negative cache. An explicit Setup re-check forces a new
-snapshot, so an install or shell PATH change becomes visible without restarting the daemon. Mise,
-asdf, and Volta locations are compatibility backstops rather than the primary answer. The resolver
-honors `XDG_DATA_HOME`, `MISE_DATA_DIR`, `MISE_SHIMS_DIR`, `ASDF_DATA_DIR`, and `VOLTA_HOME` before
-their standard per-user locations.
+snapshot, so an install or shell PATH change becomes visible without restarting the daemon. The
+resolver honors `XDG_DATA_HOME`, `MISE_DATA_DIR`, `MISE_SHIMS_DIR`, `ASDF_DATA_DIR`, and `VOLTA_HOME`
+before their standard per-user locations.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's

@@ -151,6 +151,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/worktrees/manual/return", "worktree.return", "settings"],
   ["POST", "/api/worktrees/actions/preview", "worktree.preview", "settings"],
   ["POST", "/api/worktrees/actions/execute", "worktree.execute", "settings"],
+  ["POST", "/api/worktrees/operations/:id/dismiss", "worktree.dismiss", "settings"],
   ["POST", "/api/worktrees/:slotId/open", "worktree.open", "settings"],
   ["POST", "/api/tours/:tourId/dispatch", "help.tour_dispatch", "help"],
   ["POST", "/api/tours/:tourId/preview", "help.tour_preview", "help"],

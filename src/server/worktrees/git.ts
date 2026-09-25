@@ -5,6 +5,7 @@ import { resetWorktreeToCommit } from "../git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha } from "../git/remote-default.ts";
 import { isConductorScratchPath } from "../pipelines/conductor/scratch.ts";
 import { run } from "../util/exec.ts";
+import { trackOwnWorktreeProcess } from "./own-processes.ts";
 import {
   worktreeRepositoryIdentity,
   type WorktreeRepositoryIdentity,
@@ -106,7 +107,13 @@ export function parseWorktreePorcelain(stdout: string): WorktreeRegistration[] {
 
 /** Production Git operations for the native allocator. */
 export class NativeWorktreeGit implements WorktreeGit {
-  constructor(private readonly execute: typeof run = run) {}
+  private readonly execute: typeof run;
+
+  /** Every command is recorded while it runs, so occupancy never counts our own Git. */
+  constructor(execute: typeof run = run) {
+    this.execute = (bin, args, opts = {}) =>
+      trackOwnWorktreeProcess((onSpawn) => execute(bin, args, { ...opts, onSpawn }));
+  }
 
   async list(identity: WorktreeRepositoryIdentity): Promise<GitResult<WorktreeRegistration[]>> {
     const result = await this.execute(

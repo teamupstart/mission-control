@@ -12,12 +12,12 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 const EVIDENCE = artifactsDir("settings-worktrees");
 
 /**
- * How long an Execute is allowed to take to close its preview.
+ * How long an executed cleanup may take to finish in the background.
  *
- * A return is real git - a fetch, then a reset of a checkout on disk to the fetched remote
- * default - so this window is about the disk, not about the dialog. Measured at six to eight
- * seconds on a developer's machine, which is why the implicit five second one was a coin toss
- * on a busy box and failed the same way on a clean tree.
+ * Execute itself answers once the preview is claimed, so the dialog closes at once. The work
+ * behind it is real git - a return is a fetch, then a reset of a checkout on disk to the
+ * fetched remote default - so this window is about the disk, not about the dialog. Measured
+ * at six to eight seconds on a developer's machine.
  */
 const EXECUTES_MS = 30_000;
 
@@ -64,8 +64,8 @@ test("safe prune removes conductor scratch while preserving unknown pipeline wor
   await expectContentClearsBorder(preview);
   await shoot(dashboard, "12-scratch-safe-prune-preview");
   await preview.getByRole("button", { name: "Execute" }).click();
-  await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
-  await expect(pool.locator(".wt-slot", { hasText: scratch.path })).toHaveCount(0);
+  await expect(preview).toHaveCount(0);
+  await expect(pool.locator(".wt-slot", { hasText: scratch.path })).toHaveCount(0, { timeout: EXECUTES_MS });
   await expect(pool.locator(".wt-slot", { hasText: work.path })).toBeVisible();
   expect(existsSync(scratch.path)).toBe(false);
   expect(existsSync(join(work.path, ".pipeline/notes.txt"))).toBe(true);
@@ -130,9 +130,9 @@ for (const action of ["destroy", "prune"] as const) {
       await shoot(dashboard, `10-${action}-sibling-churn-preview`);
       const executed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/actions/execute"));
       await preview.getByRole("button", { name: "Execute" }).click();
-      expect((await executed).status()).toBe(200);
-      await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
-      await expect(pool.locator(".wt-slot", { hasText: target.path })).toHaveCount(0);
+      expect((await executed).status()).toBe(202);
+      await expect(preview).toHaveCount(0);
+      await expect(pool.locator(".wt-slot", { hasText: target.path })).toHaveCount(0, { timeout: EXECUTES_MS });
       await expect(pool.locator(".wt-slot", { hasText: sibling.path })).toBeVisible();
       expect(existsSync(target.path)).toBe(false);
       expect(existsSync(sibling.path)).toBe(true);
@@ -245,11 +245,35 @@ test("Settings Worktrees configures, inventories, previews, blocks, launches, an
   await shoot(dashboard, "02-actionable-return-preview");
   const staleFile = join(lease.path, "appeared-after-preview.txt");
   writeFileSync(staleFile, "state changed\n");
+  // Execute is accepted at once and rechecked in the background. The recheck sees the new
+  // file, refuses, and reports it above the pools with the remedy a person needs.
   await preview.getByRole("button", { name: "Execute" }).click();
-  await expect(preview.getByText("State changed after this preview.")).toBeVisible();
-  await preview.getByRole("button", { name: "Refresh preview" }).click();
+  await expect(preview).toHaveCount(0);
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  await expect(background.getByText("State changed after this preview.")).toBeVisible({ timeout: EXECUTES_MS });
+  await shoot(dashboard, "15-stale-preview-reported-in-background");
+  await background.getByRole("button", { name: "Preview again" }).click();
   await expect(preview.getByText(/Dirty or untracked work will be discarded/)).toBeVisible();
+  // The report survives the retry until that retry is executed: cancelling it loses nothing.
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
   await preview.getByRole("button", { name: "Cancel" }).click();
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
+
+  // A dismissal the daemon refuses leaves the report where it was and says so.
+  await dashboard.route("**/api/worktrees/operations/*/dismiss", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "worktree operations unavailable" }),
+  }));
+  // With no confirmed removal the tooltip stays neutral: an owner may already have been recovered.
+  await expect(background.getByRole("button", { name: "Dismiss" }))
+    .toHaveAccessibleDescription("Hide this report; dismissing it does not undo or retry anything");
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(dashboard.getByText("That cleanup report could not be dismissed: worktree operations unavailable")).toBeVisible();
+  await expect(background.getByText("State changed after this preview.")).toBeVisible();
+  await dashboard.unroute("**/api/worktrees/operations/*/dismiss");
+  await background.getByRole("button", { name: "Dismiss" }).click();
+  await expect(background).toHaveCount(0);
   unlinkSync(staleFile);
 
   // A process whose cwd is the leased path is an unacknowledgeable blocker. The preview
@@ -362,31 +386,32 @@ test("refreshing a preview drops acknowledgements that the new token does not re
 
   unlinkSync(dirtyFile);
   await preview.getByRole("button", { name: "Execute" }).click();
-  await expect(preview.getByText("State changed after this preview.")).toBeVisible();
-  await preview.getByRole("button", { name: "Refresh preview" }).click();
-  await expect(dirtyAcknowledgement).toHaveCount(0);
+  await expect(preview).toHaveCount(0);
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  const stale = background.getByText("State changed after this preview.");
+  await expect(stale).toBeVisible({ timeout: EXECUTES_MS });
+  await background.getByRole("button", { name: "Preview again" }).click();
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expect(dirtyAcknowledgement).toHaveCount(0);
   // Revalidation is deliberately conservative. Under full-suite host contention, one of
-  // the bounded Git reads can temporarily degrade and produce another honest 409 even when
-  // the checkout did not materially change. Follow the exact recovery offered to a person,
-  // while keeping the retry bound low so persistent instability still fails this scenario.
-  for (let attempt = 0; attempt < 3 && await preview.count() > 0; attempt += 1) {
+  // the bounded Git reads can temporarily degrade and produce another honest "changed" even
+  // when the checkout did not materially change. Follow the exact recovery offered to a
+  // person, while keeping the retry bound low so persistent instability still fails this.
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  const returned = slot.getByText("available", { exact: true });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     await preview.getByRole("button", { name: "Execute" }).click();
+    await expect(preview).toHaveCount(0);
     await expect.poll(async () => {
-      if (await preview.count() === 0) return "closed";
-      return await preview.getByText("State changed after this preview.").isVisible()
-        ? "changed"
-        : "waiting";
+      if (await returned.isVisible()) return "returned";
+      return await stale.isVisible() ? "changed" : "waiting";
     }, { timeout: EXECUTES_MS }).not.toBe("waiting");
-    if (await preview.count() === 0) break;
-    await preview.getByRole("button", { name: "Refresh preview" }).click();
+    if (await returned.isVisible()) break;
+    await background.getByRole("button", { name: "Preview again" }).click();
     await expect(dirtyAcknowledgement).toHaveCount(0);
     await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   }
-  // The dialog closes when the return has actually happened, and measuring it says the return
-  // takes six to eight seconds here - so the implicit five-second window was asserting that
-  // git is fast rather than that the preview closes. `EXECUTES_MS` is the honest one.
-  await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
+  await expect(returned).toBeVisible();
 });
 
 test("Destroy reclaims an exactly owned lease that a transient observation quarantined", async ({
@@ -429,9 +454,9 @@ test("Destroy reclaims an exactly owned lease that a transient observation quara
   await shoot(dashboard, "08-quarantined-destroy-preview");
   await preview.getByRole("button", { name: "Execute" }).click();
 
-  await expect(preview).toHaveCount(0, { timeout: EXECUTES_MS });
+  await expect(preview).toHaveCount(0);
   await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
-  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible();
+  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await shoot(dashboard, "09-quarantined-destroy-complete");
 });
 
@@ -592,4 +617,348 @@ test("a failed refresh keeps the observed inventory instead of blanking it to a 
   await expect(maxSlots).toBeEnabled();
   await expect(dashboard.getByText("Worktree inventory is unavailable.")).toBeVisible();
   await expect(dashboard.getByText("Pool capacity could not be observed.")).toHaveCount(0);
+});
+
+/**
+ * Bulk cleanup is one selection, one preview, one Execute, and no waiting on the dialog.
+ *
+ * Execute answers once the preview is claimed, so the dialog closing is not evidence the
+ * work happened; the slots disappearing from the pool, and from disk, is. An unselected
+ * sibling in the same pool proves the fixed set is exactly what was ticked.
+ */
+test("bulk destroy removes exactly the selected slots in the background", async ({ dashboard, daemon, context }) => {
+  test.setTimeout(120_000);
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["bulk one", "bulk two", "bulk kept"]) {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    leases.push(await acquired.json() as { path: string; leaseId: string });
+  }
+  for (const lease of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+  }
+  const [first, second, kept] = leases;
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+
+  const bulk = dashboard.getByRole("region", { name: "Bulk destroy selection" });
+  await expect(bulk).toHaveCount(0);
+  for (const lease of [first!, second!]) {
+    await pool.locator(".wt-slot", { hasText: lease.path }).getByRole("checkbox", { name: /for bulk destroy/ }).check();
+  }
+  await expect(bulk.getByText("2 slots selected")).toBeVisible();
+
+  // Select all adds the sibling, and deselecting it again leaves the two chosen slots.
+  await pool.getByRole("button", { name: "Select all slots" }).click();
+  await expect(bulk.getByText("3 slots selected")).toBeVisible();
+  await pool.getByRole("button", { name: "Deselect all slots" }).click();
+  await expect(bulk).toHaveCount(0);
+  for (const lease of [first!, second!]) {
+    await pool.locator(".wt-slot", { hasText: lease.path }).getByRole("checkbox", { name: /for bulk destroy/ }).check();
+  }
+  await shoot(dashboard, "16-bulk-selection");
+
+  await bulk.getByRole("button", { name: "Destroy selected" }).click();
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Destroy 2 selected worktrees" })).toBeVisible();
+  await expect(preview.getByText(first!.path)).toBeVisible();
+  await expect(preview.getByText(second!.path)).toBeVisible();
+  await expect(preview.getByText(kept!.path)).toHaveCount(0);
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "17-bulk-destroy-preview");
+
+  // Hold this page's inventory refreshes for a moment so the accepted work is still on
+  // screen when it is captured: the daemon removes two small fixture slots faster than a
+  // screenshot. What renders meanwhile is the operation the real 202 returned.
+  let releaseInventory = (): void => {};
+  const inventoryHeld = new Promise<void>((resolve) => {
+    releaseInventory = resolve;
+  });
+  await dashboard.route("**/api/worktrees", async (route) => {
+    if (route.request().method() === "GET") await inventoryHeld;
+    await route.continue();
+  });
+  const executed = dashboard.waitForResponse((response) => response.url().endsWith("/api/worktrees/actions/execute"));
+  await preview.getByRole("button", { name: "Execute" }).click();
+  expect((await executed).status()).toBe(202);
+  await expect(preview).toHaveCount(0);
+  await expect(bulk).toHaveCount(0);
+  const background = dashboard.getByRole("region", { name: "Background cleanup" });
+  await expect(background.getByText("2 worktrees")).toBeVisible();
+  await expect(background.getByText(/^(queued|in progress)$/)).toBeVisible();
+  for (const lease of [first!, second!]) {
+    await expect(pool.locator(".wt-slot", { hasText: lease.path }).getByText(/^destroy (queued|in progress)$/)).toBeVisible();
+  }
+  await shoot(dashboard, "17b-bulk-destroy-queued-in-background");
+  // Released, the route is a pass-through; removing it would orphan the held requests.
+  releaseInventory();
+
+  for (const lease of [first!, second!]) {
+    await expect(pool.locator(".wt-slot", { hasText: lease.path })).toHaveCount(0, { timeout: EXECUTES_MS });
+    expect(existsSync(lease.path)).toBe(false);
+  }
+  await expect(pool.locator(".wt-slot", { hasText: kept!.path })).toBeVisible();
+  expect(existsSync(kept!.path)).toBe(true);
+  await expect(dashboard.getByRole("region", { name: "Background cleanup" })).toHaveCount(0);
+  await shoot(dashboard, "18-bulk-destroy-complete");
+
+  // While a cleanup is still queued, its slot says so and offers nothing that could race it.
+  // The daemon finishes too fast to catch that window reliably, so it is driven from a
+  // routed inventory carrying one queued operation against the surviving slot.
+  const current = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const survivor = current.repositories.flatMap((repo) => repo.slots).find((slot) => slot.path === kept!.path)!;
+  const pendingPage = await context.newPage();
+  await pendingPage.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      operations: [{
+        id: "queued-destroy",
+        request: { action: "destroy", target: { kind: "slot", slotId: survivor.id } },
+        state: "queued",
+        targets: [{ provider: "mission", id: survivor.id, path: survivor.path }],
+        error: null,
+        changed: false,
+        removals: [{ id: survivor.id, path: survivor.path }],
+        completed: [],
+        queuedAt: Date.now(),
+        finishedAt: null,
+      }, {
+        // Returning one task-owned slot also touches the task's other repositories.
+        id: "queued-task-return",
+        request: { action: "return", slotId: "task-owned-slot" },
+        state: "queued",
+        targets: [
+          { provider: "git", id: "task-repo-1", path: "/work/task/secondary-repo" },
+          { provider: "mission", id: "task-owned-slot", path: "/work/pool/task-owned" },
+        ],
+        error: null,
+        changed: false,
+        removals: [],
+        completed: [],
+        queuedAt: Date.now(),
+        finishedAt: null,
+      }],
+    } satisfies WorktreeInventory),
+  }));
+  await pendingPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pendingPool = pendingPage.locator(".wt-pool", { hasText: "demo-repo" });
+  const pendingDisclosure = pendingPool.getByRole("button", { name: /demo-repo/ });
+  if (await pendingDisclosure.getAttribute("aria-expanded") !== "true") await pendingDisclosure.click();
+  const pendingSlot = pendingPool.locator(".wt-slot", { hasText: survivor.path });
+  await expect(pendingPage.getByRole("region", { name: "Background cleanup" }).getByText(survivor.path, { exact: true })).toBeVisible();
+  await expect(pendingSlot.getByText("destroy queued", { exact: true })).toBeVisible();
+  const taskReturn = pendingPage.getByRole("region", { name: "Background cleanup" });
+  await expect(taskReturn.getByText("/work/pool/task-owned (+1 affected path)")).toBeVisible();
+  await expect(taskReturn.getByText("2 worktrees")).toHaveCount(0);
+  await expect(pendingSlot.getByRole("checkbox", { name: /for bulk destroy/ })).toBeDisabled();
+  await expect(pendingSlot.getByRole("button", { name: "Destroy", exact: true })).toHaveCount(0);
+  await shoot(pendingPage, "19-queued-cleanup-pending");
+  await pendingPage.close();
+
+  // A bulk destroy that stopped partway says which worktrees are already gone, and Preview
+  // again asks only for what it left in place - never for a slot it removed.
+  const partialPage = await context.newPage();
+  await partialPage.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      operations: [{
+        id: "partial-destroy",
+        request: { action: "destroy", target: { kind: "slots", slotIds: ["already-removed", survivor.id] } },
+        state: "failed",
+        targets: [
+          { provider: "mission", id: "already-removed", path: first!.path },
+          { provider: "mission", id: survivor.id, path: survivor.path },
+        ],
+        error: "git worktree remove failed",
+        changed: false,
+        removals: [
+          { id: "already-removed", path: first!.path },
+          { id: survivor.id, path: survivor.path },
+        ],
+        completed: [{ id: "already-removed", path: first!.path }],
+        queuedAt: Date.now(),
+        finishedAt: Date.now(),
+      }],
+    } satisfies WorktreeInventory),
+  }));
+  await partialPage.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const report = partialPage.getByRole("region", { name: "Background cleanup" });
+  await expect(report.getByText("partly done", { exact: true })).toBeVisible();
+  await expect(report.getByText("1 worktree was removed before this stopped; 1 left in place.")).toBeVisible();
+  await expect(report.getByRole("list", { name: "Already removed" }).getByText(first!.path)).toBeVisible();
+  await shoot(partialPage, "22-bulk-destroy-partly-done");
+  const retried = partialPage.waitForRequest((request) => request.url().endsWith("/api/worktrees/actions/preview"));
+  await report.getByRole("button", { name: "Preview again" }).click();
+  expect(((await retried).postDataJSON() as { target: { slotIds: string[] } }).target.slotIds).toEqual([survivor.id]);
+  const narrowed = partialPage.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(narrowed.getByRole("heading", { name: "Destroy 1 selected worktree" })).toBeVisible();
+  await expect(narrowed.getByText(survivor.path)).toBeVisible();
+  await expect(narrowed.getByRole("button", { name: "Execute" })).toBeEnabled();
+  await expectContentClearsBorder(narrowed);
+  await narrowed.getByRole("button", { name: "Cancel" }).click();
+  // Cancelling the retry keeps the report and its fixed remaining set; only Execute or Dismiss retires it.
+  await expect(report.getByText("partly done", { exact: true })).toBeVisible();
+  await expect(report.getByRole("button", { name: "Preview again" })).toBeVisible();
+  await partialPage.close();
+});
+
+/**
+ * A ticked slot that disappears before Destroy selected must not be quietly dropped.
+ *
+ * The regression: the selection used to be filtered against the current inventory, so a
+ * vanished slot left it silently and the preview covered only the survivor - which an
+ * operator could then execute without ever learning their set had changed. The selection is
+ * now exactly what was ticked, the bar says how much of it is gone, and the server's
+ * missing-slot blocker is what the preview shows.
+ */
+test("a bulk selection that lost a slot is blocked at preview, not silently narrowed", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const leases: Array<{ path: string; leaseId: string }> = [];
+  for (const label of ["narrowed survivor", "narrowed vanishes"]) {
+    const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+      data: { repositoryPath: daemon.repo, label },
+    });
+    expect(acquired.status()).toBe(201);
+    leases.push(await acquired.json() as { path: string; leaseId: string });
+  }
+  for (const lease of leases) {
+    const returned = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/return`, {
+      data: { leaseId: lease.leaseId },
+    });
+    expect(returned.ok()).toBe(true);
+  }
+  const [survivor, vanishing] = leases;
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  for (const lease of leases) {
+    await pool.locator(".wt-slot", { hasText: lease.path }).getByRole("checkbox", { name: /for bulk destroy/ }).check();
+  }
+  const bulk = dashboard.getByRole("region", { name: "Bulk destroy selection" });
+  await expect(bulk.getByText("2 slots selected")).toBeVisible();
+
+  // Another window destroys one of the ticked slots.
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const target = inventory.repositories.flatMap((repo) => repo.slots).find((slot) => slot.path === vanishing!.path)!;
+  const outside = await (await dashboard.request.post(`${daemon.baseURL}/api/worktrees/actions/preview`, {
+    data: { action: "destroy", target: { kind: "slot", slotId: target.id } },
+  })).json() as WorktreeActionPreview;
+  const accepted = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/actions/execute`, {
+    data: { token: outside.token, acknowledgements: [] },
+  });
+  expect(accepted.status()).toBe(202);
+  await expect(pool.locator(".wt-slot", { hasText: vanishing!.path })).toHaveCount(0, { timeout: EXECUTES_MS });
+
+  // The selection still counts both, and says one of them is gone.
+  await expect(bulk.getByText("2 slots selected")).toBeVisible();
+  await expect(bulk.getByText("1 no longer available")).toBeVisible();
+  await shoot(dashboard, "20-bulk-selection-lost-a-slot");
+
+  const previewed = dashboard.waitForRequest((request) => request.url().endsWith("/api/worktrees/actions/preview"));
+  await bulk.getByRole("button", { name: "Destroy selected" }).click();
+  const sent = (await previewed).postDataJSON() as { target: { slotIds: string[] } };
+  expect(sent.target.slotIds).toHaveLength(2);
+  expect(sent.target.slotIds).toContain(target.id);
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Destroy 2 selected worktrees" })).toBeVisible();
+  await expect(preview.getByText("Cannot execute")).toBeVisible();
+  await expect(preview.getByText(/1 selected slot no longer exists/)).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await expectContentClearsBorder(preview);
+  await shoot(dashboard, "21-bulk-preview-blocked-by-vanished-slot");
+  await preview.getByRole("button", { name: "Cancel" }).click();
+
+  // Nothing was removed on the operator's behalf, and only they clear the selection.
+  expect(existsSync(survivor!.path)).toBe(true);
+  await expect(pool.locator(".wt-slot", { hasText: survivor!.path })).toBeVisible();
+  await expect(bulk.getByText("2 slots selected")).toBeVisible();
+  await bulk.getByRole("button", { name: "Clear selection" }).click();
+  await expect(bulk).toHaveCount(0);
+});
+
+/**
+ * The selection controls never build a request the server must refuse.
+ *
+ * The bulk request allows 128 slot ids. A selection may span pools, so the limit is enforced
+ * where the selection is made: Select all fills the remaining room and says what did not
+ * fit, and an unticked slot cannot join a full selection. Reaching 129 slots for real means
+ * 129 checkouts, so the pool is routed; the preview behind it is the real daemon's, and
+ * since none of these ids exist there it also proves a selection that lost every slot gets
+ * a blocked dialog rather than an error.
+ */
+test("bulk selection stops at 128 slots and says so", async ({ dashboard, daemon }) => {
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "selection limit template" },
+  });
+  expect(acquired.status()).toBe(201);
+  const current = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  const pool = current.repositories[0]!;
+  const template = pool.slots[0]!;
+  const slots = Array.from({ length: 129 }, (_, index) => ({
+    ...template,
+    id: `limit-slot-${index + 1}`,
+    ordinal: index + 1,
+    state: "available",
+    owner: null,
+    path: `${pool.poolPath}/${index + 1}/demo-repo`,
+    actions: ["destroy" as const],
+  }));
+  await dashboard.route("**/api/worktrees", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...current,
+      repositories: [{
+        ...pool,
+        policy: { ...pool.policy, maxSlots: 128 },
+        counts: { total: 129, leased: 0, available: 129, quarantined: 0, overCapacity: 1 },
+        slots,
+      }],
+      operations: [],
+    } satisfies WorktreeInventory),
+  }));
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const row = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = row.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+
+  await row.getByRole("button", { name: "Select all slots" }).click();
+  const bulk = dashboard.getByRole("region", { name: "Bulk destroy selection" });
+  await expect(bulk.getByText("128 slots selected")).toBeVisible();
+  await expect(bulk.getByText("Limit of 128 reached; 1 slot was not added")).toBeVisible();
+  await shoot(dashboard, "23-bulk-selection-limit");
+
+  // The slot that did not fit is the pool's last; it cannot be ticked while the selection is full.
+  const more = row.getByRole("button", { name: /^Show more slots/ });
+  while (await more.count() > 0) await more.click();
+  const last = row.getByRole("checkbox", { name: "Select slot 129 for bulk destroy" });
+  await expect(last).not.toBeChecked();
+  await expect(last).toBeDisabled();
+  // Unticking frees room, and the freed room can be taken by the slot that was left out.
+  await row.getByRole("checkbox", { name: "Select slot 1 for bulk destroy" }).uncheck();
+  await expect(bulk.getByText("127 slots selected")).toBeVisible();
+  await expect(bulk.getByText(/Limit of 128 reached/)).toHaveCount(0);
+  await last.check();
+  await expect(bulk.getByText("128 slots selected")).toBeVisible();
+
+  const previewed = dashboard.waitForRequest((request) => request.url().endsWith("/api/worktrees/actions/preview"));
+  await bulk.getByRole("button", { name: "Destroy selected" }).click();
+  expect(((await previewed).postDataJSON() as { target: { slotIds: string[] } }).target.slotIds).toHaveLength(128);
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByRole("heading", { name: "Destroy 128 selected worktrees" })).toBeVisible();
+  await expect(preview.getByText("128 selected slots no longer exist; clear the selection and choose again.")).toBeVisible();
+  await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
+  await shoot(dashboard, "24-bulk-preview-all-selected-gone");
+  await preview.getByRole("button", { name: "Cancel" }).click();
 });

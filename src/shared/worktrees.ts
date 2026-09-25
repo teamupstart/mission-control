@@ -7,6 +7,13 @@ export const WORKTREE_INVENTORY_LIMITS = {
   legacyItems: 256,
   textBytes: 2048,
   previewTokens: 128,
+  /** One bulk destroy selection. Matches one pool's slot bound; a selection may span pools. */
+  bulkSlots: 128,
+  /**
+   * Queued, running, and undismissed failed background operations listed at once. A full list
+   * refuses new submissions; it never evicts a failure report to make room.
+   */
+  operations: 64,
 } as const;
 
 export type WorktreeRiskKey =
@@ -113,6 +120,8 @@ export interface WorktreeInventory {
   revision: string;
   repositories: WorktreeRepositoryView[];
   legacy: LegacyWorktreeInventory;
+  /** Executed previews still queued or running in the background, and failures not yet dismissed. */
+  operations: WorktreeOperationView[];
 }
 
 export type WorktreeActionRequest =
@@ -121,7 +130,10 @@ export type WorktreeActionRequest =
   | { action: "reconcile"; poolId: string }
   | {
       action: "destroy";
-      target: { kind: "slot"; slotId: string } | { kind: "pool"; poolId: string };
+      target:
+        | { kind: "slot"; slotId: string }
+        | { kind: "slots"; slotIds: string[] }
+        | { kind: "pool"; poolId: string };
     }
   | {
       action: "legacyReturn";
@@ -167,6 +179,54 @@ export interface WorktreeActionExecuteResult {
   ok: true;
   action: WorktreeActionRequest["action"];
   message: string;
+}
+
+/**
+ * An accepted Execute. The token and acknowledgements were checked before the daemon
+ * answered; the safety recheck and the mutation run afterwards, in order, in the background.
+ */
+export interface WorktreeActionSubmitResult {
+  ok: true;
+  operation: WorktreeOperationView;
+}
+
+export interface WorktreeOperationView {
+  id: string;
+  request: WorktreeActionRequest;
+  state: "queued" | "running" | "failed";
+  /** The exact paths the accepted preview showed. Pending ones are withheld from new actions. */
+  targets: Array<{ provider: WorktreeActionAffected["provider"]; id: string; path: string }>;
+  error: string | null;
+  /** The failure was a stale preview: state moved after it was shown, so preview again. */
+  changed: boolean;
+  /** The exact slots this operation removes, fixed when it was accepted. Empty for non-removals. */
+  removals: Array<{ id: string; path: string }>;
+  /**
+   * Slots whose removal was confirmed before this operation stopped. Empty unless a failure
+   * came partway through a set: those slots are gone, and the rest were left in place.
+   */
+  completed: Array<{ id: string; path: string }>;
+  queuedAt: number;
+  finishedAt: number | null;
+}
+
+/**
+ * What "Preview again" should ask for after a failure. A destroy retries only the fixed set
+ * it was accepted with, minus the slots it already removed - the operator is told which ones
+ * went. A pool destroy is therefore retried as that slot set, never as the pool, so a slot
+ * that joined the pool after the failure cannot ride along. Nothing left to do returns null.
+ */
+export function worktreeRetryRequest(operation: WorktreeOperationView): WorktreeActionRequest | null {
+  const request = operation.request;
+  if (request.action !== "destroy") return request;
+  const removed = new Set(operation.completed.map((target) => target.id));
+  if (request.target.kind === "slot") return removed.has(request.target.slotId) ? null : request;
+  const original = request.target.kind === "slots"
+    ? request.target.slotIds
+    : operation.removals.map((target) => target.id);
+  const remaining = original.filter((id) => !removed.has(id));
+  if (remaining.length === 0) return null;
+  return { action: "destroy", target: { kind: "slots", slotIds: remaining } };
 }
 
 export interface OpenWorktreeRequest {

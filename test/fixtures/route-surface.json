@@ -277,6 +277,7 @@
   "POST /api/worktrees/actions/preview": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /api/worktrees/manual/acquire": "503 {\"error\":\"native worktree manager unavailable\"}",
   "POST /api/worktrees/manual/return": "503 {\"error\":\"native worktree manager unavailable\"}",
+  "POST /api/worktrees/operations/:id/dismiss": "503 {\"error\":\"worktree operations unavailable\"}",
   "POST /hooks/:event": "401 {\"error\":\"unauthorized\"}",
   "POST /ingest/conductor": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/ensembles/submit": "401 {\"error\":\"unauthorized\"}",

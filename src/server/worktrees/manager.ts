@@ -163,6 +163,23 @@ const DEFAULT_DEPS: WorktreeManagerDeps = {
   poolsDirectory: WORKTREE_POOLS_DIR,
 };
 
+const SLOT_OBSERVATION_CONCURRENCY = 8;
+
+/** Maps with at most `limit` callbacks in flight, keeping the input order in the output. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
+  const output: R[] = Array.from({ length: items.length });
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      output[index] = await map(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return output;
+}
+
 function bounded(value: string): string {
   return Buffer.from(value, "utf8").subarray(0, MAX_ERROR_BYTES).toString("utf8");
 }
@@ -377,8 +394,13 @@ export class WorktreeManager {
     return this.occupancyBlocker(path);
   }
 
+  /**
+   * A point check before a mutation. Only the process read itself takes the observation
+   * lock, so it cannot overlap an inventory observation's Git reads inside this slot; the
+   * mutation around it runs unlocked, so a slow removal never holds up a preview.
+   */
   private async occupancyBlocker(path: string): Promise<string | null> {
-    const occupancy = (await this.occupancy([path])).get(path);
+    const occupancy = (await this.withObservation(() => this.occupancy([path]))).get(path);
     if (!occupancy || occupancy.status === "unknown") {
       return occupancy?.status === "unknown" ? occupancy.reason : "slot occupancy is unknown";
     }
@@ -1153,9 +1175,27 @@ export class WorktreeManager {
     this.store.recordReconciliation(pool.id, now, errors.length > 0 ? bounded(errors.join("; ")) : null);
   }
 
+  /**
+   * Observations never overlap, and within one the process read finishes before any Git read
+   * starts. Occupancy is "a process whose cwd is inside the slot", and `git -C <slot>` runs
+   * with exactly that cwd: a process read taken while this daemon's own Git reads are in
+   * flight - from this observation or a concurrent one - sees them as occupants. A slot then
+   * looks occupied for a moment, a preview and its recheck disagree, and a cleanup is refused
+   * as stale for a change that was only ever us looking.
+   */
   async status(): Promise<NativePoolStatus[]> {
+    return this.withObservation(() => this.observeStatus());
+  }
+
+  private withObservation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withLock("observation", operation);
+  }
+
+  private async observeStatus(): Promise<NativePoolStatus[]> {
     const pools = this.store.pools();
     const allSlots = this.store.slots();
+    // `occupancy()` turns any failure into unknown occupancy for every slot, which blocks
+    // cleanup rather than permitting it, and it is awaited here before anything else starts.
     const occupancy = await this.occupancy(
       allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path),
     );
@@ -1172,18 +1212,16 @@ export class WorktreeManager {
       let listed: Awaited<ReturnType<WorktreeGit["list"]>> | null = null;
       let observedDefaultSha: string | null = null;
       if (identityValid && identity) {
-        try {
-          listed = await this.deps.git.list(identity);
-        } catch {
-          listed = null;
-        }
-        try {
-          const observed = await this.deps.git.observedDefaultSha(identity);
-          if (observed.ok) observedDefaultSha = observed.value;
-        } catch {}
+        const [registrations, observed] = await Promise.all([
+          (async () => this.deps.git.list(identity))().catch(() => null),
+          (async () => this.deps.git.observedDefaultSha(identity))().catch(() => null),
+        ]);
+        listed = registrations;
+        if (observed?.ok) observedDefaultSha = observed.value;
       }
-      const slots: NativeSlotStatus[] = [];
-      for (const slot of allSlots.filter((candidate) => candidate.poolId === pool.id)) {
+      // Each slot's reads are independent Git processes, so a pool of sixteen slots is
+      // observed concurrently rather than as sixteen serial waits. Order is preserved.
+      const slots = await mapBounded(allSlots.filter((candidate) => candidate.poolId === pool.id), SLOT_OBSERVATION_CONCURRENCY, async (slot): Promise<NativeSlotStatus> => {
         let inspection: Awaited<ReturnType<WorktreeGit["inspect"]>> | null = null;
         if (existsSync(slot.path)) {
           try {
@@ -1215,7 +1253,7 @@ export class WorktreeManager {
             if (merged.ok) mergedIntoDefault = merged.value;
           } catch {}
         }
-        slots.push({
+        return {
           slot,
           nativePath,
           registered: listed?.ok === true
@@ -1231,8 +1269,8 @@ export class WorktreeManager {
           occupancy: occupancy.get(slot.path) ?? { status: "unknown", reason: "path is missing" },
           ownerReferenced: referenced,
           mergedIntoDefault,
-        });
-      }
+        };
+      });
       output.push({
         pool,
         policy: this.deps.resolvePolicy(pool.gitCommonDirectory),
@@ -1256,6 +1294,10 @@ export class WorktreeManager {
     allowDirty: boolean;
     allowUnmerged: boolean;
   }): Promise<WorktreeRemoveResult> {
+    // Its occupancy checks take the observation lock for the process read alone (see
+    // `occupancyBlocker`). The Git removal itself is not under it: a slow `git worktree
+    // remove` must never make an unrelated preview wait. Lock order is slot, then
+    // observation; nothing holding the observation lock takes a slot lock.
     return this.withSlot(input.slotId, async () => {
       const slot = this.store.slot(input.slotId);
       if (!slot) return { outcome: "alreadyRemoved" };

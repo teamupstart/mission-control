@@ -1,4 +1,4 @@
-import type { PendingTurn, Session } from "./types.ts";
+import type { PendingTurn, Session, SteeredTurn, TranscriptMessage } from "./types.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
 
 /**
@@ -78,3 +78,77 @@ export function deliveryStage(
 
 export const MESSAGE_WAIT_NOTICE_MS = 30_000;
 export const MESSAGE_INTERRUPT_WATCHDOG_MS = 10_000;
+
+/**
+ * How far a transcript clock may trail the daemon's and still be the steer it records.
+ * Both are this machine's clock; the slack only absorbs the write landing a moment before
+ * the driver's acknowledgement returns.
+ */
+const STEER_RECEIPT_SKEW_MS = 5_000;
+
+/**
+ * Whitespace collapsed, and nothing else changed. Harness scaffolding around a user turn is
+ * already removed where the transcript is parsed (Claude's `conversationText`, for one), so
+ * the text arriving here is what the operator wrote. Stripping anything more would make
+ * different messages equal: `use <Suspense> here` is not `use here`.
+ */
+function comparableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Whether this transcript turn is the agent's record of having read this steer.
+ *
+ * The WHOLE message must be the steer, not merely contain it. With `includes`, reading
+ * "yes please" would also count as reading an earlier, still unread "yes".
+ */
+function isSteerReceipt(turn: SteeredTurn, wanted: string, message: TranscriptMessage): boolean {
+  if (message.role !== "user") return false;
+  if (message.ts && message.ts < turn.acceptedAt - STEER_RECEIPT_SKEW_MS) return false;
+  return comparableText(message.text) === wanted;
+}
+
+/**
+ * Pair each steer with the transcript turn that is its receipt.
+ *
+ * An agent writes a user message to its transcript when it takes it, so that line is the
+ * receipt. The daemon runs this over what the transcript appended since a steer was
+ * accepted and retires each steer it pairs; the dashboard runs the same rule only to label
+ * the turn that replaced a retired row. One definition, so the two can never disagree.
+ *
+ * Steers are taken in the order given, which is delivery order, and each takes the EARLIEST
+ * matching turn nobody has claimed. One turn therefore answers at most one steer: two
+ * steers that say the same thing need two turns, because the agent reads them one at a
+ * time. `claimed` carries turns an earlier pass already paired, for a caller that reads the
+ * same turns again.
+ *
+ * The match is on the whole message, ignoring only whitespace, so a longer message is never a
+ * shorter steer's receipt and a message the operator did not write never retires one. A
+ * turn more than a few seconds older than the steer is an earlier message that happens to
+ * say the same thing ("yes"), and is never taken for it.
+ */
+export function assignSteerReceipts(
+  turns: readonly SteeredTurn[],
+  messages: readonly TranscriptMessage[],
+  claimed: ReadonlySet<string> = new Set(),
+): Map<string, string> {
+  const paired = new Map<string, string>();
+  const taken = new Set(claimed);
+  for (const turn of turns) {
+    const wanted = comparableText(turn.text);
+    if (!wanted) continue;
+    const hit = messages.find((message) => !taken.has(message.id) && isSteerReceipt(turn, wanted, message));
+    if (!hit) continue;
+    taken.add(hit.id);
+    paired.set(turn.id, hit.id);
+  }
+  return paired;
+}
+
+/** The receipt of one steer on its own, or null while no turn shows it was read. */
+export function steeredTurnReceipt(
+  turn: SteeredTurn,
+  messages: readonly TranscriptMessage[],
+): string | null {
+  return assignSteerReceipts([turn], messages).get(turn.id) ?? null;
+}

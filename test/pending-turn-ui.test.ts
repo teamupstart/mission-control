@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { PendingTurn } from "../src/shared/types.ts";
-import { PendingTurnView } from "../src/web/components/TranscriptPanel.tsx";
+import type { PendingTurn, SteeredTurn, SteerReceipt, TranscriptMessage } from "../src/shared/types.ts";
+import { PendingTurnView, SteeredTurnView } from "../src/web/components/TranscriptPanel.tsx";
 import type { SessionState } from "../src/shared/types.ts";
 import type { DialogBearing } from "../src/shared/session.ts";
 import {
@@ -13,8 +13,11 @@ import {
   pendingTurnHold,
   pendingTurnStatus,
   recallPendingTurnIntoDraft,
+  sentAgo,
   shouldRecallPendingTurn,
+  receiptsToLabel,
 } from "../src/web/lib/pending-turns.ts";
+import { assignSteerReceipts, steeredTurnReceipt } from "../src/shared/message-delivery.ts";
 
 function turn(over: Partial<PendingTurn> = {}): PendingTurn {
   return {
@@ -165,7 +168,7 @@ test("sending rows cannot be edited", () => {
     }),
   );
   assert.match(html, /data-pending-state="sending"/);
-  assert.match(html, />sending</);
+  assert.match(html, />sent · waiting for the agent to pick it up</);
   assert.doesNotMatch(html, />Edit</);
   assert.doesNotMatch(html, />Retry</);
 });
@@ -333,4 +336,133 @@ test("both surfaces mark a held queued row, so neither can quietly keep the old 
     assert.match(source, /PENDING_TURN_HELD_STATUS/, `${path} does not relabel a held row`);
     assert.match(source, /revealPaneDialog\(/, `${path} offers no jump to the blocking review`);
   }
+});
+
+function steer(over: Partial<SteeredTurn> = {}): SteeredTurn {
+  return { id: "pending-1", text: "Skip e2e for now.", acceptedAt: 100_000, ...over };
+}
+
+function said(text: string, ts: number, role: "user" | "assistant" = "user"): TranscriptMessage {
+  return { id: `${role}-${ts}`, role, text, tools: [], ts };
+}
+
+test("a sending row says who it is waiting on, how long, and marks itself in flight", () => {
+  const html = renderToStaticMarkup(
+    createElement(PendingTurnView, {
+      turn: turn({ state: "sending", revision: 1, claimedAt: 10_000 }),
+      editable: false,
+      agentLabel: "Claude",
+      now: 52_000,
+    }),
+  );
+  assert.match(html, />sent · waiting for Claude to pick it up</);
+  assert.match(html, />Sent 0:42 ago</);
+  assert.match(html, /data-in-flight="pending-1"/);
+  assert.match(html, /in-flight-pulse/);
+});
+
+test("a held or queued row is not drawn as in flight", () => {
+  for (const html of [
+    renderToStaticMarkup(createElement(PendingTurnView, { turn: turn(), editable: true, now: 5 })),
+    renderToStaticMarkup(createElement(PendingTurnView, {
+      turn: turn(), editable: true, hold: "review", now: 5,
+    })),
+  ]) {
+    assert.doesNotMatch(html, /data-in-flight/);
+    assert.doesNotMatch(html, /Sent \d/);
+  }
+});
+
+test("a steered row keeps the message on screen and says the agent has not read it", () => {
+  const html = renderToStaticMarkup(
+    createElement(SteeredTurnView, { turn: steer(), agentLabel: "claude", now: 172_000 }),
+  );
+  assert.match(html, /class="turn turn-user pending-turn is-steered"/);
+  assert.match(html, /data-in-flight="pending-1"/);
+  assert.match(html, />steered · waiting for claude to read it</);
+  assert.match(html, />Skip e2e for now\.</);
+  assert.match(html, />Sent 1:12 ago</);
+  assert.match(html, />Claude reads steering at its next step</);
+  // Accepted by the driver: there is nothing left to edit, retry, or expedite.
+  assert.doesNotMatch(html, />(Edit|Retry|Steer now|Interrupt and deliver)</);
+});
+
+test("the transcript turn that carries a steered message is its receipt", () => {
+  assert.equal(steeredTurnReceipt(steer(), []), null);
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 100_500)]), "user-100500");
+  // Whitespace the transcript reflowed does not hide it.
+  assert.equal(steeredTurnReceipt(steer(), [said("\n  Skip e2e   for now.\n", 101_000)]), "user-101000");
+  // A transcript without timestamps cannot be ordered, so its match is taken.
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 0)]), "user-0");
+});
+
+test("a transcript clock up to five seconds behind the steer still counts as its receipt", () => {
+  // acceptedAt is 100_000: the window opens at exactly 95_000 and not a millisecond sooner.
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 95_000)]), "user-95000");
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 94_999)]), null);
+});
+
+test("an earlier identical message, or the agent quoting it, is not the receipt", () => {
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 60_000)]), null);
+  assert.equal(steeredTurnReceipt(steer(), [said("Skip e2e for now.", 101_000, "assistant")]), null);
+  assert.equal(steeredTurnReceipt(steer({ text: "   " }), [said("   ", 101_000)]), null);
+});
+
+test("sent time reads as minutes and seconds and never goes negative", () => {
+  assert.equal(sentAgo(1_000, 1_000), "0:00");
+  assert.equal(sentAgo(0, 42_999), "0:42");
+  assert.equal(sentAgo(0, 125_000), "2:05");
+  assert.equal(sentAgo(5_000, 1_000), "0:00");
+});
+
+test("one transcript turn answers at most one steer, oldest steer first", () => {
+  const a = steer({ id: "a" });
+  const b = steer({ id: "b", acceptedAt: 100_200 });
+  // Two steers with the same words, one turn: only the first delivered is read.
+  assert.deepEqual([...assignSteerReceipts([a, b], [said("Skip e2e for now.", 101_000)])],
+    [["a", "user-101000"]]);
+  // A second turn answers the second steer, and each takes the earliest turn left.
+  assert.deepEqual(
+    [...assignSteerReceipts([a, b], [said("Skip e2e for now.", 101_000), said("Skip e2e for now.", 102_000)])],
+    [["a", "user-101000"], ["b", "user-102000"]],
+  );
+  // A turn an earlier pass already paired is never paired again.
+  assert.deepEqual(
+    [...assignSteerReceipts([b], [said("Skip e2e for now.", 101_000)], new Set(["user-101000"]))],
+    [],
+  );
+});
+
+test("the conversation labels only the turn the daemon matched, once, while recent", () => {
+  const receipt: SteerReceipt = { steerId: "s1", messageId: "later", at: 1_000 };
+  // An earlier turn with the same words is in the log too; only the matched id is labelled.
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["earlier", "later"]), new Set(), 2_000, 30_000), [receipt]);
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["earlier"]), new Set(), 2_000, 30_000), [],
+    "waits until its own turn reaches the log");
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["later"]), new Set(["s1"]), 2_000, 30_000), [],
+    "never labelled twice");
+  assert.deepEqual(receiptsToLabel([receipt], new Set(["later"]), new Set(), 31_001, 30_000), [],
+    "a receipt older than the window is history, not news");
+});
+
+test("a longer message is never the receipt of a shorter steer it contains", () => {
+  const yes = steer({ id: "yes", text: "yes" });
+  const yesPlease = steer({ id: "yes-please", text: "yes please", acceptedAt: 100_100 });
+  assert.equal(steeredTurnReceipt(yes, [said("yes please", 101_000)]), null);
+  // The agent read the second steer first: only that one is received, the first still waits.
+  assert.deepEqual([...assignSteerReceipts([yes, yesPlease], [said("yes please", 101_000)])],
+    [["yes-please", "user-101000"]]);
+  assert.deepEqual(
+    [...assignSteerReceipts([yes, yesPlease], [said("yes please", 101_000), said("yes", 102_000)])],
+    [["yes", "user-102000"], ["yes-please", "user-101000"]],
+  );
+});
+
+test("a steer's receipt must carry exactly what the operator wrote, tags included", () => {
+  const tagged = steer({ id: "tagged", text: "use <Suspense> here" });
+  assert.equal(steeredTurnReceipt(tagged, [said("use <Suspense> here", 101_000)]), "user-101000");
+  // Different messages never become equal by losing their tags.
+  assert.equal(steeredTurnReceipt(tagged, [said("use here", 101_000)]), null);
+  assert.equal(steeredTurnReceipt(steer({ id: "plain", text: "use here" }), [said("use <Suspense> here", 101_000)]), null);
+  assert.equal(steeredTurnReceipt(steer({ id: "yes", text: "yes" }), [said("<b>yes</b>", 101_000)]), null);
 });

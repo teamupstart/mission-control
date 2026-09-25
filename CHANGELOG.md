@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.25.0](https://github.com/teamupstart/mission-control/compare/v1.24.0...v1.25.0) (2026-09-25)
+
+
+### Features
+
+* **install:** add direct Bash installation ([#1123](https://github.com/teamupstart/mission-control/issues/1123)) ([affd9ea](https://github.com/teamupstart/mission-control/commit/affd9eaf1369ce3b9dcb637b96b4d7708cf86034))
+* **repositories:** support bare clones and deep discovery ([#1124](https://github.com/teamupstart/mission-control/issues/1124)) ([117ed37](https://github.com/teamupstart/mission-control/commit/117ed373706740422cca71f6473ea4f21dccdabd))
+* **runs:** replace the round context banners with one line and a disclosure ([#1127](https://github.com/teamupstart/mission-control/issues/1127)) ([2f75fd8](https://github.com/teamupstart/mission-control/commit/2f75fd8dda14e26f401b64f1f1a6e19e759d6a0b))
+* **sessions:** change SDK models from session badges ([#1131](https://github.com/teamupstart/mission-control/issues/1131)) ([d1e6267](https://github.com/teamupstart/mission-control/commit/d1e6267ac932dee7fb1f54aff9155cb61512bcfe))
+* **task-sources:** keep imported backlog tasks updated ([#1130](https://github.com/teamupstart/mission-control/issues/1130)) ([ad5a458](https://github.com/teamupstart/mission-control/commit/ad5a4584794c3e35f0a3991bde2d35870de47d49))
+
+
+### Bug Fixes
+
+* **feedback:** authorize trusted report clicks and surface CLI errors ([#1121](https://github.com/teamupstart/mission-control/issues/1121)) ([fa7a4e2](https://github.com/teamupstart/mission-control/commit/fa7a4e23b9abd77a3334f9e3fc8484e5b0c72c63))
+* **models:** discover Claude Code models from installed CLI ([#1128](https://github.com/teamupstart/mission-control/issues/1128)) ([e8d6352](https://github.com/teamupstart/mission-control/commit/e8d63529068b54fdba95208f846ae72a424c35e9))
+* **pi:** make desktop integration relocatable and app-owned ([#1132](https://github.com/teamupstart/mission-control/issues/1132)) ([236922f](https://github.com/teamupstart/mission-control/commit/236922f7a46426d73d43dd26521df0e1808c82e8))
+* **terminal:** bind WezTerm operations to mux incarnation ([#1113](https://github.com/teamupstart/mission-control/issues/1113)) ([5197ebb](https://github.com/teamupstart/mission-control/commit/5197ebbbd207210eff48695cfa5b471293ea98a1))
+* **terminal:** preserve legacy cmux worktrees without identity ([#1122](https://github.com/teamupstart/mission-control/issues/1122)) ([8464e2c](https://github.com/teamupstart/mission-control/commit/8464e2c75d8c6d79ef30d12eb7040daf297017ed))
+* **terminal:** preserve verified Ghostty launch identity ([#1111](https://github.com/teamupstart/mission-control/issues/1111)) ([ee0c773](https://github.com/teamupstart/mission-control/commit/ee0c773a8ca0865a7ccf5640da66c6a132676e77))
+* **updater:** show safe staged failure details ([#1109](https://github.com/teamupstart/mission-control/issues/1109)) ([9734fc4](https://github.com/teamupstart/mission-control/commit/9734fc4332dff84d3e8e45133f30e89ebd484eff))
+* **worktrees:** allow known conductor scratch during safe prune ([#1125](https://github.com/teamupstart/mission-control/issues/1125)) ([f73ee0d](https://github.com/teamupstart/mission-control/commit/f73ee0d38c2d58b126b6ef5641df1bec4aa88835))
+* **worktrees:** scope cleanup previews to affected targets ([#1120](https://github.com/teamupstart/mission-control/issues/1120)) ([24031e3](https://github.com/teamupstart/mission-control/commit/24031e340e6ef9c427ffed45dac0a0a5dc50450b))
+
 ## [1.24.0](https://github.com/teamupstart/mission-control/compare/v1.23.0...v1.24.0) (2026-09-21)
 
 

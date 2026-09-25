@@ -48,7 +48,7 @@ const SEE_WORK_DEMO: TourTaskRecipe = {
     intent: SEE_WORK_TOUR_DEMO_INTENT,
     kind: "ship",
     agent: "codex",
-    model: "gpt-5.6-terra",
+    model: "gpt-6-sol",
     workflowId: null,
     backlog: true,
     dependencies: [],

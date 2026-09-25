@@ -76,7 +76,7 @@ test("clearing an override restores inheritance, live app defaults included", ()
     (input) => resolvePersonaExecution(input, CODEX, undefined),
   );
   assert.equal(inherited.runner.id, "codex");
-  assert.deepEqual(inherited.model, { id: "gpt-5.6-terra", source: "default" });
+  assert.deepEqual(inherited.model, { id: "gpt-6-sol", source: "default" });
 });
 
 test("two nodes sharing one Persona resolve independently", () => {
@@ -89,7 +89,7 @@ test("two nodes sharing one Persona resolve independently", () => {
   );
   const inherited = resolveWorkflowNodeExecution({ persona }, resolvePersona);
   assert.equal(overridden.model.id, "claude-opus-4-8");
-  assert.equal(inherited.model.id, "gpt-5.6-terra");
+  assert.equal(inherited.model.id, "gpt-6-sol");
 });
 
 test("omission survives a graph round trip rather than becoming a stored choice", () => {

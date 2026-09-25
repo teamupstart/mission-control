@@ -138,7 +138,7 @@ test("two Foreman roles run on different providers, and only those roles move", 
   const status = await (await fetch(`${daemon.baseURL}/api/foreman/status`)).json();
   expect(status.roleRunners.review.id).toBe("codex");
   expect(status.roleRunners.triage.id).toBe("claude");
-  expect(status.models.review.id).toBe("gpt-5.6-sol");
+  expect(status.models.review.id).toBe("gpt-6-sol");
   expect(status.models.triage.id).toBe("claude-haiku-4-5");
   await shoot(dashboard, "02-roles-split-across-providers", "models/foreman");
 });
@@ -199,7 +199,7 @@ test("a Foreman role's own provider change resets only that role's stranded mode
   // that an id was dropped.
   await expect(
     dashboard.getByRole("combobox", { name: "Foreman Review model" }).getByRole("option").first(),
-  ).toHaveText(/Default - gpt-5\.6-sol/);
+  ).toHaveText(/Default - gpt-6-sol/);
   // The neighbour is untouched. A blanket clear and a targeted reset differ only here.
   await expect(dashboard.getByRole("combobox", { name: "Foreman Verify model" })).toHaveValue(
     "claude-sonnet-5",
@@ -232,7 +232,7 @@ test("the Inspector's review row is here, and its Inherit follows the app-wide d
     status.runner.id,
     "an unset Inspector provider ignored the app-wide default",
   ).toBe("codex");
-  expect(status.model.id).toBe("gpt-5.6-sol");
+  expect(status.model.id).toBe("gpt-6-sol");
   await shoot(dashboard, "05-inspector-inherits-app-wide", "models/inspector");
 });
 
@@ -388,7 +388,7 @@ test("an Inspector pair no writer could reach is refused, and the row says what 
   ).toBeVisible();
 
   const status = await (await fetch(`${daemon.baseURL}/api/inspector/status`)).json();
-  expect(status.model.id, "a deep call gets a deep substitute").toBe("gpt-5.6-sol");
+  expect(status.model.id, "a deep call gets a deep substitute").toBe("gpt-6-sol");
   expect(status.model.unsupported).toBe("claude-opus-5");
   await shoot(dashboard, "11-inspector-dropped-model", "models/inspector");
 });

@@ -104,6 +104,17 @@ test("a steered message stays in view until the agent reads it", async ({ dashbo
   }
   await expect(receivedTurn.getByRole("status")).toHaveCount(0, { timeout: 10000 });
   await expect(rail.locator(".rail-state")).toHaveText("working");
+
+  // Leaving and reopening the conversation remounts it while the receipt is still recent;
+  // a label it already showed must not come back looking new.
+  await card.getByRole("tab", { name: "Work queue" }).click();
+  await expect(receivedTurn).toHaveCount(0);
+  await card.getByRole("tab", { name: "Conversation" }).click();
+  await expect(receivedTurn).toBeVisible();
+  // A one-off count, not an auto-retrying assertion: retried, it would simply wait out the
+  // few seconds a wrongly repeated label is shown for and pass anyway.
+  await dashboard.waitForTimeout(500);
+  expect(await receivedTurn.getByRole("status").count(), "the label is not shown again").toBe(0);
 });
 
 test("with the working row pinned, the steer's pill sits above it instead of on it", async ({ dashboard, daemon }) => {

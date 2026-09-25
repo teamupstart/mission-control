@@ -1691,6 +1691,7 @@ function steeringFixture(name: string, options: {
   sendError?: boolean; interruptFails?: boolean; interruptTimeoutMs?: number;
   beforeSteer?: () => Promise<void>; beforeInterrupt?: () => Promise<void>;
   messagesFor?: () => SessionMessages | null;
+  steerReceiptPollMs?: number;
 } = {}) {
   const registry = new Registry();
   const id = `sdk:steering:${name}`;
@@ -1726,7 +1727,7 @@ function steeringFixture(name: string, options: {
     idleSettleMs: 0,
     interruptTimeoutMs: options.interruptTimeoutMs ?? 100,
     messagesFor: options.messagesFor ?? (() => null),
-    steerReceiptPollMs: 5,
+    steerReceiptPollMs: options.steerReceiptPollMs ?? 5,
   });
   manager.start();
   return { registry, id, manager, sends, interrupts: () => interrupts };
@@ -1829,6 +1830,24 @@ test("a retired steer publishes the exact turn that is its receipt, and a reset 
   assert.equal(f.registry.getSession(f.id)?.steerReceipts?.length, 1);
   f.registry.clearPendingTurns("steering:receipt-published");
   assert.equal(f.registry.getSession(f.id)?.steerReceipts, undefined);
+  f.manager.stop();
+});
+
+test("a turn that ends before the next scan still records the steer it read", async () => {
+  const records: TranscriptMessage[] = [];
+  // A poll far longer than the test: only the read at turn end can find this receipt.
+  const f = steeringFixture("receipt-at-idle", {
+    messagesFor: () => fakeTranscript(records),
+    steerReceiptPollMs: 60_000,
+  });
+  const row = f.manager.submit(f.id, "read then finish").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  records.push({ id: "read-then-idle", role: "user", text: "read then finish", tools: [], ts: Date.now() });
+  idle(f.registry, f.id);
+  const session = f.registry.getSession(f.id)!;
+  assert.equal(session.steeredTurns, undefined);
+  assert.deepEqual(session.steerReceipts?.map((r) => [r.steerId, r.messageId]), [[row.id, "read-then-idle"]]);
   f.manager.stop();
 });
 

@@ -486,7 +486,11 @@ export class PendingTurnManager {
       this.moveConversationKey(session.id, previousKey, key);
     }
     if (steerReadWindowClosed(session) && this.registry.hasSteeredTurns(key)) {
+      // Read once more first: an agent that wrote the steer and finished its turn inside one
+      // poll interval has a receipt waiting, and clearing without it would drop its label.
+      this.scanSteerReceiptsFor(key);
       this.registry.clearSteeredTurns(key);
+      this.steerScans.delete(key);
     }
     const sdkHandoff = this.sdkHandoffs.get(key);
     if (sdkHandoff && sdkHandoff.sessionId !== session.id && session.state !== "exited") {
@@ -832,39 +836,44 @@ export class PendingTurnManager {
   private scanSteerReceipts(): void {
     this.steerTimer = null;
     if (this.stopped) return;
-    for (const [key, scan] of this.steerScans) {
-      const waiting = this.registry.steeredTurns(key);
-      if (waiting.length === 0) {
-        this.steerScans.delete(key);
-        continue;
-      }
-      const session = this.registry.sessionForNoteKey(key);
-      let messages;
-      try {
-        const located = session ? this.deps.messagesFor(session) : null;
-        if (!located) continue;
-        if (scan.path !== located.path) {
-          scan.path = located.path;
-          scan.pos = 0;
-        }
-        const size = located.read.size(located.path);
-        if (size === null || size === scan.pos) continue;
-        // Rewritten under us: the offset names a byte that no longer exists.
-        if (size < scan.pos) scan.pos = 0;
-        const read = located.read.appended(located.path, scan.pos);
-        scan.pos = read.pos;
-        messages = read.messages;
-      } catch {
-        continue; // unreadable this pass; the next one, or the turn's end, settles it
-      }
-      const paired = assignSteerReceipts(waiting, messages, scan.claimed);
-      for (const messageId of paired.values()) scan.claimed.add(messageId);
-      if (paired.size > 0) this.registry.retireSteeredTurns(key, paired, this.deps.now());
-      if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
-    }
+    for (const key of [...this.steerScans.keys()]) this.scanSteerReceiptsFor(key);
     if (this.steerScans.size > 0) {
       this.steerTimer = unref(setTimeout(() => this.scanSteerReceipts(), this.deps.steerReceiptPollMs));
     }
+  }
+
+  /** One pass over one conversation's transcript: retire every steer it now shows. */
+  private scanSteerReceiptsFor(key: string): void {
+    const scan = this.steerScans.get(key);
+    if (!scan) return;
+    const waiting = this.registry.steeredTurns(key);
+    if (waiting.length === 0) {
+      this.steerScans.delete(key);
+      return;
+    }
+    const session = this.registry.sessionForNoteKey(key);
+    let messages;
+    try {
+      const located = session ? this.deps.messagesFor(session) : null;
+      if (!located) return;
+      if (scan.path !== located.path) {
+        scan.path = located.path;
+        scan.pos = 0;
+      }
+      const size = located.read.size(located.path);
+      if (size === null || size === scan.pos) return;
+      // Rewritten under us: the offset names a byte that no longer exists.
+      if (size < scan.pos) scan.pos = 0;
+      const read = located.read.appended(located.path, scan.pos);
+      scan.pos = read.pos;
+      messages = read.messages;
+    } catch {
+      return; // unreadable this pass; the next one, or the turn's end, settles it
+    }
+    const paired = assignSteerReceipts(waiting, messages, scan.claimed);
+    for (const messageId of paired.values()) scan.claimed.add(messageId);
+    if (paired.size > 0) this.registry.retireSteeredTurns(key, paired, this.deps.now());
+    if (this.registry.steeredTurns(key).length === 0) this.steerScans.delete(key);
   }
 
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {

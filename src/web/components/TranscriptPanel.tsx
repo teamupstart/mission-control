@@ -128,6 +128,14 @@ const STEER_RECEIVED_MS = 4000;
  * next step, and its turn reaches this log on a different stream from the receipt.
  */
 const STEER_WATCH_MS = 30_000;
+/**
+ * Steers whose receipt this dashboard has already labelled. Module scope, not component
+ * state: closing and reopening a conversation remounts the panel, and a receipt it already
+ * showed must not look new again while it is still inside `STEER_WATCH_MS`. Bounded so a
+ * dashboard left open for days does not collect every steer it ever saw.
+ */
+const labelledSteers = new Set<string>();
+const LABELLED_STEERS_KEPT = 200;
 
 /** A clock for "sent 0:42 ago", running only while something on screen is counting. */
 function useSecondClock(active: boolean): number {
@@ -153,15 +161,18 @@ function useSteerReceipts(
   receipts: readonly SteerReceipt[],
   messages: readonly TranscriptMessage[],
 ): ReadonlySet<string> {
-  /** Steers already labelled, so a remount or a later upsert never labels one twice. */
-  const labelled = useRef(new Set<string>());
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const [received, setReceived] = useState<ReadonlySet<string>>(NO_IDS);
   useEffect(() => {
     const present = new Set(messages.map((message) => message.id));
-    const due = receiptsToLabel(receipts, present, labelled.current, Date.now(), STEER_WATCH_MS);
+    const due = receiptsToLabel(receipts, present, labelledSteers, Date.now(), STEER_WATCH_MS);
     if (due.length === 0) return;
-    for (const receipt of due) labelled.current.add(receipt.steerId);
+    for (const receipt of due) labelledSteers.add(receipt.steerId);
+    // Oldest first, in insertion order, so the ones dropped are long past their window.
+    for (const old of labelledSteers) {
+      if (labelledSteers.size <= LABELLED_STEERS_KEPT) break;
+      labelledSteers.delete(old);
+    }
     const hits = due.map((receipt) => receipt.messageId);
     setReceived((prev) => new Set([...prev, ...hits]));
     const timer = setTimeout(() => {

@@ -672,8 +672,8 @@ that is a half-written draft in the composer or a transcript line, a diff hunk o
 terminal output you have dragged across. With nothing selected, it stops the agent. Like
 every other shortcut it is rebindable in **Settings → Keyboard**.
 
-The button is disabled when there is nothing to stop - an idle agent - and the tooltip says
-which of the two reasons applies.
+With nothing to stop - an idle agent - the chord does nothing, and the session keeps
+everything it had.
 
 ### What each agent can do is declared, not assumed
 

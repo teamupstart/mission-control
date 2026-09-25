@@ -159,11 +159,9 @@ test.describe("terminal-runtime interrupt", () => {
     // "Agent SDK". Asserted rather than assumed so this cannot become a weaker driver test.
     await expect(detail).toContainText(/tmux · %\d+/);
 
-    // The control is live - this is the capability declaration doing its job. Before this
-    // phase the same card drew it disabled with "can't yet stop a Claude Code turn running
-    // in a terminal".
-    const interrupt = detail.getByRole("button", { name: "interrupt" });
-    await expect(interrupt).toBeEnabled();
+    // The footer draws no interrupt button any more; ⌃C is the whole control. It is a no-op
+    // unless the capability declares a mechanism for this harness and runtime, so the byte
+    // assertion below is also what proves the declaration is live.
 
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(EVIDENCE, { recursive: true });

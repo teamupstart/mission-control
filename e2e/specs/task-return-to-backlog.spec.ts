@@ -111,6 +111,17 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await expect(dialog).toContainText("Uncommitted and unpushed work in it is deleted");
   await shoot(dashboard, "return-to-backlog-confirm");
 
+  // A modal confirm: Tab cycles its own controls and never reaches the detail behind it.
+  await expect(dialog).toHaveAttribute("aria-modal", "true");
+  for (let i = 0; i < 6; i++) {
+    await dashboard.keyboard.press(i % 2 ? "Shift+Tab" : "Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+  }
+  for (let i = 0; i < 5; i++) {
+    await dashboard.keyboard.press("Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+  }
+
   // Cancel leaves everything where it was.
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toBeHidden();

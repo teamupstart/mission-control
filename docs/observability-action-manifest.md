@@ -151,7 +151,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.cancelTask`](../src/web/lib/api.ts#L1866) | `/api/tasks/:id/cancel` |
 | [`api.reclaimTask`](../src/web/lib/api.ts#L1867) | `/api/tasks/:id/reclaim` |
 | [`api.rescheduleTask`](../src/web/lib/api.ts#L1872) | `/api/tasks/:id/reschedule` |
-| [`api.requeueTask`](../src/web/lib/api.ts#L1888) | `/api/tasks/:id/requeue` |
+| [`api.requeueTask`](../src/web/lib/api.ts#L1891) | `/api/tasks/:id/requeue` |
 | [`api.completeTask`](../src/web/lib/api.ts#L1876) | `/api/tasks/:id/complete` |
 | [`api.deleteTask`](../src/web/lib/api.ts#L1891) | `/api/tasks/:id` |
 | [`api.bulkUpdateTasks`](../src/web/lib/api.ts#L1909) | `/api/tasks/bulk-update` |

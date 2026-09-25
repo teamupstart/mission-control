@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { containTourTab } from "../tour/focus-containment.ts";
 
 /**
  * Send a session's task back to the backlog.
@@ -29,6 +30,19 @@ export function RequeueModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const task = session.task;
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // A modal confirm keeps Tab inside itself, and hands focus back to what opened it when it
+  // closes - unless that is gone, which it is after a landed requeue closes the detail.
+  useEffect(() => {
+    const previous = document.activeElement;
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+  const containTab = useCallback((event: KeyboardEvent) => {
+    if (formRef.current) containTourTab(event, formRef.current);
+  }, []);
 
   async function confirm(): Promise<void> {
     if (busy || !task) return;
@@ -51,9 +65,12 @@ export function RequeueModal({
       className="modal requeue-modal"
       role="dialog"
       ariaLabel="Return to backlog"
+      ariaModal
+      onKeyDown={containTab}
       closable={!busy}
     >
       <form
+        ref={formRef}
         onSubmit={(event) => {
           event.preventDefault();
           void confirm();

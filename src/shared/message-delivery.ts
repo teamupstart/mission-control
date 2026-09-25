@@ -86,15 +86,25 @@ export const MESSAGE_INTERRUPT_WATCHDOG_MS = 10_000;
  */
 const STEER_RECEIPT_SKEW_MS = 5_000;
 
+/**
+ * A message reduced to what a person wrote: markup tags a harness wraps around the text it
+ * was given (`<queued_command>…</queued_command>`) removed, and whitespace collapsed. Both
+ * sides go through it, so a steer that itself contains tags still compares like for like.
+ */
 function comparableText(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
+  return text.replace(/<\/?[A-Za-z][\w:-]*(?:\s[^<>]*)?>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Whether this transcript turn is the agent's record of having read this steer. */
+/**
+ * Whether this transcript turn is the agent's record of having read this steer.
+ *
+ * The WHOLE message must be the steer, not merely contain it. With `includes`, reading
+ * "yes please" would also count as reading an earlier, still unread "yes".
+ */
 function isSteerReceipt(turn: SteeredTurn, wanted: string, message: TranscriptMessage): boolean {
   if (message.role !== "user") return false;
   if (message.ts && message.ts < turn.acceptedAt - STEER_RECEIPT_SKEW_MS) return false;
-  return comparableText(message.text).includes(wanted);
+  return comparableText(message.text) === wanted;
 }
 
 /**
@@ -111,9 +121,10 @@ function isSteerReceipt(turn: SteeredTurn, wanted: string, message: TranscriptMe
  * time. `claimed` carries turns an earlier pass already paired, for a caller that reads the
  * same turns again.
  *
- * `includes` rather than equality because a harness may wrap what it records around the
- * text it was given. A turn more than a few seconds older than the steer is an earlier
- * message that happens to say the same thing ("yes"), and is never taken for it.
+ * The match is on the whole message, ignoring whitespace and the markup tags a harness may
+ * wrap around what it records, so a longer message is never a shorter steer's receipt. A
+ * turn more than a few seconds older than the steer is an earlier message that happens to
+ * say the same thing ("yes"), and is never taken for it.
  */
 export function assignSteerReceipts(
   turns: readonly SteeredTurn[],

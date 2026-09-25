@@ -449,3 +449,25 @@ test("a retired steer waits for its turn from when it left, not from when it was
   trackSteers(watched, [], 5 * 60_000 + 30_002, 30_000);
   assert.equal(watched.has("old"), false, "dropped once the window from departure has passed");
 });
+
+test("a longer message is never the receipt of a shorter steer it contains", () => {
+  const yes = steer({ id: "yes", text: "yes" });
+  const yesPlease = steer({ id: "yes-please", text: "yes please", acceptedAt: 100_100 });
+  assert.equal(steeredTurnReceipt(yes, [said("yes please", 101_000)]), null);
+  // The agent read the second steer first: only that one is received, the first still waits.
+  assert.deepEqual([...assignSteerReceipts([yes, yesPlease], [said("yes please", 101_000)])],
+    [["yes-please", "user-101000"]]);
+  assert.deepEqual(
+    [...assignSteerReceipts([yes, yesPlease], [said("yes please", 101_000), said("yes", 102_000)])],
+    [["yes", "user-102000"], ["yes-please", "user-101000"]],
+  );
+});
+
+test("markup a harness wraps around a steer does not hide its receipt", () => {
+  const yes = steer({ id: "yes", text: "yes" });
+  assert.equal(steeredTurnReceipt(yes, [said('<queued_command id="7">yes</queued_command>', 101_000)]), "user-101000");
+  assert.equal(steeredTurnReceipt(yes, [said("<queued_command>yes please</queued_command>", 101_000)]), null);
+  // Tags the operator typed are compared like for like.
+  const tagged = steer({ id: "tagged", text: "use <Suspense> here" });
+  assert.equal(steeredTurnReceipt(tagged, [said("use <Suspense> here", 101_000)]), "user-101000");
+});

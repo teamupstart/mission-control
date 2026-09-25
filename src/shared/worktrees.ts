@@ -9,7 +9,10 @@ export const WORKTREE_INVENTORY_LIMITS = {
   previewTokens: 128,
   /** One bulk destroy selection. Matches one pool's slot bound; a selection may span pools. */
   bulkSlots: 128,
-  /** Queued, running, and unacknowledged failed background operations kept for display. */
+  /**
+   * Queued, running, and undismissed failed background operations listed at once. A full list
+   * refuses new submissions; it never evicts a failure report to make room.
+   */
   operations: 64,
 } as const;
 

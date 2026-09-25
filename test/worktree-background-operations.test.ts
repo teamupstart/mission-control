@@ -264,7 +264,7 @@ test("a full queue refuses new cleanups without consuming the token or dropping 
     checkRecovery: async () => "unknown",
     notifyChanged: () => {},
     diskBytes: async () => null,
-    maxPendingOperations: 2,
+    maxOperations: 2,
   });
   const previews: Awaited<ReturnType<typeof capped.preview>>[] = [];
   for (const slot of slots) {
@@ -465,4 +465,42 @@ test("a pool destroy that fails partway retries its original slots, not whatever
   await operations.idle();
   assert.equal(manager.store.slot(left), null);
   assert.equal(manager.store.slot(joined.slotId)?.state, "available");
+});
+
+test("failure reports are never evicted: a full list refuses new cleanups until one is dismissed", async () => {
+  const slots = await availableSlots("mission-worktree-bg-reports-", 3);
+  const capped = new WorktreeOperationsService(manager, {
+    legacy: new LegacyTreehouseService(db),
+    tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
+    checks,
+    checkRecovery: async () => "unknown",
+    notifyChanged: () => {},
+    diskBytes: async () => null,
+    maxOperations: 2,
+  });
+  // Two cleanups that fail as stale: each dirties its slot after the preview.
+  const failedIds: string[] = [];
+  for (const slot of slots.slice(0, 2)) {
+    const preview = await capped.preview({ action: "destroy", target: { kind: "slot", slotId: slot.slotId } });
+    writeFileSync(join(slot.path, "appeared-after-preview.txt"), "state changed\n");
+    failedIds.push(capped.submit(preview.token, []).operation.id);
+    await capped.idle();
+  }
+  const third = await capped.preview({ action: "destroy", target: { kind: "slot", slotId: slots[2]!.slotId } });
+  assert.throws(
+    () => capped.submit(third.token, []),
+    (error: unknown) => error instanceof Error &&
+      /2 cleanups are listed \(2 failed, 0 queued\); dismiss a failed report/.test(error.message) &&
+      (error as { status?: number }).status === 503,
+  );
+  const listed = (await capped.inventory()).operations;
+  assert.deepEqual(listed.map((entry) => entry.id), failedIds, "both failure reports are still listed");
+  assert.ok(listed.every((entry) => entry.state === "failed"));
+
+  // Dismissing one report makes room; the refused preview was not consumed and now runs.
+  assert.equal(capped.dismiss(failedIds[0]!), true);
+  capped.submit(third.token, []);
+  await capped.idle();
+  assert.equal(manager.store.slot(slots[2]!.slotId), null);
+  assert.deepEqual((await capped.inventory()).operations.map((entry) => entry.id), [failedIds[1]]);
 });

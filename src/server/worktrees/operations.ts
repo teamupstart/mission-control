@@ -87,8 +87,11 @@ export interface WorktreeOperationsDeps {
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
   /** Wall-clock budget for measuring every path one preview shows, together. */
   diskMeasureBudgetMs: number;
-  /** Accepted cleanups that may be queued or running at once; further submissions are refused. */
-  maxPendingOperations: number;
+  /**
+   * Operations listed at once - queued, running, and failed reports nobody has dismissed.
+   * Further submissions are refused; nothing listed is ever dropped to make room.
+   */
+  maxOperations: number;
 }
 
 interface Observation {
@@ -230,7 +233,7 @@ export class WorktreeOperationsService {
       git: new NativeWorktreeGit(),
       occupancy: inspectWorktreeOccupancy,
       diskMeasureBudgetMs: DISK_MEASURE_BUDGET_MS,
-      maxPendingOperations: WORKTREE_INVENTORY_LIMITS.operations,
+      maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
       ...deps,
     };
   }
@@ -969,13 +972,18 @@ export class WorktreeOperationsService {
     acknowledgements: readonly WorktreeRiskKey[],
   ): WorktreeActionSubmitResult {
     this.pruneTokens();
-    const pending = [...this.operations.values()].filter((entry) => entry.view.state !== "failed");
-    if (pending.length >= this.deps.maxPendingOperations) {
+    if (this.operations.size >= this.deps.maxOperations) {
       // Refused before the token is claimed, so the same preview can be executed again once
-      // earlier cleanups finish. Accepted work is never dropped to make room.
+      // there is room. Nothing listed is dropped to make it: accepted work runs to the end,
+      // and a failure report - possibly the only record of a partial removal - leaves only
+      // through Dismiss or an accepted retry.
+      const failed = [...this.operations.values()].filter((entry) => entry.view.state === "failed").length;
+      const queued = this.operations.size - failed;
       throw new WorktreeOperationError(
         503,
-        `${pending.length} cleanups are already queued; execute again when some have finished`,
+        failed > 0
+          ? `${this.operations.size} cleanups are listed (${failed} failed, ${queued} queued); dismiss a failed report or wait for queued cleanups to finish, then execute again`
+          : `${queued} cleanups are already queued; execute again when some have finished`,
         "unavailable",
       );
     }
@@ -1001,7 +1009,6 @@ export class WorktreeOperationsService {
     };
     const entry: HeldOperation = { view, held, acknowledgements: acknowledgementSet };
     this.operations.set(view.id, entry);
-    this.trimOperations();
     // A throwing publisher must not wedge every later operation behind a rejected link.
     this.queue = this.queue.then(() => this.runQueued(entry)).catch(() => {});
     this.deps.notifyChanged();
@@ -1059,16 +1066,6 @@ export class WorktreeOperationsService {
     }));
   }
 
-  /**
-   * Bounded: pending work is capped at submission, so only failures accumulate here, and the
-   * oldest go first. Pending work is never forgotten.
-   */
-  private trimOperations(): void {
-    for (const [id, entry] of this.operations) {
-      if (this.operations.size <= WORKTREE_INVENTORY_LIMITS.operations) return;
-      if (entry.view.state === "failed") this.operations.delete(id);
-    }
-  }
 
   private claim(
     token: string,

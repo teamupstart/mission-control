@@ -1175,9 +1175,16 @@ export class WorktreeManager {
     const allSlots = this.store.slots();
     // One system-wide process read, overlapped with the per-pool Git reads below instead of
     // run ahead of them: it is the single slowest observation on a loaded machine.
-    const occupancyRead = this.occupancy(
-      allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path),
-    );
+    //
+    // It is not awaited until a slot needs it, so its failure handling is attached here, where
+    // it starts, rather than trusted to `occupancy()`: a rejection with nobody listening yet is
+    // an unhandled rejection, and on Node 24 that ends the daemon. A failed read is unknown
+    // occupancy for every slot, which blocks cleanup rather than permitting it.
+    const occupiedPaths = allSlots.filter((slot) => existsSync(slot.path)).map((slot) => slot.path);
+    const occupancyRead: Promise<Map<string, WorktreeOccupancy>> = this.occupancy(occupiedPaths).catch((error: unknown) => {
+      const reason = `slot occupancy query failed: ${bounded(String(error))}`;
+      return new Map(occupiedPaths.map((path) => [path, { status: "unknown" as const, reason }]));
+    });
     const output: NativePoolStatus[] = [];
     for (const pool of pools) {
       const identity = this.identity(pool.mainCheckoutRoot);

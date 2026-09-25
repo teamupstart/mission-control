@@ -504,3 +504,25 @@ test("failure reports are never evicted: a full list refuses new cleanups until 
   assert.equal(manager.store.slot(slots[2]!.slotId), null);
   assert.deepEqual((await capped.inventory()).operations.map((entry) => entry.id), [failedIds[1]]);
 });
+
+test("a process read that fails while Git is still observing degrades to unknown occupancy, never a crash", async () => {
+  const [slot] = await availableSlots("mission-worktree-bg-occupancy-reject-", 1);
+  const unhandled: unknown[] = [];
+  const listen = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  try {
+    const failing = new WorktreeManager(db, {
+      // Rejects at once, long before any slot worker reaches the await.
+      occupancy: () => Promise.reject(new Error("lsof exploded")),
+      resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
+    });
+    const status = await failing.status();
+    await new Promise((resolve) => setImmediate(resolve));
+    const observed = status.flatMap((pool) => pool.slots).find((entry) => entry.slot.id === slot!.slotId);
+    assert.equal(observed?.occupancy.status, "unknown");
+    assert.match(observed?.occupancy.status === "unknown" ? observed.occupancy.reason : "", /slot occupancy query failed: Error: lsof exploded/);
+    assert.deepEqual(unhandled, [], "no rejection escaped");
+  } finally {
+    process.off("unhandledRejection", listen);
+  }
+});

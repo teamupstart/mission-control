@@ -104,7 +104,8 @@ closed-list questions route the same first press through the dialog.
 
 Guided dispatch is **on by default**. An installation that never chose a value picks it up on
 upgrade, while an explicit off choice stays off. The switch in the modal's header is the one
-to reach for mid-dispatch. **Settings → Dispatch** is its durable home: it carries the same
+to reach for mid-dispatch, and it appears only on a single-agent dispatch: Ensemble, backlog
+edits, and the See the work tour have no questions for it to ask. **Settings → Dispatch** is its durable home: it carries the same
 checkbox, deep-links at `#/settings/dispatch`, and puts the preference in ⌘K under **Guided
 dispatch**, where a search result flips it in place. Both surfaces write one value, so they
 cannot disagree.
@@ -453,7 +454,9 @@ Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
 The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog. Chat calls the fold **Task details** and omits dependencies because they would
+whole dialog. It is offered only on a new dispatch: editing a backlog task and the See the
+work tour's dispatch preview show neither it nor the **Guided** switch, because neither form
+can become another kind of dispatch. Chat calls the fold **Task details** and omits dependencies because they would
 turn an immediate conversation into backlog work.
 
 **Dependencies** can be selected from tasks already in the backlog and from active

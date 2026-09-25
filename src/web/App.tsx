@@ -29,6 +29,7 @@ import type {
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
+import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
@@ -432,23 +433,17 @@ export function App(): React.JSX.Element {
   // different one - and it needed the arrow keys to remember to keep the two in step.
   // `boardOpenId` below derives the invariant instead of restating it.
   const [boardOpen, setBoardOpen] = useState(false);
-  // Only whether the dispatch modal is open. The draft it edits belongs to
-  // DispatchLayer, deliberately out of this component: App re-renders the whole
-  // session layout, and the draft has to survive a close without dragging every
-  // keystroke through it.
-  const [dispatchOpen, setDispatchOpen] = useState(false);
-  // The backlog task the dispatch modal is open OVER, when it was opened by clicking a
-  // backlog card rather than the Dispatch button. Only the id is held: the task itself
-  // is read back out of `tasks` on every render, so an edit made anywhere else - or the
-  // task being dispatched out from under the modal - is seen here rather than shadowed
-  // by a copy taken at open time.
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  // What this opening of the dispatch modal is FOR, when it is not an ordinary dispatch.
-  // Only the Library's strategy launchers set it, and only the modal reads it - the draft
-  // and the launch mode stay where they are, in `DispatchLayer`.
-  const [dispatchIntent, setDispatchIntent] = useState<{ strategyId: EnsembleStrategyId } | null>(
-    null,
-  );
+  // What the dispatch form was last asked to be, or null for closed - ONE value, written
+  // whole by whichever opener ran last. It used to be three (an open flag, a task being
+  // edited, an Ensemble intent), each opener clearing the other two by convention and a
+  // precedence chain deciding the form whenever a convention was missed. As one value, two
+  // requests at once cannot be written. The draft the form edits still belongs to
+  // DispatchLayer, deliberately out of this component: App re-renders the whole session
+  // layout, and the draft has to survive a close without dragging every keystroke through it.
+  // An edit holds only the task id: the row is read back out of `tasks` on every render, so an
+  // edit made anywhere else - or the task being dispatched out from under the modal - is seen
+  // here rather than shadowed by a copy taken at open time.
+  const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
@@ -845,41 +840,29 @@ export function App(): React.JSX.Element {
     [layout, selectedId],
   );
 
-  const closeDispatch = useCallback(() => {
-    setDispatchOpen(false);
-    setEditingTaskId(null);
-    setDispatchIntent(null);
-  }, []);
+  const closeDispatch = useCallback(() => setDispatchRequest(null), []);
   const closeComplete = useCallback(() => setCompleteSessionId(null), []);
   /**
    * Open the dispatch modal over a backlog task.
    *
-   * Clears `dispatchOpen` in the same breath, so the two ways in can never both be
-   * true: one modal, over one thing, and closing it goes all the way out rather than
-   * dropping back onto a new-dispatch form nobody asked for.
+   * Replaces whatever was asked before, so one modal is over one thing, and closing it goes
+   * all the way out rather than dropping back onto a new-dispatch form nobody asked for.
    */
   const openTaskEditor = useCallback((taskId: string) => {
-    setDispatchOpen(false);
-    setEditingTaskId(taskId);
+    setDispatchRequest({ kind: "edit", taskId });
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
-  const openDispatch = useCallback(() => {
-    setEditingTaskId(null);
-    setDispatchIntent(null);
-    setDispatchOpen(true);
-  }, []);
+  const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
    * Ensemble mode on that strategy.
    *
-   * The intent is cleared by `openDispatch` and by `closeDispatch`, so an ordinary Dispatch
-   * after one of these is an ordinary Dispatch rather than an Ensemble the operator did not
-   * ask for.
+   * Written as its own request rather than as a flag beside an open one, so an ordinary
+   * Dispatch after one of these - which writes `new` over it - is an ordinary Dispatch rather
+   * than an Ensemble the operator did not ask for.
    */
   const launchEnsemble = useCallback((strategyId: EnsembleStrategyId) => {
-    setEditingTaskId(null);
-    setDispatchIntent({ strategyId });
-    setDispatchOpen(true);
+    setDispatchRequest({ kind: "ensemble", strategyId });
   }, []);
   const closeMissions = useCallback(() => {
     setMissionsOpen(false);
@@ -2435,6 +2418,54 @@ export function App(): React.JSX.Element {
   const seeWorkDemoReviewPending = seeWorkDemoSession
     ? pendingReviews.some((review) => review.sessionId === seeWorkDemoSession.id)
     : false;
+  const seeWorkTourDispatchPreview = seeWorkRun
+    ? {
+        id: seeWorkRun.id,
+        briefReady: seeWorkTourBriefReady,
+        repoRoot: seeWorkTourRepoRoot,
+        dispatch: dispatchSeeWorkTourDemo,
+      }
+    : null;
+
+  /**
+   * The task the editor is over, or null. Deliberately requires `backlog` status, not
+   * just existence: the whole form is a rewrite of a shelved row, and the daemon refuses
+   * to rewrite one that has been dispatched - so a task that starts while its editor is
+   * open must take the editor with it rather than leave a form whose Save can only fail.
+   * The card can leave under you for good reasons (dropped onto an idle agent from the
+   * same board, launched from the Sitrep panel, deleted), which is the task-shaped case
+   * of the session-disappeared reconciliation below.
+   */
+  const editingTaskId = dispatchRequest?.kind === "edit" ? dispatchRequest.taskId : null;
+  const editingTask = useMemo(
+    () => (editingTaskId ? tasks.find((t) => t.id === editingTaskId && t.status === "backlog") ?? null : null),
+    [editingTaskId, tasks],
+  );
+  useEffect(() => {
+    if (!editingTaskId || editingTask) return;
+    // Only the request that named THIS row: an opener that ran since has already moved on.
+    setDispatchRequest((current) =>
+      current?.kind === "edit" && current.taskId === editingTaskId ? null : current);
+  }, [editingTaskId, editingTask]);
+
+  /**
+   * What the dispatch form is open FOR, or why it is not open - resolved once, here, from the
+   * one request and the one other thing that can claim the form (the See the work tour).
+   * `resolveDispatchOpening` owns that rule and says why it is a rule rather than a tie-break;
+   * a collision is refused rather than won, and the refusal is logged below.
+   */
+  const dispatchResolution = resolveDispatchOpening(dispatchRequest, {
+    editTask: editingTask,
+    tourDemo: seeWorkTourDispatchPreview,
+  });
+  const dispatchOpening = dispatchResolution.opening;
+  const dispatchRefusal = dispatchResolution.problem;
+  useEffect(() => {
+    if (dispatchRefusal) console.error(`Dispatch did not open: it was given ${dispatchRefusal}.`);
+  }, [dispatchRefusal]);
+  /** The fresh-dispatch form is on screen - what both tours wait on. Never the backlog editor. */
+  const dispatchOpen = dispatchOpening !== null && dispatchOpening.kind !== "edit";
+
   const seeWorkTourRuntime: SeeWorkTourRuntime = {
     previewSessionId: seeWorkPreviewSession?.id ?? null,
     previewPhase: seeWorkPreviewSession
@@ -2468,14 +2499,6 @@ export function App(): React.JSX.Element {
     ),
     error: seeWorkDemoTask?.error ?? null,
   };
-  const seeWorkTourDispatchPreview = seeWorkRun
-    ? {
-        id: seeWorkRun.id,
-        briefReady: seeWorkTourBriefReady,
-        repoRoot: seeWorkTourRepoRoot,
-        dispatch: dispatchSeeWorkTourDemo,
-      }
-    : null;
 
   /** The built-in Persona and Session action the Library tour teaches on.
    *
@@ -2737,23 +2760,6 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
   };
-
-  /**
-   * The task the editor is over, or null. Deliberately requires `backlog` status, not
-   * just existence: the whole form is a rewrite of a shelved row, and the daemon refuses
-   * to rewrite one that has been dispatched - so a task that starts while its editor is
-   * open must take the editor with it rather than leave a form whose Save can only fail.
-   * The card can leave under you for good reasons (dropped onto an idle agent from the
-   * same board, launched from the Sitrep panel, deleted), which is the task-shaped case
-   * of the session-disappeared reconciliation below.
-   */
-  const editingTask = useMemo(
-    () => (editingTaskId ? tasks.find((t) => t.id === editingTaskId && t.status === "backlog") ?? null : null),
-    [editingTaskId, tasks],
-  );
-  useEffect(() => {
-    if (editingTaskId && !editingTask) setEditingTaskId(null);
-  }, [editingTaskId, editingTask]);
 
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
@@ -4422,8 +4428,7 @@ export function App(): React.JSX.Element {
               )}
 
               <DispatchLayer
-                open={dispatchOpen || editingTask != null}
-                editTask={editingTask}
+                opening={dispatchOpening}
                 tasks={tasks}
                 sessions={sessions}
                 personas={personas}
@@ -4438,8 +4443,6 @@ export function App(): React.JSX.Element {
                       })
                     : `count:${settingsStatus?.pipelines.observing ?? 0}`
                 }
-                launchIntent={dispatchIntent}
-                tourDemo={seeWorkTourDispatchPreview}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}

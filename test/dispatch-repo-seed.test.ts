@@ -73,7 +73,7 @@ test("a padded path is stored and read back trimmed, so it matches what was disp
 function renderForm(): string {
   return renderToStaticMarkup(
     withOverlayHost(
-      createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} }),
+      createElement(DispatchLayer, { opening: { kind: "new" }, onClose: () => {} }),
     ),
   );
 }

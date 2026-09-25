@@ -971,6 +971,10 @@ available:
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
   the board stays on screen to show it. Console draws no tasks, so there a query
   matching only backlog items correctly reads as "nothing matches".
+- **Several backlog cards can be selected and edited together.** `Cmd`/`Ctrl`-click toggles a
+  card, `Shift`-click takes a range, and a drag that starts on empty column space draws a
+  selection box. A bar under the column then offers **Edit N tasks…** and **Delete…**. See
+  [Edit or delete several shelved tasks at once](dispatch-and-backlog.md#edit-or-delete-several-shelved-tasks-at-once).
 - **The arrow keys follow the shape** - see below.
 
 ## How much conversation you see

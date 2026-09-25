@@ -152,6 +152,8 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.rescheduleTask`](../src/web/lib/api.ts#L1872) | `/api/tasks/:id/reschedule` |
 | [`api.completeTask`](../src/web/lib/api.ts#L1876) | `/api/tasks/:id/complete` |
 | [`api.deleteTask`](../src/web/lib/api.ts#L1891) | `/api/tasks/:id` |
+| [`api.bulkUpdateTasks`](../src/web/lib/api.ts#L1909) | `/api/tasks/bulk-update` |
+| [`api.bulkDeleteTasks`](../src/web/lib/api.ts#L1914) | `/api/tasks/bulk-delete` |
 | [`api.pushTaskToSource`](../src/web/lib/api.ts#L1900) | `/api/tasks/:id/push` |
 | [`api.setForemanConfig`](../src/web/lib/api.ts#L1904) | `/api/foreman/config` |
 | [`api.retryForemanPlanner`](../src/web/lib/api.ts#L1905) | `/api/foreman/planner/retry` |

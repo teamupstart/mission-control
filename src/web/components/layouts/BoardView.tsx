@@ -338,6 +338,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         scheduleNameById={props.scheduleNameById}
         backlogTrust={props.backlogTrust}
         onManageTrust={props.onManageForemanTrust}
+        sessions={props.sessions}
+        workflowSummaries={props.workflowSummaries}
       />
 
       <RestoringSessionsColumn

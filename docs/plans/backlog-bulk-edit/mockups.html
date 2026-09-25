@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Backlog bulk edit: three mockups</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+  --border: #232a33; --border-soft: #1b2129; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+  --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+  --select: #35c08a; --purple: #a371f7; --pr-merged: var(--purple);
+  --prio-low: var(--dim); --prio-med: var(--working); --prio-high: var(--attention); --prio-blocker: var(--danger);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--sans); color: var(--fg); font-size: 13px; line-height: 1.45;
+  background: radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%), var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 1240px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font-size: 22px; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 0 0 4px; }
+h3 { font-size: 13px; margin: 18px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+p.lede { color: var(--muted); max-width: 820px; margin: 0 0 24px; }
+.shared { background: var(--panel); border: 1px solid var(--border); border-radius: 13px; padding: 16px 20px; margin-bottom: 36px; }
+.shared ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.shared li { margin: 3px 0; }
+.shared b, .option b { color: var(--fg); font-weight: 600; }
+kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--panel-2); color: var(--fg); }
+.option { border-top: 1px solid var(--border); padding-top: 28px; margin-top: 40px; }
+.option-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.tag { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.tag.rec { color: var(--select); border-color: color-mix(in oklab, var(--select) 45%, var(--border)); }
+.option > p { color: var(--muted); max-width: 900px; }
+.frames { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; margin-top: 14px; }
+.frame { flex: 0 0 auto; }
+.frame-cap { font-size: 11.5px; color: var(--dim); margin: 8px 2px 0; max-width: 520px; }
+.pros { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; max-width: 980px; }
+.pros div { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px 14px; }
+.pros h4 { margin: 0 0 4px; font-size: 12px; }
+.pros ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 12px; }
+.pros .p h4 { color: var(--idle); } .pros .c h4 { color: var(--attention); }
+
+/* ---- board chrome ---- */
+.board { display: flex; gap: 10px; padding: 12px; border-radius: 13px; border: 1px solid var(--border-soft); background: color-mix(in oklab, var(--bg-2) 80%, transparent); position: relative; }
+.col { width: 292px; display: flex; flex-direction: column; background: color-mix(in oklab, var(--panel) 55%, transparent); border: 1px solid var(--border-soft); border-radius: 12px; position: relative; overflow: hidden; }
+.col.ghost { width: 150px; opacity: .45; }
+.col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); min-height: 41px; }
+.swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--pr-merged); }
+.col-head h2 { font-size: 12px; margin: 0; font-weight: 650; letter-spacing: .02em; }
+.col-n { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.col-body { padding: 8px; display: flex; flex-direction: column; gap: 7px; position: relative; }
+.ghost-tile { height: 86px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); }
+
+.card { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 9px 10px 9px 13px; background: linear-gradient(var(--panel), var(--panel-2)); border: 1px solid var(--border); border-radius: 10px; }
+.card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 10px 0 0 10px; background: var(--pr-merged); opacity: .75; }
+.card .title { font-size: 12px; line-height: 1.42; padding-right: 22px; }
+.card.sel { border-color: color-mix(in oklab, var(--select) 70%, var(--border)); background: linear-gradient(color-mix(in oklab, var(--select) 9%, var(--panel)), color-mix(in oklab, var(--select) 6%, var(--panel-2))); box-shadow: 0 0 0 1px color-mix(in oklab, var(--select) 40%, transparent); }
+.card.sel::before { background: var(--select); opacity: 1; }
+.card.anchor { box-shadow: 0 0 0 1px color-mix(in oklab, var(--select) 40%, transparent), 0 0 0 4px color-mix(in oklab, var(--select) 16%, transparent); }
+.check { position: absolute; top: 8px; right: 8px; width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-2); display: grid; place-items: center; font-size: 10px; color: transparent; }
+.card.sel .check { background: var(--select); border-color: var(--select); color: #06140e; font-weight: 800; }
+.card.hover .check { border-color: var(--muted); }
+.marks { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.sw { width: 24px; height: 13px; border-radius: 999px; background: var(--select); position: relative; opacity: .85; }
+.sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 9px; height: 9px; border-radius: 50%; background: #06140e; }
+.sw.off { background: var(--border); } .sw.off::after { left: 2px; right: auto; background: var(--dim); }
+.prio { font-size: 10px; font-weight: 650; padding: 1px 7px; border-radius: 5px; border: 1px solid; }
+.prio.blocker { color: var(--prio-blocker); border-color: color-mix(in oklab, var(--prio-blocker) 40%, transparent); background: color-mix(in oklab, var(--prio-blocker) 12%, transparent); }
+.prio.high { color: var(--prio-high); border-color: color-mix(in oklab, var(--prio-high) 40%, transparent); background: color-mix(in oklab, var(--prio-high) 12%, transparent); }
+.prio.med { color: var(--prio-med); border-color: color-mix(in oklab, var(--prio-med) 40%, transparent); background: color-mix(in oklab, var(--prio-med) 12%, transparent); }
+.prio.unset { color: var(--dim); border-color: var(--border-soft); border-style: dashed; font-weight: 500; }
+.lbl { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--muted); }
+.foot { display: flex; gap: 6px; font-size: 10px; color: var(--dim); }
+.kind { color: var(--purple); }
+.marquee { position: absolute; border: 1px dashed var(--select); background: color-mix(in oklab, var(--select) 8%, transparent); border-radius: 4px; pointer-events: none; }
+.cursor { position: absolute; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 14px solid #fff; transform: rotate(-30deg); filter: drop-shadow(0 1px 1px #000); }
+
+/* ---- controls ---- */
+.btn { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2); color: var(--fg); white-space: nowrap; }
+.btn.primary { background: color-mix(in oklab, var(--select) 85%, #000); border-color: var(--select); color: #06140e; font-weight: 650; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.sm { font-size: 11px; padding: 3px 8px; }
+.sel-bar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: color-mix(in oklab, var(--select) 14%, var(--panel)); border: 1px solid color-mix(in oklab, var(--select) 55%, var(--border)); box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+.sel-bar .n { font-weight: 650; font-size: 12px; }
+.sel-bar .sp { flex: 1; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 12px; }
+.toast a { color: var(--working); text-decoration: none; font-weight: 600; }
+
+/* ---- modal (option A) ---- */
+.modal { width: 560px; background: var(--panel); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 20px 60px rgba(0,0,0,.6); overflow: hidden; }
+.modal-head { padding: 14px 18px 10px; border-bottom: 1px solid var(--border-soft); }
+.modal-head h4 { margin: 0; font-size: 14px; }
+.modal-head p { margin: 3px 0 0; color: var(--dim); font-size: 11.5px; }
+.chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
+.tchip { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--muted); }
+.modal-body { padding: 6px 18px 10px; }
+.group { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 12px 0 4px; font-weight: 650; }
+.frow { display: grid; grid-template-columns: 18px 104px 1fr; align-items: center; gap: 10px; padding: 6px 8px; margin: 0 -8px; border-radius: 7px; }
+.frow.on { background: color-mix(in oklab, var(--select) 8%, transparent); }
+.cb { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-2); display: grid; place-items: center; font-size: 9px; color: transparent; }
+.cb.on { background: var(--select); border-color: var(--select); color: #06140e; font-weight: 800; }
+.cb.part { background: var(--panel-2); border-color: var(--select); color: var(--select); font-weight: 800; }
+.fname { font-size: 12px; color: var(--muted); }
+.frow.on .fname { color: var(--fg); font-weight: 600; }
+.ctl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sel { font-size: 12px; padding: 4px 26px 4px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-2) linear-gradient(transparent, transparent); color: var(--fg); position: relative; white-space: nowrap; min-width: 150px; }
+.sel::after { content: "▾"; position: absolute; right: 8px; top: 3px; color: var(--dim); font-size: 11px; }
+.sel.mixed { color: var(--dim); font-style: italic; }
+.sel.dis { opacity: .5; }
+.hint { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.arrow { color: var(--select); font-size: 11px; font-family: var(--mono); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg span { font-size: 11.5px; padding: 3px 10px; color: var(--muted); border-right: 1px solid var(--border); }
+.seg span:last-child { border-right: 0; }
+.seg span.on { background: color-mix(in oklab, var(--select) 22%, var(--panel-2)); color: var(--fg); font-weight: 600; }
+.lchip { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid; display: inline-flex; gap: 4px; }
+.lchip.add { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 45%, transparent); background: color-mix(in oklab, var(--idle) 10%, transparent); }
+.lchip.rm { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 45%, transparent); background: color-mix(in oklab, var(--danger) 8%, transparent); text-decoration: line-through; }
+.lchip.keep { color: var(--muted); border-color: var(--border); }
+.warn { font-size: 11px; color: var(--attention); display: flex; gap: 6px; align-items: flex-start; margin: 2px 0 0 132px; }
+.modal-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border-soft); background: var(--bg-2); }
+.modal-foot .sum { flex: 1; font-size: 11.5px; color: var(--muted); }
+
+/* ---- strip (option B) ---- */
+.strip-head { flex-direction: column; align-items: stretch; gap: 7px; background: color-mix(in oklab, var(--select) 10%, var(--panel)); border-bottom-color: color-mix(in oklab, var(--select) 40%, var(--border)); }
+.strip-top { display: flex; align-items: center; gap: 8px; }
+.strip-top .n { font-weight: 650; font-size: 12px; }
+.strip-top .x { margin-left: auto; color: var(--dim); font-size: 11px; }
+.fchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.fchip { font-size: 10.5px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.fchip.open { color: var(--fg); border-color: var(--select); background: color-mix(in oklab, var(--select) 16%, var(--panel-2)); }
+.pop { position: absolute; width: 236px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 40px rgba(0,0,0,.6); padding: 6px; z-index: 5; }
+.pop-h { font-size: 10.5px; color: var(--dim); padding: 4px 8px 6px; border-bottom: 1px solid var(--border-soft); margin-bottom: 4px; }
+.pop input { width: 100%; font: inherit; font-size: 11.5px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--fg); margin-bottom: 4px; }
+.opt { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 12px; }
+.opt.hl { background: color-mix(in oklab, var(--select) 14%, var(--panel-2)); }
+.opt .cnt { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.opt .kb { font-family: var(--mono); font-size: 10px; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.pop-f { font-size: 10.5px; color: var(--dim); padding: 6px 8px 3px; border-top: 1px solid var(--border-soft); margin-top: 4px; }
+
+/* ---- inspector (option C) ---- */
+.insp { width: 400px; background: var(--panel); border-left: 1px solid var(--border); border-radius: 0 12px 12px 0; display: flex; flex-direction: column; box-shadow: -14px 0 40px rgba(0,0,0,.35); }
+.insp-head { padding: 12px 14px; border-bottom: 1px solid var(--border-soft); }
+.insp-head h4 { margin: 0; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.insp-head h4 .x { margin-left: auto; color: var(--dim); font-weight: 400; font-size: 12px; }
+.insp-body { padding: 4px 14px 10px; }
+.irow { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; padding: 5px 0; }
+.irow .fname { font-size: 11.5px; }
+.irow.changed .fname { color: var(--select); font-weight: 600; }
+.irow.changed .fname::before { content: "● "; font-size: 8px; vertical-align: 2px; }
+.irow > span { display: block; min-width: 0; }
+.irow .sel { display: block; }
+.dist { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.dist span { font-size: 10px; color: var(--dim); }
+.preview { margin: 8px 14px 0; border: 1px solid var(--border-soft); border-radius: 9px; overflow: hidden; }
+.preview table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.preview th { text-align: left; font-weight: 600; color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px; background: var(--bg-2); border-bottom: 1px solid var(--border-soft); }
+.preview td { padding: 5px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; color: var(--muted); }
+.preview tr:last-child td { border-bottom: 0; }
+.preview td.t { color: var(--fg); max-width: 130px; }
+.old { color: var(--dim); text-decoration: line-through; }
+.new { color: var(--select); }
+.skip { color: var(--attention); }
+.insp-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--border-soft); background: var(--bg-2); border-radius: 0 0 12px 0; }
+.insp-foot .sum { flex: 1; font-size: 11.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<h1>Backlog bulk edit: three mockups</h1>
+<p class="lede">Select several backlog cards, then change their fixed-choice fields together: priority, labels, kind, agent, model, effort, After work, autopilot, and dependencies. Freeform fields (title, intent) and repositories stay one task at a time. All three options share the selection model below and differ only in how the bulk edit is presented.</p>
+
+<section class="shared">
+  <h2 style="font-size:14px">Shared by all three: how you select</h2>
+  <ul>
+    <li><b>Click</b> on a card still opens it for editing, exactly as it does today. <b><kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click</b> adds a card to the selection or removes it. <b><kbd>Shift</kbd>-click</b> selects every card between the last one you clicked and this one, in the column's order.</li>
+    <li><b>Drag to select</b> starts on empty column space (the gaps between cards, or below the last card) and draws a marquee. Every card it touches joins the selection. A drag that starts <i>on a card</i> still moves or assigns that card, so today's drag-to-reorder and drag-to-agent keep working.</li>
+    <li>Selected cards show a green edge and a check in the corner. The checkbox also appears on hover and on focus, so selecting works by pointer alone, and <kbd>Space</kbd> on the focused checkbox toggles its card for keyboard users.</li>
+    <li><kbd>Esc</kbd> or clicking empty board space clears the selection. <kbd>⌘</kbd><kbd>A</kbd> while the backlog has focus selects every card.</li>
+    <li>Only backlog tasks can be selected, so every edit falls under the rules the single-task editor already enforces: kinds that can wait in the backlog, effort levels the chosen agent supports, and dependencies that can't point at the task itself.</li>
+  </ul>
+  <div class="frames">
+    <div class="frame">
+      <div class="board">
+        <div class="col">
+          <div class="col-head"><span class="swatch"></span><h2>Backlog</h2><span class="col-n">4</span></div>
+          <div class="col-body" style="padding-bottom:30px">
+            <div class="card"><span class="check">✓</span><div class="title">Fix flaky reconnect test in event stream</div><div class="marks"><span class="sw"></span><span class="prio high">High</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Add retry budget to task source sweeps</div><div class="marks"><span class="sw"></span><span class="prio med">Medium</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Document the Linear import mapping</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span></div></div>
+            <div class="card"><span class="check">✓</span><div class="title">Tighten worktree cleanup grace period</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span></div></div>
+            <div class="marquee" style="left:4px; top:78px; width:150px; height:118px"></div>
+            <div class="cursor" style="left:150px; top:190px"></div>
+          </div>
+        </div>
+      </div>
+      <p class="frame-cap">Drag to select: the drag started in the gap above "Add retry budget", not on a card, so it draws a marquee instead of lifting the card.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ OPTION A ============================ -->
+<section class="option">
+  <div class="option-head"><h2>A. Selection bar and a bulk-edit dialog</h2><span class="tag rec">recommended</span><span class="tag">staged, apply once</span></div>
+  <p>When a selection exists, a bar docks at the bottom of the backlog column. <b>Edit 3 tasks…</b> opens a dialog that lists every bulk-editable field. Each field starts as <i>leave as is</i> and shows <i>Mixed</i> when the selected tasks disagree. Changing a field ticks its row, and only ticked rows are sent. Labels and dependencies are <b>add / remove</b> edits, not replacements, so a task's other labels survive. The daemon applies everything in one request, so either every task changes or none does.</p>
+  <div class="frames">
+    <div class="frame">
+      <div class="board">
+        <div class="col">
+          <div class="col-head"><span class="swatch"></span><h2>Backlog</h2><span class="col-n">6</span></div>
+          <div class="col-body" style="padding-bottom:62px">
+            <div class="card"><span class="check">✓</span><div class="title">Fix flaky reconnect test in event stream</div><div class="marks"><span class="sw"></span><span class="prio high">High</span><span class="lbl">tests</span></div><div class="foot"><span class="kind">bugfix</span><span>claude</span><span>2h ago</span></div></div>
+            <div class="card sel anchor"><span class="check">✓</span><div class="title">Add retry budget to task source sweeps</div><div class="marks"><span class="sw"></span><span class="prio med">Medium</span><span class="lbl">sources</span></div><div class="foot"><span class="kind">ship</span><span>codex</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Document the Linear import mapping</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span><span class="lbl">docs</span></div><div class="foot"><span class="kind">ship</span><span>claude</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Scout: why sweeps double-file Jira epics</div><div class="marks"><span class="sw off"></span><span class="prio high">High</span><span class="lbl">sources</span><span class="lbl">jira</span></div><div class="foot"><span class="kind">scout</span><span>claude</span><span>3d ago</span></div></div>
+            <div class="card hover"><span class="check">✓</span><div class="title">Tighten worktree cleanup grace period</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span></div><div class="foot"><span class="kind">ship</span><span>pi</span><span>4d ago</span></div></div>
+          </div>
+          <div class="sel-bar"><span class="n">3 selected</span><span class="sp"></span><span class="btn sm primary">Edit 3 tasks…</span><span class="btn sm ghost">Clear</span></div>
+        </div>
+        <div class="col ghost"><div class="col-head"><span class="swatch" style="background:var(--idle)"></span><h2>Idle</h2></div><div class="col-body"><div class="ghost-tile"></div><div class="ghost-tile"></div></div></div>
+      </div>
+      <p class="frame-cap">1. Shift-click from "Add retry budget" to "Scout: why sweeps…" selects the range. The ring marks the anchor that the next shift-click extends from. The bar docks inside the column, so it never covers agent tiles.</p>
+    </div>
+
+    <div class="frame">
+      <div class="modal">
+        <div class="modal-head">
+          <h4>Edit 3 backlog tasks</h4>
+          <p>Only the fields you change are written. Everything else stays as each task has it.</p>
+          <div class="chips"><span class="tchip">Add retry budget to task source sweeps</span><span class="tchip">Document the Linear import mapping</span><span class="tchip">Scout: why sweeps double-file…</span></div>
+        </div>
+        <div class="modal-body">
+          <div class="group">Triage</div>
+          <div class="frow on"><span class="cb on">✓</span><span class="fname">Priority</span><span class="ctl"><span class="sel">Blocker</span><span class="hint">was Medium, unset, High</span></span></div>
+          <div class="frow on"><span class="cb on">✓</span><span class="fname">Labels</span><span class="ctl" style="flex-wrap:wrap"><span class="lchip add">+ q4</span><span class="lchip rm">jira</span><span class="lchip keep">sources · 2 of 3</span><span class="lchip keep">docs · 1 of 3</span><span class="btn sm">+ label</span></span></div>
+          <div class="frow"><span class="cb"></span><span class="fname">Autopilot</span><span class="ctl"><span class="seg"><span class="on">Leave</span><span>On</span><span>Off</span></span><span class="hint">Mixed: 2 on, 1 off</span></span></div>
+          <div class="group">Crew</div>
+          <div class="frow"><span class="cb"></span><span class="fname">Kind</span><span class="ctl"><span class="sel mixed">Mixed</span><span class="hint">ship ×2, scout ×1</span></span></div>
+          <div class="frow on"><span class="cb on">✓</span><span class="fname">Agent</span><span class="ctl"><span class="sel">claude</span><span class="hint">was codex, claude, claude</span></span></div>
+          <div class="frow"><span class="cb"></span><span class="fname">Model</span><span class="ctl"><span class="sel mixed">Mixed</span><span class="hint">default ×2, gpt-5.5 ×1</span></span></div>
+          <div class="warn">⚠ gpt-5.5 is not a claude model. Changing the agent resets that task's model to the claude default.</div>
+          <div class="frow"><span class="cb"></span><span class="fname">Effort</span><span class="ctl"><span class="sel mixed">Mixed</span><span class="hint">default ×2, high ×1</span></span></div>
+          <div class="group">Flow</div>
+          <div class="frow"><span class="cb"></span><span class="fname">After work</span><span class="ctl"><span class="sel mixed">Mixed</span><span class="hint">default ×2, none ×1</span></span></div>
+          <div class="frow"><span class="cb"></span><span class="fname">Depends on</span><span class="ctl"><span class="btn sm">+ prerequisite</span><span class="hint">none shared</span></span></div>
+        </div>
+        <div class="modal-foot"><span class="sum">3 fields on 3 tasks</span><span class="btn ghost">Cancel</span><span class="btn primary">Apply to 3 tasks</span></div>
+      </div>
+      <p class="frame-cap">2. Ticked rows are highlighted. The hint names what is being replaced, so "Blocker" doesn't silently overwrite a High. Conflicts that would be refused (like an effort the new agent doesn't support) are shown before you press Apply.</p>
+    </div>
+  </div>
+  <div class="pros">
+    <div class="p"><h4>Strengths</h4><ul><li>Nothing is written until you press Apply, and the edit is all or nothing. A slip of the mouse can't recolour twelve cards.</li><li>Every field is on one screen, so edits that depend on each other (agent then model then effort) can be made together and checked together.</li><li>Built from existing parts: the dispatch modal's pickers and the <code>Overlay</code> shell.</li></ul></div>
+    <div class="c"><h4>Costs</h4><ul><li>Changing one field on many tasks takes three steps (select, open, apply).</li><li>The dialog covers the board while it is open.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============================ OPTION B ============================ -->
+<section class="option">
+  <div class="option-head"><h2>B. The column header becomes a command strip</h2><span class="tag">instant, with undo</span></div>
+  <p>While cards are selected, the backlog header turns into a strip of field chips. Each chip opens a small popover that shows how many selected tasks have each value. Picking a value <b>applies it immediately</b> to the whole selection, and a toast offers <b>Undo</b>. Labels use tri-state checkboxes: filled if every selected task has the label, partial if some do. Nothing covers the board, and the selection persists so you can make several edits in a row.</p>
+  <div class="frames">
+    <div class="frame">
+      <div class="board" style="padding-bottom:64px">
+        <div class="col">
+          <div class="col-head strip-head">
+            <div class="strip-top"><span class="swatch" style="background:var(--select)"></span><span class="n">3 of 6 selected</span><span class="x">Esc to clear ✕</span></div>
+            <div class="fchips"><span class="fchip open">Priority ▾</span><span class="fchip">Labels ▾</span><span class="fchip">Autopilot ▾</span><span class="fchip">Kind ▾</span><span class="fchip">Agent ▾</span><span class="fchip">Model ▾</span><span class="fchip">Effort ▾</span><span class="fchip">After work ▾</span><span class="fchip">Depends on ▾</span></div>
+          </div>
+          <div class="col-body">
+            <div class="card"><span class="check">✓</span><div class="title">Fix flaky reconnect test in event stream</div><div class="marks"><span class="sw"></span><span class="prio high">High</span><span class="lbl">tests</span></div><div class="foot"><span class="kind">bugfix</span><span>claude</span><span>2h ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Add retry budget to task source sweeps</div><div class="marks"><span class="sw"></span><span class="prio med">Medium</span><span class="lbl">sources</span></div><div class="foot"><span class="kind">ship</span><span>codex</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Document the Linear import mapping</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span><span class="lbl">docs</span></div><div class="foot"><span class="kind">ship</span><span>claude</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Scout: why sweeps double-file Jira epics</div><div class="marks"><span class="sw off"></span><span class="prio high">High</span><span class="lbl">sources</span><span class="lbl">jira</span></div><div class="foot"><span class="kind">scout</span><span>claude</span><span>3d ago</span></div></div>
+          </div>
+          <div class="pop" style="left:10px; top:82px">
+            <div class="pop-h">Set priority on 3 tasks</div>
+            <div class="opt"><span class="prio blocker">Blocker</span><span class="cnt">0 of 3</span><span class="kb">4</span></div>
+            <div class="opt hl"><span class="prio high">High</span><span class="cnt">1 of 3</span><span class="kb">3</span></div>
+            <div class="opt"><span class="prio med">Medium</span><span class="cnt">1 of 3</span><span class="kb">2</span></div>
+            <div class="opt"><span class="prio" style="color:var(--dim);border-color:var(--border)">Low</span><span class="cnt">0 of 3</span><span class="kb">1</span></div>
+            <div class="opt"><span style="color:var(--dim)">Clear priority</span><span class="cnt">1 of 3</span><span class="kb">0</span></div>
+            <div class="pop-f">Applies right away · Undo from the toast</div>
+          </div>
+        </div>
+        <div class="col ghost"><div class="col-head"><span class="swatch" style="background:var(--idle)"></span><h2>Idle</h2></div><div class="col-body"><div class="ghost-tile"></div><div class="ghost-tile"></div></div></div>
+        <div class="toast" style="position:absolute; left:12px; bottom:12px"><span>Priority set to <b>High</b> on 3 tasks</span><a href="#b">Undo</a></div>
+      </div>
+      <p class="frame-cap">1. The Priority chip is open. Counts show how many selected tasks already have each value, and number keys pick one. The toast is from the previous edit.</p>
+    </div>
+
+    <div class="frame">
+      <div class="board">
+        <div class="col">
+          <div class="col-head strip-head">
+            <div class="strip-top"><span class="swatch" style="background:var(--select)"></span><span class="n">3 of 6 selected</span><span class="x">Esc to clear ✕</span></div>
+            <div class="fchips"><span class="fchip">Priority ▾</span><span class="fchip open">Labels ▾</span><span class="fchip">Autopilot ▾</span><span class="fchip">Kind ▾</span><span class="fchip">Agent ▾</span><span class="fchip">Model ▾</span><span class="fchip">Effort ▾</span><span class="fchip">After work ▾</span><span class="fchip">Depends on ▾</span></div>
+          </div>
+          <div class="col-body" style="height:330px">
+            <div class="card sel"><span class="check">✓</span><div class="title">Add retry budget to task source sweeps</div><div class="marks"><span class="sw"></span><span class="prio high">High</span><span class="lbl">sources</span></div></div>
+          </div>
+          <div class="pop" style="left:60px; top:82px">
+            <input value="q" readonly />
+            <div class="opt"><span class="cb on">✓</span>sources<span class="cnt">3 of 3</span></div>
+            <div class="opt"><span class="cb part">–</span>docs<span class="cnt">1 of 3</span></div>
+            <div class="opt"><span class="cb part">–</span>jira<span class="cnt">1 of 3</span></div>
+            <div class="opt hl"><span class="cb"></span>q4<span class="cnt">new</span></div>
+            <div class="pop-f">Tick adds to all · untick removes from all · a partial box leaves each task alone</div>
+          </div>
+        </div>
+      </div>
+      <p class="frame-cap">2. Labels use tri-state boxes, so adding "q4" never strips "docs" from the one task that has it. Agent, Model and Effort work the same way, and a choice the new agent can't run is shown disabled with the reason.</p>
+    </div>
+  </div>
+  <div class="pros">
+    <div class="p"><h4>Strengths</h4><ul><li>Fastest for the common case: select, chip, value. Two clicks.</li><li>The board stays visible, so you see the cards recolour as you go.</li><li>Keyboard friendly: number keys in each popover.</li></ul></div>
+    <div class="c"><h4>Costs</h4><ul><li>Edits that depend on each other (agent → model → effort) are separate writes, so an intermediate state can be refused and you fix it in steps.</li><li>Nine chips crowd a 292px column. The strip wraps to two rows, or the column has to widen.</li><li>Needs a real undo (a snapshot of each task's previous values), which is new server work.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============================ OPTION C ============================ -->
+<section class="option">
+  <div class="option-head"><h2>C. Side inspector with a change preview</h2><span class="tag">staged, per-task preview</span></div>
+  <p>Selecting two or more cards opens an inspector on the right edge of the board, like a design tool's multi-select panel. The form mirrors the dispatch modal's sections. Mixed values show as <i>Mixed</i> with a breakdown underneath. Changed fields get a dot, and a <b>preview table</b> lists each task's before and after values, including tasks a change would <i>skip</i> (for example, an effort level their agent can't run) so you decide knowingly. Apply writes it all in one request.</p>
+  <div class="frames">
+    <div class="frame">
+      <div class="board" style="padding-right:0; gap:0">
+        <div class="col" style="margin-right:10px">
+          <div class="col-head"><span class="swatch"></span><h2>Backlog</h2><span class="col-n">6</span></div>
+          <div class="col-body">
+            <div class="card"><span class="check">✓</span><div class="title">Fix flaky reconnect test in event stream</div><div class="marks"><span class="sw"></span><span class="prio high">High</span><span class="lbl">tests</span></div><div class="foot"><span class="kind">bugfix</span><span>claude</span><span>2h ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Add retry budget to task source sweeps</div><div class="marks"><span class="sw"></span><span class="prio med">Medium</span><span class="lbl">sources</span></div><div class="foot"><span class="kind">ship</span><span>codex</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Document the Linear import mapping</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span><span class="lbl">docs</span></div><div class="foot"><span class="kind">ship</span><span>claude</span><span>1d ago</span></div></div>
+            <div class="card sel"><span class="check">✓</span><div class="title">Scout: why sweeps double-file Jira epics</div><div class="marks"><span class="sw off"></span><span class="prio high">High</span><span class="lbl">sources</span><span class="lbl">jira</span></div><div class="foot"><span class="kind">scout</span><span>claude</span><span>3d ago</span></div></div>
+            <div class="card"><span class="check">✓</span><div class="title">Tighten worktree cleanup grace period</div><div class="marks"><span class="sw"></span><span class="prio unset">priority</span></div><div class="foot"><span class="kind">ship</span><span>pi</span><span>4d ago</span></div></div>
+          </div>
+        </div>
+        <div class="col ghost" style="width:110px; margin-right:10px"><div class="col-head"><h2>Idle</h2></div><div class="col-body"><div class="ghost-tile"></div></div></div>
+        <aside class="insp">
+          <div class="insp-head"><h4>3 tasks selected <span class="x">Esc ✕</span></h4><div class="chips"><span class="tchip">Add retry budget…</span><span class="tchip">Document the Linear…</span><span class="tchip">Scout: why sweeps…</span></div></div>
+          <div class="insp-body">
+            <div class="group">Triage</div>
+            <div class="irow changed"><span class="fname">Priority</span><span class="sel">Blocker</span></div>
+            <div class="irow"><span class="fname">Labels</span><span><span class="lchip keep">sources 2/3</span> <span class="lchip keep">docs 1/3</span> <span class="lchip keep">jira 1/3</span></span></div>
+            <div class="irow"><span class="fname">Autopilot</span><span class="seg"><span class="on">Mixed</span><span>On</span><span>Off</span></span></div>
+            <div class="group">Crew</div>
+            <div class="irow"><span class="fname">Kind</span><span><span class="sel mixed">Mixed</span><div class="dist"><span>ship 2 · scout 1</span></div></span></div>
+            <div class="irow"><span class="fname">Agent</span><span><span class="sel mixed">Mixed</span><div class="dist"><span>claude 2 · codex 1</span></div></span></div>
+            <div class="irow"><span class="fname">Model</span><span class="sel mixed">Mixed</span></div>
+            <div class="irow changed"><span class="fname">Effort</span><span><span class="sel">max</span><div class="dist"><span class="skip">codex has no max effort: 1 task keeps its own</span></div></span></div>
+            <div class="group">Flow</div>
+            <div class="irow"><span class="fname">After work</span><span class="sel mixed">Mixed</span></div>
+            <div class="irow changed"><span class="fname">Depends on</span><span><span class="lchip add">+ Fix flaky reconnect test…</span></span></div>
+          </div>
+          <div class="preview">
+            <table>
+              <tr><th>Task</th><th>Priority</th><th>Effort</th><th>Depends on</th></tr>
+              <tr><td class="t">Add retry budget…</td><td><span class="old">Medium</span> <span class="new">Blocker</span></td><td><span class="skip">skipped (codex)</span></td><td><span class="new">+1</span></td></tr>
+              <tr><td class="t">Document the Linear…</td><td><span class="old">unset</span> <span class="new">Blocker</span></td><td><span class="old">default</span> <span class="new">max</span></td><td><span class="new">+1</span></td></tr>
+              <tr><td class="t">Scout: why sweeps…</td><td><span class="old">High</span> <span class="new">Blocker</span></td><td><span class="old">default</span> <span class="new">max</span></td><td><span class="new">+1</span></td></tr>
+            </table>
+          </div>
+          <div class="insp-foot"><span class="sum">3 fields · 3 tasks · 1 skip</span><span class="btn ghost">Reset</span><span class="btn primary">Apply</span></div>
+        </aside>
+      </div>
+      <p class="frame-cap">1. The inspector sits beside the backlog instead of over it, so you can keep adjusting the selection (shift-click, drag) while the form stays open. The preview is the contract for what Apply will write.</p>
+    </div>
+  </div>
+  <div class="pros">
+    <div class="p"><h4>Strengths</h4><ul><li>The most explicit: you see every task's before and after values before anything is written.</li><li>You can change the selection while the form is open, and the preview updates.</li><li>Room to grow into multi-select actions beyond edit (launch all, park all, delete).</li></ul></div>
+    <div class="c"><h4>Costs</h4><ul><li>The most UI to build: a new panel that has to fit the board layout and its column-width ladder.</li><li>On a narrow window it has to fall back to an overlay, which makes it a variant of A.</li><li>Heavy for the most common edit (one priority change).</li></ul></div>
+  </div>
+</section>
+</main>
+</body>
+</html>

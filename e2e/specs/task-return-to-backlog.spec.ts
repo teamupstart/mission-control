@@ -108,6 +108,8 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await expect(dialog).toBeVisible();
   await expectContentClearsBorder(dialog);
   await expect(dialog).toContainText(first.title);
+  // The harmless answer holds focus, because confirming deletes the checkout.
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   await expect(dialog).toContainText("Uncommitted and unpushed work in it is deleted");
   await shoot(dashboard, "return-to-backlog-confirm");
 
@@ -127,7 +129,12 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await expect(dialog).toBeHidden();
   expect((await taskById(daemon, first.id)).status).toBe("running");
 
-  // `b` reaches the same confirm as the button.
+  // `b` reaches the same confirm as the button, and a bare Enter on it cancels.
+  await dashboard.keyboard.press("b");
+  await expect(dialog).toBeVisible();
+  await dashboard.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  expect((await taskById(daemon, first.id)).status).toBe("running");
   await dashboard.keyboard.press("b");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Return to backlog", exact: true }).click();

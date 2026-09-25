@@ -120,7 +120,15 @@ export function RequeueModal({
         <footer className="modal-foot">
           <span className="actions-spacer" />
           <Tooltip label="Leave the task where it is">
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            {/* Cancel, not the action, holds focus on open: unlike Kill, this deletes the
+                checkout, so a stray Enter must be the harmless answer. */}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={onClose}
+              disabled={busy}
+              autoFocus
+            >
               Cancel
             </button>
           </Tooltip>
@@ -128,7 +136,6 @@ export function RequeueModal({
             <button
               type="submit"
               className="btn btn-danger"
-              autoFocus
               disabled={busy || !task}
             >
               {busy ? "Returning…" : "Return to backlog"}

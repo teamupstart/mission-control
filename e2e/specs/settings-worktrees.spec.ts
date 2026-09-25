@@ -728,6 +728,21 @@ test("bulk destroy removes exactly the selected slots in the background", async 
         completed: [],
         queuedAt: Date.now(),
         finishedAt: null,
+      }, {
+        // Returning one task-owned slot also touches the task's other repositories.
+        id: "queued-task-return",
+        request: { action: "return", slotId: "task-owned-slot" },
+        state: "queued",
+        targets: [
+          { provider: "git", id: "task-repo-1", path: "/work/task/secondary-repo" },
+          { provider: "mission", id: "task-owned-slot", path: "/work/pool/task-owned" },
+        ],
+        error: null,
+        changed: false,
+        removals: [],
+        completed: [],
+        queuedAt: Date.now(),
+        finishedAt: null,
       }],
     } satisfies WorktreeInventory),
   }));
@@ -736,8 +751,11 @@ test("bulk destroy removes exactly the selected slots in the background", async 
   const pendingDisclosure = pendingPool.getByRole("button", { name: /demo-repo/ });
   if (await pendingDisclosure.getAttribute("aria-expanded") !== "true") await pendingDisclosure.click();
   const pendingSlot = pendingPool.locator(".wt-slot", { hasText: survivor.path });
-  await expect(pendingPage.getByRole("region", { name: "Background cleanup" }).getByText(survivor.path)).toBeVisible();
+  await expect(pendingPage.getByRole("region", { name: "Background cleanup" }).getByText(survivor.path, { exact: true })).toBeVisible();
   await expect(pendingSlot.getByText("destroy queued", { exact: true })).toBeVisible();
+  const taskReturn = pendingPage.getByRole("region", { name: "Background cleanup" });
+  await expect(taskReturn.getByText("/work/pool/task-owned (+1 affected path)")).toBeVisible();
+  await expect(taskReturn.getByText("2 worktrees")).toHaveCount(0);
   await expect(pendingSlot.getByRole("checkbox", { name: /for bulk destroy/ })).toBeDisabled();
   await expect(pendingSlot.getByRole("button", { name: "Destroy", exact: true })).toHaveCount(0);
   await shoot(pendingPage, "19-queued-cleanup-pending");

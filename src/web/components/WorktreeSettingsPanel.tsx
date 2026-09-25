@@ -42,11 +42,21 @@ const ACTION_VERBS: Record<WorktreeActionRequest["action"], string> = {
   legacyReturn: "Legacy return",
 };
 
-/** One line naming what an accepted cleanup touches: its path, or how many paths. */
+/**
+ * One line naming what an accepted cleanup is for. A removal is counted by its removal set,
+ * never by every path it touches: destroying or returning one task-owned slot also affects
+ * the task's other resources, and those are named as affected paths, not as more worktrees.
+ */
 function operationSubject(operation: WorktreeOperationView): string {
-  if (operation.targets.length === 1) return operation.targets[0]!.path;
+  if (operation.removals.length === 1) return operation.removals[0]!.path;
+  if (operation.removals.length > 1) return `${operation.removals.length} worktrees`;
   if (operation.targets.length === 0) return "pool";
-  return `${operation.targets.length} worktrees`;
+  const request = operation.request;
+  const primary = (request.action === "return"
+    ? operation.targets.find((target) => target.id === request.slotId)
+    : undefined) ?? operation.targets[0]!;
+  const others = operation.targets.length - 1;
+  return others > 0 ? `${primary.path} (+${others} affected ${others === 1 ? "path" : "paths"})` : primary.path;
 }
 
 /**

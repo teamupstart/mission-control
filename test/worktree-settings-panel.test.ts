@@ -382,3 +382,31 @@ test("a failed operation with nothing left to retry offers only Dismiss", () => 
   assert.doesNotMatch(html, />Preview again</);
   assert.match(html, />Dismiss</);
 });
+
+test("a cleanup of one task-owned slot is not counted as several worktrees", () => {
+  const taskTargets = [
+    { provider: "git" as const, id: "task-repo-1", path: "/work/task/secondary-repo" },
+    { provider: "mission" as const, id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" },
+    { provider: "treehouse" as const, id: "task-repo-2", path: "/legacy/task/third-repo" },
+  ];
+  const returning = render({
+    operations: [{
+      ...queuedDestroy,
+      request: { action: "return", slotId: "slot-1" },
+      targets: taskTargets,
+      removals: [],
+    }],
+  });
+  assert.match(returning, /\/state\/worktrees\/pool-1\/1\/mission-control \(\+2 affected paths\)/);
+  assert.doesNotMatch(returning, /3 worktrees/);
+
+  const destroying = render({
+    operations: [{
+      ...queuedDestroy,
+      targets: taskTargets,
+      removals: [{ id: "slot-1", path: "/state/worktrees/pool-1/1/mission-control" }],
+    }],
+  });
+  assert.match(destroying, /<code>\/state\/worktrees\/pool-1\/1\/mission-control<\/code>/);
+  assert.doesNotMatch(destroying, /3 worktrees/);
+});

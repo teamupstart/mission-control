@@ -173,7 +173,7 @@ export function TaskKindDefaultsGroup({ state }: { state: HarnessesState }): Rea
     const modelWhy = modelUnavailableWhy(row);
     const levels = launchEffortLevels(agent, row.model);
     // A stored level this row's CURRENT model does not offer. It is not dropped - the row's
-    // model can change back, and `max` on `gpt-5.6-sol` is a real setting the moment it does -
+    // model can change back, and `max` on `gpt-6-sol` is a real setting the moment it does -
     // so it stays stored, stays selected, and says out loud that it is not applying right now.
     // Rendered as an option rather than left to fall off the list: a `<select>` whose value
     // matches no option draws its FIRST option instead, which here is "Inherit" - the panel

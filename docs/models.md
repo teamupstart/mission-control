@@ -51,6 +51,10 @@ The other half of the rule is what a row's own Provider select does: because it 
 about exactly that row, changing it sends that row's model back to *Inherit* unless the new
 provider offers the same id, and the row says what it reset.
 
+Codex's shipped deep and balanced fallbacks use `gpt-6-sol`; cheap jobs use `gpt-6-luna`.
+Claude's deep, balanced, and cheap fallbacks use Opus 5.5, Sonnet 5, and Haiku 4.5. Saved
+model choices remain pinned to the exact id the operator selected.
+
 Whatever route a provider and a model arrive by - a saved config, an environment variable, an
 upgrade, a hand-edited blob - a job never spawns on a pair its provider cannot honour. A model id
 positively known to belong to the *other* provider is replaced with this provider's own cheap

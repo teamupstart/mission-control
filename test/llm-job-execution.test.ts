@@ -72,9 +72,9 @@ test("runJob spawns on the job's own provider and reports the pair it used", asy
   const result = await runJob("away-digest", "prompt");
 
   assert.equal(result.text, "the fleet did some things");
-  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-5.6-luna" }]);
+  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-6-luna" }]);
   // The reported pair is the SPAWNED pair, not a second resolution of the same config.
-  assert.deepEqual(result.execution, { runner: "codex", model: "gpt-5.6-luna" });
+  assert.deepEqual(result.execution, { runner: "codex", model: "gpt-6-luna" });
 });
 
 test("the reported pair is the POST-GUARD one when a fallback was substituted", async () => {
@@ -85,8 +85,8 @@ test("the reported pair is the POST-GUARD one when a fallback was substituted", 
 
   const result = await runJob("goal", "prompt");
 
-  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-5.6-luna" }]);
-  assert.deepEqual(result.execution, { runner: "codex", model: "gpt-5.6-luna" });
+  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-6-luna" }]);
+  assert.deepEqual(result.execution, { runner: "codex", model: "gpt-6-luna" });
 });
 
 const TitleSchema = z.object({ title: z.string() });
@@ -102,7 +102,7 @@ test("runJobStructured reports the pair on both the ok and the failed branch", a
     "Title",
   );
   assert.equal(ok.kind, "ok");
-  assert.deepEqual(ok.execution, { runner: "codex", model: "gpt-5.6-luna" });
+  assert.deepEqual(ok.execution, { runner: "codex", model: "gpt-6-luna" });
 
   spawned = [];
   reply = "not json at all";
@@ -115,7 +115,7 @@ test("runJobStructured reports the pair on both the ok and the failed branch", a
   assert.equal(failed.kind, "failed");
   // A caller recording what it TRIED needs the pair exactly as much as one recording what
   // worked - and both attempts of the retry ran on it, which is what makes it one answer.
-  assert.deepEqual(failed.execution, { runner: "codex", model: "gpt-5.6-luna" });
+  assert.deepEqual(failed.execution, { runner: "codex", model: "gpt-6-luna" });
   assert.deepEqual(
     spawned.map((s) => s.runner),
     ["codex", "codex"],
@@ -177,9 +177,9 @@ test("the compaction stamp records the provider the call used, not the app-wide 
 
   assert.equal(snapshot.compaction.status, "model");
   assert.deepEqual(timeouts, [150_000]);
-  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-5.6-luna" }]);
+  assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-6-luna" }]);
   assert.equal(snapshot.compaction.runner, "codex", "the stamp named the app-wide provider");
-  assert.equal(snapshot.compaction.model, "gpt-5.6-luna");
+  assert.equal(snapshot.compaction.model, "gpt-6-luna");
 });
 
 test("a failed compaction stamps the provider it tried, on the same evidence", async () => {
@@ -191,7 +191,7 @@ test("a failed compaction stamps the provider it tried, on the same evidence", a
   assert.equal(snapshot.compaction.status, "fallback");
   assert.deepEqual(timeouts, [150_000, 150_000]);
   assert.equal(snapshot.compaction.runner, "codex");
-  assert.equal(snapshot.compaction.model, "gpt-5.6-luna");
+  assert.equal(snapshot.compaction.model, "gpt-6-luna");
 });
 
 for (const scenario of ["parse", "transport", "corrected", "cancelled"] as const) {

@@ -249,6 +249,41 @@ interface BuiltinWorkflowSource {
   }[];
 }
 
+/** Publish new current routing without changing any previously bound workflow version. */
+function appendGpt6Version(
+  versions: BuiltinWorkflowSource["versions"],
+): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1);
+  if (!previous || previous.personaExecution?.default?.runner !== "codex") {
+    throw new Error("GPT-6 workflow upgrade requires a Codex-routed previous version");
+  }
+  const upgrade = (execution: BuiltinPersonaExecution): BuiltinPersonaExecution => {
+    const model = {
+      "gpt-5.6-sol": "gpt-6-sol",
+      "gpt-5.6-terra": "gpt-6-sol",
+      "gpt-5.6-luna": "gpt-6-luna",
+    }[execution.model];
+    if (!model || execution.runner !== "codex") {
+      throw new Error(`unexpected built-in workflow model ${execution.runner}/${execution.model}`);
+    }
+    return { ...execution, model };
+  };
+  return [...versions, {
+    ...previous,
+    personaExecution: {
+      ...previous.personaExecution,
+      default: upgrade(previous.personaExecution.default),
+      overrides: previous.personaExecution.overrides && Object.fromEntries(
+        Object.entries(previous.personaExecution.overrides).map(([id, execution]) => {
+          if (!execution) throw new Error(`missing built-in workflow routing for ${id}`);
+          return [id, upgrade(execution)];
+        }),
+      ),
+    },
+    sourceDraftRevision: previous.sourceDraftRevision + 1,
+  }];
+}
+
 function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
   if (source.versions.length === 0) {
     throw new Error(`built-in workflow ${source.slug} ships no published version`);
@@ -1048,7 +1083,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: [
+    versions: appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1340,13 +1375,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ],
+    ]),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,
     name: "General Review",
     description: "Typecheck, test, and lint, then balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
-    versions: [{
+    versions: appendGpt6Version([{
       pipeline: {
         sessionId: "gr-session",
         endId: "gr-end",
@@ -1439,13 +1474,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }],
+    }]),
   }),
   builtinWorkflow({
     slug: BUG_FIX_REVIEW_WORKFLOW_SLUG,
     name: "Bug Fix Review",
     description: "Typecheck, test, and lint, then focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
-    versions: [{
+    versions: appendGpt6Version([{
       pipeline: {
         sessionId: "bfr-session",
         endId: "bfr-end",
@@ -1538,13 +1573,13 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }],
+    }]),
   }),
   builtinWorkflow({
     slug: PLAN_VALIDATION_WORKFLOW_SLUG,
     name: "Plan Validation",
     description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans, then opens a verified pull request without code checks.",
-    versions: [{
+    versions: appendGpt6Version([{
       pipeline: {
         sessionId: "pv-session",
         endId: "pv-end",
@@ -1605,6 +1640,6 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
-    }],
+    }]),
   }),
 ];

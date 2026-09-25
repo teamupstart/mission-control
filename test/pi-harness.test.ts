@@ -376,6 +376,8 @@ test("Pi runtime model identities distinguish providers and preserve slashes ins
 test("pi model families use their real context windows", () => {
   assert.equal(piContextWindowSize("gpt-5.5"), 272_000);
   assert.equal(piContextWindowSize("openai/gpt-5.6-sol"), 272_000);
+  assert.equal(piContextWindowSize("openai/gpt-6-sol"), 1_050_000);
+  assert.equal(piContextWindowSize("openai/gpt-6-luna"), 1_050_000);
   assert.equal(piContextWindowSize("gpt-5.5-pro"), 1_050_000);
   assert.equal(piContextWindowSize("gpt-5.4-pro"), 1_050_000);
   assert.equal(piContextWindowSize("gpt-5-mini"), 400_000);

@@ -467,7 +467,7 @@ no resume state, new top-bar control, or chapter beyond this one guided sequence
    and explains that Workflows run reusable review and follow-up steps after an agent finishes.
 8. **Dispatch the task** spotlights the real **Dispatch now** button without dimming the rest
    of the form. The operator clicks that button to schedule one fixed read-only Ship task on
-   Codex pinned to `gpt-5.6-terra`. This is a real model call and can spend model tokens. On an
+   Codex pinned to `gpt-6-sol`. This is a real model call and can spend model tokens. On an
    empty fleet, the temporary Chat conversation is a separate real model call using Codex's
    configured default model. Each temporary daemon route accepts only a repository; it owns
    the prompt, kind, and no-Workflow posture. Only the Ship route grants the required

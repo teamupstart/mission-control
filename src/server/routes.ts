@@ -5313,6 +5313,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
+      // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
+      // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.

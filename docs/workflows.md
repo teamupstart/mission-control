@@ -34,7 +34,8 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
+the other seven on `gpt-5.6-terra`. Current version 20 uses `gpt-6-sol` for all eight.
+App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
 copying it. See [per-node provider and model](#per-node-provider-and-model).
@@ -181,8 +182,8 @@ complex work. The three implementation workflows begin with configured typecheck
 Commands in parallel.
 Unconfigured slots skip and pass. All presets use Foreman complete, live repair delivery, automatic
 resumption, and up to five repair rounds, subject to the existing trust and execution settings.
-General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
-Codex Sol for Code Design and Terra for its other judges.
+The current versions pin their judges to Codex `gpt-6-sol`. Earlier published versions retain
+their GPT-5.6 routing for existing bindings.
 
 Plan Validation v2 follows its judges with the verified Pull Request action. It has no code-test
 Commands, Slop Filter, or Inspector gate. Existing v1 bindings retain their review-only graph;
@@ -196,6 +197,7 @@ frozen text artifact containing the root plan, phase files, relevant unchanged r
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
+Their next versions update only the pinned model to `gpt-6-sol`.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
@@ -337,7 +339,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 19 because it is current. Adopting the newer version on an
+take version 20 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

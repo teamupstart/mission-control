@@ -171,7 +171,7 @@ test("a pair no writer ever recorded is still refused at resolution, and says wh
     "claude-opus-5",
     "the pair is refused at resolution and says which id was dropped",
   );
-  assert.equal(resolved.id, "gpt-5.6-sol", "and it spawns on that provider's own default");
+  assert.equal(resolved.id, "gpt-6-sol", "and it spawns on that provider's own default");
   assert.equal(
     resolved.source,
     "default",
@@ -309,7 +309,7 @@ test("the backlog planner's reported identity carries the backlog ROLE's provide
   assert.equal(foremanRoleRunner("backlog").id, "codex");
   assert.equal(
     resolveForemanModel("backlog", getForemanConfig(), {}, foremanRoleRunner("backlog").id).id,
-    "gpt-5.6-terra",
+    "gpt-6-sol",
     "and the model beside it is the one that provider offers",
   );
 });
@@ -325,7 +325,7 @@ test("an unset Inspector provider follows MISSION_LLM_RUNNER instead of a litera
   assert.equal(resolved.source, "env");
   assert.equal(
     inspectorModel().id,
-    "gpt-5.6-sol",
+    "gpt-6-sol",
     "and the shipped model default follows the provider it will actually spawn through",
   );
 });
@@ -428,7 +428,7 @@ test("an incompatible Inspector pair no writer reached is refused at resolution"
   setLlmConfig({ runner: "codex" });
 
   const resolved = inspectorModel();
-  assert.equal(resolved.id, "gpt-5.6-sol", "a Codex provider gets a Codex deep model");
+  assert.equal(resolved.id, "gpt-6-sol", "a Codex provider gets a Codex deep model");
   assert.equal(resolved.unsupported, "claude-opus-5", "and the dropped id is reported, not hidden");
   assert.equal(resolved.source, "default", "a substitute is not credited to the operator");
 });

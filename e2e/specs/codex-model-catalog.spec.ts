@@ -19,6 +19,8 @@ const CODEX_DEFAULT = "Default model for dispatched Codex sessions";
 const DISCOVERED_ONLY = "gpt-5.4";
 /** Astra must be selectable from both the live result and the shipped failure fallback. */
 const ASTRA = "gpt-6-astra";
+const SOL = "gpt-6-sol";
+const LUNA = "gpt-6-luna";
 const EVIDENCE = artifactsDir("codex-model-catalog");
 
 interface CodexProbeRecord {
@@ -32,11 +34,11 @@ async function shoot(page: Page, target: Locator): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({
-    path: `${EVIDENCE}astra-dispatch-fallback.png`,
+    path: `${EVIDENCE}sol-dispatch-fallback.png`,
     animations: "disabled",
   });
   // oxlint-disable-next-line no-console
-  console.log("CAPTURED e2e/.artifacts/codex-model-catalog/astra-dispatch-fallback.png");
+  console.log("CAPTURED e2e/.artifacts/codex-model-catalog/sol-dispatch-fallback.png");
 }
 
 async function openHarnesses(page: Page, baseURL: string): Promise<void> {
@@ -63,6 +65,8 @@ test("Codex pickers show its discovered catalog and retain selection through dis
   await expect(settingsModel.locator(`option[value="${DISCOVERED_ONLY}"]`)).toHaveText("GPT-5.4");
   await expect(settingsModel.locator('option[value="gpt-5.4-mini"]')).toHaveText("GPT-5.4-Mini");
   await expect(settingsModel.locator(`option[value="${ASTRA}"]`)).toHaveText("GPT-6-Astra");
+  await expect(settingsModel.locator(`option[value="${SOL}"]`)).toHaveText("GPT-6-Sol");
+  await expect(settingsModel.locator(`option[value="${LUNA}"]`)).toHaveText("GPT-6-Luna");
 
   // A row Codex hides from its own picker stays hidden here.
   await expect(settingsModel.locator('option[value="gpt-5.6-e2e-hidden"]')).toHaveCount(0);
@@ -114,6 +118,8 @@ test("Codex pickers show its discovered catalog and retain selection through dis
   // Falling back is a catalog-quality state, never a dispatch outage: the shipped rows are
   // still there to pick.
   await expect(retained.locator(`option[value="${ASTRA}"]`)).toHaveText("GPT-6 Astra");
+  await expect(retained.locator(`option[value="${SOL}"]`)).toHaveText("GPT-6 Sol");
+  await expect(retained.locator(`option[value="${LUNA}"]`)).toHaveText("GPT-6 Luna");
 
   // Harness Settings suppresses hints to keep every card the same width. Dispatch has room
   // for them, so verify the built-in fallback copy on the surface from the reported defect.
@@ -124,8 +130,8 @@ test("Codex pickers show its discovered catalog and retain selection through dis
   await expect(fallbackModel.locator(`option[value="${ASTRA}"]`)).toHaveText(
     "GPT-6 Astra - most capable, hardest end-to-end work",
   );
-  await fallbackModel.selectOption(ASTRA);
-  await expect(fallbackModel).toHaveValue(ASTRA);
+  await fallbackModel.selectOption(SOL);
+  await expect(fallbackModel).toHaveValue(SOL);
   await shoot(dashboard, dialog);
   await dashboard.keyboard.press("Escape");
   await openHarnesses(dashboard, daemon.baseURL);

@@ -15,6 +15,8 @@ function usage(modelId: string, patch: Partial<HarnessUsageEvent> = {}): Harness
 
 test("the verified Standard API catalog is hand-checkable model by model", () => {
   assert.equal(estimateStandardApiUsage(usage("gpt-6-astra"))?.costUsd, 0.0695);
+  assert.equal(estimateStandardApiUsage(usage("gpt-6-sol"))?.costUsd, 0.0139);
+  assert.equal(estimateStandardApiUsage(usage("gpt-6-luna"))?.costUsd, 0.000695);
   assert.equal(estimateStandardApiUsage(usage("gpt-5.6-sol"))?.costUsd, 0.0278);
   assert.equal(estimateStandardApiUsage(usage("gpt-5.6-terra"))?.costUsd, 0.0147);
   assert.equal(estimateStandardApiUsage(usage("gpt-5.6-luna"))?.costUsd, 0.00147);

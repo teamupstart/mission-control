@@ -212,7 +212,7 @@ function freshTourDispatchDraft(preview: SeeWorkTourDispatchPreview): DispatchDr
     title: "Tour demo",
     kind: "ship",
     agent: "codex",
-    model: "gpt-5.6-terra",
+    model: "gpt-6-sol",
     workflowId: null,
   };
 }

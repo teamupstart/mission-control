@@ -1,7 +1,7 @@
 import type { HarnessUsageEvent, PricedUsage } from "../types.ts";
 
 /** Immutable identity of the OpenAI Standard API price snapshot used for new rows. */
-export const CODEX_PRICE_VERSION = "openai-standard-2026-09-11";
+export const CODEX_PRICE_VERSION = "openai-standard-2026-09-25";
 
 export interface StandardTokenPrice {
   inputPerM: number;
@@ -28,13 +28,15 @@ const STANDARD_CONTEXT = {
 } as const;
 
 /**
- * Verified 2026-09-11 against https://developers.openai.com/api/docs/pricing and
+ * Verified 2026-09-25 against https://developers.openai.com/api/docs/pricing and
  * https://developers.openai.com/api/docs/models/<model-id> (older text/code models).
  * Standard text-token rates only; unknown ids and variants must not inherit a price
  * just because their name starts with a known model. Claude/Pi use reported dollars.
  */
 export const STANDARD_TOKEN_PRICES: Readonly<Record<string, StandardTokenPrice>> = {
   "gpt-6-astra": { inputPerM: 10, cachedInputPerM: 1, outputPerM: 50, ...LONG_CONTEXT },
+  "gpt-6-sol": { inputPerM: 2, cachedInputPerM: 0.2, outputPerM: 10, ...LONG_CONTEXT },
+  "gpt-6-luna": { inputPerM: 0.1, cachedInputPerM: 0.01, outputPerM: 0.5, ...LONG_CONTEXT },
   "gpt-5.6-sol": { inputPerM: 4, cachedInputPerM: 0.4, outputPerM: 20, ...LONG_CONTEXT },
   "gpt-5.6-terra": { inputPerM: 2, cachedInputPerM: 0.2, outputPerM: 12, ...LONG_CONTEXT },
   "gpt-5.6-luna": { inputPerM: 0.2, cachedInputPerM: 0.02, outputPerM: 1.2, ...LONG_CONTEXT },

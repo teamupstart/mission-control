@@ -549,13 +549,12 @@ export function ghLinkedIssueArgs(ref: TaskSourceRef): string[] {
 async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: SweepContext): Promise<LinkedReadResult> {
   const items: TaskCandidate[] = [];
   const errors: [string, string][] = [];
-  for (const ref of refs) {
-    if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
+  async function read(ref: TaskSourceRef): Promise<void> {
     let args: string[];
     try { args = ghLinkedIssueArgs(ref); }
     catch {
       errors.push([ref.externalId, "The linked GitHub issue has no valid issue identity."]);
-      continue;
+      return;
     }
     try {
       const res = await run(ghBin(), args, { cwd: ctx.repoRoot, timeoutMs: GH_TIMEOUT_MS });
@@ -563,7 +562,7 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
       // or parser exceptions, which can contain credentials, paths, or account details.
       if (res.code !== 0) {
         errors.push([ref.externalId, "The linked GitHub issue could not be read. Check access and authentication, then sweep again."]);
-        continue;
+        return;
       }
       const candidate = candidateFrom(JSON.parse(res.stdout) as GhIssue, cfg, ctx);
       if (candidate?.ref.externalId === ref.externalId) items.push(candidate);
@@ -572,6 +571,13 @@ async function readLinked(cfg: GithubIssuesConfig, refs: TaskSourceRef[], ctx: S
       errors.push([ref.externalId, "The linked GitHub issue returned unreadable content."]);
     }
   }
+  // Share a cursor so slow issues do not serialize the batch or spawn 25 subprocesses
+  // at once. In-flight reads retain their own timeout; abort stops scheduling new ones.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, refs.length) }, async () => {
+    while (!ctx.signal.aborted && next < refs.length) await read(refs[next++]!);
+  }));
+  if (ctx.signal.aborted) return { items, error: "the linked refresh was abandoned" };
   return { items, error: null, ...(errors.length ? { itemErrors: Object.fromEntries(errors) } : {}) };
 }
 

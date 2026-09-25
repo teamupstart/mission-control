@@ -38,6 +38,10 @@ The daemon's existing task-source sweeper drives discovery and optional refresh 
 cadence. `TaskSourceInstance.keepUpdated` defaults to false. The provider registry owns
 `readLinked`, which reads known issue identities outside discovery filters; adapters still
 return candidates and never write the database.
+GitHub linked reads use at most four concurrent CLI calls. An aborted sweep stops scheduling
+queued reads; in-flight calls remain bounded by their individual timeout, and aborted results
+are not applied. This reduces serial delays without promising that every batch fits the sweep
+deadline.
 
 `task-sources/ingest.ts` records import provenance and a normalized content baseline alongside
 creation. `task-sources/sync.ts` selects at most 25 eligible linked tasks by last attempt, performs

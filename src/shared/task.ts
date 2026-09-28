@@ -238,6 +238,38 @@ export function taskKindAllowsBacklog(kind: TaskKind): boolean {
   return KIND_ALLOWS_BACKLOG[kind];
 }
 
+/** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */
+export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
+  pipelineCommissionId?: Task["pipelineCommissionId"];
+};
+
+/**
+ * Why this task cannot be sent back to the backlog, or null when it can.
+ *
+ * One answer for the daemon's refusal and the dashboard's disabled control, so the button is
+ * never offered on a click the route would reject. A live task (dispatching or running) is
+ * cancelled on the way back; a stopped one (cancelled or failed) is re-filed as it stands.
+ * A done task keeps its result, and a Pipeline commission is its own durable lifecycle that
+ * the backlog cannot restart.
+ */
+export function taskRequeueRefusal(task: RequeueCandidate): string | null {
+  if (!taskKindAllowsBacklog(task.kind)) return TASK_KIND_BACKLOG_REFUSAL;
+  if (task.kind === "pipeline" && task.pipelineCommissionId) {
+    return "a Pipeline commission cannot return to the backlog; create a new Pipeline task";
+  }
+  switch (task.status) {
+    case "dispatching":
+    case "running":
+    case "cancelled":
+    case "failed":
+      return null;
+    case "backlog":
+      return "task is already in the backlog";
+    case "done":
+      return "task is done; its result is recorded, not re-run";
+  }
+}
+
 /**
  * Whether a dispatch still has no durable milestone proving provisioning or launch began.
  *

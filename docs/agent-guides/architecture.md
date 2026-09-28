@@ -46,7 +46,7 @@ same answer. A caller must not run `which`, hand-walk PATH, or carry its own app
 list.
 
 Resolution is bounded and deterministic: per-tool override, supported absolute candidate,
-operator search directory, inherited PATH, login-shell PATH, supported version-manager directory,
+operator search directory, supported version-manager directory, inherited PATH, login-shell PATH,
 then OS default directory. There is no recursive or unbounded scan. Successful and failed answers
 are generation-scoped. Misses may trigger one cooldown-bounded refresh; **Settings > Setup** forces
 a refresh and reports the selected path and source.

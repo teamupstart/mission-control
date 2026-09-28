@@ -35,7 +35,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onDeselect: () => {},
     detailId: null,
     onOpenReviews: () => {},
-    onOpenDiff: () => {},
+    onRequeue: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
     onOpenFilePath: () => {},

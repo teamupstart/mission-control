@@ -4,7 +4,7 @@
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
-| `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
+| `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for **Settings → Repositories**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
 | `MISSION_POLL_MS` | `1500` | discovery interval |

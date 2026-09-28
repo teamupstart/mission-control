@@ -2,6 +2,7 @@ import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
+import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
@@ -1237,6 +1238,13 @@ export const CompleteTaskSchema = z.object({
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
 export const RescheduleTaskSchema = z.object({}).strict();
+
+/**
+ * Send a dispatched task back to the backlog (`POST /api/tasks/:id/requeue`). Empty and
+ * strict like `RescheduleTaskSchema`: the task id is the whole request, and a stray field is
+ * a caller expecting an option this route does not have.
+ */
+export const RequeueTaskSchema = z.object({}).strict();
 
 /**
  * Move one backlog task in the operator's order - the ONE route that writes
@@ -2791,6 +2799,12 @@ export const WorktreeActionRequestSchema = z.discriminatedUnion("action", [
       action: z.literal("destroy"),
       target: z.discriminatedUnion("kind", [
         z.object({ kind: z.literal("slot"), slotId: WorktreeStableIdSchema }).strict(),
+        z
+          .object({
+            kind: z.literal("slots"),
+            slotIds: z.array(WorktreeStableIdSchema).min(1).max(WORKTREE_INVENTORY_LIMITS.bulkSlots),
+          })
+          .strict(),
         z.object({ kind: z.literal("pool"), poolId: WorktreeStableIdSchema }).strict(),
       ]),
     })

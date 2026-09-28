@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreesConfig, WorktreesConfigPatch } from "@shared/protocol.ts";
 import type {
   WorktreeActionPreview,
   WorktreeActionRequest,
   WorktreeInventory,
+  WorktreeOperationView,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
 import {
+  dismissWorktreeOperation,
   executeWorktreeAction,
   fetchWorktrees,
   previewWorktreeAction,
@@ -37,11 +39,21 @@ export interface WorktreesState {
   previewError: string | null;
   previewChanged: boolean;
   busy: boolean;
+  /** Background cleanups: queued, running, or failed and not yet dismissed. */
+  operations: WorktreeOperationView[];
   refresh: () => Promise<void>;
   updateConfig: (patch: WorktreesConfigPatch) => Promise<void>;
   requestPreview: (request: WorktreeActionRequest) => Promise<void>;
   executePreview: (acks: WorktreeRiskKey[]) => Promise<boolean>;
   discardPreview: () => void;
+  dismissOperation: (id: string) => Promise<void>;
+}
+
+/** An accepted Execute, shown until an inventory read that began after it lands. */
+interface SubmittedOperation {
+  view: WorktreeOperationView;
+  /** The last read sequence issued before submission; any later read already includes it. */
+  readSeq: number;
 }
 
 export function useWorktrees(revision = 0, enabled = true): WorktreesState {
@@ -52,6 +64,8 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewChanged, setPreviewChanged] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [submitted, setSubmitted] = useState<SubmittedOperation[]>([]);
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const inventoryRef = useRef<WorktreeInventory | null>(null);
   const readSeq = useRef(0);
   const writeChain = useRef(Promise.resolve());
@@ -86,6 +100,7 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     }
     setInventory(next);
     setError(null);
+    setSubmitted((current) => current.filter((entry) => entry.readSeq >= seq));
   }, [enabled, setInventory]);
 
   useEffect(() => {
@@ -95,11 +110,10 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     return () => window.clearInterval(timer);
   }, [enabled, refresh, revision]);
 
-  useEffect(() => {
-    setPreview(null);
-    setPreviewError(null);
-    setPreviewChanged(false);
-  }, [revision]);
+  // A worktrees_changed invalidation refreshes the inventory and leaves an open preview
+  // alone. Background cleanups publish one as each finishes, and closing whatever dialog the
+  // operator had moved on to would make queueing the next one impossible. The preview is
+  // not trusted anyway: Execute rebuilds it from fresh state and refuses if it moved.
 
   const updateConfig = useCallback(async (patch: WorktreesConfigPatch): Promise<void> => {
     const before = inventoryRef.current;
@@ -149,9 +163,12 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
       setPreviewError(result.error);
       return false;
     }
+    // Accepted, not finished. The dialog closes now and the work shows as pending on its
+    // slots; the inventory refresh that follows is deliberately not awaited.
+    setSubmitted((current) => [...current, { view: result.operation, readSeq: readSeq.current }]);
     setPreview(null);
     setPreviewChanged(false);
-    await refresh();
+    void refresh();
     return true;
   }, [preview, refresh]);
 
@@ -161,6 +178,30 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     setPreviewChanged(false);
   }, []);
 
+  const dismissOperation = useCallback(async (id: string): Promise<void> => {
+    setDismissed((current) => new Set(current).add(id));
+    const result = await dismissWorktreeOperation(id);
+    if (!result.ok) {
+      // The daemon still holds the record, so hiding it here would hide it for good: every
+      // later refresh would filter it out again. Put it back and say why.
+      setDismissed((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      setError(`That cleanup report could not be dismissed: ${result.error}`);
+      return;
+    }
+    void refresh();
+  }, [refresh]);
+
+  const operations = useMemo(() => {
+    const observed = inventory?.operations ?? [];
+    const known = new Set(observed.map((entry) => entry.id));
+    return [...observed, ...submitted.map((entry) => entry.view).filter((entry) => !known.has(entry.id))]
+      .filter((entry) => !dismissed.has(entry.id));
+  }, [inventory, submitted, dismissed]);
+
   return {
     inventory,
     loading,
@@ -169,10 +210,12 @@ export function useWorktrees(revision = 0, enabled = true): WorktreesState {
     previewError,
     previewChanged,
     busy,
+    operations,
     refresh,
     updateConfig,
     requestPreview,
     executePreview,
     discardPreview,
+    dismissOperation,
   };
 }

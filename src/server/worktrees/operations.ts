@@ -9,7 +9,9 @@ import {
   type WorktreeActionPreview,
   type WorktreeActionRequest,
   type WorktreeActionRisk,
+  type WorktreeActionSubmitResult,
   type WorktreeInventory,
+  type WorktreeOperationView,
   type WorktreeOwnerView,
   type WorktreeRepositoryView,
   type WorktreeRiskKey,
@@ -83,17 +85,32 @@ export interface WorktreeOperationsDeps {
   diskBytes: (path: string) => Promise<number | null>;
   git: Pick<WorktreeGit, "inspect" | "observedDefaultSha" | "mergedInto">;
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
+  /** Wall-clock budget for measuring every path one preview shows, together. */
+  diskMeasureBudgetMs: number;
+  /**
+   * Operations listed at once - queued, running, and failed reports nobody has dismissed.
+   * Further submissions are refused; nothing listed is ever dropped to make room.
+   */
+  maxOperations: number;
 }
 
 interface Observation {
   inventory: WorktreeInventory;
   native: NativePoolStatus[];
   legacy: LegacyInventoryItem[];
+  /** Paths an accepted, unfinished cleanup already covers. Set per build, never shared. */
+  pending: ReadonlySet<string>;
 }
 
 interface HeldPreview {
   preview: WorktreeActionPreview;
   fingerprint: string;
+}
+
+interface HeldOperation {
+  view: WorktreeOperationView;
+  held: HeldPreview;
+  acknowledgements: Set<WorktreeRiskKey>;
 }
 
 interface NativeTarget {
@@ -150,9 +167,23 @@ function ownerView(
   };
 }
 
+/**
+ * A warm slot carries its dependency install, so a full `du` is routinely seconds per path -
+ * measured at seven on a 1.3 GiB checkout - and it used to sit in front of every preview
+ * dialog. The size is context for the operator, not a safety fact (the fingerprint ignores
+ * it), so it gets a short budget and reads "size unknown" when the walk cannot finish.
+ */
+const DISK_MEASURE_BUDGET_MS = 1_500;
+/**
+ * A bulk selection can name up to `bulkSlots` paths. Walking all of them at once is its own
+ * disk storm, so a preview runs at most this many walks at a time and starts none after its
+ * budget is spent: the rest read "size unknown" and the dialog opens on time.
+ */
+const DISK_MEASURE_CONCURRENCY = 4;
+
 async function defaultDiskBytes(path: string): Promise<number | null> {
   try {
-    const result = await run("du", ["-sk", path], { timeoutMs: 10_000, maxBuffer: 16 * 1024 });
+    const result = await run("du", ["-sk", path], { timeoutMs: DISK_MEASURE_BUDGET_MS, maxBuffer: 16 * 1024 });
     if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
     const kib = Number(result.stdout.trim().split(/\s+/)[0]);
     return Number.isFinite(kib) && kib >= 0 ? kib * 1024 : null;
@@ -184,6 +215,10 @@ export class WorktreeOperationsService {
   private readonly deps: WorktreeOperationsDeps;
   private readonly tokens = new Map<string, HeldPreview>();
   private legacyVisibleRevision: string | null = null;
+  private observing: Promise<Observation> | null = null;
+  private nextObservation: Promise<Observation> | null = null;
+  private readonly operations = new Map<string, HeldOperation>();
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(
     readonly manager: WorktreeManager,
@@ -197,6 +232,8 @@ export class WorktreeOperationsService {
       diskBytes: defaultDiskBytes,
       git: new NativeWorktreeGit(),
       occupancy: inspectWorktreeOccupancy,
+      diskMeasureBudgetMs: DISK_MEASURE_BUDGET_MS,
+      maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
       ...deps,
     };
   }
@@ -213,7 +250,35 @@ export class WorktreeOperationsService {
   }
 
   async inventory(): Promise<WorktreeInventory> {
-    return (await this.observe()).inventory;
+    const { inventory } = await this.sharedObservation();
+    return { ...inventory, operations: this.operationViews() };
+  }
+
+  /**
+   * Inventory reads share observations. Every open window refreshes on the same
+   * invalidation, and each full observation is Git and process work across every pool;
+   * running one per caller is how the pane slowed itself down.
+   *
+   * A caller never joins an observation that was already running when it asked - that one
+   * may predate the change it is refreshing for. It waits for the next one instead, and every
+   * caller arriving meanwhile shares that same next one: at most one running and one queued.
+   * Previews and execute's safety rebuild bypass this and always observe fresh.
+   */
+  private sharedObservation(): Promise<Observation> {
+    if (!this.observing) return this.startObservation();
+    this.nextObservation ??= this.observing.then(() => {}, () => {}).then(() => {
+      this.nextObservation = null;
+      return this.startObservation();
+    });
+    return this.nextObservation;
+  }
+
+  private startObservation(): Promise<Observation> {
+    const running: Promise<Observation> = this.observe().finally(() => {
+      if (this.observing === running) this.observing = null;
+    });
+    this.observing = running;
+    return running;
   }
 
   private async observe(): Promise<Observation> {
@@ -346,6 +411,7 @@ export class WorktreeOperationsService {
     const inventory: WorktreeInventory = {
       config,
       repositories,
+      operations: [],
       observedAt: this.deps.now(),
       revision: digest(revisionFacts),
       legacy: {
@@ -363,13 +429,17 @@ export class WorktreeOperationsService {
       this.deps.notifyChanged();
     }
     this.legacyVisibleRevision = legacyVisibleRevision;
-    return { inventory, native, legacy };
+    return { inventory, native, legacy, pending: new Set() };
   }
 
   async preview(request: WorktreeActionRequest): Promise<WorktreeActionPreview> {
     this.pruneTokens();
     const observed = await this.observe();
     const built = await this.buildPreview(request, observed);
+    // Sizes are measured only here, for the fixed paths this dialog shows, within one bounded
+    // budget. Execute's safety rebuild never walks the disk: the fingerprint excludes size.
+    const sizes = await this.measureSizes(built.affected.map((target) => target.path));
+    built.affected = built.affected.map((target, index) => ({ ...target, diskBytes: sizes[index] ?? null }));
     const token = this.deps.randomId();
     const preview = { ...built, token, expiresAt: this.deps.now() + TOKEN_TTL_MS };
     const fingerprint = previewFingerprint(built);
@@ -378,6 +448,43 @@ export class WorktreeOperationsService {
       this.tokens.delete(this.tokens.keys().next().value!);
     }
     return preview;
+  }
+
+  /**
+   * At most `DISK_MEASURE_CONCURRENCY` walks in flight, and one wall-clock budget for the
+   * whole set. When it expires the preview stops waiting and starts nothing new; each walk
+   * still in flight is bounded by its own `du` timeout. Anything unmeasured is null.
+   */
+  private async measureSizes(paths: readonly string[]): Promise<Array<number | null>> {
+    const sizes: Array<number | null> = paths.map(() => null);
+    if (paths.length === 0) return sizes;
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"expired">((resolve) => {
+      timer = setTimeout(() => {
+        expired = true;
+        resolve("expired");
+      }, this.deps.diskMeasureBudgetMs);
+    });
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (!expired && next < paths.length) {
+        const index = next;
+        next += 1;
+        const measured = await Promise.race([
+          this.deps.diskBytes(paths[index]!).catch(() => null),
+          deadline,
+        ]);
+        if (measured === "expired") return;
+        sizes[index] = measured;
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(DISK_MEASURE_CONCURRENCY, paths.length) }, worker));
+    } finally {
+      clearTimeout(timer);
+    }
+    return sizes;
   }
 
   private taskOwner(task: WorktreeTaskView, position: number): WorktreeOwnerView {
@@ -436,7 +543,7 @@ export class WorktreeOperationsService {
             owner,
             version: null,
             safetyRevision: digest(resource),
-            diskBytes: await this.deps.diskBytes(resource.path),
+            diskBytes: null,
           });
           blockers.push(
             matches.length === 0
@@ -460,7 +567,7 @@ export class WorktreeOperationsService {
           owner,
           version: null,
           safetyRevision: digest({ resource, item }),
-          diskBytes: await this.deps.diskBytes(resource.path),
+          diskBytes: null,
         });
         if (!item) {
           blockers.push(
@@ -526,7 +633,7 @@ export class WorktreeOperationsService {
         owner,
         version: null,
         safetyRevision: digest({ resource, inspected, mergedIntoDefault, occupancy }),
-        diskBytes: await this.deps.diskBytes(resource.path),
+        diskBytes: null,
       });
       if (occupancy.status === "unknown") {
         risks.push(risk("unknown-occupancy", "Process occupancy is unknown", false));
@@ -572,7 +679,7 @@ export class WorktreeOperationsService {
         mergedIntoDefault: slot.mergedIntoDefault,
         occupancy: slot.occupancy,
       }),
-      diskBytes: await this.deps.diskBytes(slot.slot.path),
+      diskBytes: null,
     });
     if (slot.dirty === true) risks.push(risk("dirty", "Dirty or untracked work will be discarded", true));
     else if (slot.dirty === null) blockers.push(`Git cleanliness is unknown for slot ${slot.slot.ordinal}.`);
@@ -597,6 +704,9 @@ export class WorktreeOperationsService {
     if (!pool.identityValid || !pool.markerValid || !slot.nativePath ||
       slot.registered !== true || slot.repositoryMatches !== true) {
       blockers.push("Exact native pool, marker, Git registration, and repository ownership are not all proven.");
+    }
+    if (observed.pending.has(slot.slot.path)) {
+      blockers.push(`Slot ${slot.slot.ordinal} already has a cleanup queued; wait for it to finish or leave it out of this action.`);
     }
     if (slot.slot.state === "quarantined") risks.push(risk("quarantined", "A target slot is quarantined", false));
     if (action === "return" && slot.slot.state !== "leased") {
@@ -626,10 +736,16 @@ export class WorktreeOperationsService {
     if (action === "return" && !owner) blockers.push("This slot has no active owner to return.");
   }
 
+  /**
+   * `excludeOperation` is the queued operation whose own recheck this is: its targets are
+   * pending precisely because it is the one running, and must not block itself.
+   */
   private async buildPreview(
     request: WorktreeActionRequest,
-    observed: Observation,
+    observation: Observation,
+    excludeOperation: string | null = null,
   ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
+    const observed: Observation = { ...observation, pending: this.pendingPaths(excludeOperation) };
     const affected: WorktreeActionAffected[] = [];
     const risks: WorktreeActionRisk[] = [];
     const blockers: string[] = [];
@@ -669,7 +785,7 @@ export class WorktreeOperationsService {
           owner: owner ? { kind: owner.kind, key: owner.id, label: `Check ${owner.id}` } : null,
           version: null,
           safetyRevision: digest(item),
-          diskBytes: await this.deps.diskBytes(item.path),
+          diskBytes: null,
         });
         if (!preview.allowed) blockers.push(preview.reason);
         if (item.classification !== "ownedExact") {
@@ -690,6 +806,21 @@ export class WorktreeOperationsService {
       : request.action === "destroy" && request.target.kind === "slot"
         ? request.target.slotId
         : null;
+    if (request.action === "destroy" && request.target.kind === "slots") {
+      // A bulk selection may span pools. It is still one fixed set: every id is resolved now,
+      // shown in the preview, and bound into the token, so nothing joins it after the fact.
+      const selected = new Set(request.target.slotIds);
+      const found = this.nativeTargets(observed).filter(({ slot }) => selected.has(slot.slot.id));
+      const missing = selected.size - found.length;
+      if (missing > 0) {
+        blockers.push(`${missing} selected ${missing === 1 ? "slot no longer exists" : "slots no longer exist"}; clear the selection and choose again.`);
+      }
+      // Even a selection that lost every slot answers with a blocked preview, not a 404: the
+      // operator is looking at that selection and needs to be told it has to change.
+      if (found.length === 0) return this.finish(request, observed.inventory.revision, affected, risks, blockers, consequences);
+      return this.buildSlotTargets(request, observed, found, affected, risks, blockers, consequences);
+    }
+
     const pool = poolId
       ? observed.native.find((entry) => entry.pool.id === poolId)
       : observed.native.find((entry) => entry.slots.some((slot) => slot.slot.id === slotId));
@@ -704,13 +835,11 @@ export class WorktreeOperationsService {
       const candidates = (await this.manager.planMaintenance())
         .filter((candidate) => candidate.poolId === request.poolId)
         .filter((candidate) => request.mode === "safe" || candidate.rightSize)
-        .filter((candidate) => candidate.safe);
-      // Measure only the fixed safe set, but measure that bounded set concurrently. A bulk
-      // prune should not turn N independent filesystem reads into N serial waits.
-      const candidateDiskBytes = await Promise.all(
-        candidates.map((candidate) => this.deps.diskBytes(candidate.path)),
-      );
-      for (const [index, candidate] of candidates.entries()) {
+        .filter((candidate) => candidate.safe)
+        // Already on its way out through an accepted cleanup; pruning it again would only
+        // race that removal.
+        .filter((candidate) => !observed.pending.has(candidate.path));
+      for (const candidate of candidates) {
         affected.push({
           provider: "mission",
           id: candidate.slotId,
@@ -723,7 +852,7 @@ export class WorktreeOperationsService {
             // move between two merged commits without changing eligibility or version.
             head: pool.slots.find((entry) => entry.slot.id === candidate.slotId)?.observedHead ?? null,
           }),
-          diskBytes: candidateDiskBytes[index] ?? null,
+          diskBytes: null,
         });
       }
       if (candidates.length === 0) blockers.push("No clean, merged, process-free, unreferenced slots are safe to prune.");
@@ -740,6 +869,19 @@ export class WorktreeOperationsService {
       .filter(Boolean)
       .map((slot) => ({ pool, slot }));
     if (initialTargets.length === 0) blockers.push("The fixed pool target contains no slots to destroy.");
+    return this.buildSlotTargets(request, observed, initialTargets, affected, risks, blockers, consequences);
+  }
+
+  /** Return or destroy a fixed set of native slots, widened to every resource their tasks own. */
+  private async buildSlotTargets(
+    request: Extract<WorktreeActionRequest, { action: "return" | "destroy" }>,
+    observed: Observation,
+    initialTargets: NativeTarget[],
+    affected: WorktreeActionAffected[],
+    risks: WorktreeActionRisk[],
+    blockers: string[],
+    consequences: string[],
+  ): Promise<Omit<WorktreeActionPreview, "token" | "expiresAt">> {
     const targets = new Map(initialTargets.map((target) => [target.slot.slot.id, target]));
     const taskIds = new Set<string>();
     for (const target of initialTargets) {
@@ -779,9 +921,9 @@ export class WorktreeOperationsService {
       );
     }
     if (request.action === "destroy") {
-      consequences.push(request.target.kind === "pool"
-        ? "Removes only the fixed manager-owned slot set shown here after final revalidation."
-        : "Removes this exact manager-owned Git worktree and its slot row after final revalidation.");
+      consequences.push(request.target.kind === "slot"
+        ? "Removes this exact manager-owned Git worktree and its slot row after final revalidation."
+        : "Removes only the fixed manager-owned slot set shown here after final revalidation.");
     } else {
       consequences.push("Resets the slot to the fetched remote default and retains it as warm capacity.");
     }
@@ -809,10 +951,126 @@ export class WorktreeOperationsService {
     };
   }
 
+  /** Execute and wait for the outcome. The route uses `submit`; this is the same work, inline. */
   async execute(
     token: string,
     acknowledgements: readonly WorktreeRiskKey[],
   ): Promise<WorktreeActionExecuteResult> {
+    const { held, acknowledgementSet } = this.claim(token, acknowledgements);
+    return this.perform(held, acknowledgementSet);
+  }
+
+  /**
+   * Accept an Execute and answer at once. Everything cheap and final - the token exists, it
+   * is allowed, the acknowledgements are exactly the ones it asked for - is checked before
+   * this returns. The fresh safety rebuild and the mutation it guards run afterwards on one
+   * ordered queue, so an operator can keep selecting and destroying while earlier removals
+   * finish, and two cleanups never race each other through Git.
+   */
+  submit(
+    token: string,
+    acknowledgements: readonly WorktreeRiskKey[],
+  ): WorktreeActionSubmitResult {
+    this.pruneTokens();
+    if (this.operations.size >= this.deps.maxOperations) {
+      // Refused before the token is claimed, so the same preview can be executed again once
+      // there is room. Nothing listed is dropped to make it: accepted work runs to the end,
+      // and a failure report - possibly the only record of a partial removal - leaves only
+      // through Dismiss or an accepted retry.
+      const failed = [...this.operations.values()].filter((entry) => entry.view.state === "failed").length;
+      const queued = this.operations.size - failed;
+      throw new WorktreeOperationError(
+        503,
+        failed > 0
+          ? `${this.operations.size} cleanups are listed (${failed} failed, ${queued} queued); dismiss a failed report or wait for queued cleanups to finish, then execute again`
+          : `${queued} cleanups are already queued; execute again when some have finished`,
+        "unavailable",
+      );
+    }
+    const pendingPaths = this.pendingPaths(null);
+    const candidate = this.tokens.get(token);
+    const overlap = candidate?.preview.affected.find((target) => pendingPaths.has(target.path));
+    if (overlap) {
+      this.tokens.delete(token);
+      throw new WorktreeOperationError(409, `${overlap.path} already has a cleanup queued; wait for it to finish`, "changed");
+    }
+    const { held, acknowledgementSet } = this.claim(token, acknowledgements);
+    const view: WorktreeOperationView = {
+      id: this.deps.randomId(),
+      request: held.preview.request,
+      state: "queued",
+      targets: held.preview.affected.map(({ provider, id, path }) => ({ provider, id, path })),
+      error: null,
+      changed: false,
+      removals: this.removalTargets(held.preview).map(({ id, path }) => ({ id, path })),
+      completed: [],
+      queuedAt: this.deps.now(),
+      finishedAt: null,
+    };
+    const entry: HeldOperation = { view, held, acknowledgements: acknowledgementSet };
+    this.operations.set(view.id, entry);
+    // A throwing publisher must not wedge every later operation behind a rejected link.
+    this.queue = this.queue.then(() => this.runQueued(entry)).catch(() => {});
+    this.deps.notifyChanged();
+    return { ok: true, operation: { ...view } };
+  }
+
+  /** Settles when every operation accepted so far has finished, whatever its outcome. */
+  idle(): Promise<void> {
+    return this.queue;
+  }
+
+  /** Forget a failed operation the operator has read. Queued and running work cannot be dismissed. */
+  dismiss(id: string): boolean {
+    const entry = this.operations.get(id);
+    if (!entry || entry.view.state !== "failed") return false;
+    this.operations.delete(id);
+    this.deps.notifyChanged();
+    return true;
+  }
+
+  private async runQueued(entry: HeldOperation): Promise<void> {
+    entry.view.state = "running";
+    try {
+      await this.perform(entry.held, entry.acknowledgements, entry.view.id, (target) => {
+        entry.view.completed.push({ id: target.id, path: target.path });
+      });
+      // Success needs no record: the slots are gone or returned, which the inventory shows.
+      this.operations.delete(entry.view.id);
+    } catch (error) {
+      entry.view.state = "failed";
+      entry.view.finishedAt = this.deps.now();
+      entry.view.changed = error instanceof WorktreeOperationError && error.code === "changed";
+      entry.view.error = compact(error instanceof Error ? error.message : String(error)) ?? "operation failed";
+      if (!(error instanceof WorktreeOperationError)) {
+        console.error("[worktrees] background operation failed:", error);
+      }
+    } finally {
+      this.deps.notifyChanged();
+    }
+  }
+
+  /** Every path a queued or running operation covers, optionally without one operation's own. */
+  private pendingPaths(excludeOperation: string | null): Set<string> {
+    return new Set([...this.operations.values()]
+      .filter((entry) => entry.view.state !== "failed" && entry.view.id !== excludeOperation)
+      .flatMap((entry) => entry.view.targets.map((target) => target.path)));
+  }
+
+  private operationViews(): WorktreeOperationView[] {
+    return [...this.operations.values()].map(({ view }) => ({
+      ...view,
+      targets: view.targets.map((target) => ({ ...target })),
+      removals: view.removals.map((target) => ({ ...target })),
+      completed: view.completed.map((target) => ({ ...target })),
+    }));
+  }
+
+
+  private claim(
+    token: string,
+    acknowledgements: readonly WorktreeRiskKey[],
+  ): { held: HeldPreview; acknowledgementSet: Set<WorktreeRiskKey> } {
     this.pruneTokens();
     const held = this.tokens.get(token);
     this.tokens.delete(token);
@@ -830,8 +1088,17 @@ export class WorktreeOperationsService {
     if (unexpected.length > 0) {
       throw new WorktreeOperationError(422, `unexpected acknowledgement: ${unexpected.join(", ")}`, "blocked");
     }
+    return { held, acknowledgementSet };
+  }
+
+  private async perform(
+    held: HeldPreview,
+    acknowledgementSet: Set<WorktreeRiskKey>,
+    operationId: string | null = null,
+    removed: (target: WorktreeActionAffected) => void = () => {},
+  ): Promise<WorktreeActionExecuteResult> {
     const observed = await this.observe();
-    const rebuilt = await this.buildPreview(held.preview.request, observed);
+    const rebuilt = await this.buildPreview(held.preview.request, observed, operationId);
     const currentFingerprint = previewFingerprint(rebuilt);
     if (currentFingerprint !== held.fingerprint) {
       throw new WorktreeOperationError(409, "worktree state changed after preview; refresh before executing", "changed");
@@ -840,7 +1107,7 @@ export class WorktreeOperationsService {
     // publish(). Supplying the service publisher also coalesces native mutations through the
     // same content-free invalidation path instead of emitting once from each dependency.
     await this.manager.runChangeBatch(
-      () => this.dispatch(held.preview, acknowledgementSet),
+      () => this.dispatch(held.preview, acknowledgementSet, removed),
       true,
       this.deps.notifyChanged,
     );
@@ -848,7 +1115,12 @@ export class WorktreeOperationsService {
     return { ok: true, action: held.preview.request.action, message: this.successMessage(held.preview.request.action) };
   }
 
-  private async dispatch(preview: WorktreeActionPreview, acknowledgements: Set<WorktreeRiskKey>): Promise<void> {
+  /** `removed` hears each slot the moment its removal is confirmed, so a later failure is partial, not silent. */
+  private async dispatch(
+    preview: WorktreeActionPreview,
+    acknowledgements: Set<WorktreeRiskKey>,
+    removed: (target: WorktreeActionAffected) => void,
+  ): Promise<void> {
     const request = preview.request;
     if (request.action === "reconcile") {
       if (!(await this.manager.reconcilePoolById(request.poolId))) {
@@ -865,6 +1137,7 @@ export class WorktreeOperationsService {
           allowUnmerged: false,
         });
         this.assertRemoved(result);
+        removed(target);
       }
       return;
     }
@@ -908,20 +1181,33 @@ export class WorktreeOperationsService {
       if (ownerIdentity) recoveredOwners.add(ownerIdentity);
     }
     if (request.action === "destroy") {
-      const removalTargets = preview.affected.filter((target) => {
-        if (target.provider !== "mission") return false;
-        if (request.target.kind === "slot") return target.id === request.target.slotId;
-        return this.manager.store.slot(target.id)?.poolId === request.target.poolId;
-      });
-      for (const target of removalTargets) {
+      for (const target of this.removalTargets(preview)) {
         const result = await this.manager.removeSlot({
           slotId: target.id,
           allowDirty: acknowledgements.has("dirty"),
           allowUnmerged: acknowledgements.has("unlanded"),
         });
         this.assertRemoved(result);
+        removed(target);
       }
     }
+  }
+
+  /**
+   * The exact slots an accepted preview will remove, fixed when it is accepted. Owners of
+   * other affected paths are recovered, not removed. A retry after a partial failure is built
+   * from this set, so nothing that joined a pool afterwards can ride along.
+   */
+  private removalTargets(preview: WorktreeActionPreview): WorktreeActionAffected[] {
+    const request = preview.request;
+    if (request.action === "prune") return preview.affected;
+    if (request.action !== "destroy") return [];
+    return preview.affected.filter((target) => {
+      if (target.provider !== "mission") return false;
+      if (request.target.kind === "slot") return target.id === request.target.slotId;
+      if (request.target.kind === "slots") return request.target.slotIds.includes(target.id);
+      return this.manager.store.slot(target.id)?.poolId === request.target.poolId;
+    });
   }
 
   private async reclaimTask(id: string): Promise<void> {

@@ -54,7 +54,8 @@ export type ActionId =
   | "review"
   | "delete"
   | "lineDensity"
-  | "composerEditor";
+  | "composerEditor"
+  | "requeue";
 
 export interface ActionDef {
   id: ActionId;
@@ -348,6 +349,17 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Interrupt turn",
     description: "Stop what the selected session is doing now and drop its queued messages.",
     defaultBinding: "ctrl+c",
+    group: "selection",
+  },
+  {
+    // Ahead of the Complete/Kill pair rather than between them. It ends the session too, but
+    // it is the answer that keeps the WORK: the task goes back to the backlog to run later,
+    // instead of settling done or failed. `b` for backlog, which nothing else claimed.
+    id: "requeue",
+    label: "Return task to backlog",
+    description:
+      "Stop the selected session's task and put it back in the backlog at the position it had.",
+    defaultBinding: "b",
     group: "selection",
   },
   {

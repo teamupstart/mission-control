@@ -98,7 +98,7 @@ test("async initialization still reads the login shell after a synchronous start
   }
 });
 
-test("the deterministic path ladder records custom, inherited, login, manager, and OS provenance", async () => {
+test("the deterministic path ladder records custom, manager, inherited, login, and OS provenance", async () => {
   const f = fixture();
   const custom = join(f.root, "custom");
   const inherited = join(f.root, "inherited");
@@ -108,6 +108,9 @@ test("the deterministic path ladder records custom, inherited, login, manager, a
   executable(join(inherited, "codex"));
   executable(join(login, "pi"));
   executable(join(xdg, "mise", "shims", "claude"));
+  executable(join(xdg, "mise", "shims", "git"));
+  executable(join(inherited, "git"));
+  executable(join(login, "git"));
   Object.assign(f.env, {
     MISSION_EXECUTABLE_PATHS: custom,
     PATH: inherited,
@@ -128,6 +131,51 @@ test("the deterministic path ladder records custom, inherited, login, manager, a
     f.clean();
   }
 });
+
+for (const location of [
+  [".local", "bin"],
+  [".local", "share", "mise", "shims"],
+  [".asdf", "shims"],
+  [".volta", "bin"],
+  ["go", "bin"],
+]) {
+  test(`${location.join("/")} outranks inherited and login-shell binaries across refreshes`, async () => {
+    const f = fixture();
+    const manager = join(f.root, ...location);
+    const inherited = join(f.root, "system-bin");
+    const login = join(f.root, "login-bin");
+    const managedNode = executable(join(manager, "node"));
+    executable(join(inherited, "node"));
+    executable(join(login, "node"));
+    f.env.PATH = [inherited, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(delimiter);
+    try {
+      const locator = new ExecutableLocator({
+        env: f.env,
+        executable: f.executable,
+        probeLoginShell: async () => ({
+          path: [login, "/usr/bin", manager, inherited].join(delimiter),
+          problem: null,
+        }),
+      });
+      // Synchronous startup, login-shell discovery, and refresh must agree.
+      for (const phase of ["fallback", "initialize", "refresh"] as const) {
+        if (phase === "initialize") await locator.initialize();
+        if (phase === "refresh") await locator.refresh({ force: true });
+        const resolved = locator.resolveSync(executableSpec("node"));
+        assert.equal(resolved?.path, managedNode, phase);
+        assert.equal(resolved?.source, "version-manager", phase);
+        const path = locator.snapshot().path.split(delimiter);
+        assert.equal(new Set(path).size, path.length, "directories are deduplicated");
+        assert.ok(path.indexOf(manager) < path.indexOf(inherited));
+        assert.ok(path.indexOf(manager) < path.indexOf("/usr/bin"));
+        if (phase !== "fallback") assert.ok(path.indexOf(manager) < path.indexOf(login));
+        assert.equal(resolved?.env.PATH, locator.snapshot().path);
+      }
+    } finally {
+      f.clean();
+    }
+  });
+}
 
 /** Both halves of the rank: an installed agent wins, and a project-only tool is still found. */
 test("a project-local node_modules/.bin never outranks an installed agent", async () => {
@@ -154,8 +202,8 @@ test("a project-local node_modules/.bin never outranks an installed agent", asyn
     const codex = await locator.resolve(executableSpec("codex"));
     assert.equal(codex?.path, installed, "the operator's own install wins");
     assert.notEqual(codex?.path, bundled);
-    // `inherited-path`, not `project-local`: only the `node_modules/.bin` entry moved.
-    assert.equal(codex?.source, "inherited-path");
+    // The known per-user location takes provenance even when inherited PATH includes it.
+    assert.equal(codex?.source, "version-manager");
 
     // Still reachable, just last.
     const pi = await locator.resolve(executableSpec("pi"));

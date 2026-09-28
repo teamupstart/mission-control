@@ -240,3 +240,83 @@ test("the reschedule route validates an empty body before mutating", async () =>
   assert.equal(empty.status, 200);
   assert.equal(registry.getTask("wire")!.status, "backlog");
 });
+
+// ---- requeue: the session footer's Return to backlog -------------------------------------
+
+test("requeue cancels a live task and re-files it at the rank it had", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(
+    mkTask({ id: "live", status: "running", backlogRank: 7, enabled: false, dispatchedAt: 500 }),
+  );
+
+  const r = await tasks.requeue("live");
+  assert.equal(r.ok, true, r.error);
+
+  const back = registry.getTask("live")!;
+  assert.equal(back.status, "backlog");
+  assert.equal(back.backlogRank, 7, "back where the operator put it, not at the bottom");
+  assert.equal(back.enabled, true);
+  assert.equal(back.sessionId, null);
+  assert.equal(back.dispatchedAt, null);
+  assert.equal(back.completedAt, null);
+});
+
+test("requeue re-files an already-stopped task without cancelling it again", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({ id: "gone", status: "failed", error: "agent went away" }));
+  const r = await tasks.requeue("gone");
+  assert.equal(r.ok, true, r.error);
+  assert.equal(registry.getTask("gone")!.status, "backlog");
+  assert.equal(registry.getTask("gone")!.error, null);
+});
+
+test("requeue refuses BEFORE cancelling, so a refused task is left running", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({ id: "chat", kind: "chat", status: "running" }));
+  registry.upsertTask(
+    mkTask({
+      id: "pipe",
+      kind: "pipeline",
+      status: "running",
+      pipelineCommissionId: "commission-1" as never,
+    }),
+  );
+  registry.upsertTask(mkTask({ id: "done", status: "done", outcome: "shipped" }));
+
+  for (const [id, status, why] of [
+    ["chat", "running", /Chat tasks/],
+    ["pipe", "running", /Pipeline commission/],
+    ["done", "done", /done/],
+  ] as const) {
+    const r = await tasks.requeue(id);
+    assert.equal(r.ok, false, id);
+    assert.match(r.error ?? "", why, id);
+    assert.equal(registry.getTask(id)!.status, status, `${id} left untouched`);
+  }
+  assert.deepEqual(await tasks.requeue("nope"), { ok: false, error: "no such task" });
+});
+
+test("the requeue route validates its body and maps refusals to 404 and 409", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({ id: "wire", status: "running" }));
+  registry.upsertTask(mkTask({ id: "settled", status: "done" }));
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
+  const post = (id: string, body?: unknown) =>
+    app.request(`/api/tasks/${id}/requeue`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  const stray = await post("wire", { force: true });
+  assert.equal(stray.status, 400);
+  assert.equal(registry.getTask("wire")!.status, "running", "nothing moved on a bad body");
+
+  assert.equal((await post("missing", {})).status, 404);
+  assert.equal((await post("settled", {})).status, 409);
+  assert.equal(registry.getTask("settled")!.status, "done");
+
+  const ok = await post("wire", {});
+  assert.equal(ok.status, 200);
+  assert.equal(registry.getTask("wire")!.status, "backlog");
+});

@@ -13,6 +13,8 @@ import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
+import { WorktreeActionRequestSchema } from "../src/shared/protocol.ts";
+import { WORKTREE_INVENTORY_LIMITS } from "../src/shared/worktrees.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -112,6 +114,59 @@ test("preview/execute status vocabulary and injected terminal launcher stay exac
     body: JSON.stringify({ token: "00000000-0000-4000-8000-000000000000", acknowledgements: [] }),
   });
   assert.equal(expired.status, 409);
+
+  // A valid Execute answers 202 as soon as the token is claimed; the work finishes behind it.
+  const preview = await app.request("/api/worktrees/actions/preview", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ action: "return", slotId }),
+  });
+  assert.equal(preview.status, 200);
+  const { token } = await preview.json() as { token: string };
+  const accepted = await app.request("/api/worktrees/actions/execute", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ token, acknowledgements: [] }),
+  });
+  assert.equal(accepted.status, 202);
+  const submitted = await accepted.json() as { operation: { id: string; state: string; request: { action: string } } };
+  assert.equal(submitted.operation.state, "queued");
+  assert.equal(submitted.operation.request.action, "return");
+  await operations.idle();
+
+  const dismissed = await app.request(`/api/worktrees/operations/${submitted.operation.id}/dismiss`, {
+    method: "POST",
+    headers: HEADERS,
+    body: "{}",
+  });
+  assert.equal(dismissed.status, 404, "a finished operation leaves nothing to dismiss");
+});
+
+test("a bulk destroy selection accepts up to the bulk limit and rejects one more", async () => {
+  assert.equal(WORKTREE_INVENTORY_LIMITS.bulkSlots, 128);
+  const ids = (count: number) => Array.from({ length: count }, (_, index) => `slot-${index}`);
+  const body = (count: number) => ({ action: "destroy", target: { kind: "slots", slotIds: ids(count) } });
+
+  assert.equal(WorktreeActionRequestSchema.safeParse(body(1)).success, true);
+  assert.equal(WorktreeActionRequestSchema.safeParse(body(128)).success, true);
+  assert.equal(WorktreeActionRequestSchema.safeParse(body(129)).success, false);
+  assert.equal(WorktreeActionRequestSchema.safeParse(body(0)).success, false);
+
+  const preview = (count: number) => app.request("/api/worktrees/actions/preview", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify(body(count)),
+  });
+  // 128 unknown ids pass validation and reach the service, which answers with a blocked
+  // preview naming the lost selection rather than a 404.
+  const accepted = await preview(128);
+  assert.equal(accepted.status, 200);
+  const blocked = await accepted.json() as { allowed: boolean; blockers: string[] };
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.blockers.join("\n"), /128 selected slots no longer exist/);
+  // 129 is refused at the boundary, before any observation runs.
+  assert.equal((await preview(129)).status, 400);
+  assert.equal((await preview(0)).status, 400);
 });
 
 test("worktree routes fail with 503 when the singleton operation service is absent", async () => {

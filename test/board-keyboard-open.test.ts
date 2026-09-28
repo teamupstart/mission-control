@@ -66,6 +66,7 @@ test("every action-bar chord is one the board can defer, not just perform", () =
     ["queue", "toggleQueue"],
     ["mode", "cycleMode"],
     ["kill", "requestKill"],
+    ["requeue", "requestRequeue"],
     // Interrupt is here for the same reason `mode` is: the board's overview mounts no bar,
     // so the chord has to be NAMEABLE before it can be run - even though, like `cycleMode`,
     // this one runs in place rather than deferring.

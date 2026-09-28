@@ -43,7 +43,9 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
         body: JSON.stringify({ agent: "claude", cwd: daemon.repo, env: { weztermPane: "1" }, prompt: "fixture work" }),
       });
       expect(response.ok, await response.text()).toBe(true);
-      await expect(dashboard.getByRole("button", { name: /^interrupt\b/ })).toBeEnabled();
+      // ⌃C only acts on a session running a turn, and the footer has no button to read that
+      // off any more, so wait for the badge the chord's gate reads the same state from.
+      await expect(dashboard.locator(".console-detail span.badge").first()).toHaveText("working");
     };
     await working();
     state.freezeDiscovery = true; save();
@@ -51,7 +53,7 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
     await expect.poll(async () => (await session())?.terminals[0]?.incarnation).toBe(original.terminals[0]!.incarnation);
     await stop(); await start();
     const failed = dashboard.waitForResponse((r) => r.url().endsWith("/interrupt") && r.request().method() === "POST");
-    await dashboard.getByRole("button", { name: /^interrupt\b/ }).click();
+    await dashboard.keyboard.press("Control+c");
     expect((await failed).ok()).toBe(false);
     await expect(dashboard.getByText("WezTerm pane identity is stale or unavailable; wait for fresh discovery", { exact: true })).toBeVisible();
     expect(received).toEqual([]);
@@ -63,7 +65,7 @@ test("a stale WezTerm action reports refusal and fresh discovery restores delive
     await expect.poll(async () => (await session())?.terminals[0]?.incarnation).not.toBe(original.terminals[0]!.incarnation);
     await working();
     const delivered = dashboard.waitForResponse((r) => r.url().endsWith("/interrupt") && r.request().method() === "POST");
-    await dashboard.getByRole("button", { name: /^interrupt\b/ }).click();
+    await dashboard.keyboard.press("Control+c");
     expect((await delivered).ok()).toBe(true);
     await expect.poll(() => received).toContain("\x1b");
   } finally {

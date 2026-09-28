@@ -123,7 +123,8 @@ test(`real Pi through Herdr receives a dashboard follow-up after interrupt${rest
     await send("Hold this turn through Herdr");
     await expect.poll(() => requests).toBe(1);
     await expect.poll(() => realHerdr.cli("pane", "read", paneId!, "--format", "text")).toContain("Pi through Herdr partial response");
-    await detail.getByRole("button", { name: /^interrupt\b/ }).click();
+    // The footer has no interrupt button; ⌃C on the selected session is the control.
+    await dashboard.keyboard.press("Control+c");
     const marker = detail.getByText("[Request interrupted by user]", { exact: true });
     await expect(marker).toHaveCount(1);
     await expect(detail.getByText("Pi through Herdr partial response", { exact: true })).toBeVisible();

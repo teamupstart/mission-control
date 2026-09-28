@@ -96,7 +96,6 @@ export interface SessionViewProps {
   /** Open detail id: the Console selection or the Board's drill-in. */
   detailId: string | null;
   onOpenReviews: (id: string) => void;
-  onOpenDiff: (id: string, commit?: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
   diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;
   onOpenFiles: (id: string) => void;
@@ -145,14 +144,17 @@ export interface SessionViewProps {
   onComplete: (id: string) => void;
   /** Open the kill confirm for this session (app-level modal). */
   onKill: (id: string) => void;
+  /** Open the Return to backlog confirm for this session's task (app-level modal). */
+  onRequeue: (id: string) => void;
   /**
    * A kill landed on this session. The detail it was ordered from is now a dead
    * transcript, so App closes it: the board reverses its drill-in, the console empties
    * its pane. Not driven by the session disappearing - it
    * lingers ~8s as `exited` first, which is the whole delay this removes.
    *
-   * Fired by the confirm dialogs, both of which end the session - Complete closes it
-   * once the outcome is recorded, exactly as Kill does.
+   * Fired by the confirm dialogs, all of which end the session - Complete closes it
+   * once the outcome is recorded, and Return to backlog once the task is re-filed,
+   * exactly as Kill does.
    */
   onKilled: (id: string) => void;
   /** Per-session counter bumped on each reset, so a card can remount its (uncontrolled)

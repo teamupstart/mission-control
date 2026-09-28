@@ -55,7 +55,7 @@ function actionBar(): string {
   return renderToStaticMarkup(
     createElement(ActionBar, {
       session: mkSession({ task: null }),
-      onDiff: () => {},
+      onRequeue: () => {},
       onReset: () => {},
       onComplete: () => {},
       onKill: () => {},
@@ -70,7 +70,7 @@ function setHints(on: boolean): void {
 test("hints are on out of the box, so the shortcuts are discoverable without being sought", () => {
   resetAll();
   setHints(true);
-  assert.deepEqual(keycaps(actionBar()), ["p", "⇧D", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "⌃R", "b", "c", "k"]);
 });
 
 test("turning the preference off leaves the buttons, and not one keycap", () => {
@@ -81,7 +81,7 @@ test("turning the preference off leaves the buttons, and not one keycap", () => 
   assert.ok(!bar.includes("kb-hint"), "no empty keycap element left behind either");
   // The controls themselves are untouched - this is a presentation switch, not a feature
   // flag on the action row.
-  for (const label of ["focus", "diff", "reset", "interrupt", "complete", "kill"]) {
+  for (const label of ["focus", "reset", "backlog", "complete", "kill"]) {
     assert.ok(bar.includes(label), `${label} is still drawn`);
   }
   setHints(true);
@@ -94,7 +94,7 @@ test("the console footer answers to the shared hints switch", () => {
   setHints(false);
   assert.equal(keycaps(actionBar()).length, 0);
   setHints(true);
-  assert.deepEqual(keycaps(actionBar()), ["p", "⇧D", "⌃R", "⌃C", "c", "k"]);
+  assert.deepEqual(keycaps(actionBar()), ["p", "⌃R", "b", "c", "k"]);
 });
 
 test("a rebind moves what the buttons print, so a keycap is never a stale default", () => {

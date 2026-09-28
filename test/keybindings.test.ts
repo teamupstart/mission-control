@@ -333,6 +333,8 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),
+    // `b`, Return to backlog.
+    chordFromEvent(key("b")),
     // ⌃C. Produced from the same "c" the bare `complete` chord is, which is the point of
     // deriving this set from real keydowns rather than listing strings: the modifier has to
     // survive the round trip or the interrupt would be a shortcut nobody could press.

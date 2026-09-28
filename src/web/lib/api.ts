@@ -95,9 +95,9 @@ import {
 } from "@shared/protocol.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type {
-  WorktreeActionExecuteResult,
   WorktreeActionPreview,
   WorktreeActionRequest,
+  WorktreeActionSubmitResult,
   WorktreeInventory,
   WorktreeRiskKey,
 } from "@shared/worktrees.ts";
@@ -345,10 +345,13 @@ export const previewWorktreeAction = (request: WorktreeActionRequest) =>
   worktreeRequest<WorktreeActionPreview>("/api/worktrees/actions/preview", "POST", request);
 
 export const executeWorktreeAction = (token: string, acknowledgements: WorktreeRiskKey[]) =>
-  worktreeRequest<WorktreeActionExecuteResult>("/api/worktrees/actions/execute", "POST", {
+  worktreeRequest<WorktreeActionSubmitResult>("/api/worktrees/actions/execute", "POST", {
     token,
     acknowledgements,
   });
+
+export const dismissWorktreeOperation = (id: string) =>
+  worktreeRequest<Record<string, never>>(`/api/worktrees/operations/${encodeURIComponent(id)}/dismiss`, "POST", {});
 
 export const openWorktreeTerminal = (slotId: string, backend: TerminalBackendId) =>
   worktreeRequest<{ label?: string }>(`/api/worktrees/${encodeURIComponent(slotId)}/open`, "POST", { backend });
@@ -1883,6 +1886,9 @@ export const api = {
   // `completeTask(id, ..., true)` is the "it already landed" half. Refused (409) on a task
   // that is done or still live.
   rescheduleTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reschedule`, {}),
+  // Send a dispatched task back to the backlog at the rank it had, cancelling it first when it
+  // is still live. The session footer's Return to backlog; refused (409) on a done task.
+  requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.

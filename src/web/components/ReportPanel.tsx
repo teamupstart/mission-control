@@ -4,6 +4,7 @@ import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import { TASK_WORKTREE_RETENTION_DAYS } from "@shared/types.ts";
 import { taskHoldsCleanupResources } from "@shared/task-repos.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { taskRequeueRefusal } from "@shared/task.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -241,6 +242,10 @@ export function ReportPanel({
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
+  // Its own arm rather than a second use of `confirmCancel`: a stopped row can offer Clean up
+  // and Reschedule side by side, and arming one must not arm the other.
+  const [confirmReschedule, setConfirmReschedule] = useState<string | null>(null);
+  const [rescheduleError, setRescheduleError] = useState<{ id: string; text: string } | null>(null);
 
   // Escape is handled by the Overlay this panel renders into, NOT by App - App
   // suppresses the app's global session keys while any overlay is up, so the overlay layer
@@ -312,6 +317,15 @@ export function ReportPanel({
   async function reclaim(taskId: string): Promise<void> {
     await api.reclaimTask(taskId);
     setConfirmCancel(null);
+  }
+
+  // A refusal stays on the row that asked, because the likeliest one is "its resources are
+  // being cleaned up - try again in a moment", which is advice about THIS row.
+  async function reschedule(taskId: string): Promise<void> {
+    setRescheduleError(null);
+    const r = await api.rescheduleTask(taskId);
+    setConfirmReschedule(null);
+    if (!r.ok) setRescheduleError({ id: taskId, text: r.error ?? "could not reschedule" });
   }
 
   // Abort an active agent and reclaim its worktree. Two-click confirm so a stray
@@ -521,6 +535,42 @@ export function ReportPanel({
                   failed cleanup could not stop. Offering Retry for either re-dispatches on top
                   of a resource the previous attempt still holds, and starts a reschedule
                   against a cleanup that is still retrying. */}
+              {/* Any stopped task can go back to the backlog from its own row - not only from a
+                  dependent's dead-blocker warning, which a task nothing waits on never has.
+                  The same predicate the requeue route refuses on, so a done task, a chat task,
+                  and a Pipeline commission are never offered it. */}
+              {!taskRequeueRefusal(t) && (
+                <div className="report-row-actions">
+                  {confirmReschedule === t.id ? (
+                    <span className="report-cancel">
+                      <span className="report-sub">
+                        {taskHoldsCleanupResources(t)
+                          ? "back to backlog? removes its checkout"
+                          : "back to backlog?"}
+                      </span>
+                      <Tooltip label="Put this task back in the backlog at its old position. Any checkout it still holds is removed, uncommitted and unpushed work included.">
+                        <button className="btn btn-send" onClick={() => void reschedule(t.id)}>
+                          Reschedule
+                        </button>
+                      </Tooltip>
+                      <Tooltip label="Leave this task where it is">
+                        <button className="btn btn-ghost" onClick={() => setConfirmReschedule(null)}>
+                          ✕
+                        </button>
+                      </Tooltip>
+                    </span>
+                  ) : (
+                    <Tooltip label="Put this task back in the backlog to run later - asks for a confirming click first">
+                      <button className="btn" onClick={() => setConfirmReschedule(t.id)}>
+                        Reschedule
+                      </button>
+                    </Tooltip>
+                  )}
+                  {rescheduleError?.id === t.id && (
+                    <span className="report-sub dim" role="status">{rescheduleError.text}</span>
+                  )}
+                </div>
+              )}
               {t.status === "failed" && !taskHoldsCleanupResources(t) && (
                 <div className="report-row-actions">
                   <Tooltip label="Dispatch this failed task again from scratch">

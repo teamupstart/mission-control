@@ -51,7 +51,7 @@ function props(sessions: Session[]): SessionViewProps {
     onDeselect: noop,
     detailId: null,
     onOpenReviews: noop,
-    onOpenDiff: noop,
+    onRequeue: noop,
     onOpenFiles: noop,
     onOpenFile: () => false,
     onOpenFilePath: () => {},

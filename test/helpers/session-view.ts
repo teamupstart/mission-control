@@ -33,7 +33,7 @@ export function mkSessionView(
     onDeselect: () => {},
     detailId: session.id,
     onOpenReviews: () => {},
-    onOpenDiff: () => {},
+    onRequeue: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
     onOpenFilePath: () => {},

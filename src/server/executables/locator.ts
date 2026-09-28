@@ -513,19 +513,6 @@ export class ExecutableLocator {
       }
       return kept;
     };
-    groups.push(
-      {
-        values: ranked(splitPath(this.inheritedPath ?? this.env.PATH)),
-        source: "inherited-path",
-        detail: "PATH inherited by Mission Control",
-      },
-      {
-        values: ranked(splitPath(shell.path ?? undefined)),
-        source: "login-shell",
-        detail: this.env.SHELL?.trim() || "/bin/zsh",
-      },
-    );
-
     const context = executableCandidateContext(this.env);
     const dataHome = this.env.XDG_DATA_HOME?.trim() || join(context.home, ".local", "share");
     const miseData = this.env.MISE_DATA_DIR?.trim() || join(dataHome, "mise");
@@ -533,6 +520,8 @@ export class ExecutableLocator {
     const asdfData = this.env.ASDF_DATA_DIR?.trim() || join(context.home, ".asdf");
     const voltaHome = this.env.VOLTA_HOME?.trim() || join(context.home, ".volta");
     groups.push(
+      // Keep managed toolchains ahead of a Finder/Dock launch's system PATH, including
+      // for child hooks that resolve their interpreter through /usr/bin/env.
       {
         values: [
           join(context.home, ".local", "bin"),
@@ -543,6 +532,16 @@ export class ExecutableLocator {
         ],
         source: "version-manager",
         detail: "supported per-user tool locations",
+      },
+      {
+        values: ranked(splitPath(this.inheritedPath ?? this.env.PATH)),
+        source: "inherited-path",
+        detail: "PATH inherited by Mission Control",
+      },
+      {
+        values: ranked(splitPath(shell.path ?? undefined)),
+        source: "login-shell",
+        detail: this.env.SHELL?.trim() || "/bin/zsh",
       },
       {
         values: this.platform === "win32"

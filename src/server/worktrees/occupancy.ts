@@ -9,6 +9,7 @@ import {
   readProcCwdsSnapshot,
   type ProcCwdSnapshot,
 } from "../discovery/proc-cwd.ts";
+import { ownWorktreeProcesses } from "./own-processes.ts";
 
 const MAX_TARGETS = 256;
 const MAX_COMMAND_BYTES = 512;
@@ -32,12 +33,15 @@ export interface WorktreeOccupancyDeps {
   listProcesses: () => Promise<ProcessSnapshot>;
   readCwds: (pids: number[]) => Promise<ProcCwdSnapshot>;
   knownOwner: (process: Proc) => string | null;
+  /** This daemon's running worktree Git commands; never occupants of the slot they read. */
+  ownProcesses: () => ReadonlySet<number>;
 }
 
 const DEFAULT_DEPS: WorktreeOccupancyDeps = {
   listProcesses: listProcessesSnapshot,
   readCwds: readProcCwdsSnapshot,
   knownOwner: () => null,
+  ownProcesses: ownWorktreeProcesses,
 };
 
 async function physical(path: string): Promise<string> {
@@ -52,6 +56,27 @@ async function physical(path: string): Promise<string> {
 export function pathContains(parent: string, candidate: string): boolean {
   const rel = relative(parent, candidate);
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+/**
+ * Our running worktree Git commands and every process below them in this snapshot. A Git
+ * command may run helpers of its own; they are just as much our bounded read or removal.
+ */
+function ownDescendants(processes: readonly Proc[], roots: ReadonlySet<number>): Set<number> {
+  const own = new Set<number>();
+  if (roots.size === 0) return own;
+  const parent = new Map(processes.map((process) => [process.pid, process.ppid]));
+  for (const process of processes) {
+    const seen = new Set<number>();
+    for (let pid: number | undefined = process.pid; pid !== undefined && pid > 0 && !seen.has(pid); pid = parent.get(pid)) {
+      seen.add(pid);
+      if (roots.has(pid) || own.has(pid)) {
+        own.add(process.pid);
+        break;
+      }
+    }
+  }
+  return own;
 }
 
 /**
@@ -94,12 +119,14 @@ export async function inspectWorktreeOccupancy(
   // resolve, disappear under a fresh stable-identity snapshot, or make occupancy unknown.
   const cwdScope = new Set(snapshot.cwdScopePids);
   const completedCollectors = new Set(snapshot.completedCollectorPids);
+  const own = ownDescendants(snapshot.processes, d.ownProcesses());
   const processes = snapshot.processes.filter(
     (process) =>
       Number.isInteger(process.pid) &&
       process.pid > 0 &&
       cwdScope.has(process.pid) &&
-      !completedCollectors.has(process.pid),
+      !completedCollectors.has(process.pid) &&
+      !own.has(process.pid),
   );
   let cwdSnapshot: ProcCwdSnapshot;
   try {
@@ -134,9 +161,15 @@ export async function inspectWorktreeOccupancy(
       return result;
     }
     const confirmed = new Map(confirmation.processes.map((process) => [process.pid, process]));
+    // Still alive means still in scope, by the same rule the first snapshot used. A short-lived
+    // process caught mid-exit - its cwd already released, so the cwd reader omits it - is
+    // listed again as a zombie with the same start time. A zombie holds no cwd and cannot
+    // occupy anything; counting it as alive turned every busy moment of this daemon's own Git
+    // reads into unknown occupancy and a refused cleanup.
+    const confirmedScope = new Set(confirmation.cwdScopePids);
     unresolved = unresolved.filter((process) => {
       const current = confirmed.get(process.pid);
-      return current?.startRaw === process.startRaw;
+      return current?.startRaw === process.startRaw && confirmedScope.has(process.pid);
     });
   }
   if (unresolved.length > 0) {

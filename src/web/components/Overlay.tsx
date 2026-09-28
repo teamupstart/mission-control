@@ -82,6 +82,9 @@ export const OVERLAY_IDS = {
   // The backlog column's bulk edit. Its own id so the Escape registry can close it without
   // also clearing the selection it was opened over.
   backlogBulkEdit: "backlog-bulk-edit",
+  // The session footer's Return to backlog confirm. A per-session confirm like Kill, so the
+  // fleet's `k` and `r` must not reach the session behind it while it is up.
+  requeue: "requeue",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

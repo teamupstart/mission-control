@@ -102,6 +102,7 @@ interface TaskRow {
   status: string;
   sessionId: string | null;
   repoRoot: string;
+  worktreePath: string | null;
 }
 
 const sessions = (daemon: DaemonHandle): Promise<SessionRow[]> =>
@@ -334,7 +335,7 @@ test("a corrected session is offered a retro once its review is clean, and one c
   await expect(complete).toBeHidden();
 });
 
-test("a retro clicked after merge starts one follow-up and keeps the source task complete", async ({
+test("completing merged work retires its owned session and withdraws the retro offer", async ({
   dashboard,
   daemon,
 }) => {
@@ -375,17 +376,14 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
       return source?.status ?? "";
     })
     .toBe("running");
-  // Hold a real fake-agent turn open while the public PR poll observes the merge. A live
-  // working agent is not auto-settled or closed from an intermediate merge, which leaves the
-  // source session present for the explicit click after the task is completed below.
+  // A working agent can survive an intermediate merge. Explicit final completion still
+  // retires its owned session, even if that turn has not finished yet.
   await reply.fill(HELD_TURN);
   await reply.press("Enter");
   await expect
     .poll(async () => (await sessions(daemon)).find((row) => row.id === session.id)?.state)
     .toBe("working");
-  // A working turn can keep the source session alive after its merge. If the normal merge
-  // lifecycle has not already settled the task, complete it through the public task route;
-  // either way the state at click time is the operator-visible post-merge state.
+  // Complete through the public task route, which owns durable closure and checkout return.
   if ((await tasks(daemon)).find((task) => task.id === source!.id)?.status !== "done") {
     await api(
       daemon,
@@ -398,7 +396,7 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
 
   // Stand in only for what the provider poll observed, as the clean Inspector round above
   // does. Production's merge recorder stamps these two durable projections together. Both
-  // matter here: the task binding routes the click, while the episode prevents the next
+  // matter here: the task binding preserves merge attribution, while the episode prevents the next
   // ordinary Registry upsert from truthfully restoring an open observation over a DB-only
   // shortcut. Written after task completion because that public lifecycle emits its own
   // final binding upsert first. No live Registry object is seeded by the fixture.
@@ -417,41 +415,18 @@ test("a retro clicked after merge starts one follow-up and keeps the source task
     expect(Number(episode.changes)).toBe(1);
     expect(Number(binding.changes)).toBe(1);
   });
-  await expect(retro).toBeVisible();
-
-  const responsePromise = dashboard.waitForResponse((response) =>
-    response.url().includes("/api/sessions/") && response.url().endsWith("/retro"),
-  );
-  await retro.click();
-  const retroResponse = await responsePromise;
-  expect(await retroResponse.json()).toMatchObject({ kind: "started" });
-  await expect(
-    dashboard.getByText(/Retro started in a new task: .* The original task remains complete\./),
-  ).toBeVisible();
-
-  let followup: TaskRow | undefined;
-  await expect
-    .poll(async () => {
-      const rows = await tasks(daemon);
-      const matches = rows.filter((task) => task.title === `Retro: ${source!.title}`);
-      followup = matches[0];
-      return matches.length;
-    }, { message: "one linked retro task should appear" })
-    .toBe(1);
-  expect(followup?.id).not.toBe(source!.id);
-  expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
-  observed("the merged source started one separate retro while remaining complete");
-  await shoot(dashboard, dashboard, "06-post-merge-follow-up-started");
-
-  await expect(retro).toBeEnabled();
-  await retro.click();
-  await expect
-    .poll(async () => {
-      const rows = await tasks(daemon);
-      return rows.filter((task) => task.title === `Retro: ${source!.title}`).map((task) => task.id);
-    }, { message: "the duplicate click should keep the same follow-up task" })
-    .toEqual([followup!.id]);
-  expect((await tasks(daemon)).find((task) => task.id === source!.id)?.status).toBe("done");
+  // A completed managed task no longer leaves its source agent available for a post-merge
+  // retro. The separate follow-up path for retained assigned sessions remains covered by
+  // retro-http.test.ts. Here the owned checkout must be returned and its controls removed.
+  await expect(retro).toBeHidden();
+  await expect.poll(async () => (await sessions(daemon)).some((row) => row.id === session.id))
+    .toBe(false);
+  await expect.poll(async () => (await tasks(daemon)).find((task) => task.id === source!.id), {
+    timeout: 60_000,
+  }).toMatchObject({ status: "done", worktreePath: null });
+  expect((await tasks(daemon)).filter((task) => task.title === `Retro: ${source!.title}`)).toEqual([]);
+  observed("completion withdrew the retro offer, retired the owned session, and returned its checkout");
+  await shoot(dashboard, dashboard, "06-completed-owned-session-retired");
 });
 
 test("a dry-run Inspector check requires a review of the current PR commit", async ({ dashboard, daemon }) => {

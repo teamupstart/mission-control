@@ -228,7 +228,7 @@ test("a rollover archives the merged binding, and the departed agent lands on it
   assert.match(t.outcome ?? "", /merged/);
 });
 
-test("an idle merge survives the provisional done-to-running rollover", () => {
+test("an assigned agent's idle merge survives the provisional done-to-running rollover", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
   new TaskManager(registry);
@@ -249,7 +249,8 @@ test("an idle merge survives the provisional done-to-running rollover", () => {
     title: "Ship then follow up",
     status: "running",
     sessionId: id,
-    worktreePath: cwd,
+    // Assigned agents can keep working after a merge; owned checkouts complete durably.
+    worktreePath: null,
   }));
   registry.bindTaskToWorkEpisode(taskId, id);
   const episode = registry.workEpisodeForSession(id)!;

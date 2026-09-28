@@ -1298,7 +1298,7 @@ for (const [suffix, failureIndex, boundary] of [
   });
 }
 
-test("post-merge episode rollover preserves running task ownership", () => {
+test("an assigned agent's post-merge episode rollover preserves running task ownership", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const id = "owned-rollover";
@@ -1307,7 +1307,8 @@ test("post-merge episode rollover preserves running task ownership", () => {
     id: "owned-rollover-task",
     title: "Owned rollover task",
     status: "running",
-    worktreePath: cwd,
+    // This is task ownership on an assigned session, not ownership of its checkout.
+    worktreePath: null,
   }));
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/owned-rollover" })]);
   registry.applyHook({

@@ -1836,9 +1836,9 @@ export class TaskManager {
   private async stopWithinBudget(session: Session): Promise<ActionResult> {
     // Keep the SDK card truthfully unavailable while its ordinary stop/pump drain runs.
     // requestStop and stopSession join the supervisor's same deduplicated stop promise.
-    if (session.runtime === "sdk" && !this.supervisor?.requestStop(session.id)) {
-      return { ok: false, error: "this session has no live embedded driver" };
-    }
+    // A retired card can already be exited or absent while its driver still owes cleanup.
+    // Presentation refusal must not prevent stopSession from retrying that live handle.
+    if (session.runtime === "sdk") this.supervisor?.requestStop(session.id);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<ActionResult>((resolve) => {
       timer = unref(setTimeout(

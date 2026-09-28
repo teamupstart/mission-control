@@ -87,6 +87,7 @@ test("a retired mission's failed SDK stop stays owed and rejects follow-up until
   await tasks.sweepMissionSessionClosures();
   await drain();
   await tasks.sweepMissionSessionClosures();
+  assert.equal(handle.stopped, true, "cleanup retries the driver after its card was removed");
   assert.equal(supervisor.handleFor(session.id), null);
   assert.equal(getTaskSessionClosure(taskId), null);
   assert.equal(registry.getTask(taskId)?.status, "done");

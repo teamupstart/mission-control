@@ -53,7 +53,10 @@ test("a landed kill tells App, and a refused one does not", () => {
 
 test("a landed complete closes its detail too, and a refused one does not", () => {
   const modal = src("components/CompleteModal.tsx");
-  assert.match(modal, /const killed = await api\.kill\(session\.id\)/, modal);
+  assert.match(modal, /if \(!completed\.ok\)[\s\S]*?return;/, modal);
+  assert.match(modal,
+    /const killed = completed\.sessionClosureRequested\s*\? \{ ok: true \}\s*: await api\.kill\(session\.id\)/,
+    "daemon-owned completion skips the duplicate kill; other completions still close the session");
   assert.match(modal, /if \(!killed\.ok\)[\s\S]*?return;/, modal);
   assert.match(modal, /onCompleted\?\.\(\)/, modal);
 });

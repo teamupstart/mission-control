@@ -88,10 +88,11 @@ test("fully on and trusted: no warning about GitHub Inspector at all", () => {
   assert.doesNotMatch(html, /not allowed to review/i);
 });
 
-test("after-merge wording promises completion before closing, never a Kill outcome", () => {
+test("after-merge wording distinguishes owned completion from optional assigned-session closure", () => {
   const html = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
-  assert.match(html, /Complete the task, then close its session/);
-  assert.match(html, /never gives the task Kill/);
+  assert.match(html, /Completed tasks with owned worktrees always close their sessions, save required archives, and reset and return their worktrees/);
+  assert.match(html, /This setting controls assigned sessions without task-owned worktrees/);
+  assert.match(html, /marks their merged tasks complete either way/);
   assert.doesNotMatch(html, /Kill the agent once/);
 });
 

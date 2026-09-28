@@ -150,7 +150,10 @@ export const test = base.extend<{
         ),
       );
       await page.reload();
-      await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+      // Exact: a spec that switches discovery on (`session-driven-by-engine.spec.ts`) adopts
+      // whatever agents the machine is running, and a rail row whose title merely mentions
+      // "dispatch" would otherwise make this ready check a strict-mode violation.
+      await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
       await use(page);
     } finally {
       if (stopCoverage) await stopCoverage();

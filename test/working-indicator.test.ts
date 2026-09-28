@@ -60,9 +60,12 @@ function msg(id: string, role: "user" | "assistant", ts: number): TranscriptMess
   return { id, role, text: `${role} ${id}`, tools: [], ts };
 }
 
-/** Everything the default profile hides, minus the ids named: the operator checked those. */
+/** The default profile with both working marks unchecked: the base row and its clock only. */
+const NOTHING_CHECKED = [...UI_CONFIG_DEFAULTS.hiddenDisplayItems, ...WORKING_IDS];
+
+/** Both working marks unchecked, minus the ids named: the operator checked those. */
 function hiddenExcept(...checked: string[]): string[] {
-  return UI_CONFIG_DEFAULTS.hiddenDisplayItems.filter((id) => !checked.includes(id));
+  return NOTHING_CHECKED.filter((id) => !checked.includes(id));
 }
 
 async function withHidden<T>(hidden: readonly string[], run: () => T): Promise<T> {
@@ -121,7 +124,7 @@ test("the current turn starts at the newest prompt in the loaded conversation", 
 });
 
 test("the row carries how long the current turn has run, with nothing checked", async () => {
-  const html = await withHidden(UI_CONFIG_DEFAULTS.hiddenDisplayItems, () => renderPanel());
+  const html = await withHidden(NOTHING_CHECKED, () => renderPanel());
   // 2m 14s ago when the fixture was built; a slow runner may have crossed one more second.
   assert.match(html, /class="turn-progress-clock">2m 1[45]s</);
   // After the activity it describes, so the words read first and clip against the clock.
@@ -135,18 +138,26 @@ test("no clock is drawn when the turn's prompt is not loaded", () => {
 });
 
 test("with nothing checked, the row is not pinned and the reply box has no bar", async () => {
-  const html = await withHidden(UI_CONFIG_DEFAULTS.hiddenDisplayItems, () => renderPanel());
+  const html = await withHidden(NOTHING_CHECKED, () => renderPanel());
   assert.equal(rowTag(html), '<p class="turn-progress"');
   assert.doesNotMatch(replyBox(html), /has-progress-bar/);
 });
 
-test("both working marks ship off, for fresh and upgraded profiles alike", () => {
+test("both working marks ship on", () => {
   for (const id of WORKING_IDS) {
     assert.ok(
-      UI_CONFIG_DEFAULTS.hiddenDisplayItems.includes(id),
-      `"${id}" should ship unchecked`,
+      !UI_CONFIG_DEFAULTS.hiddenDisplayItems.includes(id),
+      `"${id}" should ship checked`,
     );
   }
+});
+
+test("by default the row is pinned and the reply box carries the bar", () => {
+  // No `withHidden`: the shipped defaults, which is what an operator who never opened
+  // Display gets.
+  const html = renderPanel();
+  assert.equal(rowTag(html), '<p class="turn-progress is-pinned"');
+  assert.match(replyBox(html), /class="transcript-input has-progress-bar"/);
 });
 
 test("checking Pin the working row pins the row, and only the row", async () => {
@@ -199,7 +210,7 @@ async function workingPreview(hidden: readonly string[]): Promise<string> {
   return html.slice(at);
 }
 
-test("the Display panel lists both marks under their own heading, unchecked", async () => {
+test("the Display panel lists both marks under their own heading, checked", async () => {
   const html = await withHidden(UI_CONFIG_DEFAULTS.hiddenDisplayItems, () =>
     renderToStaticMarkup(createElement(BoardCardPanel)),
   );
@@ -207,12 +218,12 @@ test("the Display panel lists both marks under their own heading, unchecked", as
   for (const label of ["Pin the working row", "Reply box progress bar"]) {
     const box = new RegExp(`<input type="checkbox" aria-label="${label}"[^>]*>`).exec(html)?.[0];
     assert.ok(box, `the panel should offer "${label}"`);
-    assert.doesNotMatch(box, /checked/, `"${label}" should ship unchecked`);
+    assert.match(box, /checked/, `"${label}" should ship checked`);
   }
 });
 
 test("the preview shows the clock with nothing checked, and moves with each box", async () => {
-  const none = await workingPreview(UI_CONFIG_DEFAULTS.hiddenDisplayItems);
+  const none = await workingPreview(NOTHING_CHECKED);
   // The base experience, visible before anything is checked.
   assert.match(none, /class="turn-progress-clock">2m 14s</);
   assert.doesNotMatch(none, /is-pinned/);

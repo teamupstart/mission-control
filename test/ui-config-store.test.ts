@@ -21,7 +21,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
-const { DISPLAY_ITEM_HIDDEN_SEEDS, UI_CONFIG_DEFAULTS } = await import(
+const { DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS } = await import(
   "../src/shared/protocol.ts",
 );
 
@@ -169,7 +169,7 @@ test("a keybinding for an action this build retired is stored, not rejected", ()
 // ---- a display item that must ship OFF, on a profile that already exists ----
 //
 // `UI_CONFIG_DEFAULTS.hiddenDisplayItems` is not enough by itself, and that is the whole
-// reason `DISPLAY_ITEM_HIDDEN_SEEDS` exists. A stored list is the operator's own answer and
+// reason `DISPLAY_ITEM_SEEDS` exists. A stored list is the operator's own answer and
 // is returned verbatim; the default only reaches a record that stored no list at all. So on
 // every profile that ever unchecked one card item, a newly-introduced ships-hidden item would
 // resolve to SHOWN - the opposite of what it ships as, and invisible to any test that starts
@@ -182,7 +182,7 @@ test("an existing profile that stored its own hidden list still gets a ships-hid
   const upgraded = getUiConfig();
   assert.deepEqual(
     upgraded.hiddenDisplayItems,
-    ["cost", "workflowDetails", "workingPinned", "workingProgressBar"],
+    ["cost", "workflowDetails"],
     "a ships-hidden item arrived switched ON for an operator who had customised this panel",
   );
   // Their own answer survives, and an item that shipped before the marker is not re-hidden.
@@ -194,27 +194,45 @@ test("an existing profile that stored its own hidden list still gets a ships-hid
   // migration that only ever answered in memory would re-run on every read, and the marker
   // it writes is what makes switching the item on stick.
   const stored = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
-  assert.deepEqual(stored.hiddenDisplayItems, [
-    "cost",
-    "workflowDetails",
-    "workingPinned",
-    "workingProgressBar",
-  ]);
-  assert.equal(stored.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+  assert.deepEqual(stored.hiddenDisplayItems, ["cost", "workflowDetails"]);
+  assert.equal(stored.hiddenDisplayItemsSeed, DISPLAY_ITEM_SEEDS.length);
 });
 
 test("a profile the previous build seeded is given only the rungs it has not had", () => {
-  // Today's operator: seeded once, for `workflowDetails`, and since then free to switch it
-  // on. This build owes them the working marks and nothing else - re-offering the first
-  // rung would switch Workflow details back off for everyone who had turned it on.
+  // An operator seeded once, for `workflowDetails`, and since then free to switch it on.
+  // The working marks are hidden and shown again by the rungs they are owed, so they end
+  // where they ship - on - and re-offering the first rung would switch Workflow details
+  // back off for everyone who had turned it on.
   setAppConfig(APP_CONFIG_ENTRIES.ui, {
     layout: "board",
     hiddenDisplayItems: ["cost"],
     hiddenDisplayItemsSeed: 1,
   });
   const upgraded = getUiConfig();
-  assert.deepEqual(upgraded.hiddenDisplayItems, ["cost", "workingPinned", "workingProgressBar"]);
-  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+  assert.deepEqual(upgraded.hiddenDisplayItems, ["cost"]);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_SEEDS.length);
+});
+
+test("a profile given the working marks off has them switched back on, once", () => {
+  // The build before this one seeded the working marks hidden. This build's `show` rung
+  // takes them back out, and leaves the operator's own `cost` and the still-hidden
+  // `workflowDetails` alone.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, {
+    layout: "board",
+    hiddenDisplayItems: ["cost", "workflowDetails", "workingPinned", "workingProgressBar"],
+    hiddenDisplayItemsSeed: 2,
+  });
+  const upgraded = getUiConfig();
+  assert.deepEqual(upgraded.hiddenDisplayItems, ["cost", "workflowDetails"]);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_SEEDS.length);
+
+  // Once: unchecking a working mark afterwards is the operator's answer, and sticks.
+  setUiConfig({ hiddenDisplayItems: ["cost", "workflowDetails", "workingPinned"] });
+  assert.deepEqual(
+    getUiConfig().hiddenDisplayItems,
+    ["cost", "workflowDetails", "workingPinned"],
+    "the show rung re-ran and switched back on a mark the operator had unchecked",
+  );
 });
 
 test("switching a ships-hidden item on is not undone by the next read", () => {
@@ -236,20 +254,15 @@ test("a profile that never touched this panel is seeded without duplicating the 
   setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board" });
   const upgraded = getUiConfig();
   assert.deepEqual(upgraded.hiddenDisplayItems, [...UI_CONFIG_DEFAULTS.hiddenDisplayItems]);
-  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_SEEDS.length);
 });
 
 test("a fresh profile is born fully seeded and never migrates", () => {
   // An absent record must not look like an un-seeded one, or the item could never be
   // switched on: the schema default already carries every ships-hidden id.
   const fresh = getUiConfig();
-  assert.deepEqual(fresh.hiddenDisplayItems, [
-    "worktree",
-    "workflowDetails",
-    "workingPinned",
-    "workingProgressBar",
-  ]);
-  assert.equal(fresh.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+  assert.deepEqual(fresh.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.equal(fresh.hiddenDisplayItemsSeed, DISPLAY_ITEM_SEEDS.length);
   assert.equal(
     getAppConfig(APP_CONFIG_ENTRIES.ui),
     undefined,

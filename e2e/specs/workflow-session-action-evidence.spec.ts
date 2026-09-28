@@ -354,10 +354,10 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   //
   //     Code Risk Reviewer, Code Quality Judge and Code Design Reviewer share stage 3. Test
   //     Evidence Auditor, Documentation Steward and Slop Filter share stage 4, followed by Pull
-  //     Request and End with no fixed footer afterwards. GitHub Inspector remains available to observe the
-  //     resulting pull request, but the current version does not wait for that optional remote
-  //     pass. `code-design-reviewer.spec.ts` owns stage 3's membership; this step is here for
-  //     the stage ORDER and the overflow measurement around it.
+  //     Request and End, and the current version (18 onward) closes on GitHub Inspector's fixed
+  //     completion footer after End: the run is not complete until Inspector has reviewed the
+  //     verified pull request. `code-design-reviewer.spec.ts` owns stage 3's membership; this
+  //     step is here for the stage ORDER and the overflow measurement around it.
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
   const shipped = dashboard.locator(".wf-pipeline-strip");
@@ -383,7 +383,10 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   const end = shipped.locator(".wf-pipeline-terminus").filter({ hasText: "Complete" });
   await expect(pullRequest).toHaveCount(1);
   await expect(end).toHaveCount(1);
-  await expect(shipped.locator(".wf-pipeline-inspector")).toHaveCount(0);
+  const inspector = shipped.getByRole("region", {
+    name: /^GitHub Inspector, the fixed completion policy/,
+  });
+  await expect(inspector).toHaveCount(1);
   const order = await shipped.locator("li.wf-pipeline-reviewer").allTextContents();
   expect(order.findIndex((text) => text.includes("Documentation Steward")))
     .toBeLessThan(order.findIndex((text) => text.includes("Pull Request")));
@@ -431,7 +434,8 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   });
 
   // The tail is REACHABLE, which is the claim a scrollable strip actually owes a reader:
-  // scrolled to its far end, the last two items are both wholly on screen. This fails if
+  // scrolled to its far end, the last two items - the Complete terminus and the Inspector
+  // footer that follows it - are both wholly on screen. This fails if
   // the strip's own padding, a sticky element, or a terminus wider than the scrollport ever
   // leaves the end of a pipeline impossible to see, and it is measured at the one viewport
   // where the strip has room to be judged.
@@ -440,5 +444,5 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect.poll(async () => entirelyInsideStrip(end), {
     message: "the Complete terminus should be wholly visible at the strip's far end",
   }).toBe(true);
-  expect(await entirelyInsideStrip(pullRequest)).toBe(true);
+  expect(await entirelyInsideStrip(inspector)).toBe(true);
 });

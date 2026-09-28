@@ -1338,9 +1338,9 @@ it should. The clock is part of the row and cannot be switched off. When a turn 
 its prompt is no longer in the loaded part of the log, the row draws no clock rather than a
 smaller, wrong one.
 
-**Two more marks are yours to add**, under **Settings → Display → Session display → Working
-indicator**. Both ship off, so with neither checked the conversation looks exactly as it did
-before, plus the clock, and the panel's preview shows each one as you check it:
+**Two more marks are on by default**, under **Settings → Display → Session display → Working
+indicator**. Uncheck either to drop it; with neither checked the conversation shows only the
+row and its clock. The panel's preview shows each one as you check or uncheck it:
 
 - **Pin the working row** keeps the row on the bottom edge of the log while you scroll back
   through the conversation. At the bottom of the log nothing changes - it is still the last

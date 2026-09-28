@@ -863,7 +863,8 @@ available:
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
   and **Reply box progress bar**, a thin moving bar along the top of the reply box. Both ship
-  off, and an upgraded profile gets them off too, once, the same way as **Workflow details**.
+  on. A profile that was given them off by the build that introduced them has them switched
+  back on once, on upgrade, and unchecking either afterwards sticks.
   The row's elapsed-time clock is not on this list: it is always drawn. See
   [the step the current turn is on](sessions.md#the-step-the-current-turn-is-on).
 - **The conversation header stays on one row, and gives way in a fixed order.** It carries the

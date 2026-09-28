@@ -82,7 +82,7 @@ function render(over: Partial<Session> = {}, view: ConversationView = "terminal"
 
 test("a working session's current step reads at the tail of the log", () => {
   const html = render();
-  assert.match(html, /<p class="turn-progress pty-entry"/, "the row should render");
+  assert.match(html, /<p class="turn-progress pty-entry[" ]/, "the row should render");
   assert.match(html, /class="turn-progress-text">running Bash</);
   // Whose step it is. The byline is the same speaker the assistant turns above carry, drawn
   // through the log's own `.turn-role` so the row reads in the same rhythm as them.
@@ -95,10 +95,12 @@ test("the terminal drawing gets the row as an entry in its stream", () => {
   // diff - the row was sitting flush against the last entry and two dozen pixels left of
   // everything else. It takes `.pty-entry` there rather than restating those rules, which
   // is also what puts the spine's `:last-child` stop on the row that is actually last.
-  assert.match(render({}, "terminal"), /class="turn-progress pty-entry"/);
+  assert.match(render({}, "terminal"), /class="turn-progress pty-entry[" ]/);
   // And the chat drawing does NOT, which is what makes the class a rendering choice rather
-  // than something the row carries everywhere.
-  assert.match(render({}, "chat"), /class="turn-progress"/);
+  // than something the row carries everywhere. (`is-pinned` may follow either: Pin the
+  // working row ships on.)
+  assert.match(render({}, "chat"), /class="turn-progress[" ]/);
+  assert.doesNotMatch(render({}, "chat"), /class="turn-progress[^"]*pty-entry/);
 });
 
 test("the row says what it is, so it is never read as a recorded turn", () => {
@@ -159,7 +161,7 @@ test("the in-progress row and the Observed activity rail are different things", 
   // would have to delete one of these two assertions to pass.
   const html = render();
   assert.match(html, /Tool calls observed in the loaded transcript\./);
-  assert.match(html, /<p class="turn-progress pty-entry"/);
+  assert.match(html, /<p class="turn-progress pty-entry[" ]/);
   // And the row is not inside the rail: it is a child of the log, which is what puts it at
   // the tail of the conversation rather than in the column beside it.
   const log = html.slice(html.indexOf('<div class="transcript-log"'));

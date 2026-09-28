@@ -214,8 +214,9 @@ export const DISPLAY_ITEMS = [
    *
    * The base is not here and cannot be switched off: while a session is working, the log's
    * last row says what it reports doing and how long the current turn has run. These two
-   * add to that, and both ship OFF (`DISPLAY_ITEM_HIDDEN_SEEDS`), so with neither checked
-   * the conversation draws exactly what it did before they existed, plus the clock.
+   * add to that, and both ship ON - `DISPLAY_ITEM_SEEDS` also switches them back on for a
+   * profile given them off when they were introduced - so a working conversation holds its
+   * row in view and marks its reply box until the operator unchecks either.
    *
    * Both mount on the same gate as the row itself, `liveActivity(session)`, so neither can
    * claim the session is working while the row has gone.

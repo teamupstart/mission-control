@@ -3176,7 +3176,21 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  * the right rule and the breach is a defect to fix, not a licence to add a second one.
  */
 /**
- * Display-item ids that ship HIDDEN, in the order the builds that introduced them shipped.
+ * What a build changed about which display items ship hidden, one rung per build.
+ *
+ * A rung either HIDES ids - the ordinary case, an item introduced switched off - or SHOWS ids
+ * a rung below it hid, which is how a ships-hidden item is later changed to ship on. A
+ * `show` rung removes its ids from every record it runs on, once. A stored list cannot tell
+ * an id the ladder hid from one the operator unchecked, so a `show` rung also turns an
+ * operator's explicit off back on - append one only when that is decided, as it was for the
+ * working marks (see the rung itself). A choice made after the rung has run sticks.
+ */
+export type DisplayItemSeed =
+  | { readonly hide: readonly string[] }
+  | { readonly show: readonly string[] };
+
+/**
+ * Changes to which display items ship hidden, in the order the builds that made them shipped.
  *
  * `UI_CONFIG_DEFAULTS.hiddenDisplayItems` below is NOT sufficient on its own, and that is
  * the defect this ladder exists to fix rather than a subtlety to remember. A stored
@@ -3189,9 +3203,11 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  * touched this panel - the opposite of what "ships off" means, and invisible in any test
  * that starts from an empty store.
  *
- * Each entry is one build's worth of new ships-hidden ids, and `hiddenDisplayItemsSeed`
- * records how many entries a record has been given. `seedHiddenDisplayItems` applies the
- * rest exactly once and then stops, so checking the box afterwards sticks.
+ * Each entry is one build's worth of change, and `hiddenDisplayItemsSeed` records how many
+ * entries a record has been given. `seedHiddenDisplayItems` applies the rest, in order,
+ * exactly once and then stops, so checking or unchecking the box afterwards sticks. The
+ * marker is a count, so entries are append-only: never remove, edit or reorder one, even to
+ * reverse it - append a rung that does.
  *
  * `worktree` is deliberately NOT here - it is in `PRE_SEED_HIDDEN_DISPLAY_ITEMS` below, for
  * the reason given there. This ladder is for items introduced from the marker on, and
@@ -3199,16 +3215,28 @@ export type LineDensity = (typeof LINE_DENSITIES)[number];
  *
  * ADDING ONE: append an entry, and that is the whole job. A fresh profile's default list is
  * COMPOSED from this ladder (see `UI_CONFIG_DEFAULTS.hiddenDisplayItems`), so a new id is
- * hidden for new profiles and seeded into existing ones from the same line. The two used to
- * be separate literals, which meant an id added here and forgotten there shipped hidden on
- * upgrade and SHOWN on a fresh profile - the same class of bug this ladder exists to prevent,
- * deferred one item. `test/board-card-items.test.ts` fails if the composition is unpicked.
+ * hidden (or shown) for new profiles and seeded into existing ones from the same line. The
+ * two used to be separate literals, which meant an id added here and forgotten there shipped
+ * hidden on upgrade and SHOWN on a fresh profile - the same class of bug this ladder exists
+ * to prevent, deferred one item. `test/board-card-items.test.ts` fails if the composition is
+ * unpicked.
  */
-export const DISPLAY_ITEM_HIDDEN_SEEDS: readonly (readonly string[])[] = [
-  ["workflowDetails"],
-  // The conversation's opt-in working marks: with neither checked, the conversation draws
-  // what it drew before they existed.
-  ["workingPinned", "workingProgressBar"],
+export const DISPLAY_ITEM_SEEDS: readonly DisplayItemSeed[] = [
+  { hide: ["workflowDetails"] },
+  // The conversation's working marks, introduced switched off...
+  { hide: ["workingPinned", "workingProgressBar"] },
+  // ...and switched on by request one build later: the pinned row and the reply box bar are
+  // how a working session reads at a glance, and off they were a setting nobody found. The
+  // rung above stays, because records have already counted it.
+  //
+  // This does override an operator who unchecked either mark while the rung above was
+  // current, and the operator decided that explicitly (2026-09-28) when asked whether to
+  // preserve such choices or turn both marks on everywhere. A stored list cannot tell that
+  // choice from the ships-off default, and the rung above never reached a release (v1.25.0
+  // predates it), so the only records holding it ran `main` in the days between the two -
+  // among them the operator who asked for the marks on, whose own install must get them.
+  // Unchecking either mark after this rung has run sticks like any other choice.
+  { show: ["workingPinned", "workingProgressBar"] },
 ];
 
 /**
@@ -3223,8 +3251,22 @@ export const DISPLAY_ITEM_HIDDEN_SEEDS: readonly (readonly string[])[] = [
  */
 const PRE_SEED_HIDDEN_DISPLAY_ITEMS: readonly string[] = ["worktree"];
 
+/** A hidden list with the given rungs applied in order. Never duplicates an id. */
+function applyDisplayItemSeeds(
+  list: readonly string[],
+  seeds: readonly DisplayItemSeed[],
+): string[] {
+  let next = [...list];
+  for (const seed of seeds) {
+    next = "hide" in seed
+      ? [...next, ...seed.hide.filter((id) => !next.includes(id))]
+      : next.filter((id) => !seed.show.includes(id));
+  }
+  return next;
+}
+
 /**
- * Give a stored UI record any ships-hidden ids it has not been offered yet.
+ * Give a stored UI record any ladder rungs it has not been given yet.
  *
  * Takes and returns the RAW record rather than a parsed `UiConfig`, so it can run before
  * schema defaults are applied - which is what lets absence of the seed marker mean "written
@@ -3241,17 +3283,17 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
   const seeded = typeof stored.hiddenDisplayItemsSeed === "number"
     ? stored.hiddenDisplayItemsSeed
     : 0;
-  if (seeded >= DISPLAY_ITEM_HIDDEN_SEEDS.length) return raw;
-  // A record with no list of its own needs no ids added: the schema default below already
-  // carries every ships-hidden id. It still takes the marker, so it never migrates again.
+  if (seeded >= DISPLAY_ITEM_SEEDS.length) return raw;
+  // A record with no list of its own starts from the schema default, which already carries
+  // the whole ladder, so the owed rungs change nothing in it. It still takes the marker, so
+  // it never migrates again.
   const list = Array.isArray(stored.hiddenDisplayItems)
     ? stored.hiddenDisplayItems.filter((id): id is string => typeof id === "string")
     : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems];
-  const owed = DISPLAY_ITEM_HIDDEN_SEEDS.slice(seeded).flat();
   return {
     ...stored,
-    hiddenDisplayItems: [...list, ...owed.filter((id) => !list.includes(id))],
-    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+    hiddenDisplayItems: applyDisplayItemSeeds(list, DISPLAY_ITEM_SEEDS.slice(seeded)),
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_SEEDS.length,
   };
 }
 
@@ -3299,7 +3341,7 @@ export const UI_CONFIG_DEFAULTS = {
    * further away than the card's own link to Runs.
    *
    * COMPOSED, not hand-written, and that is load-bearing. This list is what a FRESH profile
-   * reads; `DISPLAY_ITEM_HIDDEN_SEEDS` is what an UPGRADED profile is given. They are two
+   * reads; `DISPLAY_ITEM_SEEDS` is what an UPGRADED profile is given. They are two
    * questions with one answer - "which ids ship hidden" - and as two independent literals
    * they could disagree silently in either direction: an id on the ladder but missing here
    * ships hidden on upgrade and SHOWN on every new profile, and an id here but missing from
@@ -3316,18 +3358,15 @@ export const UI_CONFIG_DEFAULTS = {
    * the same as not shipping them. Unchecking it stands both the keycaps and the chords
    * down together; see the registry entry.
    */
-  hiddenDisplayItems: [
-    ...PRE_SEED_HIDDEN_DISPLAY_ITEMS,
-    ...DISPLAY_ITEM_HIDDEN_SEEDS.flat(),
-  ],
+  hiddenDisplayItems: applyDisplayItemSeeds(PRE_SEED_HIDDEN_DISPLAY_ITEMS, DISPLAY_ITEM_SEEDS),
   /**
-   * The head of `DISPLAY_ITEM_HIDDEN_SEEDS`, so a fresh profile is born fully seeded.
+   * The head of `DISPLAY_ITEM_SEEDS`, so a fresh profile is born fully seeded.
    *
    * A record parsed from nothing already has every ships-hidden id in the list above, so it
    * is owed no seeds and must never be given any - otherwise the first `workflowDetails` the
    * operator switches ON would be switched back off on the next read.
    */
-  hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  hiddenDisplayItemsSeed: DISPLAY_ITEM_SEEDS.length,
   /**
    * TRUE, unlike `hiddenDisplayItems` above, and the difference is worth stating.
    *
@@ -3446,7 +3485,7 @@ export const UiConfigSchema = z.object({
     .array(z.string().min(1))
     .default([...UI_CONFIG_DEFAULTS.hiddenDisplayItems]),
   /**
-   * How many entries of `DISPLAY_ITEM_HIDDEN_SEEDS` this record has already been given.
+   * How many entries of `DISPLAY_ITEM_SEEDS` this record has already been given.
    *
    * The marker that makes a ships-hidden item actually ship hidden on an UPGRADE. See that
    * constant for the whole reasoning; the short version is that `hiddenDisplayItems` above

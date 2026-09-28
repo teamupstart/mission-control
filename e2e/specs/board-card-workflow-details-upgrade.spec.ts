@@ -12,7 +12,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  * cannot mention an id invented later, and `workflowDetails` would arrive switched ON for
  * exactly the people who use this panel most.
  *
- * `DISPLAY_ITEM_HIDDEN_SEEDS` plus the `hiddenDisplayItemsSeed` marker closes that: the ids
+ * `DISPLAY_ITEM_SEEDS` plus the `hiddenDisplayItemsSeed` marker closes that: the ids
  * are added once, then never again, so checking the box afterwards sticks.
  *
  * Here rather than only in `test/` because the unit layers can prove the migration and

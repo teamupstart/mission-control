@@ -15,11 +15,14 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * - The clock is on the row with nothing checked, and it TICKS. A static render can print a
  *   duration; only a running page can show the second hand moving.
- * - With nothing checked, the row is not pinned and the reply box draws no bar: the
+ * - With both unchecked, the row is not pinned and the reply box draws no bar: the
  *   conversation is what it was before these options existed, plus the clock.
- * - The Display panel offers both, unchecked, and its preview moves with each box - measured,
- *   because "the row holds the bottom edge" is a fact about geometry inside a clipped log.
- * - Checked, the live row stays inside the log's viewport while the reader is scrolled back
+ * - The Display panel offers both, checked, under a heading spaced from the group above it
+ *   exactly as the Conversation header group is spaced from the Board card rows, and its
+ *   preview moves with each box - measured, because "the row holds the bottom edge" is a fact
+ *   about geometry inside a clipped log.
+ * - As shipped, with nothing touched, the live row stays inside the log's viewport while the
+ *   reader is scrolled back
  *   to the top, and it is painted in the surface it sits on, so the turns scrolling under it
  *   do not print through. The reply box carries the bar while the session works and drops it
  *   when the session settles.
@@ -221,10 +224,18 @@ async function inside(inner: Locator, outer: Locator): Promise<boolean> {
   return a.y >= b.y - 1 && a.y + a.height <= b.y + b.height + 1;
 }
 
-test("a working row carries a ticking clock, and with nothing checked it is the only mark", async ({
+test("a working row carries a ticking clock, and with both unchecked it is the only mark", async ({
   dashboard,
   daemon,
 }) => {
+  // Unchecked through the real panel: both ship checked.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  const panel = dashboard.locator('[data-anchor="display/board-card"]');
+  await panel.getByRole("checkbox", { name: PIN, exact: true }).uncheck();
+  await panel.getByRole("checkbox", { name: BAR, exact: true }).uncheck();
+  await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).not.toBeChecked();
+
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dispatch(dashboard, daemon);
   const target = await session(daemon);
   const detail = await openDetail(dashboard, daemon);
@@ -240,26 +251,49 @@ test("a working row carries a ticking clock, and with nothing checked it is the 
   const first = await clock.textContent();
   await expect.poll(() => clock.textContent(), { timeout: 5_000 }).not.toBe(first);
 
-  // Nothing checked: the row is the log's plain last line and the reply box is unmarked.
+  // Both unchecked: the row is the log's plain last line and the reply box is unmarked.
   await expect(row).not.toHaveClass(/is-pinned/);
   const reply = detail.getByPlaceholder(/^Reply to this session|^Send the next instruction/);
-  expect(await backgroundImage(reply), "the reply box draws no bar by default").toBe("none");
+  expect(await backgroundImage(reply), "the reply box draws no bar once unchecked").toBe("none");
 
-  await shot(dashboard, detail.locator(".detail-conv"), "base-clock", "the working row carries a ticking clock with neither option checked");
+  await shot(dashboard, detail.locator(".detail-conv"), "base-clock", "the working row carries a ticking clock with both options unchecked");
 });
 
-test("Display offers both marks unchecked, and the preview moves with each box", async ({
+/** The vertical distance from the bottom of `above` to the top of `below`, in CSS pixels. */
+async function gapBetween(above: Locator, below: Locator): Promise<number> {
+  const a = (await above.boundingBox())!;
+  const b = (await below.boundingBox())!;
+  return Math.round(b.y - (a.y + a.height));
+}
+
+test("Display offers both marks checked, spaced like the groups above, and the preview moves with each box", async ({
   dashboard,
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
   const panel = dashboard.locator('[data-anchor="display/board-card"]');
-  await expect(panel.getByRole("heading", { name: "Working indicator" })).toBeVisible();
+  const heading = panel.getByRole("heading", { name: "Working indicator" });
+  await expect(heading).toBeVisible();
+
+  // The heading clears the Git branch row above it by the same distance the Conversation
+  // header heading clears the last Board card row. It used to sit almost on the row's border:
+  // the group is a customizer of its own, so its heading was a first child with no margin.
+  const conversation = panel.getByRole("heading", { name: "Conversation header" });
+  const lastCardRow = conversation.locator("xpath=preceding-sibling::label[1]");
+  // `has` is queried inside each label, so it is rooted at the page rather than the panel.
+  const gitBranchRow = panel.locator("label.settings-toggle").filter({
+    has: dashboard.getByRole("checkbox", { name: "Git branch", exact: true }),
+  });
+  const reference = await gapBetween(lastCardRow, conversation);
+  expect(reference, "the reference gap should be a real separation").toBeGreaterThanOrEqual(20);
+  expect(await gapBetween(gitBranchRow, heading), "the Working indicator heading is crowded").toBe(
+    reference,
+  );
 
   const pin = panel.getByRole("checkbox", { name: PIN, exact: true });
   const bar = panel.getByRole("checkbox", { name: BAR, exact: true });
-  await expect(pin).not.toBeChecked();
-  await expect(bar).not.toBeChecked();
+  await expect(pin).toBeChecked();
+  await expect(bar).toBeChecked();
 
   const preview = panel.locator(".working-preview");
   // `has` is queried INSIDE each customizer, so it names the preview from the page rather
@@ -267,45 +301,50 @@ test("Display offers both marks unchecked, and the preview moves with each box",
   const customizer = panel
     .locator(".board-card-customizer")
     .filter({ has: dashboard.locator(".working-preview") });
-  // The base experience is visible before anything is checked: the row and its clock.
   await expect(preview.locator(".turn-progress-clock").first()).toHaveText("2m 14s");
 
-  // The scrolled-back frame: its tail, row included, is below the fold until pinned.
+  // The scrolled-back frame: pinned as shipped, so its row holds the bottom edge.
   const back = preview.locator(".working-preview-log.is-scrolled-back");
   const backRow = back.locator(".turn-progress");
-  expect(await inside(backRow, back), "unpinned, the row has scrolled away with the tail").toBe(false);
-  const box = preview.getByRole("textbox", { includeHidden: true });
-  expect(await backgroundImage(box)).toBe("none");
-  await shot(dashboard, customizer, "display-unchecked", "Display > Working indicator ships with both marks unchecked");
-
-  await pin.check();
   await expect(backRow).toHaveClass(/is-pinned/);
   await expect.poll(() => inside(backRow, back), { message: "pinned, the row holds the bottom edge" }).toBe(true);
-  expect(await backgroundImage(box), "the pin does not bring the bar with it").toBe("none");
-
-  await bar.check();
+  const box = preview.getByRole("textbox", { includeHidden: true });
   await expect.poll(() => backgroundImage(box)).toContain("gradient");
-  await shot(dashboard, customizer, "display-both-checked", "both marks checked, the preview pins the row and draws the bar");
+  if (process.env.MC_E2E_EVIDENCE) {
+    // From the Git branch row down through the whole group, which is the area that crowded.
+    await customizer.scrollIntoViewIfNeeded();
+    await dashboard.mouse.move(0, 0);
+    const top = (await gitBranchRow.boundingBox())!;
+    const bottom = (await customizer.boundingBox())!;
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({
+      path: join(EVIDENCE, "display-shipped.png"),
+      clip: { x: bottom.x, y: top.y - 8, width: bottom.width, height: bottom.y + bottom.height - top.y + 16 },
+    });
+    // eslint-disable-next-line no-console
+    console.log("OBSERVED Display > Working indicator ships with both marks checked, its heading spaced like the Conversation header's");
+  }
+
+  await pin.uncheck();
+  await expect(backRow).not.toHaveClass(/is-pinned/);
+  await expect.poll(() => inside(backRow, back), { message: "unpinned, the row has scrolled away with the tail" }).toBe(false);
+  await expect.poll(() => backgroundImage(box), { message: "unpinning does not take the bar with it" }).toContain("gradient");
+
+  await bar.uncheck();
+  await expect.poll(() => backgroundImage(box)).toBe("none");
+  await shot(dashboard, customizer, "display-both-unchecked", "both marks unchecked, the preview shows only the row and its clock");
 
   // The choice is the operator's and survives a reload.
   await dashboard.reload();
-  await expect(panel.getByRole("checkbox", { name: PIN, exact: true })).toBeChecked();
-  await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).toBeChecked();
+  await expect(panel.getByRole("checkbox", { name: PIN, exact: true })).not.toBeChecked();
+  await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).not.toBeChecked();
 });
 
-test("checked, the live row holds the bottom edge while scrolled back, and the reply box carries the bar", async ({
+test("as shipped, the live row holds the bottom edge while scrolled back, and the reply box carries the bar", async ({
   dashboard,
   daemon,
 }) => {
-  // Opted in through the real panel, so the same click an operator makes is what the
-  // console below is reading.
-  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
-  const panel = dashboard.locator('[data-anchor="display/board-card"]');
-  await panel.getByRole("checkbox", { name: PIN, exact: true }).check();
-  await panel.getByRole("checkbox", { name: BAR, exact: true }).check();
-  await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).toBeChecked();
-
-  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  // Nothing touched in Display: both marks ship on, so this is what every operator gets.
   await dispatch(dashboard, daemon);
   const target = await session(daemon);
 
@@ -388,12 +427,7 @@ test("the reply box bar sweeps while the session works, and holds still as a ste
   dashboard,
   daemon,
 }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
-  const panel = dashboard.locator('[data-anchor="display/board-card"]');
-  await panel.getByRole("checkbox", { name: BAR, exact: true }).check();
-  await expect(panel.getByRole("checkbox", { name: BAR, exact: true })).toBeChecked();
-
-  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  // The bar ships on, so nothing is checked first.
   await dispatch(dashboard, daemon);
   const target = await session(daemon);
   const detail = await openDetail(dashboard, daemon);

@@ -52,7 +52,7 @@ const { DISPLAY_GROUP_COPY, DISPLAY_ITEMS, isDisplayItemShown } = await import(
 );
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
-const { DISPLAY_ITEM_HIDDEN_SEEDS, UI_CONFIG_DEFAULTS } = await import(
+const { DISPLAY_ITEM_SEEDS, UI_CONFIG_DEFAULTS, seedHiddenDisplayItems } = await import(
   "../src/shared/protocol.ts",
 );
 
@@ -290,9 +290,9 @@ test("hiding an item leaves no trace of it in the preview", async () => {
   assert.ok(!(await panelWith(["worktree"])).includes(worktreeLeaf));
 });
 
-const SHIPS_HIDDEN = ["worktree", "workflowDetails", "workingPinned", "workingProgressBar"] as const;
+const SHIPS_HIDDEN = ["worktree", "workflowDetails"] as const;
 
-test("the shipped default hides the worktree, the workflow details and the working marks, and nothing else", () => {
+test("the shipped default hides the worktree and the workflow details, and nothing else", () => {
   // D2, at its narrowest, and the two exceptions are exceptions for DIFFERENT reasons.
   // `workflowProgressBar` deliberately changes an existing card when absent from this list:
   // the whole-pipeline view ships on, with the old rung behind its checkbox. `worktree` is
@@ -301,8 +301,8 @@ test("the shipped default hides the worktree, the workflow details and the worki
   // by request, because a reviewer's reasoning and an in-place ladder are a paragraph of
   // somebody else's reading per tile, and the card still states the whole stage track and
   // the repair budget without them. Every other visible id preserves a card item that was
-  // already on screen. The two working marks are additions to the conversation, and with
-  // neither checked the conversation draws what it drew before they existed.
+  // already on screen. The two working marks were introduced hidden and ship on since, by
+  // request: they are how a working conversation reads at a glance.
   assert.deepEqual([...UI_CONFIG_DEFAULTS.hiddenDisplayItems], [...SHIPS_HIDDEN]);
   for (const item of CARD_ITEMS) {
     assert.equal(
@@ -316,16 +316,28 @@ test("the shipped default hides the worktree, the workflow details and the worki
 test("'which ids ship hidden' is answered once, for fresh and upgraded profiles alike", () => {
   // Two surfaces read that answer and they must not be able to disagree. A FRESH profile
   // reads `UI_CONFIG_DEFAULTS.hiddenDisplayItems`; an UPGRADED one is given
-  // `DISPLAY_ITEM_HIDDEN_SEEDS` by `seedHiddenDisplayItems`. As two hand-written literals
-  // they drifted silently in either direction - an id on the ladder and missing from the
-  // default ships hidden on upgrade and SHOWN on every new profile, which is exactly the
-  // defect the ladder was added to fix, one item later. So the default is COMPOSED from the
-  // ladder, and this is what fails if somebody unpicks that back into a literal.
-  for (const id of DISPLAY_ITEM_HIDDEN_SEEDS.flat()) {
-    assert.ok(
-      UI_CONFIG_DEFAULTS.hiddenDisplayItems.includes(id),
-      `"${id}" is seeded into upgraded profiles but ships SHOWN on a fresh one`,
-    );
+  // `DISPLAY_ITEM_SEEDS` by `seedHiddenDisplayItems`. As two hand-written literals they
+  // drifted silently in either direction - an id on the ladder and missing from the default
+  // ships hidden on upgrade and SHOWN on every new profile, which is exactly the defect the
+  // ladder was added to fix, one item later. So the default is COMPOSED from the ladder, and
+  // this is what fails if somebody unpicks that back into a literal: a profile that predates
+  // the marker and only ever hid the pre-marker `worktree` must be seeded into exactly the
+  // fresh default.
+  const upgraded = seedHiddenDisplayItems({ hiddenDisplayItems: ["worktree"] }) as {
+    hiddenDisplayItems: string[];
+  };
+  assert.deepEqual(
+    upgraded.hiddenDisplayItems,
+    [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
+    "an upgraded profile and a fresh one disagree about which ids ship hidden",
+  );
+  for (const seed of DISPLAY_ITEM_SEEDS) {
+    for (const id of "hide" in seed ? seed.hide : seed.show) {
+      assert.ok(
+        DISPLAY_ITEMS.some((item) => item.id === id),
+        `the seed ladder names "${id}", which is in no registry entry`,
+      );
+    }
   }
 
   // Every ships-hidden id has to be a real registry item, or it is an elaborate no-op: the
@@ -336,11 +348,14 @@ test("'which ids ship hidden' is answered once, for fresh and upgraded profiles 
     assert.ok(known.has(id), `the shipped hidden list names "${id}", which is in no registry entry`);
   }
 
-  // And the ladder carries no duplicate, across entries as well as within one. A repeated id
-  // would be appended twice to a list the panel builds its next patch from, and unchecking
-  // the box would then remove only one of them - a checkbox that visibly does nothing.
-  const seeded = DISPLAY_ITEM_HIDDEN_SEEDS.flat();
-  assert.equal(new Set(seeded).size, seeded.length, "an id appears twice in the seed ladder");
+  // And seeding never duplicates an id, even across a hide, a show and a hide again. A
+  // repeated id would be appended twice to a list the panel builds its next patch from, and
+  // unchecking the box would then remove only one of them - a checkbox that visibly does
+  // nothing.
+  const seeded = (seedHiddenDisplayItems({ hiddenDisplayItems: [] }) as {
+    hiddenDisplayItems: string[];
+  }).hiddenDisplayItems;
+  assert.equal(new Set(seeded).size, seeded.length, "seeding appended an id twice");
 });
 
 test("the workflow details item governs the tile's disclosure control both ways", async () => {

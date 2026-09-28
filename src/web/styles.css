@@ -29979,6 +29979,14 @@ span.line-run-prov {
   gap: 20px;
   align-items: start;
 }
+/* The Working indicator group is a customizer of its own, so its heading is the FIRST child
+   of its checklist and `:first-child` below takes its margin away. This puts back exactly
+   what separates the Conversation header group from the Board card rows above it - the
+   checklist's 8px gap plus the subhead's 16px - so all three groups sit the same distance
+   from the last row before them, instead of the third one crowding the Git branch row. */
+.board-card-customizer + .board-card-customizer {
+  margin-top: 24px;
+}
 .board-card-checklist {
   display: flex;
   flex-direction: column;

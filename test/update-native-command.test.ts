@@ -30,7 +30,7 @@ test("the app menu and tray expose the same native update command seam", () => {
   assert.doesNotMatch(index, /showNativeMessage/);
   assert.match(index, /const updateDialogPresenter = new UpdateDialogPresenter\(/);
   const updaterStart = index.indexOf("updater = new UpdateController");
-  const backgroundReady = index.indexOf("const background = await backgroundStart.ready");
+  const backgroundReady = index.indexOf("await backgroundStart.ready");
   assert.notEqual(updaterStart, -1, "the native updater must be constructed");
   assert.notEqual(backgroundReady, -1, "background startup must expose its readiness boundary");
   assert.ok(

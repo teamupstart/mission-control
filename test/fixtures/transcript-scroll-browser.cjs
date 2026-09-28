@@ -101,6 +101,17 @@ app.whenReady().then(async () => {
           activityViewHeight,
           activityScrolledTo,
           progressHeight: progress ? Math.round(progress.getBoundingClientRect().height) : null,
+          // The row's content box: its height less padding and borders. Pin the working row
+          // (on by default) gives the row a padded, bordered band, and that chrome is a fixed
+          // cost rather than a line - so "one line" is asked of this, not of the whole box.
+          progressLineHeight: progress
+            ? (() => {
+              const cs = getComputedStyle(progress);
+              const chrome = ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']
+                .reduce((sum, key) => sum + parseFloat(cs[key]), 0);
+              return Math.round(progress.getBoundingClientRect().height - chrome);
+            })()
+            : null,
           progressRightOverflow: progress
             ? Math.round(progress.getBoundingClientRect().right - log.getBoundingClientRect().right)
             : null,

@@ -76,6 +76,7 @@ interface Measured {
   activityViewHeight: number | null;
   activityScrolledTo: number | null;
   progressHeight: number | null;
+  progressLineHeight: number | null;
   progressRightOverflow: number | null;
   progressClipped: boolean | null;
 }
@@ -307,10 +308,18 @@ for (const name of ALL_CASES) {
     // a row that wrapped to two or three lines would appear underneath them, push them out
     // of that window, and stop the pane following the tail - a defect nothing in the DOM
     // can show, because the markup is identical either way. Held to half the threshold:
-    // Terminal's one-line row is 24px, while a wrapped row is taller.
+    // Terminal's one-line row is 24px, while a wrapped row is taller. Asked of the content
+    // box, because the row ships pinned (Display > Working indicator), and the pin's padded,
+    // bordered band is a fixed cost that a second line would add to, not replace.
     assert.ok(
-      (m.progressHeight ?? 0) <= STICK_TO_BOTTOM_PX / 2,
-      `the in-progress row must stay on one line, got ${m.progressHeight}px`,
+      (m.progressLineHeight ?? 0) <= STICK_TO_BOTTOM_PX / 2,
+      `the in-progress row must stay on one line, got ${m.progressLineHeight}px of content`,
+    );
+    // And the whole row, chrome included, still fits inside the window it must not push a
+    // reader out of.
+    assert.ok(
+      (m.progressHeight ?? 0) < STICK_TO_BOTTOM_PX,
+      `the in-progress row must fit the stick-to-bottom window, got ${m.progressHeight}px`,
     );
 
     // And it got there by clipping, not by having short text: the fixture's activity line

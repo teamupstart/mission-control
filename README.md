@@ -338,6 +338,8 @@ repository:
   the window closed, and receives updates. Updates check Node.js and npm before building and
   offer remediation with **Check again** when the runtime is incompatible. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
+  A local **Starting Mission Control** screen stays visible during startup. After 60 seconds
+  it offers **Retry now** and keeps checking readiness, so a slow restart recovers automatically.
   **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
   command in a visible terminal, with **Re-check** to confirm the repair.
   To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application

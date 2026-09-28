@@ -32,39 +32,24 @@ const HEALTH_URL = `${BASE_URL}/api/health`;
 const REQUIRED_DAEMON_CAPABILITY =
   DAEMON_PROTOCOL_CAPABILITIES.daemonExecutableEnvironment;
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
 /**
  * One health probe that distinguishes an absent daemon from an older running daemon.
  * Treating both as merely unhealthy would make Electron spawn into an occupied port.
  */
-export async function daemonCompatibility(timeoutMs = 800): Promise<DaemonCompatibility> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+export async function daemonCompatibility(timeoutMs = 800, signal?: AbortSignal): Promise<DaemonCompatibility> {
+  const timeout = AbortSignal.timeout(timeoutMs);
   try {
-    const res = await fetch(HEALTH_URL, { signal: ctrl.signal });
+    const res = await fetch(HEALTH_URL, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (!res.ok) return "unreachable";
     return daemonHealthCompatibility(await res.json() as unknown, REQUIRED_DAEMON_CAPABILITY);
   } catch {
     return "unreachable";
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 /** True only when the daemon is healthy and speaks this desktop build's wire contract. */
-export async function daemonHealthy(timeoutMs = 800): Promise<boolean> {
-  return await daemonCompatibility(timeoutMs) === "compatible";
-}
-
-/** Poll health until it passes or `totalMs` elapses. */
-export async function waitForHealthy(totalMs: number): Promise<boolean> {
-  const start = Date.now();
-  for (;;) {
-    if (await daemonHealthy()) return true;
-    if (Date.now() - start >= totalMs) return false;
-    await sleep(300);
-  }
+export async function daemonHealthy(timeoutMs = 800, signal?: AbortSignal): Promise<boolean> {
+  return await daemonCompatibility(timeoutMs, signal) === "compatible";
 }
 
 export interface StartDaemonOptions {

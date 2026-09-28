@@ -16,14 +16,14 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateDir, PORT } from "@shared/harness-runtime.mjs";
-import { startDaemon, waitForHealthy } from "./daemon.ts";
+import { startDaemon } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
 import {
   ownElectronBackgroundStart,
   type BackgroundStartOwnership,
 } from "./daemon-policy.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
-import { createWindow, getMainWindow, onMainWindowClosed, showWindow } from "./window.ts";
+import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
@@ -281,6 +281,7 @@ app.on("window-all-closed", () => {
 
 function stopShell(): void {
   setQuitting(true);
+  stopWindowStartup();
   stopUpdateSubscription?.();
   stopUpdateSubscription = null;
   updater?.stop();
@@ -344,8 +345,16 @@ app.whenReady().then(async () => {
       }),
   );
 
-  // Install the native update path before awaiting daemon health. A broken daemon must not
-  // prevent the user from repairing the packaged app through an update.
+  // The window owns readiness and keeps a local starting screen visible until it can load.
+  // Menu and updater setup remain independent of a slow or unavailable daemon.
+  let migrationRepairStarted = false;
+  onMainWindowLoaded(() => {
+    if (!migratedStartup || migrationRepairStarted) return;
+    migrationRepairStarted = true;
+    void backgroundStart?.ready.then((background) => {
+      if (background && !isQuitting()) return updater?.retryMigrationRepair();
+    }).catch((error: unknown) => console.error(error));
+  });
   createWindow(paths.preload);
   updater = new UpdateController(
     createDefaultUpdaterPort({
@@ -388,13 +397,8 @@ app.whenReady().then(async () => {
   });
   void updaterStart;
 
-  // The window retries while the daemon starts. In development, `dev:server` owns the daemon
-  // and its hot-reload lifecycle, so this resolves to null.
-  const background = await backgroundStart.ready;
-  if (background) {
-    const healthy = await waitForHealthy(15000);
-    if (healthy && migratedStartup) await updater.retryMigrationRepair();
-  }
+  // Retain startup failure handling and process ownership; the window owns health polling.
+  await backgroundStart.ready;
 }).catch((error: unknown) => {
   console.error(error);
   if (migratedStartup) {

@@ -17,6 +17,19 @@ an independently started worker safe as a standby.
 
 ## Startup while SDK sessions restore
 
+The shell immediately shows **Starting Mission Control** from a local page that does not
+depend on the daemon. It checks for a compatible daemon before loading the dashboard. After
+60 seconds, **Still starting Mission Control** explains the delay and offers **Retry now**.
+Readiness checks continue once a second, including after this message, so a late daemon opens
+the dashboard automatically. Retry starts a fresh wait; it does not launch a second daemon.
+A failed dashboard navigation returns to a visible reconnecting screen. Navigation itself
+also has a 60-second bound in case the daemon disappears after its health response.
+
+Window startup owns this recovery loop. Successful dashboard loading, window destruction and
+application quit stop it, so it cannot reload an active conversation. The native menu and
+updater initialize independently of readiness, and update questions allow 65 seconds for a
+dashboard host. Development checks the Vite origin instead of requiring its own health route.
+
 The packaged window loads the ordinary daemon-served dashboard as soon as the daemon owns its
 resolved state home, has opened the database, and has bound HTTP. Persisted SDK conversations may
 still be restoring serially at that point. The Board renders each readable live persisted row as a

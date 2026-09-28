@@ -183,6 +183,30 @@ test("a question waits for the dashboard, then is answered by it", async () => {
   assert.equal(presenter.outstanding, 0);
 });
 
+test("an update question survives a dashboard that takes a full minute to start", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const rec = recorder();
+  rec.port.delay = (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  };
+  const presenter = new UpdateDialogPresenter(rec.port);
+  let settled = false;
+  const answer = presenter.present(UPDATE_DIALOGS.ready("1.9.1")).then((choice) => {
+    settled = true;
+    return choice;
+  });
+  t.mock.timers.tick(60_000);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settled, false, "the update question must not expire during the initial startup wait");
+  presenter.attach();
+  await Promise.resolve();
+  assert.equal(rec.sent.length, 1);
+  presenter.answer(rec.sent[0]!.id, "confirm");
+  assert.equal(await answer, "confirm");
+});
+
 test("two questions can be open at once and are answered by id, in any order", async () => {
   // The outcome notice fires seconds after launch, and a manual check started from the menu
   // bar while it is still up is a second conversation rather than a replacement for the

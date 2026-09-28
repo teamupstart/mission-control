@@ -14,18 +14,19 @@ import type {
   UpdateDialogRequest,
 } from "../shared/update-dialog.ts";
 import { updateDialogDismissal } from "../shared/update-dialog.ts";
+import { WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 
 /**
  * How long a question waits for the dashboard before settling as a dismissal.
  *
  * Generous rather than snappy, and deliberately so. The only moments the dashboard is not
  * already mounted are a cold launch and a window being recreated, both of which mean the
- * renderer is loading right now - `window.ts` retries the load for up to fifteen seconds
- * against a daemon that may itself still be starting. Timing out early there would drop the
+ * renderer may still be waiting for the daemon. Allow the full initial startup window
+ * before giving up on a dialog host. Timing out early there would drop the
  * one question a fresh install asks ("did the update work?"). Nothing is blocked while it
  * waits except the update conversation itself.
  */
-export const UPDATE_DIALOG_HOST_TIMEOUT_MS = 20_000;
+export const UPDATE_DIALOG_HOST_TIMEOUT_MS = WINDOW_STARTUP_TIMEOUT_MS + 5_000;
 
 export interface UpdateDialogPort {
   /** Is there a loaded, visible dashboard that can draw a modal right now? */

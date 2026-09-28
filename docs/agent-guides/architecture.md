@@ -119,7 +119,7 @@ An SDK shutdown suspends its session. `taskLiveness` reads persisted rows during
 
 Only one non-terminal task may be bound to a session. Enforce this anywhere the pointer is assigned.
 
-When an agent disappears, settle the task but retain its worktree, branch, and home for explicit operator cleanup. Startup reconciliation may reclaim invisible stale rows; live disappearance must not.
+When an agent disappears, settle the task and retain its resources unless final completion or an accepted safe-Kill return authorizes cleanup. Unrequested disappearance alone never authorizes immediate teardown; retained failed and cancelled work follows the 30-day activity policy.
 
 A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
 
@@ -133,14 +133,24 @@ on the owning row, never current configuration. Native release remains condition
 occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
 release. Historical rows that name Treehouse retain their provider-specific cleanup path.
 
+Final task completion records done and any session-closure obligation atomically, then uses the
+existing closure sweep and repository cleanup queue to stop, archive, reset and return owned
+worktrees. Initial prompted workflow handoff remains separate. Accepted Kill records a best-effort
+conditional return intent before the session binding disappears; only observed removal, stopped
+runtime, clean and published Git state in every attached tree, exact ownership, and empty known
+occupancy authorize return. Unknown or unsafe Kill checks keep the existing retention policy.
+Reset and Cancel keep their existing semantics. Automatic provider return rechecks policy at the
+destructive boundary, under the native slot lock where applicable; partial returns clear only
+successfully released resource facts.
+
 A terminal task that still holds a worktree also carries a durable activity clock. The daemon
 observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
 whole index, tracked worktree changes, and non-ignored untracked files - and records the
 fingerprint plus a 30-day deadline in `task_worktree_retention`. The clock has one boundary per
 task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
 activity signal and must never be used as one. The observation service reclaims nothing; it is
-structurally incapable of it, and automatic reclamation at the deadline is a separate change that
-will consume this ledger through `TaskManager.reclaim()`. An unreadable tree records a bounded
+structurally incapable of it. The retention cleanup worker consumes the ledger through
+`TaskManager.reclaimForRetention()` and the shared cleanup queue. An unreadable tree records a bounded
 reason and moves no deadline, and a set of resources nothing has successfully observed yet has no
 row at all - a first observation is what starts a window, never a pre-existing timestamp.
 

@@ -1,3 +1,4 @@
+import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -5532,10 +5533,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    const acceptReturn = tasks.prepareKilledSessionReturn(session);
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions);
+    if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
     // both real, and neither implies the other.
@@ -7937,7 +7940,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     if (!t) return c.json({ error: "no such task" }, 404);
-    return c.json(t);
+    return c.json({ ...t, sessionClosureRequested: taskHasWorktrees(t) && t.sessionId !== null });
   });
 
   app.delete("/api/tasks/:id", async (c) => {

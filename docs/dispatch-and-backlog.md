@@ -654,13 +654,18 @@ according to the [merged-PR rule](inspector-and-shipping.md#when-a-tasks-pull-re
 merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
 way, it drops out of every count that means "executing".
 
-It settles; it is **not** torn down. The worktree, its branch and any terminal home name are
-all kept, and the row says so (`its worktree was kept; Clean up or re-dispatch it`). Freeing
-a checkout runs `git worktree remove --force` over whatever is in it, so that stays where
-every other destructive path in the app puts it: behind the confirmed **Clean up** button on
-the row, next to Mark done, which refuses to discard work for the same reason. A task that
-never had a worktree of its own - one you handed to an agent that was already running - has
-nothing to collect and says nothing about cleanup.
+An unrequested exit retains the worktree, branch and terminal ownership. An accepted **Kill**
+also requests a conditional return: after the session has gone, every attached checkout must
+be clean, published to origin, unoccupied, and still owned by that task. Unsafe or unknown
+checks preserve the resources, including local work. The task's failed outcome remains even
+when safe return succeeds. **Reset** retains its checkout; Reset followed by Kill can qualify
+for safe return after the task/session binding has been cleared.
+
+**Complete / Mark done** is final: it saves required archives, closes the owned session, and
+resets and returns task-owned worktrees, discarding residual local changes. Initial agent
+handoff to a workflow keeps those resources until final completion. **Clean up** remains the
+explicit way to discard a retained checkout. A task assigned to an existing agent without
+an owned worktree has no task checkout to collect.
 
 That reprieve is not indefinite. A terminal task's checkouts are removed automatically once
 **30 days pass without a Git-visible change** in any of them - see

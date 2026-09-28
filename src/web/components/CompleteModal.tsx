@@ -136,7 +136,7 @@ export function CompleteModal({
     // The task is recorded before the agent stop is requested, and the order matters: a stop
     // that fails must not leave the outcome unwritten, because the row would then settle
     // as `failed` through the session-went-away path and lose what was just typed.
-    const killed = await api.kill(session.id);
+    const killed = completed.sessionClosureRequested ? { ok: true } : await api.kill(session.id);
     setBusy(false);
     if (!killed.ok) {
       setError(`task marked done, but the session could not be closed: ${killed.error ?? "failed"}`);
@@ -220,7 +220,9 @@ export function CompleteModal({
           {task ? (
             <>
               <p className="complete-task">
-                Marks <strong>{task.title}</strong> done, then closes this session.
+                Marks <strong>{task.title}</strong> done, then closes this session. Task-owned
+                worktrees are reset and returned after required archives are saved. Remaining
+                local changes are discarded.
               </p>
 
               <label className="complete-field">

@@ -291,10 +291,10 @@ session is actually gone:
 - **While a closure is outstanding it is visible.** The task stays `done` and its row says
   automatic cleanup is retrying and why - including the quiet case, where nothing errored and
   the agent simply did not go - rather than the daemon calling a live agent closed.
-- **The checkout is not part of this.** An `empty` run committed nothing, so the worktree may
-  hold work; it stays, the ordinary
-  [30-day retention clock](worktrees-and-checks.md#task-worktree-retention) owns it, and
-  **Clean up** on the task row is still yours. The session's fate never waits on the tree's.
+- **Final completion returns task-owned worktrees.** After the session is confirmed gone,
+  required archives are captured and owned worktrees are reset and returned. Uncertain process
+  ownership, archive failure or provider refusal retains the resources for retry or manual
+  reconciliation. See [task worktree return and retention](worktrees-and-checks.md#task-worktree-retention).
 
 None of it applies to a mission left on **manual**: nothing concluded the run, so nothing is
 owed, and the session is yours until you close it.

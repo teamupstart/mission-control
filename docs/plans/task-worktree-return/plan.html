@@ -1,0 +1,60 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Task worktree return</title><style>:root{color-scheme:light dark;--bg:#f5f7fb;--fg:#15243b;--panel:#fff;--line:#bbc8d8}@media(prefers-color-scheme:dark){:root{--bg:#101925;--fg:#e6edf7;--panel:#182536;--line:#526981}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui}main{max-width:1080px;margin:auto;padding:36px 24px 72px}h1{font-size:2.3rem}h2{margin-top:2.2rem}p,li{max-width:90ch}li{margin:.65rem 0}.scroll,pre{overflow:auto;max-width:100%}table{border-collapse:collapse;background:var(--panel);min-width:620px}td,th{padding:12px;text-align:left;border:1px solid var(--line)}svg{min-width:700px;width:100%;height:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}a{color:inherit}</style><main><h1>Task worktree return</h1>
+<h2>Agreed behavior</h2>
+<p>Final task completion resets each task-owned checkout and returns its lease to the pool. The initial agent handoff to a shipping workflow is not final task completion and keeps its checkout. Completion authorizes discarding residual local changes after required archives are captured.</p>
+<p>Kill requests keep their current prompt response and task outcome. After the session has actually left, an automatic return is allowed only when every attached checkout has no staged, unstaged, or untracked work, no unpublished commits, and no process still using it. Unknown evidence preserves the checkout. Otherwise the existing 30-day retention and manual Worktree Settings reconciliation remain available. A clean Reset followed by Kill qualifies even though Reset clears the task/session binding.</p>
+<p>Reset and Cancel retain their existing behavior. Assigned sessions without task-owned worktrees are outside automatic pool return. Quarantine remains a safety hold, not an available pool slot; failed native resets continue to quarantine through the allocator.</p>
+<h2>Lifecycle and ownership</h2><div class="scroll"><svg viewBox="0 0 860 150" role="img" aria-label="Completion or accepted Kill flows through TaskManager, Registry removal, safety and archives, then allocator return"><g fill="none" stroke="currentColor" stroke-width="2"><path d="M160 65h35m155 0h35m155 0h35m155 0h35"/></g><g fill="currentColor" font-family="system-ui" font-size="14" text-anchor="middle"><text x="80" y="58">Complete / Kill</text><text x="80" y="82">TaskManager</text><text x="275" y="58">Registry removal</text><text x="275" y="82">runtime stopped</text><text x="465" y="58">Safety + archives</text><text x="465" y="82">exact ownership</text><text x="655" y="58">Allocator reset</text><text x="655" y="82">verified return</text><text x="815" y="70">Available</text><text x="465" y="135">Any refusal preserves resources for retry or manual reconciliation</text></g></svg></div>
+<p>The Complete UI or final workflow/merge completion reaches TaskManager&#39;s existing completion boundary. TaskManager records done synchronously and, for owned worktrees with a session, records the existing durable session-closure obligation in the same transaction. Registry remains the sole session-removal authority. After observed removal and runtime shutdown, TaskManager queues archive capture and provider-aware teardown. The native allocator checks the exact lease and ownership, resets, verifies the result, and marks the slot available. A failed or uncertain return preserves the unreleased resource records.</p>
+<p>The Kill route captures the exact task resource identity before requesting stop. An accepted request installs a conditional cleanup intent; a refused request installs none. Registry removal consumes it. Reset-detached owners are found by exact recorded checkout path, including secondary repositories, with ambiguous ownership refused. A daemon restart may lose this best-effort Kill optimization, in which case existing retention remains the safe fallback. Completion recovery is durable and resumes after initial session discovery.</p>
+<p>Background return uses the existing repository cleanup queue. Read-only eligibility checks run outside the task reservation so a refused safe-Kill attempt cannot block manual Clean up. The reservation protects archive capture and destructive return. It rereads task attempt, ordered repository paths, providers and leases after awaits, refuses another live session, checks all checkout occupants, and captures scout/ensemble archives before teardown. Kill additionally fetches origin refs and checks clean status and commit reachability, failing closed on errors. A guard is repeated at each provider&#39;s destructive boundary; the native allocator repeats it after its own fetch under its slot lock. Successful partial returns clear only those resources. Shutdown waits for queued cleanup before stopping the allocator.</p>
+<h2>Implementation sequence</h2>
+<ol>
+<li>Add and test a bounded Git safety probe for clean status and commits reachable from freshly fetched origin refs. Include malformed/error responses, untracked files and local commits.</li>
+<li>Add guarded teardown support to the existing provider path and native allocator. Keep manual cleanup, Cancel, Reset and retention defaults unchanged.</li>
+<li>Connect final completion to durable closure and queued return. Connect accepted Kill to a conditional return after durable removal. Cover stopped runtimes, ownership changes, attached-only worktrees, reset-detached owners, archives and partial failures.</li>
+<li>Update Complete, Kill and shipping-setting explanations to match the lifecycle. Preserve prompt Complete/Kill response while SDK teardown drains. Update product and lifecycle documentation.</li>
+<li>Add focused unit/integration and browser tests, run typecheck, lint, build, smoke and affected Playwright specs. Capture rendered evidence and register focused results through Mission Control. No commit, push or pull request during this task turn.</li>
+</ol>
+<h2>Acceptance and verification</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Observable result</th>
+<th>Proof</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>complete-return</td>
+<td>Final completion closes its owned session, archives required output, resets and makes every returned native slot reusable</td>
+<td>Task lifecycle and real allocator tests; browser Complete and reuse</td>
+</tr>
+<tr>
+<td>handoff-retains</td>
+<td>Initial agent/workflow handoff retains its task resources</td>
+<td>Existing prompted-completion/workflow tests</td>
+</tr>
+<tr>
+<td>kill-safe-return</td>
+<td>Accepted Kill returns clean, published, unoccupied checkouts after removal, including Reset then Kill</td>
+<td>Git safety and lifecycle tests; browser Reset/Kill</td>
+</tr>
+<tr>
+<td>kill-preserves</td>
+<td>Dirty, untracked, unpublished, occupied, unknown, stale or refused-stop cases retain resources and existing retention</td>
+<td>Negative lifecycle/Git tests and retained-worktree browser checks</td>
+</tr>
+<tr>
+<td>lifecycle-compatibility</td>
+<td>Reset, Cancel, archive refusal, multi-repo partial failure and quarantine remain safe</td>
+<td>Existing focused regressions plus new cases</td>
+</tr>
+<tr>
+<td>interface</td>
+<td>Dialogs and settings accurately explain automatic return without waiting for SDK drain</td>
+<td>Render assertions and Playwright</td>
+</tr>
+</tbody></table></div>
+<h2>Limits and recovery</h2>
+<p>Git and process inspection are observations, not an operating-system lock against an unrelated process starting at the final instant. Existing allocator occupancy checks plus a repeated final guard narrow this window. Unknown inspection or failed provider reset never makes a slot available. Completion retry uses discovery and the existing durable closure/resource records; unsafe Kill attempts fall back to 30-day retention. The implementation adds no new session eviction path, database writer, provider, or cleanup scheduler.</p>
+</main></html>

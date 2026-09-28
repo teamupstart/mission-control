@@ -218,10 +218,27 @@ and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and
 
 ### Task worktree retention
 
-A task's worktrees are not freed when the task ends. A `done`, `failed`, or `cancelled` task
-keeps every checkout it holds so a person can still read the work, commit it, push it, or
-reclaim it deliberately with **Clean up**. That reprieve is bounded: **Mission Control removes a
-terminal task's worktrees automatically after 30 days without a Git-visible change.**
+Final task completion closes its owned session, saves required archives, and resets and returns
+all task-owned worktrees. Remaining local changes are discarded. The initial agent handoff to
+a shipping workflow keeps the checkout until the task reaches final completion. Native slots
+become available only after the allocator verifies the reset. A refused or uncertain return
+keeps its resource records for retry or manual reconciliation; a failed native reset may quarantine
+the slot rather than making it available.
+
+**Kill** keeps its existing failed-task outcome. Once the session has actually left, Mission
+Control returns its worktrees automatically only if **every** attached checkout is clean
+(including untracked files), its commits are reachable from freshly fetched origin refs, and
+no session or process still occupies it. Unreadable Git state, an unreachable origin, ambiguous
+ownership or unknown occupancy all preserve the checkout. Reset retains its lease and session;
+a subsequent safe Kill can return it even after Reset detached the task binding. Cancel keeps
+its existing immediate cleanup behavior.
+
+Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
+is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after
+30 days without a Git-visible change.** The best-effort safe-Kill intent is in memory; a daemon
+restart before it runs falls back to that retention policy. Completion's closure and resource
+records are durable and cleanup resumes after discovery, with refused returns retried at a
+bounded cadence. Another live session or process always blocks automatic return.
 
 The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the
@@ -246,9 +263,8 @@ protects the whole set, and the task is reclaimed as one operation.
 **How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
 internal cadence, well inside the window, and persists the result - the fingerprint, when it
 last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart no longer frees a checkout: when reconciliation
-proves a task's agent died with the daemon, the task settles honestly and keeps every worktree,
-provider, and lease fact for the same 30-day rule.
+granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees for the same 30-day rule. Final
+completed tasks resume their outstanding closure and return after session discovery.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
 the database can prove when a checkout was last touched, so every tree that existed before this

@@ -170,13 +170,15 @@ test("kill warns that the task will settle as failed, and offers Complete instea
   assert.match(html, /Complete instead/);
 });
 
-test("kill keeps the checkout, and says so", () => {
+test("kill explains conditional safe return and retained local work", () => {
   // `agentWentAway` retains the worktree for a confirmed Clean up precisely so a
   // mis-aimed kill costs nothing git cannot return. The dialog must not imply otherwise.
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(KillModal, { session: sessionWithTask(), onClose: () => {} })),
   );
-  assert.match(html, /checkout is kept/);
+  assert.match(html, /worktrees return automatically/);
+  assert.match(html, /all are clean, published to origin, and unused/);
+  assert.match(html, /automatically after 30 days/);
 });
 
 test("Enter submits the Kill confirmation", () => {

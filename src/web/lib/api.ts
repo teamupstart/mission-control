@@ -232,6 +232,7 @@ export interface DispatchResult extends ActionResult {
  * problems it just verified so the operator confirms this exact missing archive state.
  */
 export interface CompleteTaskResult extends ActionResult {
+  sessionClosureRequested?: boolean;
   confirmIncompleteScout?: boolean;
   problems?: string[];
 }

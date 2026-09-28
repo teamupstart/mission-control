@@ -3648,8 +3648,7 @@ export class Registry extends EventEmitter {
    *
    * Scoped hard, because a wrong answer here refuses a person's prompt at their own terminal:
    * only a session that the DURABLE closure ledger says is owed a close is ever refused, and
-   * that ledger is empty except in the seconds between a mission run concluding and its agent
-   * going. Every other session, and every other event, is none of this function's business.
+   * that ledger exists only while a final task completion owes its agent a close. Every other session, and every other event, is none of this function's business.
    */
   promptRefusalForHook(evt: HookIngest): string | null {
     if (evt.event !== "UserPromptSubmit") return null;
@@ -3658,7 +3657,7 @@ export class Registry extends EventEmitter {
     const closing = taskSessionClosureForSession(session.id);
     if (!closing) return null;
     const task = this.tasks.get(closing.taskId);
-    return `This session's recurring mission run${task ? ` (${task.title})` : ""} was concluded and Mission Control is closing the session, so this prompt was not run. Dispatch a new agent for follow-up work.`;
+    return `This session's task${task ? ` (${task.title})` : ""} was completed and Mission Control is closing the session, so this prompt was not run. Dispatch a new agent for follow-up work.`;
   }
 
   /**
@@ -6513,7 +6512,7 @@ export class Registry extends EventEmitter {
     const closing = taskSessionClosureForSession(sessionId);
     if (closing) {
       const task = this.tasks.get(closing.taskId);
-      return `this session's recurring mission run was concluded${task ? ` (${task.title})` : ""} and the session is being closed - dispatch a new agent for follow-up work`;
+      return `this session's task was completed${task ? ` (${task.title})` : ""} and the session is being closed - dispatch a new agent for follow-up work`;
     }
     const owner = this.taskResourceOwnerForSession(
       sessionId,

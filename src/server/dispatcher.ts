@@ -2522,6 +2522,8 @@ export async function teardownWorktree(
   _priority: "foreground" | "background" = "foreground",
   /** The daemon's singleton allocator. Required only when a recorded provider is `mission`. */
   manager?: WorktreeManager,
+  /** Automatic lifecycle policy, repeated at each destructive provider boundary. */
+  beforeReturn?: (path: string) => Promise<string | null>,
 ): Promise<void> {
   if (task.homeName) {
     const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null, task.terminalResourceId ?? null);
@@ -2564,7 +2566,7 @@ export async function teardownWorktree(
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, legacy, manager).then(
+    await teardownOneWorktree(tree, legacy, manager, beforeReturn).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -2665,10 +2667,13 @@ async function teardownOneWorktree(
   },
   legacy: LegacyTreehouseService,
   manager?: WorktreeManager,
+  beforeReturn?: (path: string) => Promise<string | null>,
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once so every provider check and diagnostic names the same requested path.
   const worktreePath = task.worktreePath;
+  const blocked = await beforeReturn?.(worktreePath);
+  if (blocked) throw new Error(blocked);
 
   if (task.provider === "mission") {
     if (!manager) throw new Error("native worktree manager is unavailable");
@@ -2688,7 +2693,10 @@ async function teardownOneWorktree(
           : `native task lease is stale: ${lookup.reason}`,
       );
     }
-    const released = await manager.release(lookup.lease, { ownerAuthorized: true });
+    const released = await manager.release(lookup.lease, {
+      ownerAuthorized: true,
+      beforeReset: beforeReturn ? () => beforeReturn(worktreePath) : undefined,
+    });
     if (released.outcome === "released" || released.outcome === "alreadyReleased") return;
     throw new Error(`native worktree release ${released.outcome}: ${released.reason}`);
   }

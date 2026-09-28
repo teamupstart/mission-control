@@ -419,7 +419,7 @@ test("the conclusion is terminal, and the session that produced it is closed wit
   // And nothing may be delivered to that session while its closure is owed.
   assert.match(
     f.registry.promptResourceBlockerForSession(f.sessionId) ?? "",
-    /recurring mission run was concluded/,
+    /task was completed/,
   );
 });
 

@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -154,6 +154,7 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
   // A live session disappearing keeps its task checkout. Kill it through the detail, then use
   // the existing explicit Clean up flow. This proves the allocator cutover did not turn
   // session exit into a second task-eviction path.
+  writeFileSync(join(first.worktreePath!, "local-notes.md"), "Keep this work until explicit cleanup.\n");
   await firstDetail.getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
   await kill.getByRole("button", { name: "Kill" }).click();
@@ -178,6 +179,8 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
       extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
     });
   await expect(sitrep.locator(".report-row", { hasText: currentFirst.title })).toContainText("failed");
+  await expect(firstRow).toContainText("for any retained worktrees");
+  await expect(firstRow).not.toContainText("its worktree was kept");
   await expect(
     sitrep.locator(".report-row", { hasText: currentFirst.title }).getByRole("button", { name: "Clean up" }),
   ).toHaveCount(0);

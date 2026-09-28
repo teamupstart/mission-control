@@ -103,6 +103,8 @@ import {
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
+import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
   kindMissionMcpRequirement,
@@ -397,13 +399,14 @@ export interface TaskManagerStartupDeps {
    * The BACKGROUND teardown seam, injectable so cleanup ordering can be exercised without real
    * providers.
    *
-   * Covers the two paths that release a tree on the daemon's own initiative - startup
-   * reconciliation and automatic retention cleanup - and deliberately not the manual ones. An
+   * Covers background startup, retention and lifecycle return, not the manual paths. An
    * operator's Clean up, Cancel, Remove and Reschedule keep calling `teardownWorktree`
    * directly at `foreground` priority, because there is nothing about them a test needs to
    * stand in for and every one of them is somebody watching.
    */
   teardown?: typeof teardownWorktree;
+  occupancy?: typeof inspectWorktreeOccupancy;
+  returnBlocker?: typeof worktreeReturnBlocker;
 }
 
 interface TaskCleanupJob {
@@ -436,6 +439,12 @@ class TaskCleanupQueue {
   private activeRepoKeys = new Set<string>();
   /** In-flight and queued jobs by task, so the same task cannot be enqueued twice. */
   private readonly enqueued = new Set<string>();
+  private readonly idleWaiters: (() => void)[] = [];
+
+  async settled(): Promise<void> {
+    if (this.size === 0) return;
+    await new Promise<void>((resolve) => this.idleWaiters.push(resolve));
+  }
 
   /**
    * Queue a job, or refuse when this task already has one.
@@ -470,7 +479,7 @@ class TaskCleanupQueue {
       void job.run()
         .catch((error: unknown) => {
           console.error(
-            `[tasks] could not reconcile ${job.taskId} during startup:`,
+            `[tasks] background cleanup failed for ${job.taskId}:`,
             error,
           );
         })
@@ -478,6 +487,7 @@ class TaskCleanupQueue {
           for (const key of job.repoKeys) this.activeRepoKeys.delete(key);
           this.enqueued.delete(job.taskId);
           this.drain();
+          if (this.size === 0) for (const resolve of this.idleWaiters.splice(0)) resolve();
         });
     }
   }
@@ -883,6 +893,8 @@ export class TaskManager {
    * are exactly the awaits during which a second caller used to be able to walk in.
    */
   private readonly cleanupReservations = new Set<string>();
+  private readonly nextCompletedReturn = new Map<string, number>();
+  private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
   /** One completion in flight per task, so two signals cannot both publish one archive. */
@@ -1019,11 +1031,15 @@ export class TaskManager {
         // that does not.
         this.reconcileMergedTasks();
         this.reconcileTasksBoundTo(e.id);
+        this.returnKilledSessionWorktrees(e.id);
         // Recheck promptly after registry removal. Forced retirement still owes runtime
         // cleanup until discovery or the SDK supervisor confirms that it stopped.
         this.scheduleMissionSessionClosureSweep(0);
       }
-      if (e.type === "task_remove") this.autoCompleted.delete(e.id);
+      if (e.type === "task_remove") {
+        this.autoCompleted.delete(e.id);
+        this.nextCompletedReturn.delete(e.id);
+      }
       if (
         e.type === "task_upsert" &&
         this.autoCompleted.has(e.task.id) &&
@@ -1060,6 +1076,7 @@ export class TaskManager {
       // one: until the process table has been read, a session missing from the registry has
       // not been observed to be gone. See `sweepMissionSessionClosures`.
       this.scheduleMissionSessionClosureSweep(0);
+      this.resumeCompletedWorktreeReturns();
     });
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
@@ -1685,7 +1702,9 @@ export class TaskManager {
       this.sweepingClosures = false;
       const urgent = this.sweepUrgentlyRequested;
       this.sweepUrgentlyRequested = false;
-      if (listTaskSessionClosures().length > 0) {
+      this.resumeCompletedWorktreeReturns();
+      if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some((task) =>
+        task.status === "done" && taskHasWorktrees(task))) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
       }
     }
@@ -1716,12 +1735,8 @@ export class TaskManager {
    * is recorded as a bounded sentence that reaches the operator through the task's
    * automatic-cleanup summary for as long as the closure is outstanding.
    *
-   * The worktree is deliberately NOT touched here, which is the difference from
-   * `closeMergedSession`. A merge proves the committed work landed, so that path may reclaim a
-   * checkout it can prove is safe. A concluded mission run proves the opposite: `empty` means
-   * nothing was committed at all, so anything in that tree is unpushed work. It stays, the
-   * 30-day retention clock owns it exactly as it owns every other terminal task's, and the
-   * closure is finished either way - the session's fate never waits on the tree's.
+   * Worktree return is queued only after absence is confirmed. Archives and provider safety
+   * remain independent gates, so a refused return never reopens the completed task.
    */
   private async settleMissionSessionClosure(row: TaskSessionClosureRow): Promise<void> {
     // SQLite, not `registry.getTask`. The in-memory task map is BOUNDED and evicts terminal
@@ -1741,6 +1756,7 @@ export class TaskManager {
     }
     if (!target) {
       this.dropMissionSessionClosure(row.taskId);
+      if (taskHasWorktrees(task)) this.enqueueFinishedWorktreeReturn(task, "complete");
       return;
     }
     // Already on its way out - the stop landed and the registry is lingering the card before
@@ -1818,6 +1834,11 @@ export class TaskManager {
    * and the ledger row is cleared by the pass that sees the absence.
    */
   private async stopWithinBudget(session: Session): Promise<ActionResult> {
+    // Keep the SDK card truthfully unavailable while its ordinary stop/pump drain runs.
+    // requestStop and stopSession join the supervisor's same deduplicated stop promise.
+    if (session.runtime === "sdk" && !this.supervisor?.requestStop(session.id)) {
+      return { ok: false, error: "this session has no live embedded driver" };
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<ActionResult>((resolve) => {
       timer = unref(setTimeout(
@@ -2125,6 +2146,10 @@ export class TaskManager {
 
   /** Apply the operator's preference after either merge/idle event ordering completes. */
   private closeMergedSessionAfterCompletion(e: MergedSessionRef): void {
+    // Managed completion owns durable closure and return, regardless of the assigned-agent
+    // reuse preference. Do not race that owner with the older optional close path.
+    const task = this.registry.getTask(e.taskId);
+    if (task && taskHasWorktrees(task)) return;
     if (!getShippingConfig().closeSessionAfterMerge) return;
     void this.closeMergedSession(e).catch((error: unknown) => {
       console.error("[merge] closing merged session failed:", e.taskId, error);
@@ -2388,10 +2413,10 @@ export class TaskManager {
     // unknown ending as a measured correctness failure. Marked here, not in the observer,
     // because this is the only place that knows which of the two happened.
     noteTaskDeparture(taskId);
-    const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
+    const holdsResources = taskHasWorktrees(t) || Boolean(t.homeName);
     const now = Date.now();
     const kept = holdsResources
-      ? " - its worktree was kept; Clean up or re-dispatch it"
+      ? " - use Clean up or re-dispatch for any retained worktrees"
       : "";
     this.registry.upsertTask({
       ...t,
@@ -4327,7 +4352,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if ((t.worktreePath || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
+    if ((taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }
@@ -4583,9 +4608,9 @@ export class TaskManager {
   }
 
   /**
-   * Record a task's outcome. Deliberately does NOT tear down the worktree/agent -
-   * "Mark done" annotates a result, it must not silently discard unpushed work.
-   * The tree is freed later by an explicit, confirmed `reclaim` (or `remove`).
+   * Record a final outcome synchronously. Managed worktrees owe durable session closure,
+   * archive capture and background reset/return; the initial workflow handoff does not enter
+   * this boundary. Assigned sessions without owned trees retain their existing close policy.
    *
    * `satisfyDependents` additionally closes the operator-declared edges pointing HERE.
    * Off by default, and that default is load-bearing - see `CompleteTaskSchema` for why
@@ -4797,9 +4822,10 @@ export class TaskManager {
     // One transaction when this completion also finishes with the agent that produced it, so
     // an interruption cannot land the task without the closure it owes. `publishPersistedTask`
     // then broadcasts what that transaction already wrote, rather than writing it twice.
-    if (input.closeSessionId) {
+    const closeSessionId = input.closeSessionId ?? (taskHasWorktrees(t) ? t.sessionId : null);
+    if (closeSessionId) {
       const displaced = completeTaskWithSessionClosure(updated, {
-        sessionId: input.closeSessionId,
+        sessionId: closeSessionId,
         requestedAt: now,
         deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
       });
@@ -4824,7 +4850,7 @@ export class TaskManager {
     // window between them is the whole correctness argument: `upsertTask` may evict this row
     // from the bounded in-memory list, and its `task_upsert` listener clears exactly this map.
     // Setting it from a `.then` would put both of those between the write and the record.
-    if (input.inferredFrom && this.registry.getTask(id) === updated) {
+    if (input.inferredFrom && !taskHasWorktrees(t) && this.registry.getTask(id) === updated) {
       this.autoCompleted.set(id, input.inferredFrom);
     }
     // The task's upstream item, if it came from one, is owed a note. A LOCAL INSERT and
@@ -4841,6 +4867,10 @@ export class TaskManager {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
     if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
+      this.enqueueFinishedWorktreeReturn(updated, "complete");
+      this.scheduleMissionSessionClosureSweep();
+    }
     return updated;
   }
 
@@ -5390,6 +5420,159 @@ export class TaskManager {
   /** Queued plus in-flight background cleanups, so retention can bound how many it adds. */
   get pendingCleanupJobs(): number {
     return this.cleanupQueue.size;
+  }
+
+  /** Shutdown drains the same queue used by startup, retention and lifecycle return. */
+  async settleWorktreeReturns(): Promise<void> {
+    await this.cleanupQueue.settled();
+  }
+
+  private worktreeOwnership(task: Task): string {
+    return JSON.stringify({
+      dispatchedAt: task.dispatchedAt,
+      repos: taskRepoRefs(task).map((ref) => [ref.position, ref.repoRoot, ref.worktreePath,
+        ref.provider, ref.worktreeLeaseId]),
+    });
+  }
+
+  /** Capture before the stop, which can synchronously remove the session and its binding. */
+  prepareKilledSessionReturn(session: Session): () => void {
+    const owners = this.registry.listTasks().filter((task) => taskHasWorktrees(task) &&
+      (task.sessionId === session.id || taskRepoRefs(task).some((ref) =>
+        ref.worktreePath !== null && ref.worktreePath === session.cwd)));
+    if (owners.length !== 1) return () => {};
+    const task = owners[0]!;
+    const intent = { taskId: task.id, ownership: this.worktreeOwnership(task) };
+    return () => {
+      this.killedSessionReturns.set(session.id, intent);
+      if (!this.registry.getSession(session.id)) this.returnKilledSessionWorktrees(session.id);
+    };
+  }
+
+  private returnKilledSessionWorktrees(sessionId: string): void {
+    const intent = this.killedSessionReturns.get(sessionId);
+    if (!intent || this.registry.getSession(sessionId)) return;
+    this.killedSessionReturns.delete(sessionId);
+    const task = this.registry.getTask(intent.taskId) ?? getDurableTask(intent.taskId);
+    if (!task || this.worktreeOwnership(task) !== intent.ownership || task.status === "done") return;
+    this.enqueueFinishedWorktreeReturn(task, "kill", sessionId);
+  }
+
+  private resumeCompletedWorktreeReturns(): void {
+    if (this.closuresStopped) return;
+    for (const task of this.registry.listTasks()) {
+      if (task.status === "done" && taskHasWorktrees(task) && !getTaskSessionClosure(task.id)) {
+        this.enqueueFinishedWorktreeReturn(task, "complete");
+      }
+    }
+  }
+
+  private enqueueFinishedWorktreeReturn(
+    task: Task, reason: "complete" | "kill", stoppedSessionId?: string,
+  ): void {
+    if (this.closuresStopped) return;
+    if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return;
+    const ownership = this.worktreeOwnership(task);
+    this.cleanupQueue.enqueue({
+      taskId: task.id,
+      repoKeys: taskCleanupRepoKeys(task),
+      run: async () => {
+        // Closure sweeps can run in quick succession. Refused return retries at a bounded
+        // cadence, while durable task resources carry the obligation across daemon restart.
+        if (reason === "complete") this.nextCompletedReturn.set(task.id, Date.now() + 30_000);
+        const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
+        if (result.ok) this.nextCompletedReturn.delete(task.id);
+        else console.info(`[tasks] ${reason} kept worktrees for ${task.id}: ${result.error}`);
+      },
+    });
+  }
+
+  private async returnFinishedWorktrees(
+    id: string, ownership: string, reason: "complete" | "kill", stoppedSessionId?: string,
+  ): Promise<Ok> {
+    const current = () => this.registry.getTask(id) ?? getDurableTask(id);
+    const owned = (): Task | null => {
+      const task = current();
+      return task && this.worktreeOwnership(task) === ownership &&
+        (reason === "complete" ? task.status === "done" : ["failed", "cancelled"].includes(task.status))
+        ? task : null;
+    };
+    const before = owned();
+    if (!before || !taskHasWorktrees(before)) return { ok: false, error: "task ownership changed" };
+    const paths = taskRepoRefs(before).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+    const guard = async (): Promise<string | null> => {
+      const task = owned();
+      if (!task) return "task ownership changed";
+      if (stoppedSessionId && this.supervisor?.handleFor(stoppedSessionId)) {
+        return "killed session runtime has not stopped";
+      }
+      if (task.sessionId && (this.registry.getSession(task.sessionId) || this.supervisor?.handleFor(task.sessionId))) {
+        return "task session has not stopped";
+      }
+      if (this.registry.snapshot().sessions.some((session) =>
+        session.cwd && paths.some((path) => pathContains(canonicalWorktreePath(path), canonicalWorktreePath(session.cwd!))))) {
+        return "another session still uses a checkout";
+      }
+      const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
+      for (const path of paths) {
+        const state = occupancy.get(path);
+        if (!state || state.status === "unknown") return "checkout occupancy is unknown";
+        if (state.occupants.length) return "a process still uses a checkout";
+      }
+      return owned() ? null : "task ownership changed";
+    };
+    let blocked = await guard();
+    if (blocked) return { ok: false, error: blocked };
+    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
+    if (reason === "kill") {
+      // All repos must pass before the first return. Fresh refs cannot vouch for a branch
+      // deleted upstream; an offline or unreachable origin retains the entire set.
+      for (const path of paths) {
+        blocked = await probe(path, { fetch: true });
+        if (blocked) return { ok: false, error: blocked };
+      }
+    }
+    // Read-only eligibility must not stand in front of a confirmed manual Clean up. In
+    // particular a dirty Kill should not reserve resources it will never be allowed to return.
+    return this.withCleanupReservation<Ok>(
+      id,
+      { ok: false, error: "another cleanup owns the task" },
+      async () => {
+        if (!owned()) return { ok: false, error: "task ownership changed" };
+        const archived = await this.settleArchivesBeforeTeardown(id);
+        if (!archived.ok) return archived;
+        const beforeReturn = async (path: string): Promise<string | null> => {
+          const refusal = await guard();
+          if (refusal) return refusal;
+          // Upstream refs may disappear after eligibility or archive capture. Refresh and
+          // prune here too; non-native providers do not refresh origin before teardown.
+          const unsafe = reason === "kill" ? await probe(path, { fetch: true }) : null;
+          return unsafe ?? (owned() ? null : "task ownership changed");
+        };
+        blocked = await guard();
+        if (blocked) return { ok: false, error: blocked };
+        const target = owned()!;
+        try {
+          await (this.startupDeps.teardown ?? teardownWorktree)(
+            target, this.legacyWorktrees, "background", this.worktrees, beforeReturn,
+          );
+        } catch (error) {
+          const partial = owned();
+          if (partial) this.registry.upsertTask({
+            ...partial, ...releasedTaskResources(partial, reclaimedFrom(error)), updatedAt: Date.now(),
+          });
+          return { ok: false, error: `provider return failed (${readFailureClass(error)})` };
+        }
+        const after = owned();
+        if (!after) return { ok: false, error: "task ownership changed" };
+        this.autoCompleted.delete(id);
+        this.registry.upsertTask({
+          ...after, ...releasedTaskResources(after, null), homeName: null, homeBackend: null,
+          terminalResourceId: null, sessionId: null, updatedAt: Date.now(),
+        });
+        return { ok: true };
+      },
+    );
   }
 
   /**

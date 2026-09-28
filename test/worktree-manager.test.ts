@@ -1065,3 +1065,21 @@ test("Return cannot mark a slot available while it still holds a branch", async 
   assert.equal(released.outcome, "outcomeUnknown");
   assert.equal(m.store.slots().every((slot) => slot.state === "quarantined"), true);
 });
+
+
+test("lifecycle guard runs after native fetch and refuses newly created work before reset", async () => {
+  const { clone, sha } = repository("return-policy-");
+  const m = manager();
+  const held = lease(await acquire(m, clone, sha, "return-policy:0"));
+  const local = join(held.path, "late-local-work.txt");
+  let checked = false;
+  const result = await m.release(held, { ownerAuthorized: true, beforeReset: async () => {
+    checked = true;
+    writeFileSync(local, "keep this work");
+    return "checkout changed during release";
+  } });
+  assert.ok(checked);
+  assert.equal(result.outcome, "refused");
+  assert.ok(existsSync(local));
+  assert.equal(m.lookupLease({ leaseId: held.leaseId, path: held.path, owner: held.owner }).state, "active");
+});

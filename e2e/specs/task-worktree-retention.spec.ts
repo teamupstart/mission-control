@@ -159,6 +159,8 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   const worktree = dispatched.worktreePath!;
   expect(worktree).toContain(join(daemon.home, "worktree-pools"));
 
+  writeFileSync(join(worktree, "retained-notes.md"), "Local work must survive Kill.\n");
+
   // The agent goes away without recording an outcome, which is the ordinary way a task ends
   // up holding a checkout nobody has decided about. Its tree is KEPT - that is the existing
   // contract, and retention is what eventually bounds it.

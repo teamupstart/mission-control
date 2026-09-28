@@ -1101,7 +1101,7 @@ test("a prompt typed into a concluded pane is refused before any turn begins", a
   assert.equal(refused.status, 200);
   const decision = await refused.json() as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
-  assert.match(decision.reason, /recurring mission run/);
+  assert.match(decision.reason, /task.*was completed/);
   assert.match(decision.reason, /was not run/);
 
   // And NO TURN BEGAN. This is the difference from stopping a turn afterwards: the session
@@ -1295,7 +1295,7 @@ test("retirement refuses a task and session the durable ledger does not pair", a
 
 // ---- what the closure does not touch ----
 
-test("the closure completes with the run's checkout still held, and reclaims nothing", async (t) => {
+test("closure confirmation keeps an unverifiable checkout tracked for guarded return", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = terminalMission({}, killRecorder(), {
     worktreePath: "/wt/sweep",
@@ -1313,8 +1313,8 @@ test("the closure completes with the run's checkout still held, and reclaims not
   assert.equal(db.getTaskSessionClosure(f.taskId), null, "the session closed");
 
   const task = f.registry.getTask(f.taskId);
-  // An `empty` run committed nothing, so anything in that tree is unpushed work. The 30-day
-  // retention clock owns it, exactly as it owns every other terminal task's checkout.
+  // The fake path/lease cannot pass provider validation. A closed session alone never makes
+  // an unverified checkout available, even though completion now owes its return.
   assert.equal(task?.worktreePath, "/wt/sweep", "and the checkout is still the operator's");
   assert.equal(task?.worktreeLeaseId, "lease-sweep");
 });

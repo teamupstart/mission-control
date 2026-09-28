@@ -794,7 +794,12 @@ export class WorktreeManager {
 
   async release(
     lease: NativeWorktreeLease,
-    options: { ownerAuthorized?: boolean; requireClean?: boolean } = {},
+    options: {
+      ownerAuthorized?: boolean;
+      requireClean?: boolean;
+      /** Task policy rechecked under the slot lock, after all provider awaits. */
+      beforeReset?: () => Promise<string | null>;
+    } = {},
   ): Promise<WorktreeReleaseResult> {
     if (lease.provider !== "mission") return { outcome: "refused", reason: "lease provider is not mission" };
     const pool = this.store.poolForSlot(lease.slotId);
@@ -879,6 +884,8 @@ export class WorktreeManager {
           return { outcome: "refused", reason: "manual worktree is dirty" };
         }
       }
+      const policyBlocker = await options.beforeReset?.();
+      if (policyBlocker) return { outcome: "refused", reason: policyBlocker };
       let returning: WorktreeSlotRow | null;
       try {
         returning = this.store.markReturning(slot.id, slot.version, target.value, this.deps.now());

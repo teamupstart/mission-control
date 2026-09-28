@@ -16,12 +16,8 @@ import { Tooltip } from "./Tooltip.tsx";
  * declared to wait on it. An operator whose work was finished wanted Complete, and had
  * no way to know that from a button that just turned red.
  *
- * So the dialog's job is to name the consequence and offer the other door. What it must
- * NOT do is take the checkout: `agentWentAway` keeps the worktree, branch and home for a
- * confirmed Clean up precisely so a mis-aimed kill costs nothing that git cannot give
- * back. That reprieve is no longer indefinite, which is why the copy says so: an untouched
- * checkout is reclaimed automatically after the retention window, uncommitted and unpushed
- * work included.
+ * A safe, published checkout can return after the session leaves. Local work or uncertain
+ * safety preserves it under the existing retention policy.
  */
 export function KillModal({
   session,
@@ -102,9 +98,10 @@ export function KillModal({
                 be verified. Other panes and windows are preserved
               </>
             ) : null}
-            . Its checkout is kept - free it later with Clean up, or leave it and Mission
-            Control removes it automatically after {TASK_WORKTREE_RETENTION_DAYS} days
-            without a change.
+            . Task-owned worktrees return automatically once the session stops, if all are clean,
+            published to origin, and unused. Otherwise they are kept for Clean up or Worktree
+            Settings and removed automatically after {TASK_WORKTREE_RETENTION_DAYS} days
+            without a Git-visible change.
           </p>
 
           {task && (

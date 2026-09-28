@@ -386,12 +386,13 @@ every task waiting on it behind a *stopped* blocker. The merge survives the roll
 task's durable record, so a later prompt cannot outrun it; if several of the agent's
 episodes merged, the **most recent** merge is the one recorded.
 
-An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
-that conclusion is **reversible**: once a follow-up prompt is delivered, the task goes back
+For an assigned agent without task-owned worktrees, the idle conclusion remains
+**reversible**: once a follow-up prompt is delivered, the task goes back
 to running and drops the outcome. Only conclusions Mission Control drew from idleness are
 undone this way - an outcome you recorded yourself is never overwritten. This correction is
 deliberately limited to the current daemon run; after a restart, a completed task stays
-done.
+done. A task with owned worktrees instead enters final closure and return; further work
+requires a new agent.
 
 #### A merge that lands when nobody is watching
 
@@ -415,36 +416,23 @@ had already been written off:
 | `backlog` | untouched: a rescheduled task is being re-run, so its previous attempt's merge is not this run's result |
 
 Only a **merged** pull request does this. One that was closed without merging changes
-nothing, and neither does one still open. An upgrade records an outcome and nothing else:
-the worktree, branch and any terminal home stay exactly where they were, still behind the
-**Clean up** button, because freeing a checkout runs `git worktree remove --force` and
-stays a human's click. Tasks that declared a dependency on the upgraded one are released
-at the same moment, which is the point - a `stopped` blocker over work that shipped is
-what stalls a backlog.
+nothing, and neither does one still open. An upgrade records the merged outcome, releases
+dependents, and starts final completion cleanup for task-owned worktrees. Required archives
+are saved before those worktrees are reset and returned.
 
-Unlike the idle conclusion, this one is **not reversible**: it was drawn from a pull
-request in main, not from an agent that had gone quiet, so an agent typing again does not
-reopen it.
+Final completion of a task with owned worktrees closes its agent and resets and returns those
+worktrees, including residual local changes, regardless of the Shipping setting. An agent that
+is still working, awaiting input or review, or carrying queued work is not completed from an
+intermediate merge. Its episode must first finish idle with an empty queue.
 
-What happens to the agent is yours to choose, in **Settings → Shipping**:
+**Settings > Shipping > Close assigned sessions after their pull requests merge** controls
+agents without task-owned worktrees:
 
-| Close the session after merge | What happens |
+| Setting | Assigned-session behavior |
 |---|---|
-| **off** (default) | The agent stays, with its checkout and its context. Once idle, its merged task lands; a later follow-up reopens it |
-| **on** | Once the agent is idle with an empty queue, Mission Control first marks the merged task done and then closes its session, freeing a fleet slot for a fresh dispatch. If the merge is observed mid-turn, closure waits for that later idle transition. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+| **off** (default) | Keep the agent with its checkout and context; a later follow-up can reopen its inferred completion |
+| **on** | Close the idle completed agent to free fleet capacity |
 
-An agent that is still **working**, awaiting input, awaiting review, or carrying queued
-work is neither closed nor failed as a substitute for completion, even with the switch
-on. The merge is recorded either way. Once the same episode does finish idle with an empty
-queue, its task lands and the enabled switch closes the session.
-
-The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
-nothing about files still sitting unsaved in that checkout, and reclaiming runs
-`git worktree remove --force`. Anything that could be lost stays behind a human click.
-
-Behind that click, not behind it forever. A checkout kept this way is removed automatically
-once **30 days pass with no Git-visible change** in it, uncommitted, untracked and unpushed
-work included - see [task worktree retention](worktrees-and-checks.md#task-worktree-retention).
-Editing anything in the tree resets that window. Push and merge state are deliberately not
-consulted: they decide whether a *merge* reclaims the checkout, and they have no bearing at
-all on whether an untouched one is eventually reclaimed by age.
+Provider or archive failures preserve the unreturned resource records. See
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
+manual reconciliation, quarantine, and the unchanged 30-day fallback.

@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,13 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 
+const managers: InstanceType<typeof TaskManager>[] = [];
+afterEach(async () => {
+  for (const manager of managers.splice(0)) {
+    manager.stopMissionSessionClosures();
+    await manager.settleWorktreeReturns();
+  }
+});
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
@@ -89,7 +96,9 @@ function fleet(
   closeDeps?: ConstructorParameters<typeof TaskManager>[1],
 ) {
   const registry = new Registry();
+  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
   const tasks = new TaskManager(registry, closeDeps);
+  managers.push(tasks);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({
@@ -106,7 +115,9 @@ function fleet(
     title: "Ship the thing",
     status: "running",
     sessionId: id,
-    worktreePath: cwd,
+    // These legacy close/reopen cases describe assigned agents. Managed completion is
+    // terminal and covered separately below.
+    worktreePath: null,
   }));
   registry.bindTaskToWorkEpisode(`task-${id}`, id);
   return { registry, tasks, id, taskId: `task-${id}` };
@@ -692,4 +703,22 @@ test("a reopened task stays running when its next idle turn is on an unmerged ep
   // current episode never merged), NOT `agentWentAway`/`mergedPrFor` - the two paths differ
   // precisely because a present agent may still be mid-turn while a departed one cannot.
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+
+test("managed merge completion closes regardless of the assigned-agent reuse setting", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const killed: string[] = [];
+  const f = fleet("s-managed-final", false, {
+    resetWouldDestroyWork: async () => "local edits",
+    kill: async (session) => { killed.push(session.id); return { ok: true }; },
+  });
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, worktreePath: `/repo/${f.id}` });
+  merge(f);
+  await f.tasks.sweepMissionSessionClosures();
+  assert.deepEqual(killed, [f.id]);
+  f.registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`, transcriptPath: null, env: {}, prompt: "late work" });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.match(f.registry.promptResourceBlockerForSession(f.id) ?? "", /being closed/);
 });

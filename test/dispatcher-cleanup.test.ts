@@ -14,7 +14,7 @@ process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { MULTIPLEXERS } = await import("../src/server/terminal/registry.ts");
-const { fakeMultiplexer, muxPane, FAIL } = await import("./helpers/terminal-fakes.ts");
+const { fakeMultiplexer, muxPane, FAIL, OK } = await import("./helpers/terminal-fakes.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 const { getTask } = await import("../src/server/db.ts");
 
@@ -151,6 +151,54 @@ for (const state of ["absent", "live", "unknown"] as const) {
         assert.equal(existsSync(worktree), true);
       }
       assert.deepEqual(attempts, ["captured-id"], "never retry against the replacement name");
+    } finally {
+      MULTIPLEXERS.tmux = original;
+    }
+  });
+}
+
+for (const blocker of ["primary", "secondary", "after-home", "none"] as const) {
+  test(`automatic return guards terminal-home cleanup and repeats provider checks: ${blocker}`, async () => {
+    const repo = join(home, `guarded-home-${blocker}`);
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]);
+    const trees = ["primary", "secondary"].map((branch) => {
+      const worktreePath = join(home, `guarded-${blocker}-${branch}`);
+      execFileSync("git", ["-C", repo, "worktree", "add", "-qb", branch, worktreePath]);
+      return { repoRoot: repo, worktreePath, branch, provider: "git" as const };
+    });
+    const original = MULTIPLEXERS.tmux;
+    const events: string[] = [];
+    let homeClosed = false;
+    MULTIPLEXERS.tmux = fakeMultiplexer({
+      bin: { env: null, candidates: [process.execPath], dropEnv: [] },
+      sessions: {
+        ...original.sessions!,
+        kill: async () => { events.push("close home"); homeClosed = true; return OK; },
+      },
+    });
+    const task = {
+      ...trees[0]!, extraRepos: [trees[1]!], homeName: "task", homeBackend: "tmux",
+      terminalResourceId: "multiplexer:tmux:captured-id",
+    };
+    try {
+      const returning = teardownWorktree(task, undefined, "foreground", undefined, async (path) => {
+        const tree = trees.find((entry) => entry.worktreePath === path)!;
+        events.push(`guard ${tree.branch}`);
+        return blocker === tree.branch || (blocker === "after-home" && homeClosed)
+          ? "checkout became unsafe" : null;
+      });
+      if (blocker === "none") {
+        await returning;
+        assert.deepEqual(trees.map((tree) => existsSync(tree.worktreePath)), [false, false]);
+      } else {
+        await assert.rejects(returning, /checkout became unsafe/);
+        assert.deepEqual(trees.map((tree) => existsSync(tree.worktreePath)), [true, true]);
+      }
+      assert.deepEqual(events, blocker === "primary" ? ["guard primary"]
+        : blocker === "secondary" ? ["guard primary", "guard secondary"]
+          : ["guard primary", "guard secondary", "close home", "guard primary", "guard secondary"]);
+      assert.equal(homeClosed, blocker === "none" || blocker === "after-home");
     } finally {
       MULTIPLEXERS.tmux = original;
     }

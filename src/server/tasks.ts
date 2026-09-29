@@ -82,6 +82,7 @@ import {
   recordTaskSessionClosureAttempt,
   settleTaskWithRetentionAdoption,
   taskSessionClosureForSession,
+  taskOwesWorktreeReturn,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
   reserveRetroFollowup,
@@ -1704,8 +1705,7 @@ export class TaskManager {
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
       for (const sessionId of this.killedSessionReturns.keys()) this.returnKilledSessionWorktrees(sessionId);
-      if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some((task) =>
-        task.status === "done" && taskHasWorktrees(task))) {
+      if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some(taskOwesWorktreeReturn)) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
       }
     }
@@ -4820,16 +4820,16 @@ export class TaskManager {
       completedAt: now,
       updatedAt: now,
     };
-    // One transaction when this completion also finishes with the agent that produced it, so
-    // an interruption cannot land the task without the closure it owes. `publishPersistedTask`
-    // then broadcasts what that transaction already wrote, rather than writing it twice.
+    // One transaction records any return obligation and session closure with completion, so
+    // an interruption cannot lose either. Historical done rows have no return obligation.
+    // `publishPersistedTask` broadcasts what that transaction already wrote.
     const closeSessionId = input.closeSessionId ?? (taskHasWorktrees(t) ? t.sessionId : null);
-    if (closeSessionId) {
-      const displaced = completeTaskWithSessionClosure(updated, {
+    if (closeSessionId || taskHasWorktrees(t)) {
+      const displaced = completeTaskWithSessionClosure(updated, closeSessionId ? {
         sessionId: closeSessionId,
         requestedAt: now,
         deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
-      });
+      } : null);
       this.registry.publishPersistedTask(updated, displaced);
       // Armed HERE, beside the write, and that placement is the invariant: a closure row is
       // never committed without something scheduled to settle it.
@@ -5470,7 +5470,7 @@ export class TaskManager {
   private resumeCompletedWorktreeReturns(): void {
     if (this.closuresStopped) return;
     for (const task of this.registry.listTasks()) {
-      if (task.status === "done" && taskHasWorktrees(task) && !getTaskSessionClosure(task.id)) {
+      if (taskOwesWorktreeReturn(task) && !getTaskSessionClosure(task.id)) {
         this.enqueueFinishedWorktreeReturn(task, "complete");
       }
     }
@@ -5480,6 +5480,7 @@ export class TaskManager {
     task: Task, reason: "complete" | "kill", stoppedSessionId?: string,
   ): boolean {
     if (this.closuresStopped) return false;
+    if (reason === "complete" && !taskOwesWorktreeReturn(task)) return false;
     if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return false;
     const ownership = this.worktreeOwnership(task);
     return this.cleanupQueue.enqueue({
@@ -5487,7 +5488,7 @@ export class TaskManager {
       repoKeys: taskCleanupRepoKeys(task),
       run: async () => {
         // Closure sweeps can run in quick succession. Refused return retries at a bounded
-        // cadence, while durable task resources carry the obligation across daemon restart.
+        // cadence, while the explicit durable obligation survives daemon restart.
         if (reason === "complete") this.nextCompletedReturn.set(task.id, Date.now() + 30_000);
         const context = { taskId: task.id, reason };
         console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
@@ -5515,7 +5516,7 @@ export class TaskManager {
     const owned = (): Task | null => {
       const task = current();
       return task && this.worktreeOwnership(task) === ownership &&
-        (reason === "complete" ? task.status === "done" : ["failed", "cancelled"].includes(task.status))
+        (reason === "complete" ? taskOwesWorktreeReturn(task) : ["failed", "cancelled"].includes(task.status))
         ? task : null;
     };
     const before = owned();

@@ -237,9 +237,12 @@ removal or a reset onto a different commit can discard them; this includes ignor
 Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
 is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after
 30 days without a Git-visible change.** The best-effort safe-Kill intent is in memory; a daemon
-restart before it runs falls back to that retention policy. Completion's closure and resource
-records are durable and cleanup resumes after discovery, with refused returns retried at a
-bounded cadence. Another live session or process always blocks automatic return.
+restart before it runs falls back to that retention policy. New final completions record an
+explicit return obligation atomically with completion and any session closure. Those durable
+obligations resume after discovery, with refused returns retried at a bounded cadence. Tasks
+completed before this policy keep their existing retained checkouts and 30-day activity window;
+upgrade never infers return permission from an old done status or session-closure record.
+Another live session or process always blocks automatic return.
 
 The policy is fixed and destructive at the boundary. Staged changes, unstaged changes,
 untracked files, local commits, and commits that were never pushed are all deleted when the
@@ -265,7 +268,7 @@ protects the whole set, and the task is reclaimed as one operation.
 internal cadence, well inside the window, and persists the result - the fingerprint, when it
 last changed, and the resulting deadline - so a restart resumes the boundary that was actually
 granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees for the same 30-day rule. Final
-completed tasks resume their outstanding closure and return after session discovery.
+completed tasks resume explicitly recorded closure and return obligations after session discovery.
 
 **The clock starts when the tree is first observed, not when the task ended.** No timestamp in
 the database can prove when a checkout was last touched, so every tree that existed before this

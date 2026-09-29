@@ -15,7 +15,8 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
-const { getTaskSessionClosure } = await import("../src/server/db.ts");
+const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
+  getTask: durableTask, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 const managers: InstanceType<typeof TaskManager>[] = [];
 afterEach(async () => {
   for (const manager of managers.splice(0)) {
@@ -93,6 +94,7 @@ test("completion persists closure, waits for removal, and returns every tree des
   await w.manager.complete(w.task.id, "shipped");
   assert.equal(w.registry.getTask(w.task.id)?.status, "done");
   assert.ok(getTaskSessionClosure(w.task.id));
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
   await w.manager.sweepMissionSessionClosures();
   assert.deepEqual(w.state.stopped, [w.session.id]);
   assert.deepEqual(w.state.released, []);
@@ -103,6 +105,7 @@ test("completion persists closure, waits for removal, and returns every tree des
   assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
   assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreePath, null);
   assert.equal(w.registry.getTask(w.task.id)?.outcome, "shipped");
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
 });
 
 for (const reset of [false, true]) {
@@ -286,14 +289,100 @@ test("archive refusal preserves completion resources and the closure sweep retri
   assert.deepEqual(w.state.released, ["/pool/one"]);
 });
 
-test("completion recovery waits for observed sessions before returning an old done tree", async () => {
-  const w = world({ status: "done", sessionId: null }, false);
+test("completion recovery waits for observed sessions before returning a newly completed tree", async () => {
+  const w = world({ sessionId: null }, false);
   w.sessions.clear();
+  await w.manager.complete(w.task.id, "finished");
+  w.manager.stopMissionSessionClosures();
+  closeDb();
+  const registry = new Registry();
+  const manager = new TaskManager(registry, undefined, undefined, undefined, undefined, {
+    occupancy: async (paths) => new Map(paths.map((path) => [path, w.state.occupancy])),
+    teardown: async (task) => { w.state.released.push(task.worktreePath!); },
+  });
+  managers.push(manager);
+  await manager.settleWorktreeReturns();
   assert.deepEqual(w.state.released, []);
+  assert.equal(taskOwesWorktreeReturn(registry.getTask(w.task.id)!), true);
+  registry.applyDiscovery([]);
+  await manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.equal(taskOwesWorktreeReturn(registry.getTask(w.task.id)!), false);
+});
+
+for (const table of ["task_worktree_returns", "task_session_closures"]) {
+  test(`a failed ${table} write rolls back completion and both obligations`, async () => {
+    const w = world();
+    openDb().exec(`CREATE TRIGGER refuse_completion BEFORE INSERT ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'obligation unavailable'); END`);
+    try {
+      await assert.rejects(w.manager.complete(w.task.id, "finished"), /obligation unavailable/);
+      assert.equal(durableTask(w.task.id)?.status, "running");
+      assert.equal(w.registry.getTask(w.task.id)?.status, "running");
+      assert.equal(getTaskSessionClosure(w.task.id), null);
+      assert.equal(taskOwesWorktreeReturn(durableTask(w.task.id)!), false);
+      assert.equal(openDb().prepare("SELECT count(*) AS n FROM task_worktree_returns").get()?.n, 0);
+    } finally {
+      openDb().exec("DROP TRIGGER refuse_completion");
+    }
+  });
+}
+
+test("a partial completion return retains its obligation until the secondary tree returns", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const w = world({ sessionId: null, extraRepos: [extra] });
+  w.sessions.clear();
+  w.state.partial = true;
+  await w.manager.complete(w.task.id, "finished");
+  await w.manager.settleWorktreeReturns();
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
+  w.state.partial = false;
+  now += 30_001;
+  await w.manager.sweepMissionSessionClosures();
+  await w.manager.settleWorktreeReturns();
+  assert.deepEqual(w.state.released, ["/pool/one", "/pool/two"]);
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+});
+
+test("reopening an attempt clears its completion-return obligation", async () => {
+  const w = world({ sessionId: null }, false);
+  w.sessions.clear();
+  await w.manager.complete(w.task.id, "finished");
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
+  w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, status: "backlog", completedAt: null });
+  assert.equal(openDb().prepare("SELECT count(*) AS n FROM task_worktree_returns").get()?.n, 0);
   w.registry.applyDiscovery([]);
   await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.deepEqual(w.state.released, []);
 });
+
+for (const legacyClosure of [false, true]) {
+  test(`upgrade preserves a legacy completed checkout${legacyClosure ? " with an old session-closure obligation" : ""}`, async (t) => {
+    const { root, clone } = mkOriginAndClone("mission-legacy-complete-");
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const path = mkLinkedWorktree(clone, "harness/legacy", join(root, "task"));
+    writeFileSync(join(path, "keep.txt"), "uncommitted legacy work\n");
+    const w = world({ status: "done", completedAt: 123, repoRoot: clone, worktreePath: path,
+      branch: "harness/legacy", provider: "git", worktreeLeaseId: null }, false, { teardown: teardownWorktree });
+    w.sessions.clear();
+    if (legacyClosure) openTaskSessionClosure(w.task.id, w.session.id, 123, 456);
+    // Reopen a pre-feature schema: upgrading creates an empty obligation table, never
+    // inferring destructive authorization from historical task status or session closure.
+    openDb().exec("DROP TABLE IF EXISTS task_worktree_returns");
+    openDb().exec(`PRAGMA user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
+    closeDb();
+    openDb();
+    assert.equal(taskOwesWorktreeReturn(w.task), false);
+    w.registry.applyDiscovery([]);
+    await w.manager.sweepMissionSessionClosures();
+    await w.manager.settleWorktreeReturns();
+    assert.equal(readFileSync(join(path, "keep.txt"), "utf8"), "uncommitted legacy work\n");
+    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, path);
+    assert.equal(getTaskSessionClosure(w.task.id), null, "an old closure may settle without authorizing return");
+  });
+}
 
 
 test("read-only Kill eligibility never reserves a dirty checkout against manual cleanup", async () => {

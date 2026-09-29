@@ -121,6 +121,11 @@ Only one non-terminal task may be bound to a session. Enforce this anywhere the 
 
 When an agent disappears, settle the task and retain its resources unless final completion or an accepted safe-Kill return authorizes cleanup. Unrequested disappearance alone never authorizes immediate teardown; retained failed and cancelled work follows the 30-day activity policy.
 
+New final completions persist a `task_worktree_returns` obligation in the same transaction as
+the done status and optional session closure. Startup resumes only those explicit obligations;
+historical done tasks are never backfilled and keep the existing retention policy. The obligation
+survives partial return and is cleared when the last checkout returns or the task attempt changes.
+
 A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
 
 Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.

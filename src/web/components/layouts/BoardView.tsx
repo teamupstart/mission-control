@@ -16,6 +16,12 @@ import {
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
+import {
+  columnWidthOf,
+  setColumnWidth,
+  useColumnWidths,
+  type BoardColumnId,
+} from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
@@ -30,7 +36,8 @@ import {
 } from "./types.ts";
 import {
   blockedMembersIn,
-  ColumnWidthToggle,
+  CollapsedColumnStrip,
+  ColumnWidthControl,
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
@@ -125,13 +132,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // targets, so it has to be state - a tile decides whether it may accept during a
   // render, and nothing about a native drag re-renders the board on its own.
   const [draggingRepo, setDraggingRepo] = useState<string | null>(null);
-  // The column the operator widened to read, by id ("backlog" or a tone). ONE at a
-  // time: widening is "let me look at that properly", and a board with three wide
-  // columns is not a wider column, it is a board you have to scroll to use. Local and
-  // un-persisted for the same reason `revealed` above is - it is a gesture, not a
-  // setting, and it should not still be in force tomorrow morning.
-  const [wideCol, setWideCol] = useState<string | null>(null);
-  const toggleWide = (id: string): void => setWideCol((prev) => (prev === id ? null : id));
+  // Each column's width - collapsed, normal, or expanded - by id ("backlog" or a tone). From
+  // a store rather than local state because App reads the collapsed half to keep the arrow
+  // keys off cards a strip is hiding; see `lib/column-width.ts` for the rules between the
+  // two halves (one expanded column at a time, and only the collapsed set is saved).
+  const widths = useColumnWidths();
+  const toggleWide = (id: BoardColumnId): void =>
+    setColumnWidth(id, columnWidthOf(widths, id) === "wide" ? "normal" : "wide");
   // Which repository frames are folded. From the shared store rather than local state, because
   // `App` has to read the same set to build the arrow-key arrays: a fold takes cards out of the
   // DOM, and navigation that did not know would step the cursor into rows nobody can see. See
@@ -322,8 +329,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
       <BacklogColumn
-        wide={wideCol === "backlog"}
-        onToggleWide={() => toggleWide("backlog")}
+        width={columnWidthOf(widths, "backlog")}
+        onWidthChange={(width) => setColumnWidth("backlog", width)}
         tasks={props.backlog}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),
@@ -352,10 +359,34 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         .map((g) => {
           const isRail = focusedTone === g.tone;
           const calm = modes.get(g.tone) === "calm";
-          // Never wide while calm. `wideCol` outlives a column emptying (it is the operator's
+          // Never wide while calm: the width outlives a column emptying (it is the operator's
           // gesture, kept for when sessions return), and the wide rule outranks the rail's width,
           // so an all-clear rail would otherwise be drawn as a wide empty column.
-          const wide = wideCol === g.tone && !calm;
+          const width = columnWidthOf(widths, g.tone);
+          const wide = width === "wide" && !calm;
+          // Collapsed wins over calm: an empty Needs you the operator collapsed stays the same
+          // strip, so the strip is still mounted to pulse when a session arrives. Never while
+          // this column IS the drill-in rail: the rail is a fixed-width console fixture that has
+          // to show its rows whatever the overview had folded. The fold is kept, so coming back
+          // to the board finds the column as it was left.
+          const collapsed = width === "collapsed" && !isRail;
+          const count = g.sessions.length + (g.tone === "working" ? pending.length : 0);
+          if (collapsed) {
+            return (
+              <section
+                key={g.tone}
+                className={`board-col tone-${g.tone} is-collapsed`}
+                inert={focusedTone != null}
+              >
+                <CollapsedColumnStrip
+                  label={g.label}
+                  count={count}
+                  announce={g.tone === "attention"}
+                  onRestore={() => setColumnWidth(g.tone, "normal")}
+                />
+              </section>
+            );
+          }
           return (
             <section
               key={g.tone}
@@ -364,7 +395,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
               }`}
               inert={focusedTone != null && !isRail}
             >
-              {/* Double-click the head to widen, the gesture asked for. On the HEAD
+              {/* Double-click the head to expand, the gesture asked for. On the HEAD
                   rather than on the title alone: the head is the column's handle, the
                   title is a word inside it, and a 40px target is not one. It sits
                   beside the toggle rather than instead of it - the same reveal the
@@ -397,13 +428,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     Here it lands in the dead space the head already had.
 
                     Not while drilled in: the rail is a fixed-width console fixture, and
-                    a widen control there would offer to move something that cannot. */}
-                {/* Nor on the all-clear rail: there is nothing in it to read wider. */}
+                    a width control there would offer to move something that cannot. */}
+                {/* Nor on the all-clear rail: it is already slim, and there is nothing in it
+                    to read wider. */}
                 {!isRail && !calm && (
-                  <ColumnWidthToggle
-                    wide={wide}
+                  <ColumnWidthControl
+                    width={width}
                     label={g.label}
-                    onToggle={() => toggleWide(g.tone)}
+                    onChange={(next) => setColumnWidth(g.tone, next)}
                   />
                 )}
                 {/* One number when the column is one kind of thing, two when it is not. A
@@ -418,9 +450,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {/* A placeholder is a visible row and counts in the unsplit Working column.
                     It is not included in the free/held split because no session exists yet. */}
                 {g.heldFrom === null ? (
-                  <span className="board-col-n">
-                    {g.sessions.length + (g.tone === "working" ? pending.length : 0)}
-                  </span>
+                  <span className="board-col-n">{count}</span>
                 ) : (
                   <>
                     {g.heldFrom > 0 && (

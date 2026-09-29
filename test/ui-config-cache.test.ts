@@ -85,6 +85,9 @@ test("a written cache round-trips", () => {
     groupBoardByRepo: false,
     // FALSE for the same reason: it defaults to true.
     showEmptyColumnStash: false,
+    // Non-empty for the same reason: an empty list is the default, so only a fold that
+    // survives the cache proves the field is copied at all.
+    collapsedBoardColumns: ["backlog", "attention"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -101,6 +104,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.showEmptyColumnStash, false);
+  assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {

@@ -809,6 +809,20 @@ available:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
+- **Every Board column has three widths: collapsed, normal, and expanded.** Hover a column's
+  header to show its width control, three bars from thin to wide, and press the width you
+  want. The control stays visible while a column is expanded. A collapsed column becomes a thin strip
+  showing its dot, its card count, and its name written vertically, and clicking the strip
+  restores it. Any column can be collapsed, including **Backlog** and **needs you**, and
+  several at once. Only one column is expanded at a time, and expanding one returns the
+  previous one to normal. Double-clicking a header still expands or restores it. A collapsed
+  column stays collapsed after a reload; an expanded one returns to normal. An empty **needs
+  you** is already the slim all-clear rail, so it has no width control until something needs
+  you. A **needs you** you collapsed stays a strip when it empties, and when a session starts
+  waiting on you the strip stays collapsed and its count pulses. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
+  collapsed column is hiding. Opening a session from a collapsed column (from the Line or a
+  notification, say) shows that column as the drill-in rail in full, and it is collapsed
+  again when you come back to the board.
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,

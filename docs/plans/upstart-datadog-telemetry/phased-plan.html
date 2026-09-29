@@ -205,7 +205,7 @@ the phase that owns it.</p>
 <tr>
 <td>F5</td>
 <td>&quot;Changing a shape starts new series&quot; has no mechanism today. A policy-epoch bump would skip journal facts captured but not yet projected.</td>
-<td>A shape change bumps the generation, which fences queued batches, and resets the profile&#39;s series in one transaction.</td>
+<td>A shape change bumps the generation, which fences queued batches, and resets the profile&#39;s series and their watermarks in one transaction. Projection checkpoints are kept, so already-projected facts never count twice and pending facts count once, under the new shape. This is sufficient because <code>CATALOG_PROJECTION</code> holds no reducer state: every counter and histogram total lives in <code>telemetry_series</code>. The analytical projection emits only gauges, recomputed from retained facts.</td>
 <td>2</td>
 </tr>
 <tr>
@@ -246,9 +246,9 @@ the phase that owns it.</p>
 </tr>
 <tr>
 <td>F12</td>
-<td>Managing the product destination on Upstart Macs overwrites whatever a person had configured there, and a Mac can leave Upstart&#39;s management.</td>
-<td>The record stores the prior product destination and master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon&#39;s own apply path keeps working.</td>
-<td>3</td>
+<td>Managing the product destination on Upstart Macs overwrites whatever a person had configured there. If that destination was already on, it could send to the gateway before pilot enrollment. A Mac can also leave Upstart&#39;s management.</td>
+<td>Under the pilot invariant, Product analytics is on exactly when the Mac is enrolled. First application is one transaction that writes the preset and switches the destination off. The record stores the prior product destination, including its switch, and the master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon&#39;s own apply path keeps working.</td>
+<td>3, 6</td>
 </tr>
 </tbody></table></div>
 <h2 id="sizing-and-phase-count">Sizing and phase count</h2>
@@ -465,7 +465,7 @@ the other&#39;s code.</li>
 <td>3, 5</td>
 </tr>
 <tr>
-<td>A shape change bumps the generation and resets series</td>
+<td>A shape change bumps the generation and resets series and watermarks, keeps projection checkpoints, and forbids projection-held cumulative totals</td>
 <td>2</td>
 <td>3 (preset apply)</td>
 </tr>
@@ -491,6 +491,11 @@ the other&#39;s code.</li>
 </tr>
 <tr>
 <td>The managed lock: person-initiated telemetry settings writes answer 403 while an organization is active</td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>The pilot invariant: during <code>pilot</code>, <code>product.enabled</code> is true exactly when <code>pilotEnrolledAt</code> is set; only Phase 6&#39;s default-on replaces it</td>
 <td>3</td>
 <td>6</td>
 </tr>

@@ -35,14 +35,14 @@ the phase that owns it.
 | F2 | "Waiting for the network" cannot be a pause reason: any non-null `pausedReason` stops delivery until a person acts. | A new `waiting` delivery outcome, with its own 5-minute backoff ceiling and new health and summary fields. | 1 |
 | F3 | A batch holds only the series touched in that pass, with their full cumulative values. The series key has no destination or shape. | The delta watermark is stored in columns on `telemetry_series`, which is one destination per profile. It advances in the batch-building transaction. | 1 |
 | F4 | Delta end times cannot reuse event times without overlapping windows, and a lost delta batch is lost data. | End time is the pass clock, strictly increasing per series. Every loss path is already counted and is documented as such. An endpoint or temporality change baselines the watermark, so a new endpoint never receives the whole history. | 1 |
-| F5 | "Changing a shape starts new series" has no mechanism today. A policy-epoch bump would skip journal facts captured but not yet projected. | A shape change bumps the generation, which fences queued batches, and resets the profile's series in one transaction. | 2 |
+| F5 | "Changing a shape starts new series" has no mechanism today. A policy-epoch bump would skip journal facts captured but not yet projected. | A shape change bumps the generation, which fences queued batches, and resets the profile's series and their watermarks in one transaction. Projection checkpoints are kept, so already-projected facts never count twice and pending facts count once, under the new shape. This is sufficient because `CATALOG_PROJECTION` holds no reducer state: every counter and histogram total lives in `telemetry_series`. The analytical projection emits only gauges, recomputed from retained facts. | 2 |
 | F6 | Series rows are never pruned, so old app versions count toward the 10,000 profile cap forever. | Prune series for resources that no longer contribute after the 30-day reducer window. The lean budget counts only live series. | 2 |
 | F7 | Datadog picks a host from `host`, then `datadog.host.name`, and recommends the latter. | The lean shape sets `datadog.host.name = mission-control`. The pilot verifies that no billable hosts result. | 2, 6 |
 | F8 | Every subprocess must be registered, and a scanner test enforces it. `plutil` is registered; `profiles` is not. `plutil -extract` reads one subtree safely. | Register `profiles` like `plutil`. Build bounded readers once, in Phase 3, and let Phase 4 reuse them. | 3 |
 | F9 | Tests on a managed Mac would read the real `/Library` policies and enrollment. CI runs on Linux and would never notice. | The e2e fixture pins `MISSION_ORGANIZATION=none` and `MISSION_MANAGED_SETTINGS_ROOT`. Unit tests inject their readers. | 3, 4 |
 | F10 | Upstart Macs also carry a per-user managed Claude Code plist. | The Cost-panel reader checks it first. | 4 |
 | F11 | The source plan requires the pilot before default-on, but a merged phase is in every alpha build at once. Upstart users also have no Settings control to join a pilot, because Settings is view-only for them. | Phase 3 ships the preset with `rollout: "pilot"`, and volunteers enroll with one documented call, `POST /api/telemetry/organization/pilot`. Phase 6 flips the rollout to `default-on` only after the measured gate passes, and retires enrollment. | 3, 6 |
-| F12 | Managing the product destination on Upstart Macs overwrites whatever a person had configured there, and a Mac can leave Upstart's management. | The record stores the prior product destination and master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon's own apply path keeps working. | 3 |
+| F12 | Managing the product destination on Upstart Macs overwrites whatever a person had configured there. If that destination was already on, it could send to the gateway before pilot enrollment. A Mac can also leave Upstart's management. | Under the pilot invariant, Product analytics is on exactly when the Mac is enrolled. First application is one transaction that writes the preset and switches the destination off. The record stores the prior product destination, including its switch, and the master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon's own apply path keeps working. | 3, 6 |
 
 ## Sizing and phase count
 
@@ -124,12 +124,13 @@ flowchart LR
 | The `waiting` outcome, the health and summary fields, and the waiting sentence with an optional label | 1 | 3 |
 | `TELEMETRY_EXPORT_SHAPE_IDS`, `exportShape`, and the shape records with their `summary` | 2 | 3, 5, 6 |
 | `exportedInstruments(shapeId)` as the only statement of what a shape exports | 2 | 3, 5 |
-| A shape change bumps the generation and resets series | 2 | 3 (preset apply) |
+| A shape change bumps the generation and resets series and watermarks, keeps projection checkpoints, and forbids projection-held cumulative totals | 2 | 3 (preset apply) |
 | The editable temporality and export-shape controls, through one component with an `editable` flag | 1, 2 | 3 (hidden when managed) |
 | `profiles` executable, `readMdmEnrollment` and `readPlistValue` | 3 | 4 |
 | `currentOrganization()` and its label | 3 | 4, 6 |
 | The `telemetry.organization` record, including `previous` and `pilotEnrolledAt` | 3 | 6 |
 | The managed lock: person-initiated telemetry settings writes answer 403 while an organization is active | 3 | 6 |
+| The pilot invariant: during `pilot`, `product.enabled` is true exactly when `pilotEnrolledAt` is set; only Phase 6's default-on replaces it | 3 | 6 |
 | Preset `rollout` (`pilot`, then `default-on`) and the rule that a newer `presetVersion` rewrites every preset field | 3 | 6 |
 | e2e fixture pins: `MISSION_ORGANIZATION=none` and `MISSION_MANAGED_SETTINGS_ROOT` | 3, 4 | every later spec |
 

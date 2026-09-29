@@ -288,9 +288,17 @@ becomes a second read path. At daemon start and on Re-check, when the guards pas
    the revision all behave as for any save.
    - The record first stores the product destination and master collection switch as they
      were. Withdrawal restores them.
-   - Whether sending starts depends on the rollout. During the pilot, only enrolled pilot
-     installations send. Once the default is on, every Upstart-managed Mac sends, and the
-     master collection switch is turned on with it.
+   - **During the pilot, only enrolled Macs send.** The same write turns the Product
+     analytics switch **off** unless the Mac is enrolled. A destination that was already on
+     therefore cannot send to Upstart's gateway before enrollment.
+     - The master collection switch is left as it was, because it also governs local collection
+       and the person's own backend, and the Product analytics lane cannot send while its own
+       switch is off.
+     - Batches already queued for the previous product endpoint are fenced by the endpoint
+       change and dropped by the switch-off, under the existing rules. They are never redirected
+       to the gateway.
+   - **Once the default is on,** every Upstart-managed Mac sends, and the master collection
+     switch is turned on with it.
    - The record stores the preset version and the time.
 
    The write is recorded as a telemetry control action by the daemon itself (`SYSTEM_ACTOR`,
@@ -304,8 +312,10 @@ becomes a second read path. At daemon start and on Re-check, when the guards pas
    `PUT /api/telemetry/config` and the purge and identity-reset operations. Test connection
    and Try again remain available, because they change no setting. The daemon's own writes are
    unaffected.
-4. **No longer detected.** If a Mac with a record stops matching, the product destination and
-   master switch are restored to what the record stored, and the record is removed. From then
+4. **No longer detected.** If a Mac with a record stops matching, the product destination,
+   including its own switch, and the master switch are restored to what the record stored,
+   and the record is removed. A destination that was on before detection is on again, sending
+   to its original endpoint under a new consent epoch. From then
    on the person can edit their settings again, like anyone else.
 
 `MISSION_ORGANIZATION=none` remains a diagnostic override for development and support. It is
@@ -387,8 +397,15 @@ settings as well.
    The default shape is today's full export, so the local Grafana stack and every existing
    destination keep every metric and label. The shape is applied when the destination's
    batches are built. Dropping a label aggregates the affected series together, and the
-   dropped detail stays on the matching trace span. Changing a destination's shape starts
-   new series for it, as a consent epoch does. It never rewrites batches already queued.
+   dropped detail stays on the matching trace span.
+
+   Changing a destination's shape starts new series for it from zero:
+   - queued batches of the old shape are fenced, never rewritten;
+   - its aggregates and delta watermarks are cleared;
+   - journal facts already projected are not projected again, and facts not yet projected
+     count once, under the new shape;
+   - gauges that a projection recomputes from its own retained state come back with their
+     current values, which is correct for a gauge and is never added to a counter.
    The Upstart preset selects `datadog-lean`, and anyone can select it for their own
    Datadog destination.
 
@@ -602,6 +619,11 @@ cohort gauges, which this destination never receives.
     ignored;
   - apply, keep in step and withdraw, including restoring the stored product destination and
     master switch on withdrawal;
+  - a Mac whose Product analytics destination and master switch were both on before detection:
+    - after first application, the destination holds the preset and is off, and the master
+      switch is unchanged;
+    - nothing reaches the gateway until enrollment;
+    - withdrawal restores the original destination with its switch on;
   - a person's change to telemetry settings refused while the organization is active, and
     accepted again after withdrawal;
   - the temporality and export-shape controls saving on a machine that is not managed;

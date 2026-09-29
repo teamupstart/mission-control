@@ -9,9 +9,11 @@ organization. It writes Upstart's managed configuration into the Product analyti
 (Upstart's telemetry gateway, with the Datadog-ready settings), and makes Settings > Telemetry
 **view-only** on that Mac, as the human decided on 2026-09-29.
 
-Sending starts only for **pilot-enrolled** Macs in this phase. The rollout is `pilot`, and
-volunteers enroll with one documented API call, because Settings has no editing controls on an
-Upstart Mac. Phase 6 turns the default on for every Upstart Mac after the pilot passes.
+Sending starts only for **pilot-enrolled** Macs in this phase. On every other Upstart Mac the
+Product analytics destination is switched **off**, even if it was on before detection, so
+nothing reaches the gateway before enrollment. The rollout is `pilot`, and volunteers enroll
+with one documented API call, because Settings has no editing controls on an Upstart Mac.
+Phase 6 turns the default on for every Upstart Mac after the pilot passes.
 
 On every other machine, including other companies' Jamf-managed Macs, nothing changes, no
 Upstart text appears, and everything stays editable.
@@ -197,17 +199,37 @@ Inherited:
    - This runs at start, after the database opens and before `startTelemetry`, and on
      Re-check. Every write goes through `setTelemetryConfig` with `SYSTEM_ACTOR`, so revisions,
      generations, the Phase 1 baseline and the Phase 2 shape reset all apply.
-   - **Detected, no record:**
-     - store `previous`;
+   - **The pilot invariant.** While the rollout is `pilot` and an organization is active,
+     `product.enabled` is true **if and only if** `pilotEnrolledAt` is set. Every apply
+     re-asserts it, so no path can leave a non-enrolled Mac sending to the gateway.
+   - **Detected, no record.** Make the first application **one `setTelemetryConfig` call**, so
+     no intermediate state is ever stored or exported:
+     - store `previous`: the whole prior product destination, including its `enabled`, and the
+       master switch;
      - write every preset field to `product`, replacing whatever was there;
-     - set `product.enabled` and the master switch **only** for pilot-enrolled Macs, of which
-       there are none on first application, so both stay as they were.
+     - set `product.enabled` to **false**, whatever it was. No Mac is enrolled at first
+       application, and a destination that was already on must not send to the gateway;
+     - leave the master switch as it was. It also governs local collection and the person's own
+       backend, and the Product analytics lane cannot send while its own switch is off.
+
+     The endpoint change bumps the generation, which fences batches queued for the previous
+     product endpoint, and the switch-off drops them under the existing disable rule. Neither
+     path can redirect them to the gateway.
    - **Detected, record present:**
      - write every preset field again when `presetVersion` is newer; nobody on the Mac can
        have changed them;
-     - keep `product.enabled` and the master switch on while `pilotEnrolledAt` is set.
-   - **Not detected, record present:** restore `previous.product` and `previous.enabled`, then
-     delete the record.
+     - re-assert the pilot invariant;
+     - the master switch is on while enrolled, and otherwise is whatever it was at first
+       application, which is `previous.enabled`. The lock means nobody on the Mac can have
+       changed it.
+   - **Not detected, record present:**
+     - restore `previous.product`, including its own `enabled`, and `previous.enabled`, in one
+       `setTelemetryConfig` call;
+     - then delete the record.
+
+     A destination that was on before detection is on again, sending to its original endpoint
+     under a new consent epoch per the existing rules. Nothing already sent to the gateway is
+     recalled.
    - **Environment.** `environmentName()` returns `MISSION_TELEMETRY_ENVIRONMENT` if set, then
      the active organization's `preset.environment`, then `local`.
 7. **The managed lock (`src/server/routes.ts`).**
@@ -270,8 +292,10 @@ Inherited:
 
 - **Undetected machines.** A machine that is not detected keeps its stored config untouched and
   gets no record.
-- **Detected machines.** The product destination is replaced by the preset, and its previous
-  value is kept in the record for withdrawal. No switch moves until pilot enrollment.
+- **Detected machines.** The product destination is replaced by the preset and switched off,
+  and its previous value, including its switch, is kept in the record for withdrawal. The
+  master switch does not move until pilot enrollment. Product analytics stays off until
+  enrollment.
 - **API:**
   - `organization` on the status, which is additive;
   - two new routes;
@@ -304,10 +328,23 @@ Unit tests:
   - a force without a loopback endpoint is ignored;
   - a force with one is honoured.
 - **`test/telemetry-organization.test.ts`:**
-  - first application stores `previous` and writes the preset;
-  - a newer preset version rewrites every preset field;
-  - pilot enrollment turns sending on, and leaving restores the master switch;
-  - withdrawal restores `previous` and deletes the record;
+  - first application stores `previous` and writes the preset, in one `setTelemetryConfig`
+    call;
+  - **starting from an enabled configuration.** Take a Mac whose product destination
+    (pointing at a fake collector) and master switch were both on, with batches queued. After
+    first application:
+    - `product` holds the preset and `product.enabled` is false;
+    - the master switch is unchanged;
+    - the queued batches are fenced or dropped;
+    - a delivery pass sends nothing to the gateway's fake collector, and nothing more to the
+      original collector.
+  - enrolling turns Product analytics and the master switch on, and the gateway collector
+    receives data;
+  - leaving turns Product analytics off and restores the master switch;
+  - a newer preset version rewrites every preset field and re-asserts the pilot invariant for
+    both enrolled and non-enrolled records;
+  - withdrawal restores `previous`, including a product switch that was on, so the original
+    collector receives data again, and deletes the record;
   - `environmentName()` precedence.
 - **The lock.**
   - While active: `PUT /api/telemetry/config` and the `purge` and `reset_identity` operations
@@ -370,6 +407,7 @@ Later phases may rely on these:
 - **Rollout and lock.**
   - the preset's `rollout`, and the rule that a newer preset version rewrites every preset
     field;
+  - the pilot invariant: `product.enabled` is true exactly when `pilotEnrolledAt` is set;
   - the managed lock.
 
   Phase 6 changes `rollout` to `default-on`, bumps `presetVersion`, and retires pilot
@@ -400,3 +438,11 @@ Must not change without an audit entry:
 - **2026-09-29, repair round 2:** the human recorded the editing decision in the Mission
   Control dashboard as "No: view-only for Upstart users; only non-Upstart users edit settings",
   confirming the view-only design above. Nothing in this phase changed.
+- **2026-09-29, repair round 4:**
+  - The first-application rule left `product.enabled` "as it was". A Mac whose Product
+    analytics destination was already on would then have sent to the gateway before
+    enrollment.
+  - Replaced with the pilot invariant: Product analytics is on exactly when enrolled. First
+    application is one transaction that switches it off, and withdrawal restores it.
+  - Added a test that starts from an enabled configuration.
+  - Phase 6 consumes the invariant and is updated in the same round.

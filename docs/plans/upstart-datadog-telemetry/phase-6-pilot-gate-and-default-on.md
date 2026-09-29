@@ -64,6 +64,8 @@ Inherited:
     `enabledByDefault` and `noticeAcknowledgedAt`;
   - `rollout`;
   - the rule that a newer preset version rewrites every preset field;
+  - the pilot invariant: while the rollout is `pilot`, `product.enabled` is true exactly when
+    `pilotEnrolledAt` is set, so before this phase no non-enrolled Upstart Mac sends;
   - the managed lock;
   - `currentOrganization()`;
   - the forced-organization e2e setup.
@@ -106,6 +108,9 @@ Inherited:
    `rollout: "default-on"`, every detected Mac, with or without a record, gets the preset
    written and `product.enabled` and the master switch turned on, and `enabledByDefault: true`
    is set.
+   - This replaces Phase 3's pilot invariant only once the rollout is `default-on`. It is the
+     one transition that turns Product analytics on without enrollment, and it ships only after
+     the gate in step 1 passes.
    - `previous` is still stored at first application, so withdrawal restores the Mac's own
      settings.
    - There is no person's choice to preserve, because the lane is managed (the 2026-09-29
@@ -212,3 +217,7 @@ This is the final phase. It leaves:
   - `shareTurnedOffByUser` and its upgrade conditions are removed.
   - Pilot enrollment through the API replaces the Settings switch, and is retired at the flip.
   - The notice says the setting is managed instead of telling people how to turn it off.
+- **2026-09-29, repair round 4:** consumes Phase 3's new pilot invariant. Until this phase's
+  flip, a non-enrolled Upstart Mac never sends, even if its Product analytics destination was on
+  before detection. The default-on rule is now stated as the only transition that replaces the
+  invariant.

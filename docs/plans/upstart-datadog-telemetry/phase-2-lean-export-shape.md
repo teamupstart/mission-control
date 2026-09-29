@@ -182,6 +182,33 @@ Inherited from Phase 1:
    - delete that profile's `telemetry_series` rows;
    - record a `shape_changed` gap.
 
+   **What the reset touches, and why that is enough.** These are repository facts checked on
+   2026-09-29:
+   - **Counter and histogram totals live only in `telemetry_series`.** `CATALOG_PROJECTION`,
+     the projection that turns events into counters and histograms, holds no reducer state at
+     all: its state type is `Record<string, never>` (`src/server/telemetry/projection.ts:135-139`).
+     Deleting the profile's series rows therefore sets every counter and histogram for that
+     profile to zero.
+   - **Phase 1's watermark columns live on those same rows**, so they go with them. The next
+     export of a series has no watermark for the new generation and baselines at zero, so a
+     delta can never carry pre-change totals.
+   - **Projection checkpoints are kept on purpose.** Each projection's journal checkpoint in
+     `telemetry_projection_state` stays where it is:
+     - facts already projected under the old shape are never projected again, which avoids
+       double counting;
+     - facts captured but not yet projected are projected once, under the new shape.
+   - **The analytical projection keeps its retained facts.** It emits only gauges
+     (`mission.analytics.v1.*`), recomputed from those facts on every snapshot. Re-emitting
+     them after the reset gives each gauge its current population value, which is correct for
+     a gauge and is never added to a counter. Under `datadog-lean` that family is excluded
+     anyway.
+   - **Queued batches** of the old shape are fenced by the generation bump, retained and then
+     expired under the existing rules, and never sent.
+   - **Future projections.** A projection that holds cumulative totals in its own state is now
+     forbidden. Add that rule to the doc comment on `registerTelemetryProjection`, and have the
+     shape-change test fail if a registered projection's state carries a non-empty counter
+     total after a reset.
+
    New contributions then aggregate under the new shape from zero. Phase 1's baseline rule holds
    trivially, because there are no series left to baseline. Do not bump the policy epoch: that
    would skip journal facts captured but not yet projected.
@@ -239,9 +266,19 @@ Unit tests:
   - overflow at the boundary;
   - a series 8 days idle is not live;
   - the 10,000 cap still applies.
-- **Shape change:**
-  - generation bumped, queued lean batches fenced, series restarted;
-  - unprojected journal facts still projected under the new shape.
+- **Shape change, starting from nonzero totals with journal facts still pending:**
+  - build nonzero counter, histogram and gauge totals on a delta destination, and export them
+    once so the watermarks are set;
+  - capture further facts that are not yet projected;
+  - change the shape;
+  - then assert:
+    - the generation is bumped and queued old-shape batches are fenced;
+    - the next batch's counter and histogram deltas equal exactly the pending facts, with none
+      of the pre-change totals;
+    - facts projected before the change are not counted again;
+    - analytical gauges re-emit their current population values under a full shape, and are
+      absent under `datadog-lean`;
+    - every registered projection's state holds no counter totals.
 - **Prune:**
   - old-resource series older than 30 days removed;
   - current-resource series kept at any age;
@@ -303,3 +340,8 @@ approved optimizations.
 - 2026-09-29, repair round 1: added the editable Export shape control, following the human
   decision that people on machines that are not Upstart-managed edit their telemetry settings.
   This phase now changes UI, so it gains an e2e spec.
+- 2026-09-29, repair round 4: specified what a shape change resets across series, watermarks,
+  projection checkpoints, analytical state and queued batches, and why no cumulative total can
+  survive it. This is grounded in `CATALOG_PROJECTION` holding no state. Added a test that
+  starts from nonzero totals with pending journal facts, and a rule forbidding projection-held
+  cumulative totals. No other phase's contract changed.

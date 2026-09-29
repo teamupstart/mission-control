@@ -24,6 +24,8 @@ Readiness checks continue once a second, including after this message, so a late
 the dashboard automatically. Retry starts a fresh wait; it does not launch a second daemon.
 A failed dashboard navigation returns to a visible reconnecting screen. Navigation itself
 also has a 60-second bound in case the daemon disappears after its health response.
+Local startup-page navigation uses the same bound and cancellation signal. If a local page
+fails to load, the shell retries it too, including the first page before the window is visible.
 
 Window startup owns this recovery loop. Successful dashboard loading, window destruction and
 application quit stop it, so it cannot reload an active conversation. The native menu and

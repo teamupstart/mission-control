@@ -55,7 +55,7 @@ async function evidence(page: Page, name: string) {
   await page.screenshot({ path: join(dir, `${name}.png`) });
 }
 
-for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss"] as const) {
+for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "local page failure", "local page cancellation"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
     const gate = await gatedDaemon(daemon.baseURL);
@@ -67,13 +67,22 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
     });
     const application = await electron.launch({ args: [
       fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
-      gate.origin, windowModule, join(daemon.home, "electron-profile"),
+      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
     ] });
     try {
       const page = await application.firstWindow();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
       await evidence(page, "starting");
-      if (scenario === "late readiness") {
+      if (scenario === "local page cancellation") {
+        await application.evaluate(({ app }) => { app.emit("fixture:stop-startup"); });
+        expect(await application.evaluate(() => Reflect.get(globalThis, "startupPageStopped"))).toBe(true);
+        gate.release();
+        await page.waitForTimeout(2200);
+        expect(gate.dashboardRequests()).toBe(0);
+        return;
+      } else if (scenario === "local page failure") {
+        expect(await application.evaluate(() => Reflect.get(globalThis, "startupPageFailures"))).toBe(1);
+      } else if (scenario === "late readiness") {
         // Cross the old 15-second retry budget before making health reachable.
         await page.waitForTimeout(17_000);
         await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();

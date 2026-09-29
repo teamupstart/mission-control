@@ -4,7 +4,7 @@ export type StartupScreen = "starting" | "slow" | "error";
 
 interface WindowStartupPort {
   now(): number;
-  show(screen: StartupScreen): Promise<void>;
+  show(screen: StartupScreen, signal: AbortSignal): Promise<void>;
   ready(signal: AbortSignal): Promise<boolean>;
   load(signal: AbortSignal): Promise<void>;
   pause(signal: AbortSignal): Promise<void>;
@@ -37,10 +37,23 @@ export class WindowStartup {
     this.attempt?.abort();
   }
 
+  private async show(screen: StartupScreen, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        await this.port.show(screen, signal);
+        return;
+      } catch (error) {
+        if (signal.aborted) return;
+        this.port.log(error);
+        await this.port.pause(signal);
+      }
+    }
+  }
+
   private async run(signal: AbortSignal): Promise<void> {
     const began = this.port.now();
     let explained = false;
-    await this.port.show("starting");
+    await this.show("starting", signal);
     while (!signal.aborted) {
       const ready = await this.port.ready(signal);
       if (signal.aborted) return;
@@ -50,7 +63,7 @@ export class WindowStartup {
         } catch (error) {
           if (signal.aborted) return;
           this.port.log(error);
-          await this.port.show("error");
+          await this.show("error", signal);
           explained = true;
           if (!signal.aborted) await this.port.pause(signal);
           continue;
@@ -61,7 +74,7 @@ export class WindowStartup {
         return;
       }
       if (!explained && this.port.now() - began >= WINDOW_STARTUP_TIMEOUT_MS) {
-        await this.port.show("slow");
+        await this.show("slow", signal);
         explained = true;
       }
       if (!signal.aborted) await this.port.pause(signal);

@@ -117,18 +117,20 @@ export function createWindow(preloadPath: string): BrowserWindow {
 
   const window = win;
   const url = targetUrl();
+  // Both local status pages and the dashboard must release navigation on Retry or quit.
+  const navigate = async (target: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    const stop = () => { if (!window.isDestroyed()) window.webContents.stop(); };
+    const timer = setTimeout(stop, WINDOW_STARTUP_TIMEOUT_MS);
+    signal.addEventListener("abort", stop, { once: true });
+    try { await window.loadURL(target); }
+    finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
+  };
   const loading = new WindowStartup({
     now: () => Date.now(),
-    show: (state) => window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state))}`),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state))}`, signal),
     ready: (signal) => dashboardReady(url, signal),
-    load: async (signal) => {
-      // Health may pass just before the daemon exits. Bound that navigation too.
-      const stop = () => { if (!window.isDestroyed()) window.webContents.stop(); };
-      const timer = setTimeout(stop, WINDOW_STARTUP_TIMEOUT_MS);
-      signal.addEventListener("abort", stop, { once: true });
-      try { await window.loadURL(url); }
-      finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
-    },
+    load: (signal) => navigate(url, signal),
     pause: (signal) => delay(1000, undefined, { signal }),
     loaded: () => { for (const listener of loadedListeners) listener(); },
     log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),

@@ -2,11 +2,41 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("node:path");
 
-const [origin, windowModule, profile] = process.argv.slice(2);
+const [origin, windowModule, profile, scenario] = process.argv.slice(2);
 process.env.MISSION_PORT = new URL(origin).port;
 delete process.env.MISSION_DEV_SERVER_URL;
 app.setPath("userData", profile);
-const { createWindow } = require(windowModule);
+const { createWindow, stopWindowStartup } = require(windowModule);
+
+// Inject only the failed or unsettled Electron operation, leaving recovery to window.ts.
+const loadURL = BrowserWindow.prototype.loadURL;
+let firstLocalPage = true;
+globalThis.startupPageFailures = 0;
+globalThis.startupPageStopped = false;
+BrowserWindow.prototype.loadURL = function (url, ...args) {
+  if (firstLocalPage && url.startsWith("data:text/html")) {
+    firstLocalPage = false;
+    if (scenario === "local page failure") {
+      globalThis.startupPageFailures++;
+      return Promise.reject(new Error("fixture: first local page failed"));
+    }
+    if (scenario === "local page cancellation") {
+      return new Promise((_resolve, reject) => {
+        const stop = this.webContents.stop.bind(this.webContents);
+        this.webContents.stop = () => {
+          this.webContents.stop = stop;
+          globalThis.startupPageStopped = true;
+          stop();
+          reject(new Error("fixture: pending local page stopped"));
+        };
+        // Render the page but hold its completion until the native cancellation fires.
+        loadURL.call(this, url, ...args).catch(reject);
+      });
+    }
+  }
+  return loadURL.call(this, url, ...args);
+};
+app.on("fixture:stop-startup", stopWindowStartup);
 
 app.whenReady().then(() => {
   ipcMain.handle("mission:update-get-state", () => ({

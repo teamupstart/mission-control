@@ -68,6 +68,14 @@ Findings this phase relies on. Line numbers were taken on 2026-09-28 and will dr
   `runOne` (267-360) folds, writes batches and checkpoints inside one `telemetryTransaction`.
 - A batch contains only the series touched in that pass, each carrying its full cumulative
   value (`Collector.apply`, 481-589).
+- **Passes with no events.** A pass with no new journal events returns early, before
+  `Collector.apply`, unless the projection sets `idleSnapshots` (`projection.ts:306-319`). Only
+  the analytical projection sets it. Without a change here, an untouched gauge would never
+  heartbeat.
+- **Health gauges.** Every 30-second cycle, `captureTelemetryHealth` emits one
+  `mission.telemetry.health` event per capturing profile (`service.ts:93`, `health.ts:42-55`),
+  which feeds the nine `mission.telemetry.health.*` gauges through `CATALOG_PROJECTION`. So those
+  gauges are touched every cycle while collection runs, and `observed_at` changes every cycle.
 - `startTime` is set once when a series is created, and `lastTime` is the maximum event time
   seen.
 
@@ -141,9 +149,33 @@ Inherited contracts: none.
        current generation. Otherwise the baseline rule in step 4 applies.
      - **Histogram:** difference count, sum and each bucket. Omit `min` and `max`, which cannot
        be differenced.
-     - **Gauge:** send the current value if it differs from `exported_value`, or if the last
-       export of that series was more than one hour ago (the heartbeat). Otherwise skip it.
+     - **Gauge:** send the current value if it differs from `exported_value`. Otherwise skip it
+       here; an unchanged gauge is sent only by the heartbeat below.
      - **Zero deltas and unchanged gauges are not written into the batch at all.**
+   - **The heartbeat.** It guarantees that a gauge a projection still maintains reports at
+     least hourly, even with no events. For a delta destination:
+     - **Owner.** `CATALOG_PROJECTION`'s pass owns it for every gauge that projection
+       contributes. The analytical projection already re-emits hourly through its own
+       `idleSnapshots`, so its gauges are excluded here and never sent twice.
+     - **Due set.** A gauge series is due when all of these hold:
+       - it is in the profile's current policy epoch;
+       - its instrument is a catalog gauge;
+       - its `exported_end` is more than one hour before the pass clock;
+       - its `last_time` is within `payloadRetentionMs`, so a gauge whose source stopped
+         reporting days ago is not resurrected.
+     - **Selection.** Find the due set with one query over a new index,
+       `idx_telemetry_series_heartbeat` on `(profile, policy_epoch, exported_end)`. Create the
+       index in `migrateTelemetry` after the columns in step 2 exist, as the database contract
+       requires.
+     - **Idle passes.** When the due set is non-empty, `runOne` for `CATALOG_PROJECTION` does
+       not return early on a pass with no journal events. It reduces nothing and advances no
+       checkpoint, but still builds a batch holding only the due gauges.
+     - **Points.** Each due gauge is written with its current value, `startTimeMs` at its
+       previous `exported_end` and `endTimeMs` at the pass clock, and its `exported_*` updated
+       in the same transaction. It therefore heartbeats at most once per hour.
+     - **In practice.** The health gauges are touched every cycle, so their changing values,
+       `observed_at` among them, are sent every cycle while the daemon runs. The heartbeat is the
+       guarantee for any catalog gauge that is not touched, or during a capture gap.
    - **Point times.** `startTimeMs` is the previous `exported_end`, or the series start for a
      first export. `endTimeMs` is the pass clock `now`, bumped by 1 ms if needed so it is always
      strictly greater than `exported_end`.
@@ -175,6 +207,9 @@ Inherited contracts: none.
      `{ kind: "waiting", detail: "The destination's network edge refused this network", retryAfterMs }`.
    - Every other 401 and 403, and every 403 on an ungated destination, still pauses exactly as
      today.
+   - This fingerprint is Cloudflare's documented edge response. It is tested here only against
+     a fake collector. Phase 6's pilot captures the real gateway's off-VPN response before
+     default-on, and owns any correction.
 7. **Settling a wait.**
    - `settle` schedules the batch at `retryAfterMs ?? backoff(attempts)`, with the ceiling
      `networkWaitRetryMaxMs` for this outcome only.
@@ -252,7 +287,16 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.test.ts
 - A new `test/telemetry-delta.test.ts`:
   - counters and histograms export differences across three passes;
   - a zero delta is omitted;
-  - gauges are sent on change and on the one-hour heartbeat, and not otherwise;
+  - gauges are sent on change and not otherwise within the hour;
+  - **a full idle hour.** With health capture stubbed off, no journal events for 61 minutes
+    after a gauge's last export:
+    - the next pass returns a batch holding exactly that gauge, with its unchanged value,
+      `startTimeMs` at the previous export and `endTimeMs` at the pass clock;
+    - the checkpoint does not move;
+    - at 59 minutes the pass writes nothing;
+    - repeated passes within the next hour write nothing more;
+    - a gauge whose `last_time` is 8 days old is not heartbeated;
+    - analytical gauges are not selected by the catalog heartbeat;
   - restart and replay neither repeat nor lose a window;
   - an endpoint change baselines, so the first delta excludes the history;
   - `cumulative → delta` baselines the same way;
@@ -316,8 +360,11 @@ Later phases may rely on these, and must not change them without an audit entry 
   does not replace it.
 - **Outcome and health.** The `waiting` outcome, `waitingForNetwork`, `waitingSince` and
   `latePointsSent`, and the one sentence function that takes an optional organization label.
-- **Heartbeat.** The gauge rule: sent on change, heartbeat at most hourly. Phase 2's budget
-  counts a gauge series as live while it heartbeats.
+- **Heartbeat.** The gauge rule: sent on change, and otherwise heartbeated by
+  `CATALOG_PROJECTION`'s pass at most an hour after its last export, even in a pass with no
+  events. Analytical gauges keep their own hourly snapshots. Phase 2's budget counts a gauge
+  series as live while it heartbeats, and Phase 5's adoption query relies on the health
+  `observed_at` gauge reporting at least hourly.
 - **Temporality control.** The editable "Metric temporality" select, with its `editable` flag.
   Phase 2 adds the "Export shape" select beside it, and Phase 3 hides both on a managed Mac.
 
@@ -331,3 +378,11 @@ Later phases may rely on these, and must not change them without an audit entry 
     machines that are not Upstart-managed edit their telemetry settings, including what they
     need to configure Datadog by hand.
   - Redacted the gateway's replica count and access description for the public repository.
+- 2026-09-29, repair round 5:
+  - The heartbeat was promised without a mechanism: a pass with no events returns early, and
+    batches hold only touched series. It is now specified: the owning projection, the due-set
+    query and index, running despite the idle early return, and a full-idle-hour test.
+  - The real-gateway checks (the delta replay behaviour and the real off-VPN response) are
+    stated as Phase 6's, matching the root plan. This phase builds the gate to Cloudflare's
+    documented edge response against a fake collector. If Phase 6's capture differs, the
+    fingerprint correction is recorded here.

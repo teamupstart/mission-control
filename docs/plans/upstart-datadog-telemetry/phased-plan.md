@@ -120,7 +120,9 @@ flowchart LR
 | Destination fields `temporality`, `networkGate` and `lateAfterMs`, with defaults equal to today | 1 | 2, 3 |
 | `temporality: "delta"` on `MetricPointDto`, where absence means cumulative | 1 | 2 |
 | The `exported_*` watermark columns, and the baseline on an endpoint or temporality change | 1 | 2 |
-| Gauges sent on change, with an hourly heartbeat | 1 | 2 (budget liveness), 5 (adoption query) |
+| Gauges sent on change, and heartbeated by `CATALOG_PROJECTION`'s pass at most an hour after their last export, even in a pass with no events (due-set query on `idx_telemetry_series_heartbeat`) | 1 | 2 (budget liveness), 5 (adoption query) |
+| The weighted budget counts overflow series: each `(resource, instrument)` pair reserves its overflow weight at its first series, admission is against live weight plus reservations, and a pair with no room is dropped with a counted `budget_exhausted` gap | 2 | 6 (pilot measures against it) |
+| Real-gateway checks (delta replay, the real off-VPN response, and any fingerprint correction) belong to Phase 6 alone; earlier phases use fake collectors | 6 | 1 (builds the gate to the documented fingerprint) |
 | The `waiting` outcome, the health and summary fields, and the waiting sentence with an optional label | 1 | 3 |
 | `TELEMETRY_EXPORT_SHAPE_IDS`, `exportShape`, and the shape records with their `summary` | 2 | 3, 5, 6 |
 | `exportedInstruments(shapeId)` as the only statement of what a shape exports | 2 | 3, 5 |

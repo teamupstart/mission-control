@@ -92,8 +92,13 @@ Inherited:
        counts for one day.
      - **Off-VPN fingerprint:** with the VPN off, the gateway's response is a Cloudflare 403
        that Phase 1's gate recognizes, and health reads "Waiting for the Upstart network".
-     - **Replay:** a deliberately re-sent delta batch either overwrites or adds. Record which,
-       and state the consequence in `docs/observability.md`.
+       This phase is the only one that checks this against the real gateway. If the real
+       response differs from the documented fingerprint Phase 1 built to, correct the
+       fingerprint in `delivery.ts` in this phase, with a test, and record it in Phase 1's
+       audit record.
+     - **Replay:** a deliberately re-sent delta batch either overwrites or adds. This phase is
+       the only one that measures it against the real gateway. Record which, and state the
+       consequence in `docs/observability.md`.
    - **Late points:** record `latePointsSent` across the pilot, and whether Datadog's admins
      enabled Historical Metrics Ingestion for `mission.*`.
 2. **If the gate fails** (more than 150 per installation, or a host is billed):
@@ -217,6 +222,9 @@ This is the final phase. It leaves:
   - `shareTurnedOffByUser` and its upgrade conditions are removed.
   - Pilot enrollment through the API replaces the Settings switch, and is retired at the flip.
   - The notice says the setting is managed instead of telling people how to turn it off.
+- **2026-09-29, repair round 5:** stated this phase as the sole owner of the real-gateway replay
+  measurement and the real off-VPN capture, including any fingerprint correction. The root plan
+  and Phase 1 now say the same.
 - **2026-09-29, repair round 4:** consumes Phase 3's new pilot invariant. Until this phase's
   flip, a non-enrolled Upstart Mac never sends, even if its Product analytics destination was on
   before detection. The default-on rule is now stated as the only transition that replaces the

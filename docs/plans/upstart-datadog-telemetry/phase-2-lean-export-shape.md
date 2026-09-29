@@ -157,15 +157,37 @@ Inherited from Phase 1:
      together.
    - Keep the undeclared-dimension check against the instrument's full dimension list, so a
      dropped label is never reported as a defect.
-4. **Weighted, live budget (`fold`).**
-   - When the shape has a `seriesBudget`, admitting a new series checks the profile's weighted
-     live series count plus the new series' weight against the budget.
-   - Live means: current policy epoch, and a `last_time` or `exported_end` within
+4. **Weighted, live budget (`fold`), with the overflow series paid for inside it.**
+   - **Live** means: current policy epoch, and a `last_time` or `exported_end` within
      `payloadRetentionMs` (7 days). Phase 1's gauge heartbeat keeps a reporting gauge live.
-   - Weight is taken from the shape by the series' exported kind: a distribution, a histogram
+   - **Weight** comes from the shape, by the series' exported kind: a distribution, a histogram
      exported as sum and count, a counter or a gauge.
-   - Over budget folds into the existing overflow path and records the existing
-     `series_overflow` gap.
+   - **The overflow series.** Each `(resource, instrument)` pair has at most one overflow series,
+     with every declared dimension set to `__overflow__`. Its weight is the instrument's weight.
+   - **Reservation.** A pair holds a reservation of that weight once it has at least one live
+     series and its overflow series does not exist yet. When the overflow series is created it
+     is counted as live, and the reservation ends.
+   - **Committed weight** = weighted live series + reservations, over the profile's current
+     epoch.
+   - **Admitting a new non-overflow series** requires
+     `committed + weight(new) + (the pair's reservation, if it has none yet) <= seriesBudget`.
+     The pair's first series therefore also reserves room for its overflow series.
+   - **Otherwise:**
+     - if the pair holds a reservation or already has a live overflow series, the contribution
+       folds into that overflow series. Creating it only converts the reservation, so committed
+       weight never grows, and the existing `series_overflow` gap is recorded;
+     - if the pair has neither, which only happens for a brand-new instrument or resource when
+       the budget is already full, the contribution is dropped and a `budget_exhausted` gap is
+       recorded, with the instrument name and a count.
+   - **The invariant.** Committed weight never exceeds `seriesBudget`, so live series, overflow
+     included, never do either. Datadog bills distinct series per hour, and live-within-7-days is
+     a superset of reported-this-hour, so no hour can exceed the budget.
+   - **Freeing room.** A pair whose series all age out of live releases its reservation too, so
+     retired app versions free their room after 7 idle days.
+   - **Keep it cheap.** Keep committed weight maintained incrementally in the same transaction,
+     for example as a per-profile row in `telemetry_destinations` or a small sibling table
+     charged to the byte budget. Recompute and verify it in the retention sweep, recording a gap
+     if they disagree.
    - The existing 2,000 and 10,000 caps still apply to every shape. The budget is an additional,
      tighter bound, never a looser one.
 5. **Applying the shape at batch build (`Collector.apply`, `toPoint`).**
@@ -261,11 +283,22 @@ Unit tests:
   - the lean batch has no analytics series, the host attribute, merged trimmed series, and
     sum and count counters for minor histograms;
   - the full batch is byte-identical to a pre-phase fixture.
-- **Budget:**
-  - weighted admission;
-  - overflow at the boundary;
-  - a series 8 days idle is not live;
-  - the 10,000 cap still applies.
+- **Budget, at the boundary across several instruments:**
+  - one counter, one gauge, one distribution histogram (weight 9) and one sum-and-count
+    histogram (weight 2), across two resources;
+  - fill committed weight to exactly `seriesBudget - 1`, then assert:
+    - a new weight-1 series for a pair that already holds its reservation is admitted, and
+      committed weight equals the budget;
+    - a further series for that pair folds into its overflow series with no increase in
+      committed weight;
+    - a new pair's first series, which needs its own weight plus its reservation, is refused
+      and counted as `budget_exhausted`;
+    - a distribution series that would exceed the budget by 8 folds into its overflow series.
+  - **A property test.** Randomized admissions across the instruments and resources never let
+    live weight plus reservations exceed `seriesBudget`, and never create more than one
+    overflow series per pair.
+  - **Freeing room.** A series 8 days idle is not live, and its pair's reservation is released.
+  - **Other caps.** The 2,000 and 10,000 caps still apply alongside the budget.
 - **Shape change, starting from nonzero totals with journal facts still pending:**
   - build nonzero counter, histogram and gauge totals on a delta destination, and export them
     once so the watermarks are set;
@@ -340,6 +373,15 @@ approved optimizations.
 - 2026-09-29, repair round 1: added the editable Export shape control, following the human
   decision that people on machines that are not Upstart-managed edit their telemetry settings.
   This phase now changes UI, so it gains an e2e spec.
+- 2026-09-29, repair round 5:
+  - The hard budget sent over-budget combinations into overflow series that it never paid for,
+    so it could be exceeded.
+  - It now reserves each pair's overflow weight at the pair's first series, and admits against
+    committed weight (live plus reservations). It drops a brand-new pair with a counted
+    `budget_exhausted` gap when there is no room, and states the invariant.
+  - The tests cover the boundary across several instruments and resources, plus a property
+    test.
+  - No other phase's contract changed.
 - 2026-09-29, repair round 4: specified what a shape change resets across series, watermarks,
   projection checkpoints, analytical state and queued batches, and why no cumulative total can
   survive it. This is grounded in `CATALOG_PROJECTION` holding no state. Added a test that

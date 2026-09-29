@@ -77,7 +77,9 @@ Inherited from Phase 2:
    - Groups, from the source plan:
      - **Adoption:** distinct installations over 1, 7 and 28 days.
        - Use `count_nonzero` over `mission.telemetry.health.observed_at` by
-         `service.instance.id`, which heartbeats hourly under Phase 1's gauge rule.
+         `service.instance.id`. That gauge's value changes every cycle while the daemon runs,
+         so it is sent every cycle, and Phase 1's catalog heartbeat guarantees at least hourly
+         reporting even without events.
        - Add a span-based alternative on the session spans.
      - **Sessions and dispatch:** started and ended sessions by agent, runtime and task kind;
        dispatch outcomes; p50 and p95 of `mission.session.turn.duration` and

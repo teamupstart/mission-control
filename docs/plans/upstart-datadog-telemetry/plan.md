@@ -356,9 +356,14 @@ settings as well.
    the previous batch's end. It happens in the same transaction that already commits
    checkpoint, state and batch, so a restart neither loses nor repeats a window. The cost is
    stated rather than hidden: a batch re-sent after an ambiguous acknowledgement repeats its
-   delta, unless Datadog overwrites a point with the same series and timestamp. Phase 1
-   measures which. **A series whose delta is zero is never sent.** Datadog bills a series
-   only for the hours it reports, so this keeps idle series free. Cumulative destinations
+   delta, unless Datadog overwrites a point with the same series and timestamp. Phase 6's
+   pilot measures which against the real gateway, before the default turns on. **A series
+   whose delta is zero is never sent.** Datadog bills a series only for the hours it reports,
+   so this keeps idle series free.
+
+   A gauge has no delta. It is sent when its value changes, and otherwise as a **heartbeat**
+   at most an hour after its last export. The heartbeat runs even in a pass with no new events,
+   so a quiet installation still reports its gauges. Phase 1 specifies the mechanism. Cumulative destinations
    keep today's behaviour exactly, and the pinned test keeps pinning it.
 2. **A network gate that waits instead of pausing.** Off the Upstart network, Cloudflare
    refuses the request. Today every 403 pauses the destination with reason `auth` until
@@ -480,10 +485,18 @@ up to the 24-slice limit. The expected case therefore drifts towards about $100.
    sent, so it is not billed.
 6. **A hard series budget.** Each installation can have at most 1,500 weighted series live
    for this destination. A distribution combination weighs 9 (or 5), a sum-and-count pair 2,
-   and a counter or gauge 1. Anything beyond the budget folds into the existing overflow
-   bucket, with the gap counted. Whatever the usage, no installation can exceed 1,500 custom
-   metrics in any hour, which is $75 a month at list price. The realistic high case is far
-   below that.
+   and a counter or gauge 1. **The overflow series count toward that limit too:**
+   - when an instrument gets its first live series for a resource, the budget also reserves
+     the weight of that instrument's one overflow series;
+   - a new series is admitted only if the live weight, plus every reservation, plus its own
+     weight (and its instrument's reservation, if it has none yet) stays within 1,500;
+   - a series that does not fit folds into its instrument's overflow series, which is always
+     admissible because its weight was reserved;
+   - a contribution for an instrument that has neither room for a series nor a reservation is
+     dropped and counted as a `budget_exhausted` gap.
+
+   Whatever the usage, no installation can exceed 1,500 custom metrics in any hour, which is
+   $75 a month at list price. The realistic high case is far below that.
 
 **After the optimizations.**
 
@@ -657,7 +670,9 @@ cohort gauges, which this destination never receives.
   labels `datadog-lean` exports, so a widget cannot query a dropped label, an excluded family
   or a renamed metric.
 - **Against the real gateway.** The metric path was validated on 2026-09-25, as recorded
-  above. Still to do, once, with human authorization, using an installation with
+  above. Every remaining real-gateway check is owned by **Phase 6's pilot**, run once with
+  human authorization before the default turns on. No earlier phase sends to the real gateway;
+  Phases 1 to 3 test against local fake collectors. The checks use an installation with
   `MISSION_TELEMETRY_ENVIRONMENT=test`:
   - the real daemon's delta counts, which must match its own health counts;
   - one span through the traces path, which must appear in APM;
@@ -726,8 +741,8 @@ flowchart LR
 
 | Risk | Handling |
 | --- | --- |
-| Delta replay after an ambiguous acknowledgement double-counts, if Datadog does not overwrite points with the same timestamp | Measured in Phase 1. The window is one in-flight request per destination. |
-| The off-network response is not a recognizable Cloudflare 403 | Phase 1 captures it with the VPN off before the gate is written. |
+| Delta replay after an ambiguous acknowledgement double-counts, if Datadog does not overwrite points with the same timestamp | Measured by Phase 6's pilot against the real gateway, before default-on. The window is one in-flight request per destination. |
+| The off-network response is not a recognizable Cloudflare 403 | Phase 1 builds the gate to Cloudflare's documented edge response and tests it with a fake collector, without sending to the real gateway. Phase 6's pilot captures the real response with the VPN off before default-on. If it differs, Phase 6 corrects the fingerprint, recorded in Phase 1's audit record. |
 | The gateway owners move to `corp-otel.upstart.com` | Bump the preset version. The next start moves every Upstart Mac to the new address. |
 | An Upstart user wants to change or stop the lane | By the 2026-09-29 decision, Upstart manages it: Settings is view-only and the daemon refuses direct changes. Questions go to the lane's owners, and the source of truth is `docs/upstart.md`. |
 | Datadog custom-metric cost | The `datadog-lean` shape brings the expected figure from about $60 to about $4.60 per installation per month. The series budget caps any installation at 1,500 custom metrics in an hour. The pilot gate requires 150 or fewer before default-on. |

@@ -21,8 +21,7 @@ This is the release gate the source plan requires: default-on never ships on an 
   the unmet criteria with Mission Control's input request and wait. Do not flip the default to
   make progress.
 - **Rollout prerequisites answered.** The gateway owners and the budget owner have been told
-  (source plan items 1 and 2). The gateway's second-destination copy and the host approach are
-  agreed.
+  (source plan items 1 and 2). The gateway's onward routing and the host approach are agreed.
 
 ## 3. Scope and non-goals
 
@@ -77,8 +76,10 @@ Inherited:
 
 1. **Verify the pilot, before any code change.** Use the Datadog MCP read tools only.
    - **Installations:** distinct `service.instance.id` on
-     `mission.telemetry.health.observed_at`, with `env:corp`, over the last 7 days. There
-     must be at least 5.
+     `mission.telemetry.health.observed_at`, filtered to the gateway's environment tag (local
+     internal notes, Preset values), over the last 7 days. There must be at least 5. Keep
+     internal names and values out of the pull request's pilot report: report counts and
+     outcomes only.
    - **Cost gate:** `datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}`,
      averaged over the last 7 days and divided by the installation count. **It must be 150 or
      fewer.**
@@ -90,8 +91,8 @@ Inherited:
      record the answers:
      - **Delta accuracy:** a pilot installation's daemon health counts match its Datadog
        counts for one day.
-     - **Off-VPN fingerprint:** with the VPN off, the gateway's response is a Cloudflare 403
-       that Phase 1's gate recognizes, and health reads "Waiting for the Upstart network".
+     - **Off-VPN fingerprint:** with the VPN off, the gateway's response is a 403 that the
+       preset's network gate recognizes, and health reads "Waiting for the Upstart network".
        This phase is the only one that checks this against the real gateway. If the real
        response differs from the documented fingerprint Phase 1 built to, correct the
        fingerprint in `delivery.ts` in this phase, with a test, and record it in Phase 1's
@@ -150,7 +151,8 @@ Inherited:
      - that the telemetry goes to Upstart's Datadog through Upstart's telemetry gateway,
        because this Mac is enrolled;
      - that Upstart manages the setting;
-     - what travels and what never does, including the gateway's second-destination copy;
+     - what travels and what never does, including any onward routing the gateway owners
+       configure;
      - a link to Settings > Telemetry, and a Dismiss button.
 6. **Docs.**
    - In `docs/upstart.md` and `docs/observability.md`, say that the lane is on by default and
@@ -221,8 +223,8 @@ This is the final phase. It leaves:
 - **2026-09-28:** written last. It consumes Phase 3's record and rollout without changing their
   meaning.
 - **2026-09-28:** the real-gateway checks the source plan lists under Testing are owned here,
-  because they need a person and a running pilot. Phase 1's gate is built to the documented
-  Cloudflare fingerprint and verified here.
+  because they need a person and a running pilot. Phase 1's gate is built to a documented
+  edge fingerprint and verified here.
 - **2026-09-29, repair round 1:** rewritten for the decision that Upstart users do not edit the
   Upstart configuration.
   - Default-on now applies to every Upstart Mac.

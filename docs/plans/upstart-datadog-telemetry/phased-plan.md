@@ -16,7 +16,8 @@ These are requirements, not open questions.
 
 | Question | Adopted | Owned by |
 | --- | --- | --- |
-| How Mission Control recognizes Upstart and gets its defaults | A built-in Upstart preset, switched on by Jamf enrollment | Phase 3 |
+| How Mission Control recognizes Upstart and gets its defaults | A built-in Upstart preset, switched on by enrollment in Upstart's MDM tenant | Phase 3 |
+| Upstart internals in this public repository (human, 2026-09-29) | None. Hostnames, tenant names, gateway configuration, vendor details, account figures and investigation evidence live in the local internal notes, `~/workspace/upstart/mission-control-internal/upstart-datadog-telemetry/internal-notes.md`, which phase files cite by section and nobody commits. | All phases |
 | Which destination carries the lane | Product analytics | Phase 3 |
 | What an Upstart user experiences | On by default, with a one-time notice | Phase 6, after the pilot gate |
 | Extra scope | The precise Cost-panel warning, and the Datadog dashboard | Phases 4 and 5 |
@@ -40,7 +41,7 @@ the phase that owns it.
 | F7 | Datadog picks a host from `host`, then `datadog.host.name`, and recommends the latter. | The lean shape sets `datadog.host.name = mission-control`. The pilot verifies that no billable hosts result. | 2, 6 |
 | F8 | Every subprocess must be registered, and a scanner test enforces it. `plutil` is registered; `profiles` is not. `plutil -extract` reads one subtree safely. | Register `profiles` like `plutil`. Build bounded readers once, in Phase 3, and let Phase 4 reuse them. | 3 |
 | F9 | Tests on a managed Mac would read the real `/Library` policies and enrollment. CI runs on Linux and would never notice. | The e2e fixture pins `MISSION_ORGANIZATION=none` and `MISSION_MANAGED_SETTINGS_ROOT`. Unit tests inject their readers. | 3, 4 |
-| F10 | Upstart Macs also carry a per-user managed Claude Code plist. | The Cost-panel reader checks it first. | 4 |
+| F10 | Managed Macs can also carry a per-user managed Claude Code plist. | The Cost-panel reader checks it first. | 4 |
 | F11 | The source plan requires the pilot before default-on, but a merged phase is in every alpha build at once. Upstart users also have no Settings control to join a pilot, because Settings is view-only for them. | Phase 3 ships the preset with `rollout: "pilot"`, and volunteers enroll with one documented call, `POST /api/telemetry/organization/pilot`. Phase 6 flips the rollout to `default-on` only after the measured gate passes, and retires enrollment. | 3, 6 |
 | F12 | Managing the product destination on Upstart Macs overwrites whatever a person had configured there. If that destination was already on, it could send to the gateway before pilot enrollment. A Mac can also leave Upstart's management. | Under the pilot invariant, Product analytics is on exactly when the Mac is enrolled. First application is one transaction that writes the preset and switches the destination off. The record stores the prior product destination, including its switch, and the master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon's own apply path keeps working. | 3, 6 |
 
@@ -142,17 +143,20 @@ flowchart LR
 These are outward-facing, so a person does them or explicitly authorizes an agent. They come
 from the source plan's rollout prerequisites, plus F1.
 
-1. **Tell the gateway owners,** with the cost estimate, and settle four things:
-   - that the gateway's copy of metrics to its second destination is acceptable;
-   - that staging-1 remains the address until production opens;
+1. **Tell the gateway owners** (local internal notes, Gateway), with the cost estimate, and
+   settle four things:
+   - that the gateway's onward routing of these metrics is acceptable;
+   - which endpoint to use until any planned move;
    - the constant-host approach;
-   - whether `send_aggregation_metrics` can be turned off.
+   - whether the extra histogram aggregation metrics can be turned off.
 
    This must be done before Phase 6.
 2. **Get cost sign-off.** The Datadog budget owner reviews the estimate, then the pilot's
    measured figure. This must be done before Phase 6.
-3. **Confirm the public hostname.** Confirm that publishing the gateway hostname in this public
-   repository is acceptable. This must be done before Phase 3 merges.
+3. **Settle publication of the preset values.** Confirm with Upstart whether the preset's
+   literal values (local internal notes, Preset values) may be committed to this public
+   repository, or decide another way to deliver them. This must be done before Phase 3
+   commits them.
 4. **Ask for Historical Metrics Ingestion.** Ask Datadog's admins to enable it for the
    `mission.*` metrics (F1). This should be done before Phase 6's pilot, so the pilot measures
    the real configuration.

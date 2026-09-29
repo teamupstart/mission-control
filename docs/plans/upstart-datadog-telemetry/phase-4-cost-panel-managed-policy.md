@@ -1,7 +1,7 @@
 # Phase 4: Name the managed-policy redirect in the Cost panel
 
-Source plan: [plan.md](plan.md), section "Adjacent finding: Cost telemetry is silent at
-Upstart". Index: [phased-plan.md](phased-plan.md).
+Source plan: [plan.md](plan.md), section "Adjacent finding: Cost telemetry is silent on
+managed Macs". Index: [phased-plan.md](phased-plan.md).
 
 ## 1. Outcome and value
 
@@ -66,14 +66,18 @@ Findings. Line numbers were taken on 2026-09-28.
   `test/shipping-panel-warnings.test.ts`.
 - The e2e coverage is `e2e/specs/session-spend.spec.ts:194-260`, which asserts today's wording.
 
-**Measured on an Upstart Mac.**
-- Both `/Library/Managed Preferences/com.anthropic.claudecode.plist` and the per-user
-  `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist` exist. Both are binary
-  plists with an `env` dictionary that sets `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to the
-  gateway.
-- `/Library/Application Support/ClaudeCode/managed-settings.json` does not exist on this Mac.
-- The `env` block also carries other keys that are none of Mission Control's business. **Never
-  log or echo the env block.** Extract only the keys named below.
+**Measured on a managed Mac.** Specifics are in the local internal notes, Managed Claude Code
+policy, and are never committed.
+- **Both locations can exist.** A machine-level `/Library/Managed Preferences/com.anthropic.claudecode.plist`
+  and a per-user `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist` can
+  both be present.
+- **Format.** Both are binary plists, with an `env` dictionary that can set
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`.
+- **The JSON file** `/Library/Application Support/ClaudeCode/managed-settings.json` may be
+  absent.
+- **The rest of the `env` block** carries other keys that are none of Mission Control's
+  business. **Never log or echo the env block,** and never put a real policy's values in a
+  test, commit or pull request. Extract only the keys named below.
 
 Inherited from Phase 3:
 - `readPlistValue(path, keyPath, deps)`;
@@ -210,8 +214,8 @@ npm run test:e2e
 
 - 2026-09-28, written after Phase 3:
   - consumes `readPlistValue` and `currentOrganization()` unchanged;
-  - adds the per-user plist, which the source plan did not name, because it exists on
-    Upstart Macs and Claude Code reads it;
+  - adds the per-user plist, which the source plan did not name, because managed Macs can
+    carry one and Claude Code reads it;
   - broadens the trigger from "after a week of silence" to "whenever Cost is on and a policy
     redirects". The source plan asks for the cause to be named, and waiting a week to name a
     known cause helps nobody.

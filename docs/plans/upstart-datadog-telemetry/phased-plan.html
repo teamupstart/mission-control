@@ -132,8 +132,13 @@
 </thead>
 <tbody><tr>
 <td>How Mission Control recognizes Upstart and gets its defaults</td>
-<td>A built-in Upstart preset, switched on by Jamf enrollment</td>
+<td>A built-in Upstart preset, switched on by enrollment in Upstart&#39;s MDM tenant</td>
 <td>Phase 3</td>
+</tr>
+<tr>
+<td>Upstart internals in this public repository (human, 2026-09-29)</td>
+<td>None. Hostnames, tenant names, gateway configuration, vendor details, account figures and investigation evidence live in the local internal notes, <code>~/workspace/upstart/mission-control-internal/upstart-datadog-telemetry/internal-notes.md</code>, which phase files cite by section and nobody commits.</td>
+<td>All phases</td>
 </tr>
 <tr>
 <td>Which destination carries the lane</td>
@@ -234,7 +239,7 @@ the phase that owns it.</p>
 </tr>
 <tr>
 <td>F10</td>
-<td>Upstart Macs also carry a per-user managed Claude Code plist.</td>
+<td>Managed Macs can also carry a per-user managed Claude Code plist.</td>
 <td>The Cost-panel reader checks it first.</td>
 <td>4</td>
 </tr>
@@ -529,20 +534,23 @@ the other&#39;s code.</li>
 <p>These are outward-facing, so a person does them or explicitly authorizes an agent. They come
 from the source plan&#39;s rollout prerequisites, plus F1.</p>
 <ol>
-<li><p><strong>Tell the gateway owners,</strong> with the cost estimate, and settle four things:</p>
+<li><p><strong>Tell the gateway owners</strong> (local internal notes, Gateway), with the cost estimate, and
+settle four things:</p>
 <ul>
-<li>that the gateway&#39;s copy of metrics to its second destination is acceptable;</li>
-<li>that staging-1 remains the address until production opens;</li>
+<li>that the gateway&#39;s onward routing of these metrics is acceptable;</li>
+<li>which endpoint to use until any planned move;</li>
 <li>the constant-host approach;</li>
-<li>whether <code>send_aggregation_metrics</code> can be turned off.</li>
+<li>whether the extra histogram aggregation metrics can be turned off.</li>
 </ul>
 <p>This must be done before Phase 6.</p>
 </li>
 <li><p><strong>Get cost sign-off.</strong> The Datadog budget owner reviews the estimate, then the pilot&#39;s
 measured figure. This must be done before Phase 6.</p>
 </li>
-<li><p><strong>Confirm the public hostname.</strong> Confirm that publishing the gateway hostname in this public
-repository is acceptable. This must be done before Phase 3 merges.</p>
+<li><p><strong>Settle publication of the preset values.</strong> Confirm with Upstart whether the preset&#39;s
+literal values (local internal notes, Preset values) may be committed to this public
+repository, or decide another way to deliver them. This must be done before Phase 3
+commits them.</p>
 </li>
 <li><p><strong>Ask for Historical Metrics Ingestion.</strong> Ask Datadog&#39;s admins to enable it for the
 <code>mission.*</code> metrics (F1). This should be done before Phase 6&#39;s pilot, so the pilot measures

@@ -80,7 +80,7 @@ Findings. Line numbers were taken on 2026-09-28 and will drift.
     `datadog.host.name`. Source: Datadog OTLP hostname mapping documentation, read
     2026-09-28.
   - The validation point showed that `service.instance.id` and data-point attributes become
-    tags, and that `host` is otherwise the gateway pod.
+    tags, and that `host` is otherwise the receiving gateway instance.
 - **Span attributes.** Every trimmed label still exists on its span:
   - as a span attribute for the session, dispatch, turn, segment, operation and effort events;
   - as `mission.actor.kind` / `origin` / `basis`, which every span carries
@@ -133,8 +133,8 @@ Inherited from Phase 1:
      - **Resource attribute:** `{ "datadog.host.name": "mission-control" }`.
      - **Budget:** `seriesBudget: 1500`.
      - **Weights:** `{ distribution: 9, sumCount: 2, counter: 1, gauge: 1 }`. The distribution
-       weight is 9 while the gateway keeps `send_aggregation_metrics: true`, and 5 if its owners
-       turn it off. Keep it one editable number.
+       weight is 9 while the gateway sends separate aggregation metrics for each histogram
+       (internal notes, Gateway), and 5 if its owners stop. Keep it one editable number.
    - `exportedInstruments(shapeId, catalog = TELEMETRY_METRICS)` returns what the shape
      actually exports: each exported name, its exported kind (`counter` / `gauge` /
      `distribution`), its exported label list, and the source instrument it came from.
@@ -437,7 +437,7 @@ Later phases may rely on these:
   Phase 5's dashboard validator and Phase 3's read-only display call it.
 - **Label.** The `summary` sentence on each shape record, which Phase 3 prints.
 - **Host attribute.** `datadog.host.name = mission-control` on lean batches and on the lean
-  probe. Phase 6's pilot verifies that it collapses the pod split without creating billable
+  probe. Phase 6's pilot verifies that it collapses the instance split without creating billable
   hosts. If it does not, Phase 6 changes only the shape record's `resourceAttributes`.
 - **Shape-change semantics:** a generation bump plus a series reset.
 - **Shape control.** The editable "Export shape" select, rendered through Phase 1's component

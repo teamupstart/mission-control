@@ -5,15 +5,18 @@ Source plan: [plan.md](plan.md). Index: [phased-plan.md](phased-plan.md).
 ## 1. Outcome and value
 
 An OTLP destination can be told to export **delta** metrics instead of cumulative ones, and
-to treat a refusal from a Cloudflare edge as "off the network, keep waiting" rather than "the
-credential is wrong, stop". Both are generic destination capabilities. Nothing turns them on
+to treat a refusal from a recognized network edge as "off the network, keep waiting" rather
+than "the credential is wrong, stop". Both are generic destination capabilities. Nothing turns them on
 by default, and no Upstart code arrives in this phase.
 
-This is what makes Upstart's telemetry gateway usable at all. It runs several Collector
-replicas whose Datadog exporter converts cumulative sums to delta per replica, which inflates
-counts when points of one series land on different replicas. Its Cloudflare edge also refuses
-laptops off Upstart's network with a 403, and today that 403 pauses the destination until a
-person saves the configuration again.
+This is what makes Upstart's telemetry gateway usable at all. Its specifics are recorded in
+the local internal notes, Gateway, at
+`~/workspace/upstart/mission-control-internal/upstart-datadog-telemetry/internal-notes.md`,
+and are never committed. Two of its properties matter here:
+- **Delta only.** It cannot convert cumulative sums to delta correctly, so cumulative counts
+  would come out inflated.
+- **Network edge.** It refuses requests from off the corporate network with a 403. Today that
+  403 pauses the destination until a person saves the configuration again.
 
 Engineering value:
 - Datadog's agentless OTLP intake also accepts only delta, so this is useful beyond Upstart.
@@ -207,9 +210,10 @@ Inherited contracts: none.
      `{ kind: "waiting", detail: "The destination's network edge refused this network", retryAfterMs }`.
    - Every other 401 and 403, and every 403 on an ungated destination, still pauses exactly as
      today.
-   - This fingerprint is Cloudflare's documented edge response. It is tested here only against
-     a fake collector. Phase 6's pilot captures the real gateway's off-VPN response before
-     default-on, and owns any correction.
+   - This fingerprint is Cloudflare's documented edge response, a generic capability that any
+     gateway behind that edge can use. It is tested here only against a fake collector.
+     Phase 6's pilot captures the real gateway's off-VPN response before default-on, and owns
+     any correction.
 7. **Settling a wait.**
    - `settle` schedules the batch at `retryAfterMs ?? backoff(attempts)`, with the ceiling
      `networkWaitRetryMaxMs` for this outcome only.
@@ -377,12 +381,12 @@ Later phases may rely on these, and must not change them without an audit entry 
   - Added the editable temporality control, following the human decision that people on
     machines that are not Upstart-managed edit their telemetry settings, including what they
     need to configure Datadog by hand.
-  - Redacted the gateway's replica count and access description for the public repository.
+  - Redacted the gateway's instance count and access description for the public repository.
 - 2026-09-29, repair round 5:
   - The heartbeat was promised without a mechanism: a pass with no events returns early, and
     batches hold only touched series. It is now specified: the owning projection, the due-set
     query and index, running despite the idle early return, and a full-idle-hour test.
   - The real-gateway checks (the delta replay behaviour and the real off-VPN response) are
-    stated as Phase 6's, matching the root plan. This phase builds the gate to Cloudflare's
-    documented edge response against a fake collector. If Phase 6's capture differs, the
+    stated as Phase 6's, matching the root plan. This phase builds the gate to a documented
+    edge fingerprint against a fake collector. If Phase 6's capture differs, the
     fingerprint correction is recorded here.

@@ -49,9 +49,9 @@ Findings. Line numbers were taken on 2026-09-28.
   Datadog keeps the dotted OTel name unchanged, as the validation point showed.
 
 **Tags.**
-- Datadog tags seen on the validation point: `service`, `version`, `env` (both `corp` and the
-  local value), `service.instance.id` (lowercased), data-point attributes,
-  `instrumentation_scope` and `host`.
+- Datadog tags seen on the validation point: `service`, `version`, `env` (both the gateway's
+  environment and the local value), `service.instance.id` (lowercased), data-point
+  attributes, `instrumentation_scope` and `host`.
 - Under `datadog-lean`, `host` is the constant `mission-control`.
 
 **Spans.**
@@ -70,7 +70,9 @@ Inherited from Phase 2:
 1. **Dashboard JSON (`observability/datadog/dashboards/mission-control.json`).**
    - `layout_type: "ordered"`, with a title and a description stating the source and the shape.
    - Template variables:
-     - `env`, default `corp`;
+     - `env`, default `*` in the committed JSON. The person who applies the dashboard sets
+       the gateway's environment name as the default, from the local internal notes, Preset
+       values. The name is never committed;
      - `version`, default `*`.
    - Every widget filters `service:mission-control` and `$env`, and excludes `env:test`,
      `env:local` and `env:development`.
@@ -106,7 +108,8 @@ Inherited from Phase 2:
    - **Tags:** every filter and group-by tag is either one of that metric's exported labels,
      or one of the resource tags `service`, `env`, `version`, `host` and `service.instance.id`.
    - **Required filters:** every query includes `service:mission-control` and `$env`.
-   - **Template variable:** `env` defaults to `corp`.
+   - **Template variable:** `env` exists and defaults to `*`. The validator also refuses any
+     committed default other than `*`, so no internal environment name can be committed.
    - **Spans:** span queries (`data_source: "spans"`) reference only span names from
      `TELEMETRY_EVENTS` and attributes that exist on those spans.
    - **Hygiene:** widget ids are unique, there are no duplicate titles within a group, and no

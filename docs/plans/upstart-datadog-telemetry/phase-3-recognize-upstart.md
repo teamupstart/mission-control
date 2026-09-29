@@ -4,7 +4,7 @@ Source plan: [plan.md](plan.md). Index: [phased-plan.md](phased-plan.md).
 
 ## 1. Outcome and value
 
-On a Mac actively enrolled in Upstart's own Jamf tenant, Mission Control recognizes the
+On a Mac actively enrolled in Upstart's own MDM tenant, Mission Control recognizes the
 organization. It writes Upstart's managed configuration into the Product analytics destination
 (Upstart's telemetry gateway, with the Datadog-ready settings), and makes Settings > Telemetry
 **view-only** on that Mac, as the human decided on 2026-09-29.
@@ -15,8 +15,21 @@ nothing reaches the gateway before enrollment. The rollout is `pilot`, and volun
 with one documented API call, because Settings has no editing controls on an Upstart Mac.
 Phase 6 turns the default on for every Upstart Mac after the pilot passes.
 
-On every other machine, including other companies' Jamf-managed Macs, nothing changes, no
-Upstart text appears, and everything stays editable.
+On every other machine, including other companies' Macs managed by the same MDM vendor,
+nothing changes, no Upstart text appears, and everything stays editable.
+
+**Internal values.** Upstart's literal values live only in the local internal notes, never in
+this repository:
+- the MDM tenant host;
+- the gateway endpoint;
+- the gateway's environment name;
+- the network gate;
+- the evidence captured on an Upstart Mac.
+
+The notes are at
+`~/workspace/upstart/mission-control-internal/upstart-datadog-telemetry/internal-notes.md`, and
+this file cites them as "internal notes, *Section*". Read them from there. See step 3 for when
+they may enter committed code.
 
 Value:
 - Upstart gets a consistent, managed lane that the pilot can join.
@@ -48,8 +61,9 @@ In scope:
   organization is active. Test connection, Try again and Re-check remain.
 - **Pilot enrollment.** `POST /api/telemetry/organization/pilot`, available only during the
   `pilot` rollout.
-- **Environment.** `deployment.environment.name` is `corp` on an Upstart-managed Mac unless
-  `MISSION_TELEMETRY_ENVIRONMENT` is set.
+- **Environment.** `deployment.environment.name` is the gateway's environment name (internal
+  notes, Preset values) on an Upstart-managed Mac, unless `MISSION_TELEMETRY_ENVIRONMENT` is
+  set.
 - **Status wire.** `organization` on the telemetry status, and a Re-check route.
 - **The view-only "Managed by Upstart" panel.**
 - **Docs:** `docs/upstart.md`, `docs/observability.md`, `docs/configuration.md`, and the
@@ -103,14 +117,13 @@ Findings. Line numbers were taken on 2026-09-28.
 (`e2e/fixtures/daemon.ts:397-560`), and accepts per-spec additions through
 `test.use({ daemonEnv })` (`e2e/fixtures/test.ts:18-26`). Its `MISSION_HOME` is a temp directory.
 
-**Measured on an Upstart Mac (2026-09-25).**
-- `profiles status -type enrollment` prints `MDM enrollment: Yes (User Approved)` and
-  `MDM server: https://upstart.jamfcloud.com/mdm/ServerURL`, needs no admin rights, and takes
-  about 30 ms.
-- `/Library/Preferences/com.jamfsoftware.jamf.plist` is `root:wheel 0644` and holds `jss_url`.
-  **It is not used for detection.** It can outlive an unenrollment, and nothing in it ties it
-  to the Mac's current enrollment. On a Mac later enrolled in another organization's MDM, it
-  would still name Upstart.
+**Measured on an Upstart Mac (2026-09-25).** The exact output is in the internal notes,
+Detection evidence.
+- `profiles status -type enrollment` prints an `MDM enrollment:` line and an `MDM server:` line
+  carrying the tenant's URL. It needs no admin rights, and takes about 30 ms.
+- The MDM vendor's own settings file also names the tenant. **It is not used for detection.**
+  It can outlive an unenrollment, and nothing in it ties it to the Mac's current enrollment. On
+  a Mac later enrolled in another organization's MDM, it would still name Upstart.
 
 Inherited:
 
@@ -154,12 +167,24 @@ Inherited:
    - **Server (`src/server/environment/organizations.ts`):** the `upstart` entry, and the only
      place Upstart is named in code. It holds:
      - `label: "Upstart"`;
-     - `mdmHosts: ["upstart.jamfcloud.com"]`;
+     - `mdmHosts`: the tenant host, from the internal notes, Preset values;
      - `evidence(host)`, which returns "This Mac is enrolled in Upstart's device management
-       (upstart.jamfcloud.com).";
-     - `preset: { endpoint: "https://corp-otel-staging-1.upstart.com", temporality: "delta", networkGate: "cloudflare-edge", lateAfterMs: 3_600_000, exportShape: "datadog-lean", environment: "corp" }`;
+       (*host*).";
+     - `preset`:
+       - `endpoint`, `networkGate`, `lateAfterMs` and `environment` from the internal notes,
+         Preset values;
+       - `temporality: "delta"`;
+       - `exportShape: "datadog-lean"`;
      - `presetVersion: 1`;
      - `rollout: "pilot"`.
+   - **Do not commit the literal values without clearance.** The tenant host, endpoint,
+     environment name and gate value must not be committed until the source plan's rollout
+     prerequisite 3 is settled: Upstart confirms that publishing them in this public
+     repository is acceptable.
+     - Until then, keep them out of every commit, pull request description, screenshot and
+       log. Tests use placeholder hosts.
+     - If publication is not approved, stop, and ask the human how the values should be
+       delivered to installed apps instead.
 
      `lateAfterMs` is Datadog's one-hour ingestion limit, recorded in
      [phased-plan.md](phased-plan.md).
@@ -175,7 +200,7 @@ Inherited:
      describe the current enrollment.
      - A missing, empty or unparseable `MDM server` line means no organization. It fails
        closed.
-     - No file, including Jamf's `jss_url`, is consulted as a fallback.
+     - No file, including the MDM vendor's settings file, is consulted as a fallback.
    - **Other platforms.** Detection returns `null` without running anything on any platform
      other than `darwin`.
    - **Guards.** Detection only runs, and its result only counts, when all of these hold:
@@ -284,10 +309,11 @@ Inherited:
     environment. A spec opts in through `daemonEnv`.
 12. **Docs.**
     - `docs/upstart.md`, a "Telemetry to Upstart's Datadog" section:
-      - what is detected, and why other Jamf customers are unaffected;
+      - what is detected, and why other organizations' managed Macs are unaffected;
       - that the setting is managed and view-only on Upstart Macs;
-      - what is sent and never sent, including that the gateway copies metrics to a second
-        destination its owners run;
+      - what is sent and never sent, and that the gateway's owners control any onward
+        routing;
+      - no hostname, tenant, gateway configuration or other Upstart-internal specific;
       - how pilot volunteers enroll and leave.
     - `docs/observability.md`, an "Organization defaults" section: apply, keep in step,
       withdraw, and the lock.
@@ -309,29 +335,31 @@ Inherited:
 - **Identity.** An identity is minted only when a pilot enrollment starts capture, through the
   existing consent path.
 - **Persisted ids.** `ORGANIZATION_IDS` is append-only: add it to the persisted-identifier list.
-- **Public repository.** The Upstart gateway hostname and Jamf tenant now appear in code, as the
-  source plan's decision accepted. That is rollout prerequisite 3; confirm it with Upstart
-  before merging.
+- **Public repository.** The preset's literal values come from the internal notes. They enter
+  committed code only after rollout prerequisite 3 approves it; see step 3. Until then, nothing
+  in this phase's commits, tests, pull request or screenshots may carry them.
 
 ## 7. Tests and verification
 
 Unit tests:
 
 - **`test/organization-detection.test.ts`, with injected `run` and file reads:**
-  - should match: Upstart enrolled, and the uppercase and trailing-dot forms of the host;
+  - **fixtures use a placeholder tenant host**, for example `tenant.mdm.example`, injected as
+    the allowlist, and never the real one;
+  - should match: the allowlisted host enrolled, and its uppercase and trailing-dot forms;
   - must fail:
-    - `MDM enrollment: No` while the Jamf plist names Upstart;
-    - `acme.jamfcloud.com`, self-hosted Jamf, Kandji and Intune;
-    - the lookalikes `notupstart.jamfcloud.com`, `upstart-sandbox.jamfcloud.com`,
-      `upstart.jamfcloud.com.example.com`, `http://upstart.jamfcloud.com` and
-      `https://user@upstart.jamfcloud.com`;
+    - `MDM enrollment: No` while a vendor settings file names the allowlisted host;
+    - another tenant on the same vendor domain, a self-hosted server, and other MDMs;
+    - lookalikes: `nottenant.mdm.example`, `tenant-sandbox.mdm.example`,
+      `tenant.mdm.example.attacker.example`, `http://tenant.mdm.example` and
+      `https://user@tenant.mdm.example`;
   - a missing `MDM server` line, which must fail, including when the injected file reader
-    would return a Jamf plist naming Upstart. The test also asserts that detection never calls
-    the file reader;
+    would return a vendor file naming the allowlisted host. The test also asserts that
+    detection never calls the file reader;
   - active enrollment in another organization's MDM (`MDM enrollment: Yes`), with no
-    `MDM server` line and a stale Upstart `jss_url` plist present, which must fail;
+    `MDM server` line and a stale vendor file naming the allowlisted host, which must fail;
   - active enrollment in another organization's MDM with its own `MDM server` line, and the
-    same stale plist, which must fail;
+    same stale file, which must fail;
   - malformed output, a non-zero exit, a timeout and an overflow;
   - a non-darwin platform, which must not call `run`.
 - **Guards and overrides:**
@@ -379,7 +407,8 @@ E2E:
   - after pilot enrollment through the API, the state reads "Sending to Upstart's Datadog",
     and the collector receives a delta metrics request whose resource carries
     `datadog.host.name: mission-control` and no `mission.analytics.v1.*` metrics;
-  - a Cloudflare-shaped 403 from the collector, which shows "Waiting for the Upstart network";
+  - a 403 from the collector matching the preset's network gate, which shows "Waiting for the
+    Upstart network";
   - Re-check.
 - **`e2e/specs/telemetry-no-organization.spec.ts`**, under the default fixture:
   - no "Upstart" text anywhere in Settings > Telemetry;
@@ -451,13 +480,13 @@ Must not change without an audit entry:
   Control dashboard as "No: view-only for Upstart users; only non-Upstart users edit settings",
   confirming the view-only design above. Nothing in this phase changed.
 - **2026-09-29, repair round 7:**
-  - Removed the Jamf `jss_url` fallback. A Mac that left Upstart kept the file, and was then
+  - Removed the MDM vendor settings-file fallback. A Mac that left Upstart kept the file, and was then
     enrolled in another organization's MDM, would have passed "active enrollment" plus a stale
-    Upstart plist whenever the `MDM server` line was missing.
+    vendor file naming Upstart's tenant whenever the `MDM server` line was missing.
   - The server URL now comes only from the same `profiles` output as the enrollment, and a
     missing line fails closed.
-  - Added tests for another MDM with a stale Upstart plist, with and without an `MDM server`
-    line, and one asserting detection never reads a file.
+  - Added tests for another MDM with a stale vendor file naming the allowlisted host, with and
+    without an `MDM server` line, and one asserting detection never reads a file.
   - `readPlistValue` stays, for Phase 4.
 - **2026-09-29, repair round 4:**
   - The first-application rule left `product.enabled` "as it was". A Mac whose Product
@@ -467,3 +496,10 @@ Must not change without an audit entry:
     application is one transaction that switches it off, and withdrawal restores it.
   - Added a test that starts from an enabled configuration.
   - Phase 6 consumes the invariant and is updated in the same round.
+- **2026-09-29, public-repository redaction (the human's instruction):**
+  - Removed every Upstart-internal specific from this phase: the tenant and gateway hosts,
+    the MDM vendor, the gateway's environment name, and the measured detection evidence.
+  - The preset's literal values now live only in the local internal notes. This phase commits
+    them only after the source plan's rollout prerequisite 3 is settled.
+  - Tests use the placeholder host `tenant.mdm.example` and its lookalikes.
+  - The detection rule, guards, managed lock and pilot invariant are unchanged.

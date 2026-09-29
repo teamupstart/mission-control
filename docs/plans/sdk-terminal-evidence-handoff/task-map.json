@@ -1,0 +1,29 @@
+{
+  "status": "publication_authorized_not_scheduled",
+  "publicationGate": "Operator explicitly requested the planning PR. Create phase tasks only after every named path has been verified in the pushed plan commit. Resolve symbolic phase keys to returned task IDs and retain dependsOnCurrentSession on both tasks. No merge is authorized.",
+  "repositoryScope": "current Mission Control repository; omit repository and additionalRepositories in create_task",
+  "phases": [
+    {
+      "phaseKey": "phase-1",
+      "taskId": null,
+      "dependsOnPhaseKeys": [],
+      "createTaskArgs": {
+        "title": "SDK-to-terminal handoff - Phase 1: Managed resume tools",
+        "intent": "Make managed terminal resumes preserve Mission tools, permission posture and repository scope. Refuse unusable preparation before stopping a live SDK session, and retain the prepared environment for any terminal that may have launched.\n\nRead docs/plans/sdk-terminal-evidence-handoff/plan.md, docs/plans/sdk-terminal-evidence-handoff/phased-plan.md and docs/plans/sdk-terminal-evidence-handoff/phase-1-managed-resume-tools.md first. Follow the phase file as the implementation guide. It is the proposed route, not a specification: use your judgement where the repository disagrees or a better implementation presents itself, and record deviations and reasons in the pull request. Only the goal is fixed.\n\nImplement only Phase 1 in the current Mission Control repository, preserve its cross-phase contracts, and leave later phases and the separate Backlog UI feature alone.\n\nRun the verification specified by the phase file and deliver a reviewable pull request whose merge can release dependent work, following the task's completion handoff and the workflow's later publication instruction.",
+        "dependsOnCurrentSession": true
+      }
+    },
+    {
+      "phaseKey": "phase-2",
+      "taskId": null,
+      "dependsOnPhaseKeys": [
+        "phase-1"
+      ],
+      "createTaskArgs": {
+        "title": "SDK-to-terminal handoff - Phase 2: Durable ownership transfer",
+        "intent": "Make Continue in terminal preserve the running task, all pinned workflows and their evidence on a proven successor, including early hooks and daemon restart. Keep uncertain launches visible and recoverable without duplicate agents or automatic replay of uncertain deliveries.\n\nRead docs/plans/sdk-terminal-evidence-handoff/plan.md, docs/plans/sdk-terminal-evidence-handoff/phased-plan.md and docs/plans/sdk-terminal-evidence-handoff/phase-2-durable-runtime-transfer.md first. Follow the phase file as the implementation guide. It is the proposed route, not a specification: use your judgement where the repository disagrees or a better implementation presents itself, and record deviations and reasons in the pull request. Only the goal is fixed.\n\nImplement only Phase 2 in the current Mission Control repository, preserve its cross-phase contracts, and leave later phases and the separate Backlog UI feature alone.\n\nRun the verification specified by the phase file and deliver a reviewable pull request whose merge can release dependent work, following the task's completion handoff and the workflow's later publication instruction.",
+        "dependsOnCurrentSession": true
+      }
+    }
+  ]
+}

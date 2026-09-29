@@ -1,0 +1,146 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Phase 1: complete managed terminal resume launches</title><style>
+:root{color-scheme:dark;--bg:#10141c;--panel:#192230;--ink:#f0f4fa;--muted:#b8c5d6;--line:#53647c;--link:#a4d5ff;--accent:#93e1c5}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f6f8fc;--panel:#e8eef7;--ink:#142237;--muted:#34475e;--line:#8191a9;--link:#12588e;--accent:#17644f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30px,4vw,46px);line-height:1.15;letter-spacing:-.035em;max-width:900px;margin:0 0 28px}h2{font-size:25px;line-height:1.3;margin-top:48px;border-top:1px solid var(--line);padding-top:25px}h3{font-size:19px;margin-top:32px}p{max-width:980px}a{color:var(--link);text-underline-offset:3px}strong{font-weight:700}code,pre{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.86em}code{overflow-wrap:anywhere;background:var(--panel);padding:2px 4px;border-radius:4px}pre{background:var(--panel);padding:16px;overflow:auto}.scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:13px 16px;border-bottom:1px solid var(--line)}th{background:var(--panel);color:var(--accent);font-weight:700}td code{font-size:12px}li{margin:9px 0}svg{display:block;width:100%;min-width:900px;margin:16px 0}svg rect{fill:var(--panel);stroke:var(--line)}svg text{fill:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}svg path{stroke:var(--accent);fill:none;stroke-width:2}footer{margin-top:48px;color:var(--muted);font-size:13px}
+</style></head><body><main><h1>Phase 1: complete managed terminal resume launches</h1>
+<p>Read <a href="plan.md">plan.md</a> and <a href="phased-plan.md">phased-plan.md</a> first. This guide is the proposed route, not a specification of internal APIs. The fixed goal is that a managed terminal resume receives the correct tool transport and scope before a usable source SDK is stopped. Adapt to repository changes and record deviations with reasons in the PR.</p>
+<h2>Outcome, entry and scope</h2>
+<p>An operator continuing a conversation in a terminal keeps Mission tools and its permission posture. A missing required tool or unusable launch configuration produces an actionable refusal while the original SDK remains usable. The prepared environment has one explicit lifetime, including uncertain terminal launches.</p>
+<p>Direct prerequisites: the planning session&#39;s artifacts must be published. There are no preceding implementation phases. Work is entirely in Mission Control; attach no other repositories.</p>
+<p>In scope: harness resume preparation, required-tool derivation, fresh scoped environment/config, default and selected terminal launch arms, exited-session resume, and focused integration/browser coverage for those changes. Non-goals: durable task/workflow transfer, new Backlog controls, automatic workflow reattachment, new MCP tools, global integration installation, new terminal vendors, and redesigning all dispatch.</p>
+<p>Phase 1 is useful independently, but the known early-hook task/workflow race remains until Phase 2. Do not update operator docs to claim transparent lifecycle continuity yet.</p>
+<h2>Repository contracts to preserve</h2>
+<ul>
+<li><code>src/server/harness/index.ts</code> owns <code>resumeArgvFor</code>; <code>ResumeSpec</code> in <code>harness/types.ts</code> supplies harness-specific grammar. Resume must remain separate from SDK support.</li>
+<li><code>src/server/mission-mcp.ts</code> owns descriptors, names, renderer functions and <code>verifyMissionMcpTools</code>. Check the exact descriptor used by the launch, not another newly resolved object.</li>
+<li><code>kindMissionMcpRequirement</code> owns task-kind requirements. <code>WorkflowManager.agentEvidenceBinding</code> and immutable version inspection demonstrate that a manually attached workflow is authoritative even when <code>task.workflowId</code> is empty. Secondary bindings must also be considered when deciding whether any Persona requires evidence.</li>
+<li><code>src/server/ensembles/member-launch.ts</code> requires <code>submit_ensemble_result</code> independently of task kind. Read membership from existing ensemble ownership, not title or transcript text.</li>
+<li><code>src/server/mission-tools.ts</code> reads <code>missionTools</code> capability: Claude/Codex use MCP clients; Pi uses its installed extension. Preserve this distinction.</li>
+<li><code>src/server/harness/codex/launch.ts</code> includes dispatch posture as well as configuration. Reuse/extract its registration and hook rendering; never let dispatch auto-mode overwrite a resumed permission mode.</li>
+<li><code>src/server/ask-channel.ts</code> composes redirect text and tool flags together. Do not add an unpaired <code>AskUserQuestion</code> ban or a second <code>--append-system-prompt</code>. Mission transport registration for a resume does not itself require replacing the conversation&#39;s question policy.</li>
+<li><code>spawnUniquely</code> in <code>dispatcher.ts</code> accepts a state home. <code>launchAgentTerminal</code> in <code>terminal/targets.ts</code> currently allocates its own. Both end in <code>isolatedAgentArgv</code> and a cleanup wrapper.</li>
+</ul>
+<h2>Implementation sequence</h2>
+<h3>1. Pin the launch regressions and contract</h3>
+<p>Extend <code>test/harness-resume.test.ts</code>, <code>test/sdk-answer-http.test.ts</code> and <code>test/session-launch-http.test.ts</code> before changing production behavior. Assert the argv/config actually handed to the fake terminal, including the final command inside the isolation wrapper. Show that the baseline lacks launch-scoped Mission registration. Exercise both <code>/handoff</code> and <code>/launch</code>, and the exited-session resume arm.</p>
+<p>Introduce a server-only prepared-resume value, preferably in a small <code>src/server/harness/resume.ts</code> module with a harness-owned preparation slot in <code>HarnessDaemonSlots</code>. This is a proposed filename/API, not an existing module. Keep <code>resumeArgvFor</code> responsible for binary resolution and conversation/mode grammar. The value should carry:</p>
+<ul>
+<li>absolute executable and final unwrapped argv;</li>
+<li>the single disposable state-home handle and explicit dispose/transfer ownership behavior;</li>
+<li>required Mission tool names and verified transport result, with the exact descriptor for MCP-client harnesses;</li>
+<li>any hook/instrumentation facts the existing launch consumers need;</li>
+<li>write scope inherited from the task&#39;s primary and attached worktrees, using existing scope helpers.</li>
+</ul>
+<p>The preparation seam takes a resolved launch context. It does not query SQLite from a harness adapter or make the adapter interpret workflow graphs. An owner-level composer in the existing route/handoff layer asks TaskManager/WorkflowManager/ensemble ownership for requirements and passes plain values down.</p>
+<h3>2. Resolve requirements from the live conversation</h3>
+<p>Union task-kind tools, current ensemble obligations, and evidence submission when any active pinned binding&#39;s immutable graph supports Persona evidence. Taskless/manual bindings are a required case. Preserve known launch-scoped Mission tools for an SDK conversation even when no task kind mandates them; do not fall back to “optional descriptor, continue without tools” for the managed handoff this repair promises.</p>
+<p>Use the existing complete tool vocabulary as the conservative preflight set for a managed SDK resume whose previously available tool subset cannot be recovered. Do not invent a persisted launch-tool ledger just to recover a subset. Normal dispatch with an empty requirement retains its existing no-probe behavior.</p>
+<p>For an exited managed session, derive what remains from its task/binding owners without reactivating an old task. For a discovered, unmanaged conversation, preserve current resume semantics and capabilities; this work must not convert external sessions into managed task owners. Required capabilities that cannot be established fail before launch with a precise reason.</p>
+<h3>3. Render an isolated transport without changing conversation policy</h3>
+<p>Reuse <code>missionMcpDescriptor(cwd, stateHome)</code> and <code>verifyMissionMcpTools(required, descriptor)</code>. Extend Claude&#39;s renderer to accept an explicit per-launch config path under this home while preserving the old default for existing callers. Write that file atomically and privately. Two resumes in different repositories must not overwrite each other&#39;s descriptor or credential location.</p>
+<p>Compose Codex&#39;s MCP overrides and launch hooks with <code>resumeArgvFor</code> in the grammar accepted by the installed CLI. Preserve sandbox, approval/reviewer profile, and native conversation identity. Do not add model/effort overrides that replace values restored by the native conversation. Keep the hook trust flag coupled to actual hook overrides, following current managed-launch policy.</p>
+<p>Pi must use <code>missionToolsAvailability</code> and the installed extension&#39;s verified bridge, not an unsupported MCP descriptor. Add capability-level tests for every current harness. A missing required extension refuses preparation while the SDK is still live.</p>
+<p>Mint a fresh descriptor from the daemon context. Explicitly remove stale source <code>MISSION_SESSION_ID</code> and pane identifiers from the new transport context, while allowing the actual terminal to supply its own pane identity. Preserve native conversation identity through resume argv and existing hook/MCP resolution. Inspect extra-directory handling so attached worktrees retain exactly their existing write scope; do not widen it to the repository parent or operator home.</p>
+<h3>4. Carry one home through all launch consumers</h3>
+<p>Prepare before clearing the task or stopping the SDK in <code>sdk/handoff.ts</code>. Thread the prepared home through the default <code>spawnUniquely</code> path and selected-backend adapter in <code>routes.ts</code>. Extend <code>launchAgentTerminal</code> with an optional owned prepared home or equivalent narrow input; retain its existing behavior for callers that do not provide one. Do not wrap the command twice.</p>
+<p>The ownership transitions are:</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Boundary</th>
+<th>Owner and cleanup</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Preparation, verification or stop fails before launch</td>
+<td>Preparation owner disposes the unused home. Existing stop-failure task rollback remains unchanged.</td>
+</tr>
+<tr>
+<td>Terminal definitely did not launch</td>
+<td>Caller disposes; no live wrapper owns the files.</td>
+</tr>
+<tr>
+<td>Terminal launched successfully</td>
+<td>Wrapper owns cleanup until the agent exits. Remove that home from the daemon&#39;s exit-cleanup set without deleting it.</td>
+</tr>
+<tr>
+<td>Terminal launch result is unknown, including selected-backend 504</td>
+<td>Retain the home and marker because a process may use them; no immediate cleanup and no second spawn. Phase 2 adds durable resolution of this uncertainty.</td>
+</tr>
+<tr>
+<td>Agent exits</td>
+<td>Wrapper removes its home; repeated cleanup must remain safe.</td>
+</tr>
+</tbody></table></div>
+<p>Add the smallest explicit ownership-release helper to <code>agent-subprocess-env.ts</code>; do not remove cleanup for SDK or unlaunched homes. An orderly daemon restart while the terminal survives must not remove its config, credential or marker. At this phase, preserve unresolved homes rather than inventing an age-only collector that could delete live credentials. Phase 2 owns evidence-based cleanup for durable transfer attempts.</p>
+<p>Use the same preparation in the exited <code>/launch</code> resume arm. Preserve the existing status/outcome semantics, default-backend uniqueness policy and selected-backend no-fallback policy. Do not leak config bodies, bearer values, or an argv containing secrets in errors. Keep existing human resume advice sanitized and clearly distinguish a bare manual resume from a managed continuation with tools.</p>
+<h3>5. Prove actual transport, then document the limited result</h3>
+<p>Add <code>test/managed-resume-tools.test.ts</code> as a focused fixture-driven transport suite if existing files become unwieldy. Launch the prepared MCP child against a disposable fixture bundle and perform a real initialize/tools-list through the rendered configuration, with no model request. A stub that only asserts a boolean <code>missionMcp: true</code> is insufficient. Reuse <code>test/helpers/mcp-fixture.ts</code> and the patterns in <code>test/mission-mcp.test.ts</code>. These unit tests must pass on a fresh checkout without pre-existing <code>dist/</code>; the built production bundle and its authenticated tool round trip belong to the browser/integration case below.</p>
+<p>Extend the terminal-boundary Playwright fixture and add <code>e2e/specs/sdk-terminal-handoff.spec.ts</code>. In this phase its cases prove preparation refusal before stop and a taskless/manual-free SDK handoff whose resumed fake actually invokes a Mission tool. The terminal fake may read its supplied config and invoke the real built MCP bundle; it must not manufacture a registry session or make a direct authenticated HTTP call in place of the tool. Phase 2 extends this same spec with task/workflow continuity.</p>
+<p>Update <code>docs/harnesses-and-terminals.md</code>, <code>docs/dispatch-and-runtimes.md</code> and the relevant Continue in terminal explanation with preflight and failure behavior. State that lifecycle continuity is completed by Phase 2. Update the E2E fixture guide for its new fake protocol. No release/deployment configuration change is planned.</p>
+<h2>Verification matrix and commands</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Required observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Claude and Codex, default and selected backend</td>
+<td>Resume grammar/mode unchanged; correct scoped config/hooks and required tools carried once.</td>
+</tr>
+<tr>
+<td>Pi extension available/unavailable</td>
+<td>Correct extension capability path or pre-stop refusal; no fake MCP registration.</td>
+</tr>
+<tr>
+<td>Manually bound Persona, taskless binding, late workflow attachment</td>
+<td>Evidence tool is required from live pinned binding, independently of <code>Task.workflowId</code>.</td>
+</tr>
+<tr>
+<td>Scout, plan, ensemble member, attached repositories</td>
+<td>Existing tool obligations and repository write scopes preserved.</td>
+</tr>
+<tr>
+<td>Missing bundle/tool, invalid config path, preparation exception</td>
+<td>Zero SDK stops and zero task/workflow mutations. SDK remains usable.</td>
+</tr>
+<tr>
+<td>Stop error, definite spawn refusal, unknown spawn</td>
+<td>Correct home ownership and existing task failure/rollback semantics; unknown is not retried.</td>
+</tr>
+<tr>
+<td>Two simultaneous resumes</td>
+<td>Independent config files and credentials; no stale SDK or unrelated pane identity.</td>
+</tr>
+<tr>
+<td>Daemon shutdown with live terminal</td>
+<td>Wrapper&#39;s files survive; final wrapper exit cleans them. SDK-only homes retain cleanup.</td>
+</tr>
+</tbody></table></div>
+<p>Run the existing files plus the new focused suite with the repository&#39;s required test preload:</p>
+<pre><code class="language-sh">node --test --import ./test/setup-state.mjs --import tsx test/harness-resume.test.ts test/sdk-answer-http.test.ts test/session-launch-http.test.ts test/mission-mcp.test.ts test/mission-tools-availability.test.ts test/agent-subprocess-env.test.ts test/managed-resume-tools.test.ts
+npm run typecheck
+npm run lint
+npm run build
+npm run smoke
+MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/sdk-terminal-handoff.spec.ts e2e/specs/terminal-session-name.spec.ts --workers=1
+</code></pre>
+<p>The new suite/spec must be created before these commands are claimed as passing. Keep the build before smoke/E2E; use scoped outside-sandbox approval when required by the repository. Do not change production security settings to make a fixture work.</p>
+<h2>Exit, merge and downstream handoff</h2>
+<p>Phase 1 can merge when all managed resume entry points consume the same prepared contract; focused transport, environment, refusal and browser checks pass; docs accurately describe the partial repair; and there are no changes to durable task/workflow identity semantics. Register final command output and rendered preflight evidence before completion. Commit/push/PR steps follow the implementation task&#39;s then-current handoff owner.</p>
+<p>Phase 2 may rely on one prepared home, verified tool transport, preserved scope, and explicit definite/unknown launch outcomes. It must reuse the preparation seam and extend existing launch proof, not duplicate agent argv or credentials. Phase 1 must leave no production feature flag or dead preparatory API for Phase 2 to enable.</p>
+<h2>Cross-phase audit record</h2>
+<ul>
+<li><p>September 28, initial: route inventory includes both active handoff paths and exited resume. No task/workflow schema work belongs here.</p>
+</li>
+<li><p>Reconciled with index: fresh scoped config and daemon-to-wrapper cleanup transfer are inseparable from a correct transport launch. The same home must survive through Phase 2&#39;s persistent proof record.</p>
+</li>
+<li><p>Final set audit: H1/H4 transport subproofs support Phase 2&#39;s end-state acceptance. The same browser spec is intentionally extended sequentially; phases cannot run concurrently. Durable adoption, orphan suppression and restart claims remain Phase 2 responsibilities.</p>
+</li>
+<li><p>Final verification audit: unit protocol tests use disposable fixture bundles and run without <code>dist/</code>; the built production MCP round trip is in the browser suite after the explicit build.</p>
+</li>
+</ul>
+<footer>Mission Control · phased implementation proposal · September 28, 2026</footer></main></body></html>

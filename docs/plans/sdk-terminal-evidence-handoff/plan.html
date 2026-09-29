@@ -1,0 +1,103 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preserve workflow evidence across SDK-to-terminal handoff</title><style>
+:root{color-scheme:dark;--bg:#10141c;--panel:#192230;--ink:#f0f4fa;--muted:#b8c5d6;--line:#53647c;--link:#a4d5ff;--accent:#93e1c5}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f6f8fc;--panel:#e8eef7;--ink:#142237;--muted:#34475e;--line:#8191a9;--link:#12588e;--accent:#17644f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30px,4vw,46px);line-height:1.15;letter-spacing:-.035em;max-width:900px;margin:0 0 28px}h2{font-size:25px;line-height:1.3;margin-top:48px;border-top:1px solid var(--line);padding-top:25px}h3{font-size:19px;margin-top:32px}p{max-width:980px}a{color:var(--link);text-underline-offset:3px}strong{font-weight:700}code,pre{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.86em}code{overflow-wrap:anywhere;background:var(--panel);padding:2px 4px;border-radius:4px}pre{background:var(--panel);padding:16px;overflow:auto}.scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:13px 16px;border-bottom:1px solid var(--line)}th{background:var(--panel);color:var(--accent);font-weight:700}td code{font-size:12px}li{margin:9px 0}svg{display:block;width:100%;min-width:900px;margin:16px 0}svg rect{fill:var(--panel);stroke:var(--line)}svg text{fill:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}svg path{stroke:var(--accent);fill:none;stroke-width:2}footer{margin-top:48px;color:var(--muted);font-size:13px}
+</style></head><body><main><h1>Preserve workflow evidence across SDK-to-terminal handoff</h1>
+<p>Status: Recommended direction accepted for detailed planning on September 28, 2026; implementation remains future work. The operator requested the phased-plan skill using this recommendation. See the <a href="phased-plan.md">phased implementation index</a> and <a href="phased-plan.html">rendered review page</a>.</p>
+<h2>Recorded operator decision and scope</h2>
+<p>The operator selected the managed transfer recommendation in chat: “i&#39;d like you to use the phased-plan skill to plan out a fix for this in depth using your recommendation”. There is no separate submitted decision form. This resolves the approach and authorizes decomposition; it does not authorize production implementation in this planning turn.</p>
+<p>The repair covers managed terminal launch preparation and task/workflow continuity. The investigated task&#39;s Backlog controls are a separate feature: the incident baseline lacked an idle return action and an own-row Reschedule action for a retained failed task. That separate Backlog feature has since merged in PR #1144. Preserving the task association prevents the handoff-induced “no task” refusal in that feature, but this plan does not recreate its UI or change Backlog eligibility.</p>
+<p>Publication authorization updated September 28: the operator explicitly requested “create pR with the plan”. That later instruction authorizes the scoped planning commit, push and PR despite the earlier completion handoff. The existing workflow binding remains in place; this request does not authorize merge. Phase tasks are created only after their referenced artifacts exist in a verified pushed commit, and remain gated on publication by merge.</p>
+<h2>Result we need</h2>
+<p>Continuing the same conversation in a terminal must preserve its ability to call Mission Control tools, its running task, and its pinned workflow. A successful transition must not mark the task failed, leave its workflow on the retired SDK session, change the workflow version, or strand registered evidence.</p>
+<p>The existing contract in <a href="../../sessions.md#continue-in-terminal">sessions.md</a> already promises that the task follows the conversation. This proposal repairs that contract.</p>
+<h2>Verified diagnosis</h2>
+<ul>
+<li>The SDK supplies Mission MCP through its launch options. The current terminal handoff calls <code>resumeArgvFor</code> and spawns the returned argv without Mission MCP registration or a required-tool handshake. See <code>src/server/sdk/handoff.ts:125</code>, <code>src/server/harness/index.ts:122</code>, and <code>src/server/harness/claude/sdk.ts:1302</code>.</li>
+<li>Before discovery creates the terminal card, its resume hook can resolve by native conversation ID to the exiting SDK card. The hook sets that card idle, and <code>TaskManager.rebindTaskAtCwd</code> puts the task back on the retiring SDK session. Its existing eviction timer then marks the task failed. An isolated diagnostic reproduces this sequence.</li>
+<li>Workflow bindings retain a concrete session ID. SDK removal orphans them; ordinary task workflow binding does not transfer that pinned binding. Evidence registration requires an active Persona binding, but supports terminal sessions.</li>
+<li>Evidence staging is keyed by native conversation identity through <code>noteKeyFor</code>. There is no need to copy evidence into a new conversation when the native identity is unchanged.</li>
+</ul>
+<p>The historical incident report at <code>docs/reports/sdk-terminal-evidence-handoff/report.html</code> retains bounded live evidence and exact timestamps in this planning checkout. It and the diagnostic evidence must not be committed. The findings here and the detailed phase guides are self-contained so implementation does not depend on that unpublished report.</p>
+<h2>Recommended approach</h2>
+<p>Repair the managed handoff as one lifecycle operation. Reuse harness launch configuration and existing Registry, TaskManager, and WorkflowManager ownership. Do not weaken evidence authorization or rely on machine-global MCP installation.</p>
+<h3>1. Prepare a complete terminal launch before stopping the SDK</h3>
+<p>Use a shared managed terminal resume preparation seam, composed with the existing harness resume argv. It must carry the Mission tool transport, scoped daemon credentials, hooks where needed, terminal identity, and required-tool allow rules through the harness capability registry.</p>
+<p>Reuse <code>missionMcpDescriptor</code>, the existing per-harness renderers, <code>kindMissionMcpRequirement</code>, and <code>verifyMissionMcpTools</code>. Requirements must include the active pinned Persona binding, even if the task has no dispatch-time workflow selection. Preserve task-kind requirements for scouts, plans, and ensemble members as applicable.</p>
+<p>Mint a fresh disposable terminal state home. Do not retain the SDK&#39;s <code>MISSION_SESSION_ID</code>, pane identity, or soon-to-be-cleaned credential file. The terminal wrapper owns cleanup after launch. A failed preparation leaves the SDK and bindings untouched; a failed spawn releases the unused prepared home.</p>
+<p>Apply the preparation seam to both terminal backend routes. Review the exited-session resume route for the same missing registration so it cannot remain an alternative route into this failure. Preserve each harness&#39;s existing permission-mode and conversation-resume semantics.</p>
+<h3>2. Reserve the transfer and verify its successor</h3>
+<p>Record a narrowly scoped transfer reservation before clearing the source task pointer. It must identify the source session, native conversation, task if any, pinned workflow bindings, and intended terminal launch. Persist the minimum facts needed to reconcile a daemon restart.</p>
+<p>While reserved, a terminal hook must not revive the stopped SDK projection or rebind the task to it. Retain its terminal overlay for discovery. Do not globally discard all hooks for exited sessions: ordinary terminal rediscovery and context-reset semantics still need their existing behavior.</p>
+<p>Adopt only a distinct, live terminal session with the expected agent, native conversation, checkout and exact launch proof. A cwd match alone is insufficient. For multiplexers, require the launched resource/pane identity; for emulators, reuse launch ancestry and resource proof.</p>
+<p>Route both the immediate waiter and later discovery reconciliation through the same adoption operation. A discovery timeout leaves a pending transfer, not a failed task or a guessed owner. On restart reconcile the recorded launch without spawning it twice. Definite stop/spawn failures keep the existing TaskManager settlement and rollback behavior.</p>
+<h3>3. Transfer the pinned workflow and preserve evidence identity</h3>
+<p>WorkflowManager participates in the authorized transfer: it suspends deliveries across the ownership gap and transfers the existing binding to the verified successor. Preserve the pinned version, run identity, round, segment, staged evidence generation, and coverage.</p>
+<p>An expected source <code>session_remove</code> must not orphan a transferred binding. If the source disappears before discovery, hold transfer provenance until the successor is verified. Handle both event orders idempotently.</p>
+<p>Keep immutable submissions unchanged. Pending or uncertain deliveries retain their existing acknowledgement and retry-confirmation rules; never replay an uncertain message automatically. Do not call ordinary <code>reattach</code> blindly: that recovery operation sets <code>reattached_resubmit_required</code>, which is not transparent continuity.</p>
+<p>A changed native conversation or conflicting target binding fails closed with an explicit recovery reason. Manual reattachment remains the recovery path for genuinely different conversations, not an automatic cwd guess.</p>
+<h2>Request flow</h2>
+<p>Before:</p>
+<div class="scroll"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 110" role="img" aria-label="SDK with Mission tools then Bare terminal resume then Hook can revive retiring SDK then Task fails; binding orphans"><rect x="5" y="10" width="237" height="85" rx="8"/><text x="124" y="45" text-anchor="middle">SDK with</text><text x="124" y="68" text-anchor="middle">Mission tools</text><path d="M247 52h18m-6 -5l6 5l-6 5"/><rect x="270" y="10" width="237" height="85" rx="8"/><text x="389" y="45" text-anchor="middle">Bare terminal</text><text x="389" y="68" text-anchor="middle">resume</text><path d="M512 52h18m-6 -5l6 5l-6 5"/><rect x="535" y="10" width="237" height="85" rx="8"/><text x="654" y="45" text-anchor="middle">Hook can revive</text><text x="654" y="68" text-anchor="middle">retiring SDK</text><path d="M777 52h18m-6 -5l6 5l-6 5"/><rect x="800" y="10" width="237" height="85" rx="8"/><text x="919" y="45" text-anchor="middle">Task fails;</text><text x="919" y="68" text-anchor="middle">binding orphans</text></svg></div><p>After:</p>
+<div class="scroll"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 110" role="img" aria-label="Prepare tools and verify bundle then Reserve transfer; stop SDK then Verify terminal and launch identity then Transfer task and pinned workflow"><rect x="5" y="10" width="237" height="85" rx="8"/><text x="124" y="45" text-anchor="middle">Prepare tools and</text><text x="124" y="68" text-anchor="middle">verify bundle</text><path d="M247 52h18m-6 -5l6 5l-6 5"/><rect x="270" y="10" width="237" height="85" rx="8"/><text x="389" y="45" text-anchor="middle">Reserve transfer;</text><text x="389" y="68" text-anchor="middle">stop SDK</text><path d="M512 52h18m-6 -5l6 5l-6 5"/><rect x="535" y="10" width="237" height="85" rx="8"/><text x="654" y="45" text-anchor="middle">Verify terminal and</text><text x="654" y="68" text-anchor="middle">launch identity</text><path d="M777 52h18m-6 -5l6 5l-6 5"/><rect x="800" y="10" width="237" height="85" rx="8"/><text x="919" y="45" text-anchor="middle">Transfer task and</text><text x="919" y="68" text-anchor="middle">pinned workflow</text></svg></div><p>Registry remains the only session owner and eviction path. TaskManager owns task settlement. WorkflowManager owns binding/run changes. The daemon remains the only database writer.</p>
+<h2>Acceptance criteria and regression coverage</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Required behavior</th>
+<th>Focused proof</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>H1</td>
+<td>A managed terminal successor exposes <code>submit_workflow_evidence</code> and can register command output, an ignored screenshot, and coverage.</td>
+<td>Fake-agent terminal launch plus authenticated evidence route; real MCP initialize/tools-list against the built bundle, without model calls.</td>
+</tr>
+<tr>
+<td>H2</td>
+<td>A resume hook arriving before discovery cannot revive/rebind the retiring SDK owner. The task stays running on its verified successor after source eviction.</td>
+<td>Convert the isolated diagnostic into permanent regression tests; exercise discovery before and after eviction.</td>
+</tr>
+<tr>
+<td>H3</td>
+<td>The same binding and immutable workflow version survive, including active runs and staged/frozen evidence.</td>
+<td>Pin an older version, publish a newer one, hand off, then verify binding/run IDs, round/segment and evidence identity remain correct.</td>
+</tr>
+<tr>
+<td>H4</td>
+<td>A missing required tool or preparation failure leaves the SDK usable; spawn/stop failures and timeouts have explicit outcomes.</td>
+<td>Inject each failure, late discovery, repeat/concurrent requests, and daemon restart with a pending transfer. Verify no duplicate launch or resource leak.</td>
+</tr>
+<tr>
+<td>H5</td>
+<td>Wrong conversation, wrong pane, same-cwd unrelated process, and conflicting target workflow cannot acquire the transfer.</td>
+<td>Negative lifecycle tests, preserving valid terminal rediscovery and context-reset tests.</td>
+</tr>
+<tr>
+<td>H6</td>
+<td>The dashboard&#39;s Continue in terminal action retains the task and workflow, and evidence reaches the review tray.</td>
+<td>Playwright fake-agent spec covering the actual UI action, server transition and rendered result. Follow <code>e2e/README.md</code>; use accessible selectors.</td>
+</tr>
+</tbody></table></div>
+<h2>Implementation order and validation</h2>
+<ol>
+<li>In Phase 1, write permanent launch/preflight regressions for the transport portions of H1 and H4. Keep the incident diagnostic as gitignored evidence only.</li>
+<li>Complete Phase 1 with the prepared terminal launch seam, scoped configuration lifetime, both backend routes, exited resume and its browser proof.</li>
+<li>In Phase 2, write permanent H2-H3 lifecycle regressions, then add the durable reservation, hook/adoption guards and restart reconciliation.</li>
+<li>Transfer pinned workflows and preserve delivery/evidence semantics in that same Phase 2 merge; cover H4-H5 negative paths.</li>
+<li>Complete H1-H6 end-to-end acceptance, update the lifecycle and session docs, then run the affected tests, typecheck, lint, build, smoke and focused browser specs. No model tokens are needed for these checks.</li>
+</ol>
+<p>Treat these as one coordinated repair delivered in two merge units. Phase 1 repairs the independently testable launch contract on the existing resume routes. Phase 2 completes the durable task/workflow transfer using that contract. Phase 1 does not claim to fix the ownership race, and the final handoff acceptance criteria require both phases. Task transfer, workflow transfer, source-removal guards, and restart reconciliation stay together in Phase 2 because separating them would introduce conflicting owners or unsafe intermediate behavior.</p>
+<h2>Alternatives considered</h2>
+<ul>
+<li><strong>MCP configuration only:</strong> smaller, but the reproduced task failure and workflow orphaning remain.</li>
+<li><strong>Automatically attach the latest workflow by cwd:</strong> unsafe; can change the pinned version, lose active-run continuity, or target an unrelated session.</li>
+<li><strong>Managed transfer with launch and workflow continuity:</strong> recommended. More lifecycle coverage, but restores the existing user-facing promise.</li>
+</ul>
+<h2>Claims and limits</h2>
+<p>Verified: the missing launch registration, the early-hook race, the original binding&#39;s orphaned state, and the current empty evidence tray. The isolated control proves terminal evidence intake works with an active binding.</p>
+<p>High confidence (95%, inferred from the matching launch omission, process flags and tool-removal record): losing launch-scoped MCP during handoff caused this session&#39;s missing tool. The underlying MCP child exit/error log was not retained in the inspected transcript; this is not a claim about a particular socket or credential error.</p>
+<p>No unconfirmed load-bearing assumption is needed for the proposal. Actual fixes and integration/browser acceptance are future work. This task does not authorize restarting the other active agent, rewriting its state, or bypassing workflow preflight.</p>
+<footer>Mission Control · phased implementation proposal · September 28, 2026</footer></main></body></html>

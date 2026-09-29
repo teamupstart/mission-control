@@ -1,6 +1,6 @@
 # Reliable SDK-to-terminal handoff: phased implementation
 
-Status: implementation design ready for review; publication authorized; phase scheduling follows the verified initial push. No implementation has been performed. Prepared September 28, 2026 against checkout `7db363f462737dfb428ce40252dbcc9de667166c`.
+Status: implementation design ready for review; phase tasks scheduled; planning PR awaiting merge. No implementation has been performed. Prepared September 28, 2026 against checkout `7db363f462737dfb428ce40252dbcc9de667166c`.
 
 Read the [accepted source plan](plan.md) first. Open [this index as a rendered page](phased-plan.html) for review. The two phase files are the implementation guides; this index owns their order and shared contracts.
 
@@ -47,8 +47,8 @@ Two phases are justified by one independently useful merge boundary: complete ma
 
 | Phase | Outcome | Direct merge prerequisites | Guide | Task status |
 | --- | --- | --- | --- | --- |
-| 1 | Every managed terminal resume carries the right Mission tool transport and launch environment, verified before SDK stop. | Planning artifacts published by this session. | [Phase 1](phase-1-managed-resume-tools.md), [rendered](phase-1-managed-resume-tools.html) | Not created; publication gate pending. |
-| 2 | One durable operation transfers task and all pinned workflows to a proven successor, survives restart, and shows actionable uncertainty. | Phase 1 and planning artifacts published by this session. | [Phase 2](phase-2-durable-runtime-transfer.md), [rendered](phase-2-durable-runtime-transfer.html) | Not created; publication gate pending. |
+| 1 | Every managed terminal resume carries the right Mission tool transport and launch environment, verified before SDK stop. | Planning artifacts published by this session. | [Phase 1](phase-1-managed-resume-tools.md), [rendered](phase-1-managed-resume-tools.html) | `339ddb4d-e54d-4756-9fb7-c130d81e1507`; Backlog, gated on this session. |
+| 2 | One durable operation transfers task and all pinned workflows to a proven successor, survives restart, and shows actionable uncertainty. | Phase 1 and planning artifacts published by this session. | [Phase 2](phase-2-durable-runtime-transfer.md), [rendered](phase-2-durable-runtime-transfer.html) | `c9935d46-24e6-403d-8fbe-8a3a02d44679`; Backlog, gated on this session and Phase 1. |
 
 ```handoff-flow
 Planning artifacts merged
@@ -111,7 +111,7 @@ Planning verification is separate: source-contract review, cross-phase audit, lo
 
 The operator explicitly requested the planning PR on September 28, superseding the earlier no-commit/push/PR handoff for these plan artifacts. Mission Control still reports the No-Mistakes Review v20 binding with `foreman_complete` trigger; that binding is not removed or rewritten. This direct operator request authorizes the planning PR, not merge or implementation.
 
-The goal-level briefs and task IDs are recorded in [task-map.json](task-map.json). Each task is created only after the source, index and phase guides have been committed, pushed and verified at the exact pushed commit. Both tasks directly depend on this planning session. Phase 2 also directly depends on Phase 1. All implementation stays in the current Mission Control repository.
+The goal-level briefs and returned task IDs are recorded in [task-map.json](task-map.json). Both tasks were created after all nine plan artifacts were verified at pushed commit `eaf4d80e11cf7fd7f3cc6355b9ccf33581ac89d1`. Mission Control returned the current repository as the sole canonical repository for each task. Both tasks directly depend on this planning session. Phase 2 also directly depends on Phase 1. Both remain in Backlog until their prerequisites merge. All implementation stays in the current Mission Control repository.
 
 Publication sequence:
 

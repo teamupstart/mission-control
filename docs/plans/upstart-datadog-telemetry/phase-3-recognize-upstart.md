@@ -397,3 +397,6 @@ Must not change without an audit entry:
     there is nothing to remember.
   - Added: the managed lock, and `previous` for restoring on withdrawal.
   - Phase 6 was reconciled in the same round.
+- **2026-09-29, repair round 2:** the human recorded the editing decision in the Mission
+  Control dashboard as "No: view-only for Upstart users; only non-Upstart users edit settings",
+  confirming the view-only design above. Nothing in this phase changed.

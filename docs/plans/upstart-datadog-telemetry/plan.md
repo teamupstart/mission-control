@@ -13,7 +13,9 @@
   - Every plan choice and the phased implementation follow-up were submitted in Mission
     Control on 2026-09-28.
   - On 2026-09-29 the human clarified that Upstart users do not edit the Upstart
-    configuration; only people on other machines edit telemetry settings.
+    configuration; only people on other machines edit telemetry settings. The same day they
+    recorded it in the Mission Control dashboard, answering "No: view-only for Upstart users;
+    only non-Upstart users edit settings".
   - Also on 2026-09-29, the human chose to redact internal details before publishing to this
     public repository. The unredacted investigation notes are kept outside the repository.
 
@@ -717,8 +719,9 @@ flowchart LR
 
 ## Decisions
 
-The first five rows were submitted in the Mission Control dashboard on 2026-09-28. The last
-two were given by the human on 2026-09-29.
+The first five rows were submitted in the Mission Control dashboard on 2026-09-28. The last two
+were submitted there on 2026-09-29. The editing row confirms, as a recorded decision, what the
+human first said in the session.
 
 | Question | Adopted |
 | --- | --- |
@@ -727,7 +730,7 @@ two were given by the human on 2026-09-29.
 | What an Upstart user experiences when it turns on | **On by default, with a one-time notice**, as in [The one-time notice](#the-one-time-notice) |
 | Extra scope | **The precise Cost-panel warning** and **the Datadog dashboard** |
 | Follow-up | **Create the phased implementation plan** |
-| Who may edit telemetry settings (2026-09-29) | **Only people on machines that are not Upstart-managed.** Upstart employees using the Upstart configuration see it but do not edit it. This supersedes the original request's "viewable in settings and editable" for Upstart users; people on every other machine keep editing, including the new Datadog-compatibility controls. |
+| Who may edit telemetry settings (2026-09-29, dashboard: "No: view-only for Upstart users; only non-Upstart users edit settings") | **Only people on machines that are not Upstart-managed.** Upstart employees using the Upstart configuration see it but do not edit it. This supersedes the original request's "viewable in settings and editable" for Upstart users; people on every other machine keep editing, including the new Datadog-compatibility controls. |
 | Publishing to this public repository (2026-09-29) | **Redact the internal details, then push and schedule the phases.** Secret and profile names, the gateway's authentication posture, other destinations and owners, pod names, organization-wide usage figures, and managed-policy logging details are left out of the repository. |
 
 ## Not in scope

@@ -21,7 +21,7 @@ These are requirements, not open questions.
 | What an Upstart user experiences | On by default, with a one-time notice | Phase 6, after the pilot gate |
 | Extra scope | The precise Cost-panel warning, and the Datadog dashboard | Phases 4 and 5 |
 | Follow-up | This phased plan | - |
-| Who may edit telemetry settings (human, 2026-09-29) | Only people on machines that are not Upstart-managed. On an Upstart Mac, Settings > Telemetry is view-only and the daemon refuses direct changes. People on other machines gain editable temporality and export-shape controls. This supersedes "viewable in settings and editable" for Upstart users. | Phases 1 and 2 (controls), 3 (lock), 6 |
+| Who may edit telemetry settings (recorded in the dashboard on 2026-09-29: "No: view-only for Upstart users; only non-Upstart users edit settings") | Only people on machines that are not Upstart-managed. On an Upstart Mac, Settings > Telemetry is view-only and the daemon refuses direct changes. People on other machines gain editable temporality and export-shape controls. This supersedes "viewable in settings and editable" for Upstart users. | Phases 1 and 2 (controls), 3 (lock), 6 |
 | Publishing to this public repository (human, 2026-09-29) | Redact internal details, then push and schedule the phases. The unredacted investigation notes are kept outside the repository. | All artifacts |
 
 ## What the repository investigation found

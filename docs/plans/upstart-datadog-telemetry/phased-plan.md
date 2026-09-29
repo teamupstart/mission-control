@@ -181,4 +181,15 @@ from the source plan's rollout prerequisites, plus F1.
 
 ## Task map
 
-Filled in when the tasks are scheduled.
+Scheduled on 2026-09-29. Each task is a backlog ship task in `teamupstart/mission-control`, and
+each also depends on this planning session, so none starts until these files reach the
+default branch.
+
+| Phase | Task id | Direct task prerequisites |
+| --- | --- | --- |
+| 1 | `2ee7286d-491a-493d-a1eb-bafb94e1d5d0` | - |
+| 2 | `ac7b09dc-199c-42be-9819-09973da3f577` | Phase 1 |
+| 3 | `2e5d44c2-5b6b-4f27-be8d-5de7003dc0c2` | Phase 2 |
+| 4 | `0622fabd-1f2d-4a32-b8e2-67c8ea788f92` | Phase 3 |
+| 5 | `243a0a7c-ed73-4ad3-8bba-f1b0d3c7d7c8` | Phase 2 |
+| 6 | `2f5da74a-a67b-4e84-9858-19721f2ff5e1` | Phase 3 |

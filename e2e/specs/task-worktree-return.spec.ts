@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -104,6 +105,38 @@ test("Reset retains its checkout and a later safe Kill returns it automatically"
   const reused = await dispatch(dashboard, daemon, "Reuse the reset and killed slot");
   expect(reused.worktreePath).toBe(first.worktreePath);
   console.log("OBSERVED Reset kept the lease; subsequent clean Kill returned it and dispatch reused it");
+});
+
+test("Kill retains ignored local work and leaves manual cleanup available", async ({ dashboard, daemon }) => {
+  const first = await dispatch(dashboard, daemon, "Preserve ignored notes on Kill");
+  const path = first.worktreePath!;
+  const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
+  const exclude = git("rev-parse", "--path-format=absolute", "--git-path", "info/exclude");
+  appendFileSync(exclude, "\nprivate-notes.txt\n");
+  writeFileSync(join(path, "private-notes.txt"), "Keep these ignored notes.\n");
+  expect(git("status", "--porcelain", "--untracked-files=all")).toBe("");
+  await dashboard.locator(".console-detail").getByRole("button", { name: /^kill$/i }).click();
+  const kill = dashboard.getByRole("dialog", { name: "Kill session" });
+  await expectContentClearsBorder(kill);
+  await kill.getByRole("button", { name: "Kill", exact: true }).click();
+  await expect(kill).toBeHidden();
+  await expect.poll(() => daemon.readLog(), { timeout: 60_000 }).toContain(
+    `"taskId":"${first.id}","reason":"kill","outcome":"retained","detail":"checkout has uncommitted, untracked or ignored work"`,
+  );
+  expect(await taskFor(daemon, first.intent)).toMatchObject({
+    status: "failed", worktreePath: path, worktreeLeaseId: first.worktreeLeaseId,
+  });
+  expect(slotState(daemon, path)).toBe("leased");
+  expect(readFileSync(join(path, "private-notes.txt"), "utf8")).toBe("Keep these ignored notes.\n");
+  await expect(async () => {
+    await dashboard.keyboard.press("Shift+P");
+    await expect(dashboard.getByRole("dialog", { name: "Sitrep" })).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
+  await expectContentClearsBorder(sitrep);
+  await expect(sitrep.locator(".report-row", { hasText: first.title }).getByRole("button", { name: "Clean up" })).toBeVisible();
+  await capture(dashboard, "ignored-work-retained");
+  console.log("OBSERVED Kill preserved ignored notes, retained the lease, and kept manual cleanup available");
 });
 
 test("Shipping explains that owned completion always returns worktrees", async ({ dashboard, daemon }) => {

@@ -28,6 +28,17 @@ test("a clean published checkout qualifies, including after a fresh origin fetch
   assert.equal(await worktreeReturnBlocker(path, { fetch: true }), null);
 });
 
+test("Kill preserves ignored local files even when ordinary Git status is clean", async (t) => {
+  const { path, git } = fixture(t);
+  writeFileSync(join(path, ".gitignore"), "private-notes/\n");
+  git("add", ".gitignore"); git("commit", "-m", "ignore private notes");
+  git("push", "origin", "main");
+  mkdirSync(join(path, "private-notes"));
+  writeFileSync(join(path, "private-notes", "draft.txt"), "keep this local work\n");
+  assert.equal(git("status", "--porcelain", "--untracked-files=all"), "");
+  assert.match((await worktreeReturnBlocker(path, { fetch: true }))!, /ignored/);
+});
+
 for (const kind of ["unstaged", "staged", "untracked", "unpublished"] as const) {
   test(`Kill preserves ${kind} work`, async (t) => {
     const { path, git } = fixture(t);

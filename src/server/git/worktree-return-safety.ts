@@ -20,9 +20,9 @@ export async function worktreeReturnBlocker(
       const fetched = await git(["fetch", "--prune", "origin"]);
       if (fetched.code !== 0 || fetched.outcomeUnknown || fetched.overflowed) return "origin could not be refreshed";
     }
-    const status = await git(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
+    const status = await git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"]);
     if (status.code !== 0 || status.outcomeUnknown || status.overflowed) return "working tree could not be read";
-    if (status.stdout.trim()) return "checkout has uncommitted or untracked work";
+    if (status.stdout.trim()) return "checkout has uncommitted, untracked or ignored work";
     const commits = await git(["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]);
     if (commits.code !== 0 || commits.outcomeUnknown || commits.overflowed || !/^\d+$/.test(commits.stdout.trim())) {
       return "commits could not be compared against origin";

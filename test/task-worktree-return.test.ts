@@ -1,6 +1,6 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask, mkSession } from "./helpers/session-fixture.ts";
@@ -117,6 +117,61 @@ for (const reset of [false, true]) {
   });
 }
 
+for (const ownershipChanged of [false, true]) {
+  test(`Kill retries a busy cleanup queue${ownershipChanged ? " without releasing a new owner" : " once its slot is free"}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    const w = world();
+    // Hold the real queue slot as startup reconciliation can while inspecting the task.
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const queue = (w.manager as unknown as { cleanupQueue: {
+      enqueue: (job: { taskId: string; repoKeys: string[]; run: () => Promise<void> }) => boolean;
+    } }).cleanupQueue;
+    assert.equal(queue.enqueue({ taskId: w.task.id, repoKeys: [w.task.repoRoot], run: () => pending }), true);
+    w.manager.prepareKilledSessionReturn(w.session)();
+    w.sessions.delete(w.session.id);
+    w.registry.emit("event", { type: "session_remove", id: w.session.id });
+    assert.deepEqual(w.state.released, [], "the existing job keeps exclusive queue ownership");
+    if (ownershipChanged) w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, worktreeLeaseId: "new-lease" });
+    release();
+    await w.manager.settleWorktreeReturns();
+    // The existing closure timer must retry; there is no second Kill or removal event.
+    t.mock.timers.tick(10_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await w.manager.settleWorktreeReturns();
+    assert.deepEqual(w.state.released, ownershipChanged ? [] : ["/pool/one"]);
+    assert.equal(w.registry.getTask(w.task.id)?.worktreeLeaseId, ownershipChanged ? "new-lease" : null);
+  });
+}
+
+test("Kill preserves ignored files created after eligibility before Git-provider teardown", async (t) => {
+  const { root, clone } = mkOriginAndClone("mission-kill-ignored-race-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const branch = "harness/kill-ignored";
+  const path = mkLinkedWorktree(clone, branch, join(root, "task"));
+  writeFileSync(join(path, ".gitignore"), "private-notes.txt\n");
+  gitIn(path, "add", ".gitignore");
+  gitIn(path, "commit", "-m", "ignore local notes");
+  gitIn(path, "push", "origin", branch);
+  let probes = 0;
+  const w = world({ repoRoot: clone, worktreePath: path, branch, provider: "git", worktreeLeaseId: null }, true, {
+    returnBlocker: async (checkout, options) => {
+      const blocked = await worktreeReturnBlocker(checkout, options);
+      if (++probes === 1) {
+        assert.equal(blocked, null, "initial eligibility passes");
+        writeFileSync(join(path, "private-notes.txt"), "keep this local work\n");
+      }
+      return blocked;
+    },
+    teardown: teardownWorktree,
+  });
+  w.manager.prepareKilledSessionReturn(w.session)();
+  await w.remove();
+  assert.equal(probes, 2, "the destructive provider guard rechecks ignored work");
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, path);
+  assert.equal(readFileSync(join(path, "private-notes.txt"), "utf8"), "keep this local work\n");
+});
+
 test("Kill preserves a Git-provider tree when its upstream branch is deleted after initial eligibility", async (t) => {
   const { root, clone, origin } = mkOriginAndClone("mission-kill-publication-race-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -218,6 +273,12 @@ test("archive refusal preserves completion resources and the closure sweep retri
   await w.manager.settleWorktreeReturns();
   assert.deepEqual(w.state.released, []);
   assert.equal(w.registry.getTask(w.task.id)?.worktreePath, "/pool/one");
+  for (let index = 0; index < 60; index++) {
+    w.registry.upsertTask(mkTask({ id: `newer-completed-${index}`, status: "done", updatedAt: now + index + 1 }));
+  }
+  assert.equal(w.registry.getTask("newer-completed-0"), undefined, "the recent-terminal cap was exercised");
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, "/pool/one", "a failed return stays in memory outside the recent cap");
+  assert.equal(new Registry().getTask(w.task.id)?.worktreePath, "/pool/one", "restart reloads the durable resource holder outside the cap");
   w.state.archiveRefused = false;
   now += 30_001;
   await w.manager.sweepMissionSessionClosures();
@@ -245,3 +306,23 @@ test("read-only Kill eligibility never reserves a dirty checkout against manual 
   await w.remove();
   assert.deepEqual(w.state.released, []);
 });
+
+for (const outcome of ["returned", "retained", "failed"] as const) {
+  test(`worktree return records start and completion when ${outcome}`, async (t) => {
+    const records: Array<Record<string, unknown>> = [];
+    t.mock.method(console, "info", (message: string) => {
+      if (message.startsWith("[tasks] {")) records.push(JSON.parse(message.slice("[tasks] ".length)));
+    });
+    const w = world({}, true, outcome === "failed" ? {
+      occupancy: async () => { throw new Error("probe crashed"); },
+    } : {});
+    if (outcome === "retained") w.state.unsafe = "local work";
+    w.manager.prepareKilledSessionReturn(w.session)();
+    await w.remove();
+    assert.deepEqual(records.map(({ event, taskId, reason, outcome: result }) => ({ event, taskId, reason, outcome: result })), [
+      { event: "worktree_return_started", taskId: w.task.id, reason: "kill", outcome: undefined },
+      { event: "worktree_return_completed", taskId: w.task.id, reason: "kill", outcome },
+    ]);
+    if (outcome !== "returned") assert.equal(typeof records[1]?.detail, "string");
+  });
+}

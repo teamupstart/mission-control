@@ -1703,6 +1703,7 @@ export class TaskManager {
       const urgent = this.sweepUrgentlyRequested;
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
+      for (const sessionId of this.killedSessionReturns.keys()) this.returnKilledSessionWorktrees(sessionId);
       if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some((task) =>
         task.status === "done" && taskHasWorktrees(task))) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
@@ -5452,10 +5453,18 @@ export class TaskManager {
   private returnKilledSessionWorktrees(sessionId: string): void {
     const intent = this.killedSessionReturns.get(sessionId);
     if (!intent || this.registry.getSession(sessionId)) return;
-    this.killedSessionReturns.delete(sessionId);
     const task = this.registry.getTask(intent.taskId) ?? getDurableTask(intent.taskId);
-    if (!task || this.worktreeOwnership(task) !== intent.ownership || task.status === "done") return;
-    this.enqueueFinishedWorktreeReturn(task, "kill", sessionId);
+    if (!task || this.worktreeOwnership(task) !== intent.ownership || task.status === "done") {
+      this.killedSessionReturns.delete(sessionId);
+      return;
+    }
+    if (this.enqueueFinishedWorktreeReturn(task, "kill", sessionId)) {
+      this.killedSessionReturns.delete(sessionId);
+    } else {
+      // Startup or retention may already own this queue slot. Keep the exact intent and
+      // retry through the existing sweep instead of requiring another session_remove.
+      this.scheduleMissionSessionClosureSweep();
+    }
   }
 
   private resumeCompletedWorktreeReturns(): void {
@@ -5469,20 +5478,32 @@ export class TaskManager {
 
   private enqueueFinishedWorktreeReturn(
     task: Task, reason: "complete" | "kill", stoppedSessionId?: string,
-  ): void {
-    if (this.closuresStopped) return;
-    if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return;
+  ): boolean {
+    if (this.closuresStopped) return false;
+    if (reason === "complete" && (this.nextCompletedReturn.get(task.id) ?? 0) > Date.now()) return false;
     const ownership = this.worktreeOwnership(task);
-    this.cleanupQueue.enqueue({
+    return this.cleanupQueue.enqueue({
       taskId: task.id,
       repoKeys: taskCleanupRepoKeys(task),
       run: async () => {
         // Closure sweeps can run in quick succession. Refused return retries at a bounded
         // cadence, while durable task resources carry the obligation across daemon restart.
         if (reason === "complete") this.nextCompletedReturn.set(task.id, Date.now() + 30_000);
-        const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
-        if (result.ok) this.nextCompletedReturn.delete(task.id);
-        else console.info(`[tasks] ${reason} kept worktrees for ${task.id}: ${result.error}`);
+        const context = { taskId: task.id, reason };
+        console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
+        let outcome: "returned" | "retained" | "failed" = "failed";
+        let detail: string | undefined;
+        try {
+          const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
+          outcome = result.ok ? "returned" : "retained";
+          detail = result.error;
+          if (result.ok) this.nextCompletedReturn.delete(task.id);
+        } catch (error) {
+          detail = readFailureClass(error);
+          throw error;
+        } finally {
+          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail })}`);
+        }
       },
     });
   }

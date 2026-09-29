@@ -227,11 +227,12 @@ the slot rather than making it available.
 
 **Kill** keeps its existing failed-task outcome. Once the session has actually left, Mission
 Control returns its worktrees automatically only if **every** attached checkout is clean
-(including untracked files), its commits are reachable from freshly fetched origin refs, and
+(including untracked and ignored files), its commits are reachable from freshly fetched origin refs, and
 no session or process still occupies it. Unreadable Git state, an unreachable origin, ambiguous
 ownership or unknown occupancy all preserve the checkout. Reset retains its lease and session;
 a subsequent safe Kill can return it even after Reset detached the task binding. Cancel keeps
-its existing immediate cleanup behavior.
+its existing immediate cleanup behavior. Ignored files also block safe Kill because provider
+removal or a reset onto a different commit can discard them; this includes ignored caches.
 
 Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
 is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after

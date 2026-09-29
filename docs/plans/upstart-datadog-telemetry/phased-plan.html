@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upstart default telemetry to Datadog: phased implementation</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2028;
+    --page-muted: #59616e;
+    --page-dim: #7b838f;
+    --page-line: #dde1e7;
+    --page-card: #ffffff;
+    --page-accent: #1f6f4f;
+    --page-accent-soft: #e6f2ec;
+    --page-code-bg: #f0f2f5;
+    --page-danger: #b42318;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1013;
+      --page-fg: #e7ebf1;
+      --page-muted: #99a3b1;
+      --page-dim: #7c8798;
+      --page-line: #242b34;
+      --page-card: #14181e;
+      --page-accent: #35c08a;
+      --page-accent-soft: #11261d;
+      --page-code-bg: #11151a;
+      --page-danger: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 56px 28px 120px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 18px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 52px 0 14px; letter-spacing: -0.01em; padding-top: 18px; border-top: 1px solid var(--page-line); }
+  h3 { font-size: 17px; margin: 34px 0 10px; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  li > ul, li > ol { margin: 6px 0 0; }
+  a { color: var(--page-accent); }
+  strong { font-weight: 640; }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  h1 + ul { list-style: none; padding: 0; margin: 0; color: var(--page-muted); font-size: 14px; }
+  h1 + ul + h2 { margin-top: 40px; }
+  h1 + ul li { margin-bottom: 4px; }
+  .scroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--page-line); border-radius: 10px; background: var(--page-card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { background: var(--page-code-bg); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td code { overflow-wrap: anywhere; }
+  pre {
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    overflow-x: auto;
+    font: 12px/1.55 var(--mono);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; overflow-wrap: normal; }
+  .diagram { margin: 6px 0 8px; padding: 16px; border: 1px solid var(--page-line); border-radius: 12px; background: var(--page-card); overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  .diagram figcaption { margin-top: 10px; font-size: 13px; color: var(--page-muted); }
+  details.src { margin: 0 0 22px; font-size: 13px; color: var(--page-muted); }
+  details.src summary { cursor: pointer; margin-bottom: 8px; }
+  .dg-box { fill: var(--page-card); stroke: var(--page-muted); stroke-width: 1.2; }
+  .dg-box.accent { fill: var(--page-accent-soft); stroke: var(--page-accent); stroke-width: 1.6; }
+  .dg-box.muted { fill: var(--page-code-bg); stroke: var(--page-line); stroke-dasharray: 4 3; }
+  .dg-title { fill: var(--page-fg); font: 620 14px var(--sans); }
+  .dg-sub { fill: var(--page-muted); font: 12.5px var(--sans); }
+  .dg-mono { fill: var(--page-fg); font: 12px var(--mono); }
+  .dg-mono-sm { fill: var(--page-muted); font: 11px var(--mono); }
+  .dg-label { fill: var(--page-dim); font: 640 11.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; }
+  .dg-edge { stroke: var(--page-muted); stroke-width: 1.6; fill: none; }
+  .dg-edge.accent { stroke: var(--page-accent); stroke-width: 2; }
+  .dg-edge.dashed { stroke: var(--page-danger); stroke-dasharray: 6 4; }
+  .dg-head { fill: var(--page-muted); }
+  .dg-head-accent { fill: var(--page-accent); }
+  .dg-x { stroke: var(--page-danger); stroke-width: 2.2; fill: none; }
+  .dg-edge-label { fill: var(--page-muted); font: 11.5px var(--sans); }
+  .dg-edge-label.left { text-anchor: start; font-family: var(--mono); font-size: 11px; }
+  .dg-rule { stroke: var(--page-line); stroke-dasharray: 2 4; }
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--page-line); font-size: 13px; color: var(--page-dim); }
+</style>
+</head>
+<body>
+<main class="wrap">
+<h1 id="upstart-default-telemetry-to-datadog-phased-implementation">Upstart default telemetry to Datadog: phased implementation</h1>
+<ul>
+<li><strong>Source plan:</strong> <a href="plan.md">plan.md</a>, approved with decisions recorded 2026-09-28.</li>
+<li><strong>Date:</strong> 2026-09-28.</li>
+<li><strong>Phases:</strong><ol>
+<li><a href="phase-1-delta-export-and-network-wait.md">Delta export and the network wait</a></li>
+<li><a href="phase-2-lean-export-shape.md">The lean export shape</a></li>
+<li><a href="phase-3-recognize-upstart.md">Recognize Upstart and manage its lane</a></li>
+<li><a href="phase-4-cost-panel-managed-policy.md">Name the managed-policy redirect in the Cost panel</a></li>
+<li><a href="phase-5-datadog-dashboard.md">The Mission Control Datadog dashboard</a></li>
+<li><a href="phase-6-pilot-gate-and-default-on.md">Pass the pilot gate, then turn the Upstart default on</a></li>
+</ol>
+</li>
+</ul>
+<h2 id="incorporated-decisions">Incorporated decisions</h2>
+<p>These are requirements, not open questions.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Adopted</th>
+<th>Owned by</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How Mission Control recognizes Upstart and gets its defaults</td>
+<td>A built-in Upstart preset, switched on by Jamf enrollment</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>Which destination carries the lane</td>
+<td>Product analytics</td>
+<td>Phase 3</td>
+</tr>
+<tr>
+<td>What an Upstart user experiences</td>
+<td>On by default, with a one-time notice</td>
+<td>Phase 6, after the pilot gate</td>
+</tr>
+<tr>
+<td>Extra scope</td>
+<td>The precise Cost-panel warning, and the Datadog dashboard</td>
+<td>Phases 4 and 5</td>
+</tr>
+<tr>
+<td>Follow-up</td>
+<td>This phased plan</td>
+<td>-</td>
+</tr>
+<tr>
+<td>Who may edit telemetry settings (human, 2026-09-29)</td>
+<td>Only people on machines that are not Upstart-managed. On an Upstart Mac, Settings &gt; Telemetry is view-only and the daemon refuses direct changes. People on other machines gain editable temporality and export-shape controls. This supersedes &quot;viewable in settings and editable&quot; for Upstart users.</td>
+<td>Phases 1 and 2 (controls), 3 (lock), 6</td>
+</tr>
+<tr>
+<td>Publishing to this public repository (human, 2026-09-29)</td>
+<td>Redact internal details, then push and schedule the phases. The unredacted investigation notes are kept outside the repository.</td>
+<td>All artifacts</td>
+</tr>
+</tbody></table></div>
+<h2 id="what-the-repository-investigation-found">What the repository investigation found</h2>
+<p>Each finding below changes or sharpens the source plan. Every one is recorded as a decision in
+the phase that owns it.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding</th>
+<th>Decision</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>F1</td>
+<td>Datadog drops metric points more than <strong>one hour</strong> older than their submission time, unless Historical Metrics Ingestion is turned on per metric. Datadog&#39;s documentation says it is billed as ordinary indexed custom metrics. A laptop off the VPN for an afternoon would lose that afternoon, even though Mission Control queues it for 7 days.</td>
+<td>Mission Control counts points sent past a destination&#39;s <code>lateAfterMs</code> (<code>latePointsSent</code>) and records a gap, so the loss is visible. A new rollout step asks Datadog&#39;s admins to enable Historical Metrics Ingestion for <code>mission.*</code>.</td>
+<td>1 (count), rollout</td>
+</tr>
+<tr>
+<td>F2</td>
+<td>&quot;Waiting for the network&quot; cannot be a pause reason: any non-null <code>pausedReason</code> stops delivery until a person acts.</td>
+<td>A new <code>waiting</code> delivery outcome, with its own 5-minute backoff ceiling and new health and summary fields.</td>
+<td>1</td>
+</tr>
+<tr>
+<td>F3</td>
+<td>A batch holds only the series touched in that pass, with their full cumulative values. The series key has no destination or shape.</td>
+<td>The delta watermark is stored in columns on <code>telemetry_series</code>, which is one destination per profile. It advances in the batch-building transaction.</td>
+<td>1</td>
+</tr>
+<tr>
+<td>F4</td>
+<td>Delta end times cannot reuse event times without overlapping windows, and a lost delta batch is lost data.</td>
+<td>End time is the pass clock, strictly increasing per series. Every loss path is already counted and is documented as such. An endpoint or temporality change baselines the watermark, so a new endpoint never receives the whole history.</td>
+<td>1</td>
+</tr>
+<tr>
+<td>F5</td>
+<td>&quot;Changing a shape starts new series&quot; has no mechanism today. A policy-epoch bump would skip journal facts captured but not yet projected.</td>
+<td>A shape change bumps the generation, which fences queued batches, and resets the profile&#39;s series in one transaction.</td>
+<td>2</td>
+</tr>
+<tr>
+<td>F6</td>
+<td>Series rows are never pruned, so old app versions count toward the 10,000 profile cap forever.</td>
+<td>Prune series for resources that no longer contribute after the 30-day reducer window. The lean budget counts only live series.</td>
+<td>2</td>
+</tr>
+<tr>
+<td>F7</td>
+<td>Datadog picks a host from <code>host</code>, then <code>datadog.host.name</code>, and recommends the latter.</td>
+<td>The lean shape sets <code>datadog.host.name = mission-control</code>. The pilot verifies that no billable hosts result.</td>
+<td>2, 6</td>
+</tr>
+<tr>
+<td>F8</td>
+<td>Every subprocess must be registered, and a scanner test enforces it. <code>plutil</code> is registered; <code>profiles</code> is not. <code>plutil -extract</code> reads one subtree safely.</td>
+<td>Register <code>profiles</code> like <code>plutil</code>. Build bounded readers once, in Phase 3, and let Phase 4 reuse them.</td>
+<td>3</td>
+</tr>
+<tr>
+<td>F9</td>
+<td>Tests on a managed Mac would read the real <code>/Library</code> policies and enrollment. CI runs on Linux and would never notice.</td>
+<td>The e2e fixture pins <code>MISSION_ORGANIZATION=none</code> and <code>MISSION_MANAGED_SETTINGS_ROOT</code>. Unit tests inject their readers.</td>
+<td>3, 4</td>
+</tr>
+<tr>
+<td>F10</td>
+<td>Upstart Macs also carry a per-user managed Claude Code plist.</td>
+<td>The Cost-panel reader checks it first.</td>
+<td>4</td>
+</tr>
+<tr>
+<td>F11</td>
+<td>The source plan requires the pilot before default-on, but a merged phase is in every alpha build at once. Upstart users also have no Settings control to join a pilot, because Settings is view-only for them.</td>
+<td>Phase 3 ships the preset with <code>rollout: &quot;pilot&quot;</code>, and volunteers enroll with one documented call, <code>POST /api/telemetry/organization/pilot</code>. Phase 6 flips the rollout to <code>default-on</code> only after the measured gate passes, and retires enrollment.</td>
+<td>3, 6</td>
+</tr>
+<tr>
+<td>F12</td>
+<td>Managing the product destination on Upstart Macs overwrites whatever a person had configured there, and a Mac can leave Upstart&#39;s management.</td>
+<td>The record stores the prior product destination and master switch, and withdrawal restores them. A route-level lock refuses only person-initiated writes, so the daemon&#39;s own apply path keeps working.</td>
+<td>3</td>
+</tr>
+</tbody></table></div>
+<h2 id="sizing-and-phase-count">Sizing and phase count</h2>
+<p>The estimate counts gross non-test lines of production code added or materially changed. It
+assumes today&#39;s module layout and no rework of neighbouring subsystems.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Estimate</th>
+<th>Main surfaces</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>500-650</td>
+<td>telemetry schema, projection, OTLP serialization, delivery, health, settings summary, panel sentence, temporality control</td>
+</tr>
+<tr>
+<td>2</td>
+<td>500-700</td>
+<td>shared shape registry, projection contribution and batch build, budget, config, retention, export-shape control</td>
+</tr>
+<tr>
+<td>3</td>
+<td>700-900</td>
+<td>executable catalog, macOS readers, organization registry and detection, apply/keep-in-step/withdraw, managed lock, pilot route, status wire, view-only panel</td>
+</tr>
+<tr>
+<td>4</td>
+<td>150-220</td>
+<td>managed-settings reader, cost status, Cost panel copy</td>
+</tr>
+<tr>
+<td>5</td>
+<td>60-120, plus 400-700 lines of dashboard JSON</td>
+<td>dashboard JSON and validator</td>
+</tr>
+<tr>
+<td>6</td>
+<td>200-300</td>
+<td>default-on rules, notice, acknowledgement route</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>about 2,000-2,800</strong>, plus the dashboard JSON</td>
+<td></td>
+</tr>
+</tbody></table></div>
+<p>That is far above the 200-line threshold for a single phase. Each boundary is justified:</p>
+<ul>
+<li><p><strong>1 and 2 are separate.</strong> Both change the most delicate code in telemetry, the durable
+projection and batch path, but they carry independent semantic risk:</p>
+<ul>
+<li>Phase 1 changes what a number means (delta windows and a watermark);</li>
+<li>Phase 2 changes which numbers exist (families, labels and budgets).</li>
+</ul>
+<p>Together they would be about 1,000 lines in one review of the durability core, and a defect
+in either would block the other. Each leaves every default installation byte-identical, so
+each can merge alone.</p>
+</li>
+<li><p><strong>3 is one vertical slice.</strong> It is detection plus preset plus lock plus the view-only panel.
+Splitting the UI from the server would leave a managed, locked destination with no
+explanation on Upstart Macs.</p>
+</li>
+<li><p><strong>4 is its own phase.</strong> It is a separate user-visible feature, the Cost panel, with its own
+e2e. Folding it into Phase 3 would make the largest phase larger, for no shared review
+benefit.</p>
+</li>
+<li><p><strong>5 is independent.</strong> The dashboard needs only Phase 2&#39;s manifest, so it can run beside
+Phases 3, 4 and 6.</p>
+</li>
+<li><p><strong>6 is a release gate on outside evidence</strong>, a one-week measured pilot, which cannot be
+inside Phase 3 without shipping default-on on an estimate.</p>
+</li>
+</ul>
+<h2 id="phases">Phases</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Phase</th>
+<th>Direct prerequisites</th>
+<th>Can run alongside</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><a href="phase-1-delta-export-and-network-wait.md">Delta export and the network wait</a></td>
+<td>-</td>
+<td>-</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="phase-2-lean-export-shape.md">The lean export shape</a></td>
+<td>1</td>
+<td>-</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="phase-3-recognize-upstart.md">Recognize Upstart and manage its lane</a></td>
+<td>2</td>
+<td>5</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="phase-4-cost-panel-managed-policy.md">Name the managed-policy redirect in the Cost panel</a></td>
+<td>3</td>
+<td>5, 6</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="phase-5-datadog-dashboard.md">The Mission Control Datadog dashboard</a></td>
+<td>2</td>
+<td>3, 4, 6</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="phase-6-pilot-gate-and-default-on.md">Pass the pilot gate, then turn the Upstart default on</a></td>
+<td>3</td>
+<td>4, 5</td>
+</tr>
+</tbody></table></div>
+<p>Every phase task also depends on this planning session, whose merge publishes these files.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 940 300" role="img" aria-labelledby="g1t g1d">
+  <title id="g1t">Phase dependency graph</title>
+  <desc id="g1d">Phase 1 precedes Phase 2. Phase 2 precedes Phase 3 and Phase 5. Phase 3 precedes Phase 4 and Phase 6. Phase 5 runs alongside Phases 3, 4 and 6. Phase 6 also waits on a human-run pilot week.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="dg-head-accent" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect x="20" y="118" width="170" height="64" rx="10" class="dg-box "/><text x="105" y="146" text-anchor="middle" class="dg-title">1 Delta export</text><text x="105" y="164" text-anchor="middle" class="dg-sub">and network wait</text>
+  <path class="dg-edge accent" d="M190,150 L236,150" marker-end="url(#ah)"/>
+  <rect x="240" y="118" width="170" height="64" rx="10" class="dg-box "/><text x="325" y="146" text-anchor="middle" class="dg-title">2 Lean export shape</text><text x="325" y="164" text-anchor="middle" class="dg-sub">registry and budget</text>
+  <path class="dg-edge accent" d="M410,140 L476,86" marker-end="url(#ah)"/>
+  <path class="dg-edge accent" d="M410,162 L476,216" marker-end="url(#ah)"/>
+  <rect x="480" y="40" width="190" height="70" rx="10" class="dg-box accent"/><text x="575" y="71" text-anchor="middle" class="dg-title">3 Recognize Upstart</text><text x="575" y="89" text-anchor="middle" class="dg-sub">managed, view-only panel</text>
+  <rect x="480" y="190" width="190" height="70" rx="10" class="dg-box "/><text x="575" y="221" text-anchor="middle" class="dg-title">5 Datadog dashboard</text><text x="575" y="239" text-anchor="middle" class="dg-sub">JSON and validator</text>
+  <path class="dg-edge accent" d="M670,62 L736,44" marker-end="url(#ah)"/>
+  <path class="dg-edge accent" d="M670,90 L736,120" marker-end="url(#ah)"/>
+  <rect x="740" y="14" width="180" height="60" rx="10" class="dg-box "/><text x="830" y="40" text-anchor="middle" class="dg-title">4 Cost-panel</text><text x="830" y="58" text-anchor="middle" class="dg-sub">managed policy</text>
+  <rect x="740" y="96" width="180" height="70" rx="10" class="dg-box accent"/><text x="830" y="118" text-anchor="middle" class="dg-title">6 Pilot gate</text><text x="830" y="136" text-anchor="middle" class="dg-sub">then default-on</text><text x="830" y="154" text-anchor="middle" class="dg-sub">and notice</text>
+  <text x="830" y="190" text-anchor="middle" class="dg-edge-label">waits on a one-week</text>
+  <text x="830" y="206" text-anchor="middle" class="dg-edge-label">human-run pilot</text>
+  <line x1="20" y1="282" x2="920" y2="282" class="dg-rule"/>
+  <text x="20" y="276" class="dg-label">Every task also depends on this planning session's merge</text>
+</svg>
+<figcaption>Direct prerequisites only. Phases 4, 5 and 6 may run concurrently once their prerequisites merge.</figcaption>
+</figure>
+<details class="src"><summary>Diagram source (Mermaid, as in phased-plan.md)</summary><pre><code>flowchart LR
+  P1[1 Delta export and network wait] --&gt; P2[2 Lean export shape]
+  P2 --&gt; P3[3 Recognize Upstart]
+  P2 --&gt; P5[5 Datadog dashboard]
+  P3 --&gt; P4[4 Cost-panel managed policy]
+  P3 --&gt; P6[6 Pilot gate and default-on]</code></pre></details>
+<h2 id="concurrency-and-merge-order">Concurrency and merge order</h2>
+<ul>
+<li><strong>Serial:</strong> 1 → 2 → 3.</li>
+<li><strong>After 2:</strong> Phase 5 may start and merge at any point.</li>
+<li><strong>After 3:</strong> Phases 4 and 6 may run together.<ul>
+<li>Both edit <code>docs/upstart.md</code> in different sections, and possibly
+<code>test/fixtures/route-surface.json</code>. Whichever merges second rebases those; neither changes
+the other&#39;s code.</li>
+<li>Phase 6 additionally waits on a human-run pilot week, so in practice it merges last.</li>
+</ul>
+</li>
+<li><strong>Suggested order:</strong> 1, 2, 3, then 5 and 4 in either order, then 6 once the pilot passes.</li>
+</ul>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Contract</th>
+<th>Owner</th>
+<th>Consumers</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Destination fields <code>temporality</code>, <code>networkGate</code> and <code>lateAfterMs</code>, with defaults equal to today</td>
+<td>1</td>
+<td>2, 3</td>
+</tr>
+<tr>
+<td><code>temporality: &quot;delta&quot;</code> on <code>MetricPointDto</code>, where absence means cumulative</td>
+<td>1</td>
+<td>2</td>
+</tr>
+<tr>
+<td>The <code>exported_*</code> watermark columns, and the baseline on an endpoint or temporality change</td>
+<td>1</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Gauges sent on change, with an hourly heartbeat</td>
+<td>1</td>
+<td>2 (budget liveness), 5 (adoption query)</td>
+</tr>
+<tr>
+<td>The <code>waiting</code> outcome, the health and summary fields, and the waiting sentence with an optional label</td>
+<td>1</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code>TELEMETRY_EXPORT_SHAPE_IDS</code>, <code>exportShape</code>, and the shape records with their <code>summary</code></td>
+<td>2</td>
+<td>3, 5, 6</td>
+</tr>
+<tr>
+<td><code>exportedInstruments(shapeId)</code> as the only statement of what a shape exports</td>
+<td>2</td>
+<td>3, 5</td>
+</tr>
+<tr>
+<td>A shape change bumps the generation and resets series</td>
+<td>2</td>
+<td>3 (preset apply)</td>
+</tr>
+<tr>
+<td>The editable temporality and export-shape controls, through one component with an <code>editable</code> flag</td>
+<td>1, 2</td>
+<td>3 (hidden when managed)</td>
+</tr>
+<tr>
+<td><code>profiles</code> executable, <code>readMdmEnrollment</code> and <code>readPlistValue</code></td>
+<td>3</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>currentOrganization()</code> and its label</td>
+<td>3</td>
+<td>4, 6</td>
+</tr>
+<tr>
+<td>The <code>telemetry.organization</code> record, including <code>previous</code> and <code>pilotEnrolledAt</code></td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>The managed lock: person-initiated telemetry settings writes answer 403 while an organization is active</td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>Preset <code>rollout</code> (<code>pilot</code>, then <code>default-on</code>) and the rule that a newer <code>presetVersion</code> rewrites every preset field</td>
+<td>3</td>
+<td>6</td>
+</tr>
+<tr>
+<td>e2e fixture pins: <code>MISSION_ORGANIZATION=none</code> and <code>MISSION_MANAGED_SETTINGS_ROOT</code></td>
+<td>3, 4</td>
+<td>every later spec</td>
+</tr>
+</tbody></table></div>
+<h2 id="rollout-steps-for-a-person">Rollout steps for a person</h2>
+<p>These are outward-facing, so a person does them or explicitly authorizes an agent. They come
+from the source plan&#39;s rollout prerequisites, plus F1.</p>
+<ol>
+<li><p><strong>Tell the gateway owners,</strong> with the cost estimate, and settle four things:</p>
+<ul>
+<li>that the gateway&#39;s copy of metrics to its second destination is acceptable;</li>
+<li>that staging-1 remains the address until production opens;</li>
+<li>the constant-host approach;</li>
+<li>whether <code>send_aggregation_metrics</code> can be turned off.</li>
+</ul>
+<p>This must be done before Phase 6.</p>
+</li>
+<li><p><strong>Get cost sign-off.</strong> The Datadog budget owner reviews the estimate, then the pilot&#39;s
+measured figure. This must be done before Phase 6.</p>
+</li>
+<li><p><strong>Confirm the public hostname.</strong> Confirm that publishing the gateway hostname in this public
+repository is acceptable. This must be done before Phase 3 merges.</p>
+</li>
+<li><p><strong>Ask for Historical Metrics Ingestion.</strong> Ask Datadog&#39;s admins to enable it for the
+<code>mission.*</code> metrics (F1). This should be done before Phase 6&#39;s pilot, so the pilot measures
+the real configuration.</p>
+</li>
+<li><p><strong>Apply the dashboard.</strong> Apply <code>observability/datadog/dashboards/mission-control.json</code> to
+Upstart&#39;s Datadog, after Phase 5 merges.</p>
+</li>
+<li><p><strong>Run the pilot.</strong> After Phase 3 is in their build, 5 to 10 volunteers enroll their Macs
+for one week with <code>POST /api/telemetry/organization/pilot</code>, as <code>docs/upstart.md</code> documents.</p>
+</li>
+</ol>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<ul>
+<li><strong>Every phase:</strong><ul>
+<li><code>npm run typecheck</code>, <code>npm run lint</code> and <code>npm test</code>;</li>
+<li><code>npm run build &amp;&amp; npm run smoke</code> wherever runtime surfaces change;</li>
+<li><code>npm run test:e2e</code> for Phases 1, 2, 3, 4 and 6, which change UI.</li>
+</ul>
+</li>
+<li><strong>Byte-for-byte defaults.</strong> Phases 1 and 2 must leave a default installation&#39;s batches
+byte-identical. The existing analytics-durability and stack pins are the proof.</li>
+<li><strong>Uniqueness of detection.</strong> Phase 3&#39;s lookalike and other-tenant fixtures must all fail,
+and the no-organization e2e spec must find no Upstart text.</li>
+<li><strong>Who can edit.</strong> Phase 3&#39;s e2e must find no editable control on a managed Mac and a 403 on a
+direct write. Its no-organization spec, and the Phase 1 and 2 specs, must find every control
+editable, including temporality and export shape.</li>
+<li><strong>The pilot gate.</strong> Phase 6 records measured installations, custom metrics per installation
+(150 or fewer), host billing, span volume and the person-run checks in its pull request,
+before the default flips.</li>
+<li><strong>End state.</strong><ul>
+<li>On an Upstart-managed Mac, the lean, delta, gated lane sends to Datadog by default, with a
+one-time notice, and Settings &gt; Telemetry is view-only.</li>
+<li>Everywhere else, Mission Control behaves as it did before Phase 1, and gains editable
+temporality and export-shape controls.</li>
+</ul>
+</li>
+</ul>
+<h2 id="task-map">Task map</h2>
+<p>Filled in when the tasks are scheduled.</p>
+
+<footer>Rendered from <code>docs/plans/upstart-datadog-telemetry/phased-plan.md</code>, which is the source of truth. Each phase file is the detailed guide for its task.</footer>
+</main>
+</body>
+</html>

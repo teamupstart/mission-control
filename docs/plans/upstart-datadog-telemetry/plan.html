@@ -1,0 +1,1357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upstart default telemetry to Datadog</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page-bg: #f7f8fa;
+    --page-fg: #1b2028;
+    --page-muted: #59616e;
+    --page-dim: #7b838f;
+    --page-line: #dde1e7;
+    --page-card: #ffffff;
+    --page-accent: #1f6f4f;
+    --page-accent-soft: #e6f2ec;
+    --page-code-bg: #f0f2f5;
+    --page-danger: #b42318;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0d1013;
+      --page-fg: #e7ebf1;
+      --page-muted: #99a3b1;
+      --page-dim: #7c8798;
+      --page-line: #242b34;
+      --page-card: #14181e;
+      --page-accent: #35c08a;
+      --page-accent-soft: #11261d;
+      --page-code-bg: #11151a;
+      --page-danger: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 56px 28px 120px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 18px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 52px 0 14px; letter-spacing: -0.01em; padding-top: 18px; border-top: 1px solid var(--page-line); }
+  h3 { font-size: 17px; margin: 34px 0 10px; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  li > ul, li > ol { margin: 6px 0 0; }
+  a { color: var(--page-accent); }
+  strong { font-weight: 640; }
+  code {
+    font: 12.5px/1.5 var(--mono);
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  h1 + ul { list-style: none; padding: 0; margin: 0; color: var(--page-muted); font-size: 14px; }
+  h1 + ul + h2 { margin-top: 40px; }
+  h1 + ul li { margin-bottom: 4px; }
+  .scroll { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--page-line); border-radius: 10px; background: var(--page-card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { background: var(--page-code-bg); font-weight: 620; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td code { overflow-wrap: anywhere; }
+  pre {
+    margin: 0 0 18px;
+    padding: 16px 18px;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    overflow-x: auto;
+    font: 12px/1.55 var(--mono);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; overflow-wrap: normal; }
+  .diagram { margin: 6px 0 8px; padding: 16px; border: 1px solid var(--page-line); border-radius: 12px; background: var(--page-card); overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  .diagram figcaption { margin-top: 10px; font-size: 13px; color: var(--page-muted); }
+  details.src { margin: 0 0 22px; font-size: 13px; color: var(--page-muted); }
+  details.src summary { cursor: pointer; margin-bottom: 8px; }
+  .dg-box { fill: var(--page-card); stroke: var(--page-muted); stroke-width: 1.2; }
+  .dg-box.accent { fill: var(--page-accent-soft); stroke: var(--page-accent); stroke-width: 1.6; }
+  .dg-box.muted { fill: var(--page-code-bg); stroke: var(--page-line); stroke-dasharray: 4 3; }
+  .dg-title { fill: var(--page-fg); font: 620 14px var(--sans); }
+  .dg-sub { fill: var(--page-muted); font: 12.5px var(--sans); }
+  .dg-mono { fill: var(--page-fg); font: 12px var(--mono); }
+  .dg-mono-sm { fill: var(--page-muted); font: 11px var(--mono); }
+  .dg-label { fill: var(--page-dim); font: 640 11.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; }
+  .dg-edge { stroke: var(--page-muted); stroke-width: 1.6; fill: none; }
+  .dg-edge.accent { stroke: var(--page-accent); stroke-width: 2; }
+  .dg-edge.dashed { stroke: var(--page-danger); stroke-dasharray: 6 4; }
+  .dg-head { fill: var(--page-muted); }
+  .dg-head-accent { fill: var(--page-accent); }
+  .dg-x { stroke: var(--page-danger); stroke-width: 2.2; fill: none; }
+  .dg-edge-label { fill: var(--page-muted); font: 11.5px var(--sans); }
+  .dg-edge-label.left { text-anchor: start; font-family: var(--mono); font-size: 11px; }
+  .dg-rule { stroke: var(--page-line); stroke-dasharray: 2 4; }
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--page-line); font-size: 13px; color: var(--page-dim); }
+</style>
+</head>
+<body>
+<main class="wrap">
+<h1 id="upstart-default-telemetry-to-datadog">Upstart default telemetry to Datadog</h1>
+<ul>
+<li><strong>Status:</strong> Approved for phased implementation planning</li>
+<li><strong>Date:</strong> 2026-09-25, decisions recorded 2026-09-28</li>
+<li><strong>Scope:</strong> Planning only. This document proposes no application changes by itself.</li>
+<li><strong>Surfaces:</strong><ul>
+<li><code>src/server/telemetry/</code> and <code>src/shared/telemetry.ts</code>;</li>
+<li>a new organization check under <code>src/server/environment/</code>;</li>
+<li><code>src/web/components/TelemetrySettingsPanel.tsx</code> and the Cost panel;</li>
+<li>a new <code>observability/datadog/dashboards/</code> definition;</li>
+<li><code>docs/observability.md</code> and <code>docs/upstart.md</code>.</li>
+</ul>
+</li>
+<li><strong>Decision record:</strong> see <a href="#decisions">Decisions</a>.<ul>
+<li>Every plan choice and the phased implementation follow-up were submitted in Mission
+Control on 2026-09-28.</li>
+<li>On 2026-09-29 the human clarified that Upstart users do not edit the Upstart
+configuration; only people on other machines edit telemetry settings.</li>
+<li>Also on 2026-09-29, the human chose to redact internal details before publishing to this
+public repository. The unredacted investigation notes are kept outside the repository.</li>
+</ul>
+</li>
+</ul>
+<h2 id="the-short-version">The short version</h2>
+<ul>
+<li>Mission Control already captures telemetry durably and exports it over OTLP/HTTP to two
+remote destinations, <strong>Your own backend</strong> and <strong>Product analytics</strong>. Both are off by
+default, and no address is built in.</li>
+<li>Upstart already runs <strong><code>corp-otel-gateway</code></strong>, an OpenTelemetry Collector that Upstart laptops
+reach over the corporate network. It forwards metrics and traces to Datadog. Claude Code on
+this Mac already sends to it through an MDM-managed policy, and those metrics are in Datadog
+today (<code>claude_code.session.count</code>, origin &quot;Datadog Exporter&quot;, tagged <code>env:corp</code>).</li>
+<li>So shipping Mission Control&#39;s telemetry to Datadog does not need a Datadog client in
+Mission Control. It means pointing the existing Product analytics destination at that
+gateway, closing four compatibility gaps, and turning it on by default only on Macs
+enrolled in Upstart&#39;s device management.</li>
+<li><strong>Validated on 2026-09-25.</strong> One synthetic <code>mission.daemon.starts</code> delta point, sent this way
+with Mission Control&#39;s own serializer, arrived in Datadog with value 1. See
+<a href="#validation-through-the-gateway">Validation through the gateway</a>.</li>
+<li><strong>Cost.</strong> Shipping everything as-is would cost about $60 per installation per month in
+Datadog custom metrics at list price. The lean export shape brings the expected figure to
+about <strong>$4.60 per installation</strong>, or about $690 a month for 150 installations. The shape
+drops the cohort gauges, uses one constant host value, trims labels, converts minor
+histograms, never sends zero deltas, and applies a hard series budget. A one-week pilot
+must confirm the figure before the default turns on. See <a href="#datadog-cost">Datadog cost</a>.</li>
+<li><strong>Detection:</strong> <code>profiles status -type enrollment</code> prints
+<code>MDM server: https://upstart.jamfcloud.com/mdm/ServerURL</code> on this Mac. It is Apple&#39;s own
+tool, needs no admin rights, and takes about 30 ms. The rule requires an <strong>active</strong>
+enrollment whose server is <strong>exactly Upstart&#39;s own Jamf tenant</strong>. Using Jamf, or any other
+device management, at another company is never enough, so those users see today&#39;s behaviour
+unchanged.</li>
+<li><strong>Managed on Upstart Macs, editable everywhere else.</strong><ul>
+<li>Upstart users see the Upstart configuration in Settings &gt; Telemetry but cannot change it.</li>
+<li>People on other machines keep full control of their telemetry settings, including new
+temporality and export-shape controls that let them configure a Datadog-compatible
+destination by hand.</li>
+</ul>
+</li>
+<li><strong>Not UMT&#39;s approach.</strong> UMT posts Datadog events directly, using a Datadog API key and
+application key fetched from AWS Secrets Manager through AWS SSO. Mission Control would need
+neither key and no AWS login.</li>
+</ul>
+<h2 id="what-exists-today">What exists today</h2>
+<h3 id="mission-control39s-outbound-telemetry">Mission Control&#39;s outbound telemetry</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Fact</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Profiles are <code>local</code>, <code>user</code>, <code>product</code>. Signals are <code>metrics</code> and <code>traces</code>, with no logs.</td>
+<td><code>src/shared/telemetry.ts:112</code>, <code>:127</code></td>
+</tr>
+<tr>
+<td>Every config default is off, and that is the stated upgrade contract. Tests pin it.</td>
+<td><code>src/shared/telemetry.ts:330</code>; <code>test/telemetry-migration.test.ts</code>, <code>test/telemetry-durability.test.ts</code>, <code>e2e/specs/telemetry-settings.spec.ts</code></td>
+</tr>
+<tr>
+<td>Product analytics reports <code>unavailable</code> until it has an address, and turns itself off if the address is cleared.</td>
+<td><code>src/server/telemetry/config.ts:68</code>, <code>:276</code>, <code>:291</code></td>
+</tr>
+<tr>
+<td>Product carries every <code>AUDIENCE_ALL</code> fact. Only the operator facts are withheld: the probe, telemetry control actions and settings-opened.</td>
+<td><code>src/shared/telemetry-catalog.ts</code>; <code>src/server/telemetry/capture.ts:152</code></td>
+</tr>
+<tr>
+<td>One base URL per destination, with <code>/v1/metrics</code> and <code>/v1/traces</code> appended. Protobuf only.</td>
+<td><code>src/server/telemetry/endpoint.ts:23</code>; <code>src/server/telemetry/otlp.ts:38</code></td>
+</tr>
+<tr>
+<td><strong>Sums, histograms and gauges are always cumulative.</strong> A test pins it.</td>
+<td><code>src/server/telemetry/otlp.ts:78</code>, <code>:100</code>, <code>:108</code>; <code>test/telemetry-contract.test.ts:177</code></td>
+</tr>
+<tr>
+<td><strong>A 401 or 403 pauses the destination</strong> with reason <code>auth</code> until someone saves the config again.</td>
+<td><code>src/server/telemetry/delivery.ts:413</code></td>
+</tr>
+<tr>
+<td>Only <code>user</code> can hold a credential: one header, with any name. <code>product</code> has none.</td>
+<td><code>src/server/telemetry/config.ts:324-342</code>; <code>src/server/telemetry/schema.ts:207</code></td>
+</tr>
+<tr>
+<td>Resource: <code>service.name=mission-control</code>, <code>service.version</code>, <code>service.instance.id</code> (the installation pseudonym), <code>mission.identity.epoch</code>, <code>deployment.environment.name</code> (<code>MISSION_TELEMETRY_ENVIRONMENT</code>, else <code>local</code>).</td>
+<td><code>src/server/telemetry/capture.ts:95-119</code></td>
+</tr>
+<tr>
+<td>Launch mode is <code>desktop</code> (Electron), <code>daemon</code> (built) or <code>dev</code>.</td>
+<td><code>src/server/index.ts:786</code></td>
+</tr>
+<tr>
+<td>Organization-specific facts live in exactly one file under <code>src/server/environment/</code>. The UpstartClaw row is the precedent: the server decides whether a row exists at all, and the browser renders what arrives.</td>
+<td><code>src/server/environment/index.ts:20-28</code>; <code>src/server/environment/upstartclaw.ts</code></td>
+</tr>
+<tr>
+<td>Upstart constants already ship as field defaults: the Jira site, the product-issues repository, and <code>~/upstart</code> in the repository index.</td>
+<td><code>src/shared/task-source.ts:494</code>; <code>src/server/config.ts:271</code>; <code>src/shared/repo-index.ts:4</code></td>
+</tr>
+<tr>
+<td>No organization, managed-policy or first-run seeding mechanism exists for telemetry.</td>
+<td>-</td>
+</tr>
+</tbody></table></div>
+<h3 id="how-umt-ships-to-datadog">How UMT ships to Datadog</h3>
+<ul>
+<li>It posts <strong>Events</strong>, not metrics or traces, to <code>https://api.datadoghq.com/api/v1/events</code>,
+with <code>DD-API-KEY</code> and <code>DD-APPLICATION-KEY</code> headers (<code>internal/datadog/publisher.go</code>).</li>
+<li>The keys are fetched from AWS Secrets Manager after an AWS SSO login, and cached in a local
+file only the user can read (<code>internal/dogrc/</code>).</li>
+<li>Tags include the machine name and the macOS user name (<code>internal/datadog/event.go</code>).</li>
+<li><code>UMT_SKIP_DATADOG=true</code> opts out. Publishing is best-effort and never blocks a command.</li>
+</ul>
+<p>What to take from it: best-effort delivery that never blocks work, an explicit opt-out, and
+redacted secrets. What not to take:</p>
+<ul>
+<li>A Datadog <strong>application</strong> key on every laptop. It carries read access to the Datadog
+organization&#39;s API.</li>
+<li>A required AWS SSO login.</li>
+<li>A key that belongs to another tool.</li>
+<li>A path that skips the corporate lane&#39;s <code>env:corp</code> tagging and its owners&#39; controls.</li>
+<li>Machine and user names, which Mission Control&#39;s privacy contract forbids.</li>
+</ul>
+<h3 id="upstart39s-corporate-otel-gateway">Upstart&#39;s corporate OTel gateway</h3>
+<p>Source: the gateway&#39;s own repository and Collector configuration, read 2026-09-25.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+<th>What it means for Mission Control</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Receiver</td>
+<td>OTLP/HTTP on <code>https://corp-otel-staging-1.upstart.com</code> (<code>/v1/metrics</code>, <code>/v1/traces</code>), protobuf</td>
+<td>Matches Mission Control&#39;s exporter as-is: one base URL, protobuf.</td>
+</tr>
+<tr>
+<td>Network access</td>
+<td>Reachable from Upstart&#39;s network (VPN or office). From anywhere else, its Cloudflare edge refuses the request.</td>
+<td>Mission Control sends no credential. Off the network, requests are refused at the edge.</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>Datadog exporter with <code>cumulative_monotonic_mode: to_delta</code>, plus a copy to a second metrics destination the gateway owners run</td>
+<td>See the temporality gap below. Mission Control metrics would also reach that second destination.</td>
+</tr>
+<tr>
+<td>Traces</td>
+<td>Datadog exporter only</td>
+<td>Datadog APM.</td>
+</tr>
+<tr>
+<td>Logs</td>
+<td>Other destinations</td>
+<td>Not used. Mission Control exports no logs.</td>
+</tr>
+<tr>
+<td>Resource processor</td>
+<td>Upserts <code>deployment.environment=corp</code></td>
+<td>Datadog maps both that key and Mission Control&#39;s <code>deployment.environment.name</code> to <code>env</code>, so each series carries two <code>env</code> values (measured). The preset sets Mission Control&#39;s value to <code>corp</code>, so an Upstart install reports one.</td>
+</tr>
+<tr>
+<td>Tags</td>
+<td><code>resource_attributes_as_tags</code> is left at its default, <code>false</code></td>
+<td><code>service.instance.id</code> still arrived as a metric tag (measured). The <code>host</code> tag is the gateway pod that took the request.</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>Several Collector replicas behind one address</td>
+<td>Stateful cumulative-to-delta conversion does not work across replicas.</td>
+</tr>
+<tr>
+<td>Production hostname</td>
+<td><code>corp-otel.upstart.com</code> is planned. The README says it &quot;must not carry traffic&quot; until its gates pass, although it answers today.</td>
+<td>Use staging-1, the same host the MDM policy gives Claude Code, until the owners open production.</td>
+</tr>
+</tbody></table></div>
+<p>A read-only <code>GET</code> against both hostnames returned the Collector&#39;s own
+<code>405 method not allowed, supported: [POST]</code>, so they are live OTLP receivers.</p>
+<h3 id="evidence-from-this-mac">Evidence from this Mac</h3>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Probe</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>profiles status -type enrollment</code>, with no admin rights</td>
+<td><code>Enrolled via DEP: Yes</code>, <code>MDM enrollment: Yes (User Approved)</code>, <code>MDM server: https://upstart.jamfcloud.com/mdm/ServerURL</code></td>
+</tr>
+<tr>
+<td><code>/Library/Preferences/com.jamfsoftware.jamf.plist</code> <code>jss_url</code></td>
+<td><code>https://upstart.jamfcloud.com/</code></td>
+</tr>
+<tr>
+<td><code>/Library/Managed Preferences/</code></td>
+<td>Holds Upstart-managed policy domains, including one for Claude Code</td>
+</tr>
+<tr>
+<td>Managed Claude Code policy</td>
+<td>Sets <code>OTEL_EXPORTER_OTLP_{METRICS,TRACES,LOGS}_ENDPOINT</code> to <code>https://corp-otel-staging-1.upstart.com/v1/...</code> over <code>http/protobuf</code>, with no headers</td>
+</tr>
+<tr>
+<td><code>/Applications/IT Self Service.app</code></td>
+<td>Bundle id <code>com.jamf.selfserviceplus</code>, signed by Jamf&#39;s team <code>483DWKW443</code>. This is Jamf&#39;s generic Self Service+ under a different name.</td>
+</tr>
+<tr>
+<td>Datadog</td>
+<td><code>claude_code.*</code> metrics and <code>trace.claude_code.*</code> APM metrics are present, tagged <code>env:corp</code>.</td>
+</tr>
+</tbody></table></div>
+<h3 id="validation-through-the-gateway">Validation through the gateway</h3>
+<p>On 2026-09-25 at 19:27:36 UTC, with the requester&#39;s go-ahead, one synthetic Mission Control
+metric was sent over the proposed route. Its payload:</p>
+<ul>
+<li>the request went to <code>https://corp-otel-staging-1.upstart.com/v1/metrics</code> as OTLP/HTTP
+protobuf, with no credential;</li>
+<li>it was built with <code>@opentelemetry/otlp-transformer</code> 0.222.0 and <code>@opentelemetry/sdk-metrics</code>
+2.11.0, the versions <code>src/server/telemetry/otlp.ts</code> pins;</li>
+<li>it carried the resource attributes <code>capture.ts</code> attaches;</li>
+<li>the metric was the catalog instrument <code>mission.daemon.starts</code>, value 1, as a delta
+monotonic sum, with <code>launch_mode=desktop</code> and <code>schema_upgraded=false</code>;</li>
+<li>the environment was set to <code>test</code> on purpose, and the installation id was a synthetic
+<code>validation-…</code> value. Mission Control&#39;s own default environment is <code>local</code>.</li>
+</ul>
+<p>The gateway answered <code>200</code> through Cloudflare, with a protobuf body and no partial rejection.
+Datadog then showed <code>sum:mission.daemon.starts{*}.as_count()</code> = 1 at 19:27:30 UTC.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Datadog tag</th>
+<th>Value</th>
+<th>Came from</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>service</code></td>
+<td><code>mission-control</code></td>
+<td><code>service.name</code></td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td><code>1.25.0</code></td>
+<td><code>service.version</code></td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td><code>corp</code> <strong>and</strong> <code>test</code></td>
+<td>the gateway&#39;s <code>deployment.environment</code> upsert, and Mission Control&#39;s <code>deployment.environment.name</code></td>
+</tr>
+<tr>
+<td><code>service.instance.id</code></td>
+<td><code>validation-2026-09-25t19-27-36-806z</code> (lowercased)</td>
+<td>the resource attribute</td>
+</tr>
+<tr>
+<td><code>launch_mode</code>, <code>schema_upgraded</code></td>
+<td><code>desktop</code>, <code>false</code></td>
+<td>data-point attributes</td>
+</tr>
+<tr>
+<td><code>instrumentation_scope</code>, <code>instrumentation_scope_version</code></td>
+<td><code>mission-control</code>, <code>2</code></td>
+<td>the OTLP scope</td>
+</tr>
+<tr>
+<td><code>host</code></td>
+<td>the name of the gateway pod that took the request (not reproduced here)</td>
+<td>the gateway</td>
+</tr>
+</tbody></table></div>
+<p>What this settles:</p>
+<ul>
+<li>the route works end to end;</li>
+<li>delta arrives exactly, with one sent and one counted;</li>
+<li>Datadog keeps the OTel metric name unchanged;</li>
+<li>every installation is its own set of series;</li>
+<li>environment filters need care.</li>
+</ul>
+<p>What it does not settle:</p>
+<ul>
+<li>traces;</li>
+<li>the response off the Upstart network;</li>
+<li>whether a re-sent delta point overwrites or adds;</li>
+<li>series count at fleet scale.</li>
+</ul>
+<h2 id="detecting-upstart">Detecting Upstart</h2>
+<p>The question is &quot;is this Mac managed by Upstart?&quot;, and the answer has to be unique to
+Upstart. Two groups must see exactly today&#39;s behaviour, with nothing sent and nothing shown:</p>
+<ul>
+<li>people at other companies whose Macs are also managed by Jamf, or by any other MDM;</li>
+<li>people who work at Upstart but run Mission Control on a personal laptop.</li>
+</ul>
+<p>So the signal describes the device and names Upstart&#39;s own tenant. It never names a vendor,
+an app, or the person.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>What it proves</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Active MDM enrollment whose server host is exactly <code>upstart.jamfcloud.com</code> (<code>/usr/bin/profiles status -type enrollment</code>)</td>
+<td>The device is enrolled right now in Upstart&#39;s own Jamf tenant</td>
+<td><strong>Use.</strong> Apple-owned, needs no root, fast. The enrollment record is system-owned, and a non-admin user cannot write it.</td>
+</tr>
+<tr>
+<td>Jamf <code>jss_url</code> host is exactly <code>upstart.jamfcloud.com</code> (<code>/Library/Preferences/com.jamfsoftware.jamf.plist</code>, owned by root, mode 644)</td>
+<td>Jamf on this Mac was configured for Upstart&#39;s tenant</td>
+<td><strong>Fallback only</strong>, and only while macOS reports an active enrollment. Used solely when macOS stops printing the <code>MDM server</code> line. It is never enough on its own, because the file can outlive an unenrollment.</td>
+</tr>
+<tr>
+<td>Jamf installed, or any <code>*.jamfcloud.com</code> host</td>
+<td>Some Jamf customer manages this Mac</td>
+<td><strong>Reject.</strong> True at every company that uses Jamf.</td>
+</tr>
+<tr>
+<td><code>IT Self Service.app</code></td>
+<td>Some Jamf customer installed Self Service+</td>
+<td><strong>Reject.</strong> Generic Jamf app with a generic name.</td>
+</tr>
+<tr>
+<td>Any <code>com.upstart.*</code> domain in <code>/Library/Managed Preferences</code></td>
+<td>Upstart&#39;s MDM pushed an Upstart-named policy</td>
+<td><strong>Reject as a trigger.</strong> It belongs to another IT tool and could disappear with it.</td>
+</tr>
+<tr>
+<td>Git email <code>@upstart.com</code>, <code>~/.aws/config</code> SSO URL, UpstartClaw installed, UMT&#39;s <code>.dogrc</code></td>
+<td>The person works at Upstart</td>
+<td><strong>Reject.</strong> True on personal machines, and anyone can edit them.</td>
+</tr>
+<tr>
+<td>Reaching the gateway or corporate DNS</td>
+<td>The Mac is on the corporate network right now</td>
+<td><strong>Reject.</strong> Flips with the VPN.</td>
+</tr>
+</tbody></table></div>
+<p><strong>Rule.</strong> The organization is <code>upstart</code> only when <strong>both</strong> of these hold:</p>
+<ol>
+<li><strong>Active enrollment.</strong> <code>profiles status -type enrollment</code> reports <code>MDM enrollment: Yes</code>.
+<code>No</code>, a missing line, or unreadable output means no organization.</li>
+<li><strong>Upstart&#39;s tenant, exactly.</strong> The enrolled server&#39;s URL parses with scheme <code>https</code>, and
+its hostname, lowercased with any trailing dot removed, equals an entry in the preset&#39;s
+host allowlist. Today that list is <code>upstart.jamfcloud.com</code> and nothing else. The hostname
+comes from the <code>MDM server</code> line. The Jamf <code>jss_url</code> is read only when that line is
+absent, and condition 1 still applies.</li>
+</ol>
+<p>There is no suffix, substring, vendor or app matching anywhere. A Jamf Cloud instance
+hostname belongs to one Jamf customer, so an exact match names one organization. A
+self-hosted Jamf server, another company&#39;s <code>*.jamfcloud.com</code> tenant, and every other MDM
+fail condition 2. Both reads run through a fixed-argument command with an absolute path, a
+2-second timeout and no shell. Any other platform, error, timeout or unexpected output means
+no organization. It fails closed: an unreadable result turns nothing on. Detection runs once
+at daemon start and again on an explicit Re-check.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Upstart-issued Mac, enrolled in <code>upstart.jamfcloud.com</code></td>
+<td>Upstart default applies</td>
+</tr>
+<tr>
+<td>Another company&#39;s Mac on Jamf Cloud (for example <code>acme.jamfcloud.com</code>)</td>
+<td>Nothing changes: off and hidden</td>
+</tr>
+<tr>
+<td>Another company&#39;s Mac on self-hosted Jamf, Kandji, Intune, Mosyle or any other MDM</td>
+<td>Nothing changes: off and hidden</td>
+</tr>
+<tr>
+<td>Personal Mac, not enrolled, including an Upstart employee&#39;s own laptop</td>
+<td>Nothing changes: off and hidden</td>
+</tr>
+<tr>
+<td>Mac that left Upstart&#39;s MDM but still has Jamf files naming Upstart</td>
+<td>Nothing changes: enrollment reads <code>No</code></td>
+</tr>
+<tr>
+<td>Linux, Windows, or a container</td>
+<td>Nothing changes: detection is macOS-only</td>
+</tr>
+</tbody></table></div>
+<p><strong>Guards.</strong> Even on an Upstart Mac, the organization default applies only when all of these
+hold:</p>
+<ul>
+<li>the launch mode is <code>desktop</code> or <code>daemon</code>, not <code>dev</code>;</li>
+<li>the daemon is not under the test runner;</li>
+<li>the state home does not resolve inside the OS temp dir, so e2e and fixture daemons never
+qualify.</li>
+</ul>
+<p><strong>Overrides.</strong> <code>MISSION_ORGANIZATION=none</code> turns detection off on any machine.
+<code>MISSION_ORGANIZATION=upstart</code> exists only for tests, and it is honoured only when the preset
+endpoint is also redirected to a loopback address, such as the e2e suite&#39;s fake collector. So
+no machine that fails the rule above can ever send to Upstart&#39;s gateway, whether by override
+or by accident.</p>
+<h2 id="design">Design</h2>
+<h3 id="the-data-flow">The data flow</h3>
+<p>Before, Mission Control&#39;s product destination has no address, so nothing leaves the Mac.
+After, on an Upstart-managed Mac, the product destination is addressed to the corporate
+gateway, which forwards to Datadog.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 940 350" role="img" aria-labelledby="d1t d1d">
+  <title id="d1t">Mission Control telemetry export, before and after</title>
+  <desc id="d1d">Before: the product destination has no address and nothing leaves the Mac. After, on an Upstart-managed Mac: the daemon sends OTLP over HTTP with delta sums and no credential to corp-otel-gateway, which forwards metrics and traces to Datadog and a copy of metrics to a second destination its owners run.</desc>
+  
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="dg-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="dg-head-accent" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <text x="20" y="26" class="dg-label">Before</text>
+  <rect x="20" y="40" width="240" height="64" rx="10" class="dg-box "/><text x="140" y="68" text-anchor="middle" class="dg-title">Mission Control daemon</text><text x="140" y="86" text-anchor="middle" class="dg-sub">product destination: no address</text>
+  <path class="dg-edge dashed" d="M260,72 L392,72"/>
+  <path class="dg-x" d="M392,66 L404,78 M404,66 L392,78"/>
+  <text x="328" y="62" text-anchor="middle" class="dg-edge-label">nothing is sent</text>
+  <rect x="420" y="40" width="200" height="64" rx="10" class="dg-box muted"/><text x="520" y="68" text-anchor="middle" class="dg-title">No export</text><text x="520" y="86" text-anchor="middle" class="dg-sub">off by default today</text>
+
+  <line x1="20" y1="132" x2="920" y2="132" class="dg-rule"/>
+  <text x="20" y="160" class="dg-label">After, on an Upstart-managed Mac</text>
+  <rect x="20" y="196" width="240" height="84" rx="10" class="dg-box "/><text x="140" y="225" text-anchor="middle" class="dg-title">Mission Control daemon</text><text x="140" y="243" text-anchor="middle" class="dg-sub">Product analytics destination</text><text x="140" y="261" text-anchor="middle" class="dg-sub">Upstart preset applied</text>
+  <path class="dg-edge accent" d="M260,238 L352,238" marker-end="url(#ahA)"/>
+  <text x="306" y="226" text-anchor="middle" class="dg-edge-label">OTLP/HTTP</text>
+  <text x="306" y="256" text-anchor="middle" class="dg-edge-label">delta, no key</text>
+  <rect x="356" y="180" width="272" height="116" rx="10" class="dg-box accent"/><text x="492" y="216" text-anchor="middle" class="dg-title">corp-otel-gateway</text><text x="492" y="234" text-anchor="middle" class="dg-mono">corp-otel-staging-1.upstart.com</text><text x="492" y="252" text-anchor="middle" class="dg-sub">Reachable from Upstart's network</text><text x="492" y="270" text-anchor="middle" class="dg-sub">Several Collector replicas</text>
+  <path class="dg-edge accent" d="M628,212 L732,204" marker-end="url(#ahA)"/>
+  <text x="682" y="196" text-anchor="middle" class="dg-edge-label">metrics + traces</text>
+  <rect x="736" y="164" width="184" height="80" rx="10" class="dg-box "/><text x="828" y="191" text-anchor="middle" class="dg-title">Datadog</text><text x="828" y="209" text-anchor="middle" class="dg-mono-sm">service:mission-control</text><text x="828" y="227" text-anchor="middle" class="dg-mono-sm">env:corp</text>
+  <path class="dg-edge" d="M628,268 L732,286" marker-end="url(#ah)"/>
+  <text x="682" y="300" text-anchor="middle" class="dg-edge-label">metrics copy</text>
+  <rect x="736" y="256" width="184" height="76" rx="10" class="dg-box muted"/><text x="828" y="281" text-anchor="middle" class="dg-title">Second destination</text><text x="828" y="299" text-anchor="middle" class="dg-sub">metrics only</text><text x="828" y="317" text-anchor="middle" class="dg-sub">run by gateway owners</text>
+</svg>
+<figcaption>Before and after. The only new network path is the daemon to the corporate gateway, which Claude Code on the same Mac already uses.</figcaption>
+</figure>
+<details class="src"><summary>Diagram source (Mermaid, as in plan.md)</summary><pre><code>flowchart LR
+  subgraph Before
+    MC1[Mission Control daemon] -. product destination: no address .-x X1[nothing leaves]
+  end
+  subgraph After on an Upstart-managed Mac
+    MC2[Mission Control daemon] -- OTLP/HTTP protobuf, delta sums --&gt; GW[corp-otel-gateway\ncorp-otel-staging-1.upstart.com]
+    GW -- metrics and traces --&gt; DD[Datadog\nservice:mission-control env:corp]
+    GW -- metrics copy --&gt; SP[Second metrics destination]
+  end</code></pre></details>
+<h3 id="the-upstart-preset">The Upstart preset</h3>
+<p>One registry entry, next to the detection check under <code>src/server/environment/</code>. It is never
+branched on elsewhere, following the same rule as the UpstartClaw check.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Organization</td>
+<td><code>upstart</code>, label &quot;Upstart&quot;</td>
+</tr>
+<tr>
+<td>MDM host allowlist</td>
+<td><code>upstart.jamfcloud.com</code>, matched exactly against an active enrollment</td>
+</tr>
+<tr>
+<td>Evidence shown to the user</td>
+<td>&quot;This Mac is enrolled in Upstart&#39;s device management (upstart.jamfcloud.com).&quot;</td>
+</tr>
+<tr>
+<td>Destination</td>
+<td>Product analytics</td>
+</tr>
+<tr>
+<td>Endpoint</td>
+<td><code>https://corp-otel-staging-1.upstart.com</code>, built into the preset</td>
+</tr>
+<tr>
+<td>Credential</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Metric temporality</td>
+<td>Delta</td>
+</tr>
+<tr>
+<td>Export shape</td>
+<td><code>datadog-lean</code>, described in <a href="#datadog-cost">Datadog cost</a></td>
+</tr>
+<tr>
+<td>Host attribute</td>
+<td>One constant value, <code>mission-control</code>, for every installation</td>
+</tr>
+<tr>
+<td>Series budget</td>
+<td>1,500 weighted series per installation</td>
+</tr>
+<tr>
+<td>Network gate</td>
+<td>Cloudflare lockdown: a 403 served by the edge means &quot;off the Upstart network&quot;, not &quot;unauthorized&quot;</td>
+</tr>
+<tr>
+<td>Environment</td>
+<td><code>corp</code>, so an Upstart install&#39;s series carry one <code>env</code> value instead of <code>corp</code> plus <code>local</code>. <code>MISSION_TELEMETRY_ENVIRONMENT</code> still overrides it, and an override such as <code>test</code> then appears alongside the gateway&#39;s <code>corp</code>.</td>
+</tr>
+<tr>
+<td>Preset version</td>
+<td>An integer, bumped when any value changes</td>
+</tr>
+</tbody></table></div>
+<h3 id="managed-on-upstart-macs-apply-keep-in-step-withdraw">Managed on Upstart Macs: apply, keep in step, withdraw</h3>
+<p>On an Upstart-managed Mac, Upstart&#39;s telemetry configuration is <strong>managed</strong>. The person can see
+it in Settings &gt; Telemetry but cannot change it. This follows the human decision recorded on
+2026-09-29 (see <a href="#decisions">Decisions</a>). People on every other machine keep full control of
+their own telemetry settings.</p>
+<p>The stored <code>telemetry</code> config stays the single source of truth; the organization never
+becomes a second read path. At daemon start and on Re-check, when the guards pass:</p>
+<ol>
+<li><p><strong>First application.</strong> This happens when there is no <code>telemetry.organization</code> record, a
+new operational app-config entry that, like <code>telemetry</code>, is excluded from settings
+snapshots. Mission Control writes the preset into the Product analytics destination
+through the ordinary <code>setTelemetryConfig</code> transaction, so consent epochs, generations and
+the revision all behave as for any save.</p>
+<ul>
+<li>The record first stores the product destination and master collection switch as they
+were. Withdrawal restores them.</li>
+<li>Whether sending starts depends on the rollout. During the pilot, only enrolled pilot
+installations send. Once the default is on, every Upstart-managed Mac sends, and the
+master collection switch is turned on with it.</li>
+<li>The record stores the preset version and the time.</li>
+</ul>
+<p>The write is recorded as a telemetry control action by the daemon itself (<code>SYSTEM_ACTOR</code>,
+basis <code>owner</code>). This is where the installation identity is first minted, when sending
+starts.</p>
+</li>
+<li><p><strong>Later starts.</strong> When the preset version is newer than the record, every preset-owned field
+moves to the new value, because nobody on the Mac can have changed it. This is how the move
+from staging-1 to <code>corp-otel.upstart.com</code> reaches every Upstart Mac in an ordinary release.</p>
+</li>
+<li><p><strong>Managed means managed.</strong> While the organization is active, the daemon refuses any
+person&#39;s change to telemetry settings with a clear &quot;managed by Upstart&quot; answer. That covers
+<code>PUT /api/telemetry/config</code> and the purge and identity-reset operations. Test connection
+and Try again remain available, because they change no setting. The daemon&#39;s own writes are
+unaffected.</p>
+</li>
+<li><p><strong>No longer detected.</strong> If a Mac with a record stops matching, the product destination and
+master switch are restored to what the record stored, and the record is removed. From then
+on the person can edit their settings again, like anyone else.</p>
+</li>
+</ol>
+<p><code>MISSION_ORGANIZATION=none</code> remains a diagnostic override for development and support. It is
+an environment variable, not a Settings control.</p>
+<h3 id="the-one-time-notice">The one-time notice</h3>
+<p>When the default first turns sending on, the dashboard shows one dismissible notice. It is a
+notice in the page, not a modal. It says:</p>
+<ul>
+<li>that Mission Control now sends usage telemetry to Upstart&#39;s Datadog, through Upstart&#39;s
+telemetry gateway, because this Mac is enrolled in Upstart&#39;s device management;</li>
+<li>that Upstart manages this setting on its Macs;</li>
+<li>what travels and what never does, in the same words as the Telemetry panel, including that
+the gateway also copies metrics to a second destination its owners run;</li>
+<li>where to see it, with a link to <strong>Settings &gt; Telemetry</strong>.</li>
+</ul>
+<p>Dismissing it stores <code>noticeAcknowledgedAt</code> in the <code>telemetry.organization</code> record, so it
+never returns on that installation. It never appears on a Mac that is not Upstart-managed.
+The notice only ships in the release that turns the default on, which comes after the pilot
+gate in <a href="#datadog-cost">Datadog cost</a> has passed.</p>
+<h3 id="datadog-compatibility-four-generic-changes">Datadog compatibility: four generic changes</h3>
+<p>These are destination capabilities, not Upstart code, so anyone can use them with manual
+settings as well.</p>
+<ol>
+<li><p><strong>Per-destination metric temporality: <code>cumulative</code> (the default) or <code>delta</code>.</strong> The gateway
+converts cumulative sums to delta inside each replica, and several replicas share the
+traffic. Consecutive points of one series land on different replicas, so every replica
+computes a delta against its own stale baseline, and counts come out inflated by up to the
+replica count. Datadog says so directly: all points of a cumulative series must reach the
+same exporter. Its agentless OTLP metrics intake accepts only delta. Claude Code already
+sends delta.</p>
+<p>For a delta destination, the projection writes each immutable batch as the difference
+from the cumulative value last batched for that destination and series. The start time is
+the previous batch&#39;s end. It happens in the same transaction that already commits
+checkpoint, state and batch, so a restart neither loses nor repeats a window. The cost is
+stated rather than hidden: a batch re-sent after an ambiguous acknowledgement repeats its
+delta, unless Datadog overwrites a point with the same series and timestamp. Phase 1
+measures which. <strong>A series whose delta is zero is never sent.</strong> Datadog bills a series
+only for the hours it reports, so this keeps idle series free. Cumulative destinations
+keep today&#39;s behaviour exactly, and the pinned test keeps pinning it.</p>
+</li>
+<li><p><strong>A network gate that waits instead of pausing.</strong> Off the Upstart network, Cloudflare
+refuses the request. Today every 403 pauses the destination with reason <code>auth</code> until
+somebody saves the config again, so a laptop that leaves the VPN would stop exporting for
+good. A destination whose preset declares the Cloudflare gate classifies an edge-served
+403 as <code>waiting_for_network</code> instead. An edge-served 403 carries <code>cf-ray</code> and
+<code>server: cloudflare</code>, and its body is not an OTLP response. The destination retries with
+backoff capped at 5 minutes and never pauses. The queue already holds 7 days, and loss
+beyond that is counted as it is today. Health reads &quot;Waiting for the Upstart network (VPN)&quot;.
+Any other 403 still pauses.</p>
+</li>
+<li><p><strong>Series cardinality.</strong> The validation point showed which attributes become Datadog
+tags: data-point attributes, <code>service</code>, <code>version</code>, <code>env</code>, <code>service.instance.id</code>, the
+instrumentation scope, and a <code>host</code> tag naming the gateway pod. That has three
+consequences:</p>
+<ul>
+<li><strong>Every installation is its own set of series.</strong> Per-installation analysis works in
+Datadog, but the custom-metric count grows with installations times label
+combinations. <a href="#datadog-cost">Datadog cost</a> sizes it.</li>
+<li><strong>The <code>host</code> tag splits series across gateway pods.</strong> Each request lands on whichever of
+the replicas takes it, so one installation&#39;s counter appears under several
+<code>host</code> values. Sums across hosts stay correct, but the series count multiplies. The
+lean export shape fixes this with one constant host value.</li>
+<li><strong>Filters on <code>env:corp</code> also match test and local data</strong>, because the gateway&#39;s <code>corp</code>
+is added next to Mission Control&#39;s own value. The preset gives real installs <code>env:corp</code>
+alone, and a Datadog view excludes <code>env:test</code>, <code>env:local</code> and <code>env:development</code>.</li>
+</ul>
+<p>Traces keep resource attributes as span tags, so per-installation drill-down also comes
+from APM.</p>
+</li>
+<li><p><strong>A per-destination export shape.</strong> A destination can name a registered shape that
+changes what it receives, without touching what other destinations receive:</p>
+<ul>
+<li>excluded instrument families;</li>
+<li>labels dropped from particular instruments;</li>
+<li>histograms exported as a sum counter plus a count counter instead of a distribution;</li>
+<li>a constant host resource attribute;</li>
+<li>a series budget.</li>
+</ul>
+<p>The default shape is today&#39;s full export, so the local Grafana stack and every existing
+destination keep every metric and label. The shape is applied when the destination&#39;s
+batches are built. Dropping a label aggregates the affected series together, and the
+dropped detail stays on the matching trace span. Changing a destination&#39;s shape starts
+new series for it, as a consent epoch does. It never rewrites batches already queued.
+The Upstart preset selects <code>datadog-lean</code>, and anyone can select it for their own
+Datadog destination.</p>
+</li>
+</ol>
+<h3 id="datadog-cost">Datadog cost</h3>
+<p><strong>How Datadog bills it.</strong> Sources: Datadog&#39;s custom-metrics billing documentation and
+public price list, and the gateway&#39;s <code>collector-config.yaml</code>, read 2026-09-25.</p>
+<ul>
+<li>A custom metric is one unique combination of metric name and tag values, including <code>host</code>.
+The bill is the monthly average of distinct series seen each hour, so a series costs money
+only in the hours it reports.</li>
+<li>List price is $5 per 100 custom metrics a month, so $0.05 each. Upstart&#39;s contract rate may
+be lower.</li>
+<li>Treat every new series as paid for. When checked on 2026-09-25, the organization&#39;s included
+per-host allotment was already fully used.</li>
+<li>The gateway reports each histogram as a Datadog distribution (5 custom metrics per tag
+combination). Its <code>send_aggregation_metrics: true</code> setting adds separate sum, count, min
+and max metrics, for <strong>9</strong> per combination. Counters and gauges count once.</li>
+</ul>
+<p><strong>Before the optimizations.</strong> This is the full product fact set: 205 instruments, of which
+52 are activity metrics, 11 of those histograms, plus 153 cohort gauges.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Cohort gauges</th>
+<th>Activity metrics</th>
+<th>Health gauges</th>
+<th>Custom metrics per installation</th>
+<th>Per installation per month</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Low</td>
+<td>458</td>
+<td>96</td>
+<td>5</td>
+<td>559</td>
+<td>$28</td>
+</tr>
+<tr>
+<td>Expected</td>
+<td>915</td>
+<td>266</td>
+<td>12</td>
+<td>1,194</td>
+<td>$60</td>
+</tr>
+<tr>
+<td>High</td>
+<td>2,224</td>
+<td>694</td>
+<td>25</td>
+<td>2,943</td>
+<td>$147</td>
+</tr>
+</tbody></table></div>
+<p>The cohort gauges dominate because they report every hour the daemon runs, by design. Their
+count also grows over time, because every release adds an <code>app_version</code> slice that is kept
+up to the 24-slice limit. The expected case therefore drifts towards about $100.</p>
+<p><strong>The lean export shape (<code>datadog-lean</code>).</strong> Each item is a requirement for the Upstart lane.</p>
+<ol>
+<li><p><strong>No cohort gauges.</strong> <code>mission.analytics.v1.*</code> is excluded from this destination. Those
+gauges exist for the Grafana dashboards&#39; PromQL coherence checks. Datadog views derive
+their numbers from the counters, and traces carry per-run detail.</p>
+</li>
+<li><p><strong>One constant host value.</strong> Mission Control sends the host resource attribute
+<code>mission-control</code> for every installation, so the gateway pod no longer splits series.
+Installations stay distinct through <code>service.instance.id</code>. The pilot must show that it
+collapses the pod split and does not make Datadog bill each laptop, or anything beyond
+one entry, as an infrastructure host. If it does, the fallback is for the gateway owners
+to set a fixed hostname for this service.</p>
+</li>
+<li><p><strong>Labels trimmed on the largest activity metrics.</strong> Every dropped label remains on the
+matching span, either as a span attribute or as the envelope&#39;s <code>mission.actor.*</code>, which
+every span carries.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Dropped labels</th>
+<th>Typical combinations, before → after</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>mission.dispatches</code></td>
+<td><code>resolution_source</code>, <code>resolved_effort</code></td>
+<td>288 → 32</td>
+</tr>
+<tr>
+<td><code>mission.action.count</code></td>
+<td><code>actor</code></td>
+<td>200 → 100</td>
+</tr>
+<tr>
+<td><code>mission.sessions.ended</code></td>
+<td><code>ended_while_work_open</code></td>
+<td>96 → 48</td>
+</tr>
+<tr>
+<td><code>mission.session.segments</code></td>
+<td><code>quality</code>, <code>reason</code></td>
+<td>72 → 12</td>
+</tr>
+<tr>
+<td><code>mission.sessions.started</code></td>
+<td><code>start_observation</code></td>
+<td>64 → 32</td>
+</tr>
+<tr>
+<td><code>mission.session.operations</code></td>
+<td><code>actor_basis</code></td>
+<td>64 → 32</td>
+</tr>
+<tr>
+<td><code>mission.session.turns</code></td>
+<td><code>quality</code></td>
+<td>48 → 24</td>
+</tr>
+<tr>
+<td><code>mission.session.effort.selections</code></td>
+<td><code>applies</code></td>
+<td>48 → 24</td>
+</tr>
+<tr>
+<td><code>mission.automation.actions</code></td>
+<td><code>actor</code></td>
+<td>48 → 24</td>
+</tr>
+</tbody></table></div>
+</li>
+<li><p><strong>Distributions only where percentiles matter.</strong> Four histograms stay as distributions:
+<code>mission.session.turn.duration</code>, <code>mission.dispatch.duration</code>, <code>mission.workflow.duration</code>
+and <code>mission.workflow.node.duration</code>. The other seven are exported as a sum counter and a
+count counter, which is 2 per combination instead of 9 and still gives averages:</p>
+<ul>
+<li><code>mission.session.observed.duration</code>;</li>
+<li><code>mission.daemon.startup.duration</code>;</li>
+<li><code>mission.workflow.pickup.duration</code>, <code>.repair.duration</code>, <code>.wait.duration</code>,
+<code>.node.queue.duration</code> and <code>.stage.duration</code>.</li>
+</ul>
+<p>Separately, the gateway owners are asked whether <code>send_aggregation_metrics</code> can be turned
+off, which would take each distribution from 9 to 5.</p>
+</li>
+<li><p><strong>No zero deltas.</strong> This is stated under temporality above. An unchanged series is not
+sent, so it is not billed.</p>
+</li>
+<li><p><strong>A hard series budget.</strong> Each installation can have at most 1,500 weighted series live
+for this destination. A distribution combination weighs 9 (or 5), a sum-and-count pair 2,
+and a counter or gauge 1. Anything beyond the budget folds into the existing overflow
+bucket, with the gap counted. Whatever the usage, no installation can exceed 1,500 custom
+metrics in any hour, which is $75 a month at list price. The realistic high case is far
+below that.</p>
+</li>
+</ol>
+<p><strong>After the optimizations.</strong></p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Custom metrics per installation</th>
+<th>Per installation per month</th>
+<th>If the gateway also turns <code>send_aggregation_metrics</code> off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Low</td>
+<td>47</td>
+<td>$2.34</td>
+<td>$1.92</td>
+</tr>
+<tr>
+<td><strong>Expected</strong></td>
+<td><strong>92</strong></td>
+<td><strong>$4.61</strong></td>
+<td><strong>$3.77</strong></td>
+</tr>
+<tr>
+<td>High</td>
+<td>172</td>
+<td>$8.59</td>
+<td>$7.00</td>
+</tr>
+</tbody></table></div>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Installations</th>
+<th>Before, expected</th>
+<th>After, expected</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>50</td>
+<td>$2,984/mo</td>
+<td>$231/mo</td>
+</tr>
+<tr>
+<td>150</td>
+<td>$8,953/mo</td>
+<td>$692/mo</td>
+</tr>
+<tr>
+<td>300</td>
+<td>$17,905/mo</td>
+<td>$1,384/mo</td>
+</tr>
+</tbody></table></div>
+<p><strong>Assumptions</strong> for the expected case:</p>
+<ul>
+<li>the daemon runs 45% of hours;</li>
+<li>each activity series reports in about 8% of hours;</li>
+<li>the typical installation uses 2 agents, 2 runtimes, 4 task kinds, 3 effort levels, 4
+models and about 50 of the 188 action names;</li>
+<li>label value counts come from the catalog&#39;s own schemas, with model labels capped at the
+17 shipped models plus <code>other</code> and <code>unknown</code>.</li>
+</ul>
+<p>The activity duty cycle is the weakest input. The model is <code>.tmp/cost-model.py</code>, which is
+gitignored and uncommitted, so its method is written out here rather than linked. Trace
+cost is not in these figures: APM span ingestion and indexing are measured in the pilot.</p>
+<p><strong>Pilot gate.</strong> The default does not turn on for every Upstart Mac until a pilot passes:</p>
+<ul>
+<li>5 to 10 volunteer installations run <code>datadog-lean</code> for one week. Because Settings is
+view-only on Upstart Macs, volunteers enroll their Mac with one documented call,
+<code>POST /api/telemetry/organization/pilot</code>, which exists only while the rollout is in its pilot
+stage;</li>
+<li><code>datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}</code> divided by the
+number of pilot installations must be <strong>150 or fewer</strong> per installation, about $7.50 a
+month at list price;</li>
+<li>the pilot also records APM span volume for <code>service:mission-control</code>.</li>
+</ul>
+<p>If the pilot runs higher, the shape is trimmed further before rollout.</p>
+<h3 id="settings-telemetry">Settings &gt; Telemetry</h3>
+<p>Who can edit follows the human decision recorded on 2026-09-29: only people on machines that
+are not Upstart-managed edit telemetry settings.</p>
+<ul>
+<li><strong>On a Mac that is not Upstart-managed</strong>, everything is editable, and no Upstart text
+appears anywhere. The status response carries <code>organization: null</code>, and the browser renders
+nothing for it, as with the UpstartClaw row.<ul>
+<li>The panel works as it does today.</li>
+<li>Each remote destination gains two editable controls, so a person can configure a
+Datadog-compatible destination by hand:<ul>
+<li><strong>Metric temporality:</strong> &quot;Cumulative (Prometheus, Grafana)&quot; or &quot;Delta (Datadog)&quot;;</li>
+<li><strong>Export shape:</strong> &quot;Full&quot; or &quot;Datadog lean&quot;, with the shape&#39;s sentence about what it
+leaves out.</li>
+</ul>
+</li>
+<li>They save with the destination&#39;s existing Save button, under the same revision rules.</li>
+</ul>
+</li>
+<li><strong>On an Upstart-managed Mac</strong>, Settings &gt; Telemetry is <strong>view-only</strong>.<ul>
+<li>A &quot;Managed by Upstart&quot; block at the top names the organization and its evidence.</li>
+<li>It shows the state in plain words: &quot;Sending to Upstart&#39;s Datadog&quot;, &quot;Waiting for the
+Upstart network&quot;, or, during the pilot, &quot;Not enrolled in the pilot on this Mac&quot;.</li>
+<li>It lists the effective configuration read-only: destination, endpoint, temporality,
+export shape (with the sentence naming what it leaves out), environment and network gate.</li>
+<li>No switch, field, Save, credential, purge or identity-reset control is shown, and the
+daemon refuses those changes if they are attempted directly.</li>
+<li><strong>Test connection</strong>, <strong>Try again</strong> after a pause, and <strong>Re-check</strong> remain, because they
+change no setting. Re-check re-runs detection, as the Setup panel does for agent
+extensions.</li>
+</ul>
+</li>
+</ul>
+<h3 id="the-datadog-dashboard">The Datadog dashboard</h3>
+<p>One Datadog dashboard, <strong>Mission Control</strong>, is kept as code at
+<code>observability/datadog/dashboards/mission-control.json</code>, beside the Grafana dashboards in
+<code>observability/grafana/dashboards/</code>. The JSON is the source of truth. Applying it to
+Upstart&#39;s Datadog organization is an outward-facing write, so a person does it, or
+authorizes it explicitly. The repository never applies it automatically.</p>
+<p>It reads only what <code>datadog-lean</code> actually sends:</p>
+<ul>
+<li><strong>Adoption:</strong> distinct installations over 1, 7 and 28 days, counted as distinct
+<code>service.instance.id</code> values on the hourly telemetry-health heartbeat, with the session spans
+as a cross-check.</li>
+<li><strong>Sessions and dispatch:</strong><ul>
+<li>sessions started and ended by agent, runtime and task kind;</li>
+<li>dispatch outcomes;</li>
+<li>p50 and p95 of turn and dispatch duration.</li>
+</ul>
+</li>
+<li><strong>Usage:</strong> tokens and API-equivalent cost by model and usage origin, labelled as never
+subscription billing.</li>
+<li><strong>Outcomes:</strong> task outcomes with their completion evidence, and verified pull request
+facts.</li>
+<li><strong>Workflows and Personas:</strong><ul>
+<li>runs started and finished;</li>
+<li>node dispositions;</li>
+<li>reviewer verdicts;</li>
+<li>finding categories.</li>
+</ul>
+</li>
+<li><strong>Reliability:</strong> errors by component and code, and action outcomes by feature.</li>
+<li><strong>Telemetry health:</strong> pending items, the oldest pending age, and the last accepted time per
+installation.</li>
+<li><strong>Cost watch:</strong> <code>datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}</code>,
+against the 150-per-installation gate.</li>
+</ul>
+<p>Every widget filters to <code>service:mission-control</code> with an <code>env</code> template variable that
+defaults to <code>corp</code> and excludes <code>test</code>, <code>local</code> and <code>development</code>. No widget depends on the
+cohort gauges, which this destination never receives.</p>
+<h3 id="privacy-and-consent">Privacy and consent</h3>
+<ul>
+<li>The data is a subset of Product analytics&#39; existing fact set, narrowed further by the lean
+export shape. That includes bounded enums, durations, token counts, model ids from the
+shipped catalog, and pseudonymous per-destination ids.</li>
+<li>It never includes prompts, code, paths, branches, repository or PR URLs, terminal output,
+names, hostnames or user names.</li>
+<li>Default-on, and the fact that Upstart users cannot change it, is the device owner&#39;s decision,
+made through its MDM and recorded on 2026-09-29. It changes the off-by-default contract only
+on Macs that pass detection. <code>docs/observability.md</code> and <code>docs/upstart.md</code> will say so
+plainly, including that the setting is managed on those Macs.</li>
+<li>The gateway also copies metrics to a second destination its owners run. That is the gateway
+owners&#39; policy, and it is listed as a rollout prerequisite below.</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<ul>
+<li><p><strong>Unit (<code>test/</code>):</strong></p>
+<ul>
+<li>the detection parser, over fixtures for:<ul>
+<li>Upstart enrolled;</li>
+<li>enrollment <code>No</code> while a Jamf file still names Upstart;</li>
+<li>another company&#39;s Jamf Cloud tenant, and self-hosted Jamf;</li>
+<li>Kandji and Intune;</li>
+<li>the lookalikes <code>notupstart.jamfcloud.com</code>, <code>upstart-sandbox.jamfcloud.com</code>,
+<code>upstart.jamfcloud.com.example.com</code>, <code>http://upstart.jamfcloud.com</code> and a
+<code>user@upstart.jamfcloud.com</code> authority, all of which must fail;</li>
+<li>uppercase and trailing-dot forms of the real host, which must match;</li>
+<li>a missing <code>MDM server</code> line, with and without the Jamf fallback;</li>
+<li>malformed output, a non-zero exit and a timeout;</li>
+</ul>
+</li>
+<li>every guard, and the rule that a forced organization without a loopback endpoint is
+ignored;</li>
+<li>apply, keep in step and withdraw, including restoring the stored product destination and
+master switch on withdrawal;</li>
+<li>a person&#39;s change to telemetry settings refused while the organization is active, and
+accepted again after withdrawal;</li>
+<li>the temporality and export-shape controls saving on a machine that is not managed;</li>
+<li>delta batches across restart and replay, and zero deltas never sent;</li>
+<li>classification of edge 403s against other 403s;</li>
+<li>the <code>datadog-lean</code> shape against a real batch:<ul>
+<li>no <code>mission.analytics.v1.*</code> series;</li>
+<li>the constant host attribute;</li>
+<li>each trimmed metric aggregated without its dropped labels;</li>
+<li>the seven minor histograms as sum and count counters;</li>
+<li>the budget folding into overflow at 1,500 weighted series;</li>
+<li>the default shape still exporting everything, byte for byte.</li>
+</ul>
+</li>
+</ul>
+<p>Detection is injected, and under the test runner it is off. Every existing default-off test
+stays green without changes.</p>
+</li>
+<li><p><strong>E2E (<code>e2e/</code>):</strong></p>
+<ul>
+<li>A spec forces <code>MISSION_ORGANIZATION=upstart</code> and redirects the preset endpoint to the
+suite&#39;s local fake collector, so no spec ever reaches the real gateway. It covers:<ul>
+<li>the &quot;Managed by Upstart&quot; block and its evidence;</li>
+<li>the effective configuration shown read-only, with no editing control on the page;</li>
+<li>a direct settings change refused by the daemon;</li>
+<li>sending once the lane is on, and the waiting-for-network state.</li>
+</ul>
+</li>
+<li>A second spec asserts that without the override, no Upstart text appears in Settings &gt;
+Telemetry, no notice appears, and the temporality and export-shape controls save and
+survive a reload.</li>
+<li>The notice appears once after the default turns sending on. Dismissing it survives a
+reload.</li>
+<li>The Cost panel names a managed-policy redirect when a fixture policy sets one, and keeps
+today&#39;s wording when none does.</li>
+</ul>
+</li>
+<li><p><strong>Dashboard:</strong> a unit test validates <code>mission-control.json</code> against the metric names and
+labels <code>datadog-lean</code> exports, so a widget cannot query a dropped label, an excluded family
+or a renamed metric.</p>
+</li>
+<li><p><strong>Against the real gateway.</strong> The metric path was validated on 2026-09-25, as recorded
+above. Still to do, once, with human authorization, using an installation with
+<code>MISSION_TELEMETRY_ENVIRONMENT=test</code>:</p>
+<ul>
+<li>the real daemon&#39;s delta counts, which must match its own health counts;</li>
+<li>one span through the traces path, which must appear in APM;</li>
+<li>the off-VPN response, captured to confirm the gate&#39;s fingerprint;</li>
+<li>a deliberately re-sent delta batch, to learn whether Datadog overwrites a point with the
+same series and timestamp or adds to it;</li>
+<li>one installation&#39;s measured series count;</li>
+<li>the pilot gate described in <a href="#datadog-cost">Datadog cost</a>.</li>
+</ul>
+</li>
+</ul>
+<h3 id="rollout-prerequisites">Rollout prerequisites</h3>
+<p>These are outward-facing. They are for a person to do, and this plan does none of them.</p>
+<ol>
+<li>Tell the <code>corp-otel-gateway</code> owners that <code>service.name=mission-control</code> will start sending
+metrics and traces, and share the cost estimate above. Then:<ul>
+<li>confirm that the gateway&#39;s copy of metrics to its second destination is acceptable;</li>
+<li>confirm that staging-1 remains the address until production opens;</li>
+<li>agree the constant-host approach, or ask for a fixed hostname for this service;</li>
+<li>ask whether <code>send_aggregation_metrics</code> can be turned off. That would also reduce
+Claude Code&#39;s histogram cost.</li>
+</ul>
+</li>
+<li>Have the Datadog custom-metrics estimate, and then the pilot&#39;s measured figure, reviewed
+by whoever owns that budget.</li>
+<li>The built-in preset was chosen, so confirm that publishing the gateway hostname in this
+repository is acceptable. <code>teamupstart/mission-control</code> is <strong>public</strong> on GitHub, checked
+with <code>gh</code> on 2026-09-25. The hostname is already in public DNS.</li>
+<li>Apply the Datadog dashboard definition to Upstart&#39;s Datadog organization, or authorize an
+agent to apply it.</li>
+</ol>
+<h2 id="adjacent-finding-cost-telemetry-is-silent-at-upstart">Adjacent finding: Cost telemetry is silent at Upstart</h2>
+<p>On this Mac, <code>GET /api/cost/config</code> returns <code>exporterSilent: true</code>. Mission Control&#39;s Cost
+switch writes a generic <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> into <code>~/.claude/settings.json</code>. Upstart&#39;s
+managed policy sets the signal-specific <code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code>, and the OTel
+SDK prefers the specific variable. So Claude Code&#39;s metrics go to the corporate gateway and
+never reach the daemon.</p>
+<p>The Cost panel&#39;s warning blames &quot;a managed policy [that] disables telemetry&quot;, but the policy
+redirects telemetry rather than disabling it. Mission Control cannot override managed
+settings, and should not try.</p>
+<p><strong>In scope by decision: name the cause precisely.</strong> The fix is generic, not Upstart code:</p>
+<ul>
+<li><p>Read Claude Code&#39;s managed settings, both the MDM domain
+<code>/Library/Managed Preferences/com.anthropic.claudecode.plist</code> and
+<code>/Library/Application Support/ClaudeCode/managed-settings.json</code>, when present.</p>
+</li>
+<li><p>When their <code>env</code> block sets <code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code>, or a generic endpoint,
+to anything other than this daemon, the warning names the host:</p>
+<blockquote>
+<p>Your organization&#39;s managed Claude Code policy sends metrics to
+corp-otel-staging-1.upstart.com, so the estimate covers only sessions Mission Control
+runs.</p>
+</blockquote>
+</li>
+<li><p>On an Upstart-managed Mac, the organization&#39;s label replaces &quot;your organization&quot;.</p>
+</li>
+<li><p>The read is bounded and fails closed like the other environment checks. Only the host is
+shown, never a path, query or header.</p>
+</li>
+<li><p>When no managed policy redirects metrics, today&#39;s wording is unchanged.</p>
+</li>
+</ul>
+
+<figure class="diagram">
+<svg viewBox="0 0 940 330" role="img" aria-labelledby="d2t d2d">
+  <title id="d2t">Why Claude Code metrics never reach Mission Control at Upstart</title>
+  <desc id="d2d">Upstart's MDM pushes a managed Claude Code policy with a signal-specific metrics endpoint. Claude Code sends metrics to corp-otel-gateway and on to Datadog. Mission Control's generic endpoint loses to the specific one, so nothing reaches Mission Control's receiver.</desc>
+  
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="dg-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="dg-head-accent" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect x="20" y="20" width="260" height="64" rx="10" class="dg-box "/><text x="150" y="48" text-anchor="middle" class="dg-title">Upstart MDM</text><text x="150" y="66" text-anchor="middle" class="dg-sub">managed Claude Code policy</text>
+  <path class="dg-edge" d="M150,84 L150,146" marker-end="url(#ah)"/>
+  <text x="162" y="112" class="dg-edge-label left">OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</text>
+  <text x="162" y="128" class="dg-edge-label left">(signal-specific, wins)</text>
+  <rect x="20" y="150" width="260" height="64" rx="10" class="dg-box "/><text x="150" y="178" text-anchor="middle" class="dg-title">Claude Code session</text><text x="150" y="196" text-anchor="middle" class="dg-sub">plus the Cost switch's endpoint</text>
+  <path class="dg-edge accent" d="M280,170 L402,170" marker-end="url(#ahA)"/>
+  <text x="341" y="160" text-anchor="middle" class="dg-edge-label">metrics</text>
+  <rect x="406" y="138" width="220" height="64" rx="10" class="dg-box accent"/><text x="516" y="166" text-anchor="middle" class="dg-title">corp-otel-gateway</text><text x="516" y="184" text-anchor="middle" class="dg-mono-sm">corp-otel-staging-1.upstart.com</text>
+  <path class="dg-edge accent" d="M626,170 L712,170" marker-end="url(#ahA)"/>
+  <rect x="716" y="138" width="204" height="64" rx="10" class="dg-box "/><text x="818" y="166" text-anchor="middle" class="dg-title">Datadog</text><text x="818" y="184" text-anchor="middle" class="dg-mono-sm">claude_code.* metrics</text>
+  <path class="dg-edge dashed" d="M280,200 L398,262"/>
+  <path class="dg-x" d="M398,259 L410,271 M410,259 L398,271"/>
+  <text x="252" y="258" text-anchor="middle" class="dg-edge-label">generic endpoint</text>
+  <text x="252" y="274" text-anchor="middle" class="dg-edge-label">loses: nothing arrives</text>
+  <rect x="426" y="238" width="220" height="64" rx="10" class="dg-box muted"/><text x="536" y="266" text-anchor="middle" class="dg-title">Mission Control</text><text x="536" y="284" text-anchor="middle" class="dg-mono-sm">/v1/metrics receiver</text>
+</svg>
+<figcaption>The adjacent finding. On this Mac the Cost panel reports <code>exporterSilent: true</code>, which is consistent with this path.</figcaption>
+</figure>
+<details class="src"><summary>Diagram source (Mermaid, as in plan.md)</summary><pre><code>flowchart LR
+  POL[Upstart MDM: managed Claude Code policy] -- OTEL_EXPORTER_OTLP_METRICS_ENDPOINT --&gt; CC[Claude Code session]
+  CC -- metrics, protobuf --&gt; GW[corp-otel-gateway] --&gt; DD[Datadog]
+  CC -. generic endpoint loses to the specific one .-x MC[Mission Control /v1/metrics]</code></pre></details>
+<h2 id="risks-and-open-questions">Risks and open questions</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Handling</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Delta replay after an ambiguous acknowledgement double-counts, if Datadog does not overwrite points with the same timestamp</td>
+<td>Measured in Phase 1. The window is one in-flight request per destination.</td>
+</tr>
+<tr>
+<td>The off-network response is not a recognizable Cloudflare 403</td>
+<td>Phase 1 captures it with the VPN off before the gate is written.</td>
+</tr>
+<tr>
+<td>The gateway owners move to <code>corp-otel.upstart.com</code></td>
+<td>Bump the preset version. The next start moves every Upstart Mac to the new address.</td>
+</tr>
+<tr>
+<td>An Upstart user wants to change or stop the lane</td>
+<td>By the 2026-09-29 decision, Upstart manages it: Settings is view-only and the daemon refuses direct changes. Questions go to the lane&#39;s owners, and the source of truth is <code>docs/upstart.md</code>.</td>
+</tr>
+<tr>
+<td>Datadog custom-metric cost</td>
+<td>The <code>datadog-lean</code> shape brings the expected figure from about $60 to about $4.60 per installation per month. The series budget caps any installation at 1,500 custom metrics in an hour. The pilot gate requires 150 or fewer before default-on.</td>
+</tr>
+<tr>
+<td>The constant host value makes Datadog bill laptops as infrastructure hosts</td>
+<td>The pilot checks the host list and usage. The fallback is a fixed hostname set by the gateway for this service.</td>
+</tr>
+<tr>
+<td>Trace cost is unmeasured</td>
+<td>The pilot records APM span volume before default-on.</td>
+</tr>
+<tr>
+<td>Filters on <code>env:corp</code> also match test and local data</td>
+<td>The preset gives real installs <code>env:corp</code> alone. Datadog views exclude <code>env:test</code>, <code>env:local</code> and <code>env:development</code>.</td>
+</tr>
+<tr>
+<td>An Upstart developer&#39;s own dev or worktree daemons ship test data</td>
+<td>The launch-mode, test-runner and temp-home guards, plus <code>MISSION_ORGANIZATION=none</code>.</td>
+</tr>
+<tr>
+<td>A non-Upstart Jamf customer, or anyone else, is detected as Upstart</td>
+<td>Active enrollment plus an exact-host allowlist, with no vendor, suffix or app matching. Lookalike and other-tenant fixtures must fail. A forced override cannot reach the real gateway.</td>
+</tr>
+<tr>
+<td>macOS changes the <code>profiles status</code> output</td>
+<td>Detection fails closed, so nothing turns on anywhere. The Jamf <code>jss_url</code> fallback covers only a missing server line, never a missing enrollment. There are parser fixtures per output shape.</td>
+</tr>
+<tr>
+<td>Upstart moves to a new Jamf tenant or a custom MDM domain</td>
+<td>Add the host to the preset&#39;s allowlist and bump the preset version. Until then, Upstart Macs fail closed.</td>
+</tr>
+</tbody></table></div>
+<h2 id="decisions">Decisions</h2>
+<p>The first five rows were submitted in the Mission Control dashboard on 2026-09-28. The last
+two were given by the human on 2026-09-29.</p>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Adopted</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How Mission Control recognizes Upstart and gets its defaults</td>
+<td><strong>A built-in Upstart preset, switched on by Jamf enrollment</strong>, using the detection rule and guards above</td>
+</tr>
+<tr>
+<td>Which destination carries the lane</td>
+<td><strong>Product analytics</strong></td>
+</tr>
+<tr>
+<td>What an Upstart user experiences when it turns on</td>
+<td><strong>On by default, with a one-time notice</strong>, as in <a href="#the-one-time-notice">The one-time notice</a></td>
+</tr>
+<tr>
+<td>Extra scope</td>
+<td><strong>The precise Cost-panel warning</strong> and <strong>the Datadog dashboard</strong></td>
+</tr>
+<tr>
+<td>Follow-up</td>
+<td><strong>Create the phased implementation plan</strong></td>
+</tr>
+<tr>
+<td>Who may edit telemetry settings (2026-09-29)</td>
+<td><strong>Only people on machines that are not Upstart-managed.</strong> Upstart employees using the Upstart configuration see it but do not edit it. This supersedes the original request&#39;s &quot;viewable in settings and editable&quot; for Upstart users; people on every other machine keep editing, including the new Datadog-compatibility controls.</td>
+</tr>
+<tr>
+<td>Publishing to this public repository (2026-09-29)</td>
+<td><strong>Redact the internal details, then push and schedule the phases.</strong> Secret and profile names, the gateway&#39;s authentication posture, other destinations and owners, pod names, organization-wide usage figures, and managed-policy logging details are left out of the repository.</td>
+</tr>
+</tbody></table></div>
+<h2 id="not-in-scope">Not in scope</h2>
+<ul>
+<li>Any change to <code>corp-otel-gateway</code>, Cloudflare, Jamf or Datadog configuration.</li>
+<li>Exporting logs.</li>
+<li>Porting the Grafana dashboards. They depend on PromQL and Prometheus name translation.</li>
+<li>Anything that identifies a person or a machine.</li>
+<li>A documented direct-to-Datadog recipe for people outside Upstart. The generic capabilities
+here make one possible, but this work neither verifies nor documents it.</li>
+<li>Reading the gateway endpoint from Upstart&#39;s managed Claude Code policy, or from an
+IT-pushed Mission Control profile. The endpoint is built into the preset.</li>
+</ul>
+
+<footer>Rendered from <code>docs/plans/upstart-datadog-telemetry/plan.md</code>, which is the source of truth.</footer>
+</main>
+</body>
+</html>

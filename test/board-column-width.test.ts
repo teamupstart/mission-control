@@ -231,6 +231,27 @@ test("an empty Needs you is the all-clear rail with no width control, unless it 
   assert.match(html, /aria-label="Restore needs you, 0 cards"/);
 });
 
+test("the Backlog leaves the tab order during a drill-in, collapsed or not", async () => {
+  // The morph folds every non-rail column to zero width. A strip or card nobody can see must
+  // not keep its controls reachable by Tab, which the tone columns already guarantee.
+  const session = mkSession();
+  const drilled = { ...props([session]), detailId: session.id };
+  const backlogSection = (html: string): string =>
+    /<section class="board-col board-backlog[^"]*"[^>]*>/.exec(html)?.[0] ?? "";
+
+  const normal = backlogSection(renderToStaticMarkup(createElement(BoardView, drilled)));
+  assert.ok(normal, "the Backlog must render");
+  assert.match(normal, /\binert=""/);
+
+  const collapsed = backlogSection(await boardWithCollapsed(["backlog"], drilled));
+  assert.match(collapsed, /is-collapsed/);
+  assert.match(collapsed, /\binert=""/);
+
+  // And back on the overview, it is reachable again.
+  const overview = backlogSection(renderToStaticMarkup(createElement(BoardView, props([session]))));
+  assert.doesNotMatch(overview, /\binert/);
+});
+
 test("the drilled-in rail is never a strip and offers no width control", async () => {
   // A session in a collapsed column can still be opened - from the Line, the palette, a
   // notification - and the rail is a fixed-width console fixture that has to show its rows.

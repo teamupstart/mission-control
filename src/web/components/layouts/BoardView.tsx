@@ -331,6 +331,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       <BacklogColumn
         width={columnWidthOf(widths, "backlog")}
         onWidthChange={(width) => setColumnWidth("backlog", width)}
+        inert={focusedTone != null}
         tasks={props.backlog}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),

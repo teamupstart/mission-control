@@ -95,6 +95,7 @@ export function BacklogColumn({
   plan,
   width,
   onWidthChange,
+  inert = false,
   onAssignError,
   onDragging,
   onEdit,
@@ -119,6 +120,12 @@ export function BacklogColumn({
    */
   width?: ColumnWidth;
   onWidthChange?: (width: ColumnWidth) => void;
+  /**
+   * Whether the board has drilled into a session. The Backlog is never the rail, so the morph
+   * folds it to zero width, and a column nobody can see must not keep its controls in the tab
+   * order. The same rule the board applies to every non-rail tone column.
+   */
+  inert?: boolean;
   onAssignError: (message: string) => void;
   /** The repo of the card now in the air, or null when nothing is being dragged. */
   onDragging: (repoRoot: string | null) => void;
@@ -351,7 +358,7 @@ export function BacklogColumn({
   // hook above, so folding and unfolding never changes the hook order.
   if (width === "collapsed" && onWidthChange) {
     return (
-      <section className="board-col board-backlog is-collapsed">
+      <section className="board-col board-backlog is-collapsed" inert={inert}>
         <CollapsedColumnStrip
           label="Backlog"
           count={tasks.length}
@@ -370,6 +377,7 @@ export function BacklogColumn({
       className={`board-col board-backlog${wide ? " is-wide" : ""}${
         inAir === null ? "" : " is-reordering"
       }${selectedTasks.length > 0 ? " has-selection" : ""}`}
+      inert={inert}
       // Keys for the selection, only while focus is inside this column, so neither one
       // reaches past it: Escape here does not also close the board's drill-in, and
       // Cmd/Ctrl-A selects cards rather than the page's text. A form control keeps both

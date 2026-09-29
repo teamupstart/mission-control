@@ -108,6 +108,9 @@ Findings. Line numbers were taken on 2026-09-28.
   `MDM server: https://upstart.jamfcloud.com/mdm/ServerURL`, needs no admin rights, and takes
   about 30 ms.
 - `/Library/Preferences/com.jamfsoftware.jamf.plist` is `root:wheel 0644` and holds `jss_url`.
+  **It is not used for detection.** It can outlive an unenrollment, and nothing in it ties it
+  to the Mac's current enrollment. On a Mac later enrolled in another organization's MDM, it
+  would still name Upstart.
 
 Inherited:
 
@@ -143,7 +146,8 @@ Inherited:
      - `-extract` is used rather than `-convert`, so dates or data elsewhere in the plist
        cannot fail the read, and only the requested subtree is loaded.
 
-   Phase 4 reuses `readPlistValue`.
+   Detection uses only `readMdmEnrollment`. `readPlistValue` is built here for Phase 4's
+   managed-settings reader, and detection never calls it.
 3. **Organization registry.**
    - **Shared, browser-safe (`src/shared/organizations.ts`):** `ORGANIZATION_IDS = ["upstart"] as const`,
      which is append-only, and the wire type `TelemetryOrganizationStatus`.
@@ -166,10 +170,12 @@ Inherited:
        with a trailing dot stripped, is in an entry's `mdmHosts`.
 
      There is no suffix, substring, vendor or app matching.
-   - **The URL's source.** The URL comes from the `MDM server` line. Only when that line is
-     absent does it come from
-     `readPlistValue("/Library/Preferences/com.jamfsoftware.jamf.plist", "jss_url")`, and
-     enrollment is still required.
+   - **The URL's source.** The URL comes **only** from the `MDM server` line of the same
+     `profiles status` output that reported `MDM enrollment: Yes`. Both facts therefore
+     describe the current enrollment.
+     - A missing, empty or unparseable `MDM server` line means no organization. It fails
+       closed.
+     - No file, including Jamf's `jss_url`, is consulted as a fallback.
    - **Other platforms.** Detection returns `null` without running anything on any platform
      other than `darwin`.
    - **Guards.** Detection only runs, and its result only counts, when all of these hold:
@@ -319,7 +325,13 @@ Unit tests:
     - the lookalikes `notupstart.jamfcloud.com`, `upstart-sandbox.jamfcloud.com`,
       `upstart.jamfcloud.com.example.com`, `http://upstart.jamfcloud.com` and
       `https://user@upstart.jamfcloud.com`;
-  - a missing `MDM server` line, with and without the fallback;
+  - a missing `MDM server` line, which must fail, including when the injected file reader
+    would return a Jamf plist naming Upstart. The test also asserts that detection never calls
+    the file reader;
+  - active enrollment in another organization's MDM (`MDM enrollment: Yes`), with no
+    `MDM server` line and a stale Upstart `jss_url` plist present, which must fail;
+  - active enrollment in another organization's MDM with its own `MDM server` line, and the
+    same stale plist, which must fail;
   - malformed output, a non-zero exit, a timeout and an overflow;
   - a non-darwin platform, which must not call `run`.
 - **Guards and overrides:**
@@ -438,6 +450,15 @@ Must not change without an audit entry:
 - **2026-09-29, repair round 2:** the human recorded the editing decision in the Mission
   Control dashboard as "No: view-only for Upstart users; only non-Upstart users edit settings",
   confirming the view-only design above. Nothing in this phase changed.
+- **2026-09-29, repair round 7:**
+  - Removed the Jamf `jss_url` fallback. A Mac that left Upstart kept the file, and was then
+    enrolled in another organization's MDM, would have passed "active enrollment" plus a stale
+    Upstart plist whenever the `MDM server` line was missing.
+  - The server URL now comes only from the same `profiles` output as the enrollment, and a
+    missing line fails closed.
+  - Added tests for another MDM with a stale Upstart plist, with and without an `MDM server`
+    line, and one asserting detection never reads a file.
+  - `readPlistValue` stays, for Phase 4.
 - **2026-09-29, repair round 4:**
   - The first-application rule left `product.enabled` "as it was". A Mac whose Product
     analytics destination was already on would then have sent to the gateway before

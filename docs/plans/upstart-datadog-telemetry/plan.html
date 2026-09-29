@@ -323,7 +323,7 @@ organization&#39;s API.</li>
 </tr>
 <tr>
 <td><code>/Library/Preferences/com.jamfsoftware.jamf.plist</code> <code>jss_url</code></td>
-<td><code>https://upstart.jamfcloud.com/</code></td>
+<td><code>https://upstart.jamfcloud.com/</code>. Corroborating only, and not used for detection; see below.</td>
 </tr>
 <tr>
 <td><code>/Library/Managed Preferences/</code></td>
@@ -441,8 +441,8 @@ an app, or the person.</p>
 </tr>
 <tr>
 <td>Jamf <code>jss_url</code> host is exactly <code>upstart.jamfcloud.com</code> (<code>/Library/Preferences/com.jamfsoftware.jamf.plist</code>, owned by root, mode 644)</td>
-<td>Jamf on this Mac was configured for Upstart&#39;s tenant</td>
-<td><strong>Fallback only</strong>, and only while macOS reports an active enrollment. Used solely when macOS stops printing the <code>MDM server</code> line. It is never enough on its own, because the file can outlive an unenrollment.</td>
+<td>Jamf on this Mac was configured for Upstart&#39;s tenant at some point</td>
+<td><strong>Reject, including as a fallback.</strong> The file can outlive an unenrollment. On a Mac that later enrolls in another organization&#39;s MDM, &quot;active enrollment&quot; plus a stale Upstart <code>jss_url</code> would wrongly pass, and nothing in the file ties it to the current enrollment.</td>
 </tr>
 <tr>
 <td>Jamf installed, or any <code>*.jamfcloud.com</code> host</td>
@@ -477,13 +477,15 @@ an app, or the person.</p>
 <li><strong>Upstart&#39;s tenant, exactly.</strong> The enrolled server&#39;s URL parses with scheme <code>https</code>, and
 its hostname, lowercased with any trailing dot removed, equals an entry in the preset&#39;s
 host allowlist. Today that list is <code>upstart.jamfcloud.com</code> and nothing else. The hostname
-comes from the <code>MDM server</code> line. The Jamf <code>jss_url</code> is read only when that line is
-absent, and condition 1 still applies.</li>
+comes <strong>only</strong> from the <code>MDM server</code> line of the same <code>profiles status</code> output that
+reported the enrollment, so both conditions describe the current enrollment. A missing,
+empty or unparseable <code>MDM server</code> line means no organization. No file is consulted as a
+fallback.</li>
 </ol>
 <p>There is no suffix, substring, vendor or app matching anywhere. A Jamf Cloud instance
 hostname belongs to one Jamf customer, so an exact match names one organization. A
 self-hosted Jamf server, another company&#39;s <code>*.jamfcloud.com</code> tenant, and every other MDM
-fail condition 2. Both reads run through a fixed-argument command with an absolute path, a
+fail condition 2. The read runs through a fixed-argument command with an absolute path, a
 2-second timeout and no shell. Any other platform, error, timeout or unexpected output means
 no organization. It fails closed: an unreadable result turns nothing on. Detection runs once
 at daemon start and again on an explicit Re-check.</p>
@@ -513,6 +515,10 @@ at daemon start and again on an explicit Re-check.</p>
 <tr>
 <td>Mac that left Upstart&#39;s MDM but still has Jamf files naming Upstart</td>
 <td>Nothing changes: enrollment reads <code>No</code></td>
+</tr>
+<tr>
+<td>That same Mac, now enrolled in another organization&#39;s MDM</td>
+<td>Nothing changes: the <code>MDM server</code> line names the other organization, or is missing. Either way there is no match, and the stale Jamf file is never read.</td>
 </tr>
 <tr>
 <td>Linux, Windows, or a container</td>
@@ -1130,7 +1136,9 @@ owners&#39; policy, and it is listed as a rollout prerequisite below.</li>
 <code>upstart.jamfcloud.com.example.com</code>, <code>http://upstart.jamfcloud.com</code> and a
 <code>user@upstart.jamfcloud.com</code> authority, all of which must fail;</li>
 <li>uppercase and trailing-dot forms of the real host, which must match;</li>
-<li>a missing <code>MDM server</code> line, with and without the Jamf fallback;</li>
+<li>a missing <code>MDM server</code> line, which must fail even when a Jamf plist names Upstart;</li>
+<li>active enrollment in another organization&#39;s MDM, with a stale Upstart Jamf plist and no
+<code>MDM server</code> line, which must fail;</li>
 <li>malformed output, a non-zero exit and a timeout;</li>
 </ul>
 </li>
@@ -1335,11 +1343,11 @@ shown, never a path, query or header.</p>
 </tr>
 <tr>
 <td>A non-Upstart Jamf customer, or anyone else, is detected as Upstart</td>
-<td>Active enrollment plus an exact-host allowlist, with no vendor, suffix or app matching. Lookalike and other-tenant fixtures must fail. A forced override cannot reach the real gateway.</td>
+<td>Active enrollment plus an exact-host allowlist, both read from the same <code>profiles</code> output, with no vendor, suffix, app or file matching. No file fallback is used, so a stale Upstart Jamf plist on a Mac now enrolled elsewhere cannot match. Lookalike, other-tenant and stale-plist fixtures must fail. A forced override cannot reach the real gateway.</td>
 </tr>
 <tr>
 <td>macOS changes the <code>profiles status</code> output</td>
-<td>Detection fails closed, so nothing turns on anywhere. The Jamf <code>jss_url</code> fallback covers only a missing server line, never a missing enrollment. There are parser fixtures per output shape.</td>
+<td>Detection fails closed, so nothing turns on anywhere, and no file fallback can misfire. Upstart Macs then see today&#39;s behaviour until the parser is updated in a release. There are parser fixtures per output shape, and the macOS version is recorded in the evidence fixture.</td>
 </tr>
 <tr>
 <td>Upstart moves to a new Jamf tenant or a custom MDM domain</td>

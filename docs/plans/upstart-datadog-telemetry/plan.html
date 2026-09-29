@@ -493,10 +493,10 @@ which forwards to Datadog.</p>
   <desc id="d1d">Before: the product destination has no address and nothing leaves the Mac. After, on an Upstart-managed Mac: the daemon sends OTLP over HTTP with delta sums and no credential to Upstart's telemetry gateway, whose endpoint is kept in the local internal notes. The gateway forwards metrics and traces to Datadog.</desc>
   
   <defs>
-    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path class="dg-head" d="M0,0 L10,5 L0,10 z"/>
     </marker>
-    <marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <marker id="ahA1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path class="dg-head-accent" d="M0,0 L10,5 L0,10 z"/>
     </marker>
   </defs>
@@ -510,11 +510,11 @@ which forwards to Datadog.</p>
   <line x1="20" y1="132" x2="920" y2="132" class="dg-rule"/>
   <text x="20" y="160" class="dg-label">After, on an Upstart-managed Mac</text>
   <rect x="20" y="196" width="240" height="84" rx="10" class="dg-box "/><text x="140" y="225" text-anchor="middle" class="dg-title">Mission Control daemon</text><text x="140" y="243" text-anchor="middle" class="dg-sub">Product analytics destination</text><text x="140" y="261" text-anchor="middle" class="dg-sub">Upstart preset applied</text>
-  <path class="dg-edge accent" d="M260,238 L352,238" marker-end="url(#ahA)"/>
+  <path class="dg-edge accent" d="M260,238 L352,238" marker-end="url(#ahA1)"/>
   <text x="306" y="226" text-anchor="middle" class="dg-edge-label">OTLP/HTTP</text>
   <text x="306" y="256" text-anchor="middle" class="dg-edge-label">delta, no key</text>
   <rect x="356" y="188" width="272" height="100" rx="10" class="dg-box accent"/><text x="492" y="225" text-anchor="middle" class="dg-title">Upstart telemetry gateway</text><text x="492" y="243" text-anchor="middle" class="dg-sub">endpoint: internal notes</text><text x="492" y="261" text-anchor="middle" class="dg-sub">Reached on the corporate network</text>
-  <path class="dg-edge accent" d="M628,238 L732,238" marker-end="url(#ahA)"/>
+  <path class="dg-edge accent" d="M628,238 L732,238" marker-end="url(#ahA1)"/>
   <text x="682" y="226" text-anchor="middle" class="dg-edge-label">metrics + traces</text>
   <rect x="736" y="204" width="184" height="68" rx="10" class="dg-box "/><text x="828" y="234" text-anchor="middle" class="dg-title">Datadog</text><text x="828" y="252" text-anchor="middle" class="dg-mono-sm">service:mission-control</text>
 </svg>
@@ -932,6 +932,9 @@ Otherwise it waits for the next hour: its delta is not lost, the delay is counte
 <p>As a result, no installation exports more than 1,500 weighted distinct series in any clock
 hour, measured by point timestamp, even across shape and epoch changes. That is $75 a month
 at list price, and the realistic high case is far below it.</p>
+<p>A point is admitted once, when its batch is built in the current hour. A batch delivered
+late was admitted when it was built, so late delivery never admits anything again, and a
+wall clock that moves backwards cannot reopen an hour the ledger has already swept.</p>
 <p>One case the ledger cannot control is how Datadog counts a backlog delivered late, for
 example after a day offline with Historical Metrics Ingestion enabled. Phase 6&#39;s pilot
 measures it.</p>
@@ -1078,12 +1081,16 @@ installation.</li>
 <li><strong>Cost watch:</strong> <code>datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}</code>,
 against the 150-per-installation gate.</li>
 </ul>
-<p>Every widget filters to <code>service:mission-control</code>, with an <code>env</code> template variable.</p>
+<p>Every widget that queries Mission Control&#39;s own metrics or spans filters to
+<code>service:mission-control</code> and an <code>env</code> template variable:</p>
 <ul>
-<li>It excludes <code>test</code>, <code>local</code> and <code>development</code>.</li>
-<li>Its default is the gateway&#39;s environment name. The committed JSON uses <code>*</code>, and the person
-who applies the dashboard sets the default from the internal notes, Preset values.</li>
+<li>the filter excludes <code>test</code>, <code>local</code> and <code>development</code>;</li>
+<li>the variable&#39;s default is the gateway&#39;s environment name. The committed JSON uses <code>*</code>, and
+the person who applies the dashboard sets the default from the internal notes, Preset
+values.</li>
 </ul>
+<p>The cost-watch usage metric is Datadog&#39;s own and carries neither tag, so it filters on
+<code>metric_name:mission.*</code> instead.</p>
 <p>No widget depends on the cohort gauges, which this destination never receives.</p>
 <h3 id="privacy-and-consent">Privacy and consent</h3>
 <ul>
@@ -1252,22 +1259,22 @@ shown, never a path, query or header.</p>
   <desc id="d2d">An organization's MDM pushes a managed Claude Code policy with a signal-specific metrics endpoint. Claude Code sends metrics to the organization's gateway and on to its backend. Mission Control's generic endpoint loses to the specific one, so nothing reaches Mission Control's receiver.</desc>
   
   <defs>
-    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path class="dg-head" d="M0,0 L10,5 L0,10 z"/>
     </marker>
-    <marker id="ahA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <marker id="ahA2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path class="dg-head-accent" d="M0,0 L10,5 L0,10 z"/>
     </marker>
   </defs>
   <rect x="20" y="20" width="260" height="64" rx="10" class="dg-box "/><text x="150" y="48" text-anchor="middle" class="dg-title">Organization MDM</text><text x="150" y="66" text-anchor="middle" class="dg-sub">managed Claude Code policy</text>
-  <path class="dg-edge" d="M150,84 L150,146" marker-end="url(#ah)"/>
+  <path class="dg-edge" d="M150,84 L150,146" marker-end="url(#ah2)"/>
   <text x="162" y="112" class="dg-edge-label left">OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</text>
   <text x="162" y="128" class="dg-edge-label left">(signal-specific, wins)</text>
   <rect x="20" y="150" width="260" height="64" rx="10" class="dg-box "/><text x="150" y="178" text-anchor="middle" class="dg-title">Claude Code session</text><text x="150" y="196" text-anchor="middle" class="dg-sub">plus the Cost switch's endpoint</text>
-  <path class="dg-edge accent" d="M280,170 L402,170" marker-end="url(#ahA)"/>
+  <path class="dg-edge accent" d="M280,170 L402,170" marker-end="url(#ahA2)"/>
   <text x="341" y="160" text-anchor="middle" class="dg-edge-label">metrics</text>
   <rect x="406" y="138" width="220" height="64" rx="10" class="dg-box accent"/><text x="516" y="166" text-anchor="middle" class="dg-title">Organization gateway</text><text x="516" y="184" text-anchor="middle" class="dg-sub">or another collector</text>
-  <path class="dg-edge accent" d="M626,170 L712,170" marker-end="url(#ahA)"/>
+  <path class="dg-edge accent" d="M626,170 L712,170" marker-end="url(#ahA2)"/>
   <rect x="716" y="138" width="204" height="64" rx="10" class="dg-box "/><text x="818" y="166" text-anchor="middle" class="dg-title">Datadog</text><text x="818" y="184" text-anchor="middle" class="dg-sub">or another backend</text>
   <path class="dg-edge dashed" d="M280,200 L398,262"/>
   <path class="dg-x" d="M398,259 L410,271 M410,259 L398,271"/>

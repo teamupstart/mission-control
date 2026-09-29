@@ -501,6 +501,10 @@ up to the 24-slice limit. The expected case therefore drifts towards about $100.
    hour, measured by point timestamp, even across shape and epoch changes. That is $75 a month
    at list price, and the realistic high case is far below it.
 
+   A point is admitted once, when its batch is built in the current hour. A batch delivered
+   late was admitted when it was built, so late delivery never admits anything again, and a
+   wall clock that moves backwards cannot reopen an hour the ledger has already swept.
+
    One case the ledger cannot control is how Datadog counts a backlog delivered late, for
    example after a day offline with Historical Metrics Ingestion enabled. Phase 6's pilot
    measures it.
@@ -601,10 +605,15 @@ It reads only what `datadog-lean` actually sends:
 - **Cost watch:** `datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}`,
   against the 150-per-installation gate.
 
-Every widget filters to `service:mission-control`, with an `env` template variable.
-- It excludes `test`, `local` and `development`.
-- Its default is the gateway's environment name. The committed JSON uses `*`, and the person
-  who applies the dashboard sets the default from the internal notes, Preset values.
+Every widget that queries Mission Control's own metrics or spans filters to
+`service:mission-control` and an `env` template variable:
+- the filter excludes `test`, `local` and `development`;
+- the variable's default is the gateway's environment name. The committed JSON uses `*`, and
+  the person who applies the dashboard sets the default from the internal notes, Preset
+  values.
+
+The cost-watch usage metric is Datadog's own and carries neither tag, so it filters on
+`metric_name:mission.*` instead.
 
 No widget depends on the cohort gauges, which this destination never receives.
 

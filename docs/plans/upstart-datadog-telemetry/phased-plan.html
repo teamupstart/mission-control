@@ -460,7 +460,7 @@ the other&#39;s code.</li>
 <td>6 (pilot measures against it)</td>
 </tr>
 <tr>
-<td>The hourly export ledger (<code>telemetry_export_hours</code>, keyed by profile and hour, not by shape or epoch) caps distinct exported weight per clock hour across transitions, and defers the surplus without losing deltas</td>
+<td>The hourly export ledger (<code>telemetry_export_hours</code>, keyed by profile and hour, not by shape or epoch) caps distinct exported weight per clock hour across transitions, and defers the surplus without losing deltas. A point is admitted once, at batch build in the pass clock&#39;s hour, so late delivery never admits, and a high-water hour keeps a backwards clock from reopening a swept hour</td>
 <td>2</td>
 <td>6 (measures a mid-hour shape change and a late backlog)</td>
 </tr>

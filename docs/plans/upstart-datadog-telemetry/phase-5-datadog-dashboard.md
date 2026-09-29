@@ -74,8 +74,10 @@ Inherited from Phase 2:
        the gateway's environment name as the default, from the local internal notes, Preset
        values. The name is never committed;
      - `version`, default `*`.
-   - Every widget filters `service:mission-control` and `$env`, and excludes `env:test`,
-     `env:local` and `env:development`.
+   - Every widget that queries a Mission Control metric or span filters
+     `service:mission-control` and `$env`, and excludes `env:test`, `env:local` and
+     `env:development`. The cost-watch usage query is the one exception, because Datadog's
+     usage metric carries neither tag (step 2).
    - Groups, from the source plan:
      - **Adoption:** distinct installations over 1, 7 and 28 days.
        - Use `count_nonzero` over `mission.telemetry.health.observed_at` by
@@ -97,7 +99,8 @@ Inherited from Phase 2:
      - **Telemetry health:** pending, oldest pending age, and last accepted, per installation.
      - **Cost watch:**
        `datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}`, divided by
-       distinct installations, with a marker at 150.
+       distinct installations, with a marker at 150. The installations divisor is its own
+       query on `mission.telemetry.health.observed_at`, so it carries the ordinary filters.
 2. **Validator (`test/datadog-dashboard-definition.test.ts`, new).**
    - Load the JSON and walk widgets recursively, including group widgets' `definition.widgets`.
    - Collect every query string, from `requests[].queries[].query` and any legacy `q`, and
@@ -105,9 +108,20 @@ Inherited from Phase 2:
    - **Every metric must resolve:** each metric name is either an `exportedInstruments("datadog-lean")`
      name, or one on an explicit allowlist that is exactly `datadog.estimated_usage.metrics.custom.by_metric`.
      Nothing else resolves.
-   - **Tags:** every filter and group-by tag is either one of that metric's exported labels,
-     or one of the resource tags `service`, `env`, `version`, `host` and `service.instance.id`.
-   - **Required filters:** every query includes `service:mission-control` and `$env`.
+   - **Tags, for a Mission Control metric:** every filter and group-by tag is either one of
+     that metric's exported labels, or one of the resource tags `service`, `env`, `version`,
+     `host` and `service.instance.id`.
+   - **Required filters, for a Mission Control metric or span query:** it includes
+     `service:mission-control` and `$env`.
+   - **Rules for the allowlisted usage metric.** Datadog's own
+     `datadog.estimated_usage.metrics.custom.by_metric` has none of Mission Control's tags, so
+     it gets its own rules instead of the two above:
+     - its only permitted filter and group-by tag is `metric_name`;
+     - it must filter `metric_name` to `mission.*`, or to a value that starts with `mission.`,
+       so it can only ever report this service's cost;
+     - it is exempt from the `service:mission-control` and `$env` requirement;
+     - a formula may combine it with Mission Control queries, and each of those still follows
+       the Mission Control rules.
    - **Template variable:** `env` exists and defaults to `*`. The validator also refuses any
      committed default other than `*`, so no internal environment name can be committed.
    - **Spans:** span queries (`data_source: "spans"`) reference only span names from
@@ -137,8 +151,13 @@ npm run lint
 npm test
 ```
 
-- Include a negative self-test in the validator: a fixture widget that queries a dropped label,
-  and one that queries `mission.analytics.v1.runs.eligible`, must both be refused.
+- Include a negative self-test in the validator. Each of these fixture widgets must be refused:
+  - one that queries a dropped label;
+  - one that queries `mission.analytics.v1.runs.eligible`;
+  - a Mission Control query without `service:mission-control` or `$env`;
+  - a usage-metric query without a `metric_name:mission.` filter, or with any other tag.
+- Include a positive self-test: the committed cost-watch widget, with its usage query and its
+  installations divisor, is accepted.
 - No e2e spec: this adds no dashboard UI to Mission Control.
 
 ## 8. Merge and exit criteria
@@ -162,3 +181,7 @@ npm test
   - chooses the health `observed_at` gauge for adoption, because Phase 1's hourly heartbeat
     makes it the one series every running installation reports;
   - no earlier phase needed to change.
+- 2026-09-29, pull request review: the validator as written refused the cost-watch query it
+  required, because Datadog's usage metric carries neither `service` nor `env` and filters on
+  `metric_name`. The allowlisted usage metric now has its own tag and filter rules, and the
+  self-tests cover both directions.

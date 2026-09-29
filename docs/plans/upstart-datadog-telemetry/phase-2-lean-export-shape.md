@@ -243,15 +243,31 @@ Inherited from Phase 1:
        - a deferred gauge sends its then-current value next hour;
        - an `hourly_cap_deferred` gap is recorded with a count;
        - ledger rows are written in the same transaction as the batch.
-     - **Retention.** Rows older than two hours are deleted by the retention sweep and charged
-       to the byte budget. `purgeProfileQueue` and the shape and epoch resets deliberately keep
-       the current hour's rows.
+     - **Admission happens once, when the batch is built.** A point's `endTimeMs` is the pass
+       clock (Phase 1), so every admission is to the hour the pass runs in. Delivery never
+       admits: a batch delivered late, for example after a day offline, was admitted when it
+       was built and goes out unchanged, with no new ledger row for its hour.
+     - **The high-water hour.** This is, per profile, the latest hour any point was admitted
+       to. It is the latest `hour_start` in the table for that profile, which the sweep never
+       deletes, so it needs no extra column.
+       - A point whose hour is earlier than the high-water hour minus one is **deferred**
+         rather than admitted. That only happens if the wall clock moves backwards.
+       - So an hour whose rows were already swept can never be granted a fresh allowance.
+       - The point is admitted once the pass clock is back inside the retained window, with
+         its delta whole.
+       - In practice only a series with no export inside the retained window waits, because
+         Phase 1 keeps each series' `endTimeMs` strictly increasing past its last export.
+     - **Retention.** The sweep deletes rows for hours earlier than the high-water hour minus
+       one, and charges them to the byte budget. Because of the two rules above, no point can
+       still be admitted to a swept hour. `purgeProfileQueue` and the shape and epoch resets
+       deliberately keep the retained rows and the high-water hour.
      - **The guarantee.** In every clock hour, measured by point timestamp, a destination
-       exports distinct series whose weights sum to at most `seriesBudget`. That holds across
-       shape and epoch changes.
-     - **What it does not control.** It cannot control how Datadog attributes a backlog
-       delivered late, for example after a day offline with Historical Metrics Ingestion
-       enabled. Phase 6's pilot measures that case.
+       admits, and therefore exports, distinct series whose weights sum to at most
+       `seriesBudget`. That holds across shape and epoch changes, restarts, late delivery and a
+       wall clock that moves backwards.
+     - **What it does not control.** How Datadog bills a backlog delivered late, for example
+       after a day offline with Historical Metrics Ingestion enabled: the ledger fixes what is
+       sent for each hour, not when Datadog counts it. Phase 6's pilot measures that case.
 6. **Changing shape (`src/server/telemetry/config.ts`).** When `exportShape` changes for a
    profile, in the same transaction:
    - bump `generation`, which fences queued batches of the old shape exactly as an endpoint
@@ -382,8 +398,14 @@ Unit tests:
     deferred, even at the cap.
   - **Restart.** A daemon restart mid-hour keeps the ledger, and does not grant a fresh
     allowance.
-  - **Rollover.** At the hour boundary the allowance resets, and rows older than two hours are
-    swept.
+  - **Rollover.** At the hour boundary the allowance resets, and rows for hours earlier than
+    the high-water hour minus one are swept.
+  - **Late delivery.** Build and admit a batch in hour H, keep the destination unreachable
+    until H's rows are swept, then deliver. The batch goes out byte for byte, no ledger row is
+    written for H, and nothing new is admitted to H.
+  - **Clock moving backwards.** After H's rows are swept, set the pass clock back into H and
+    produce a new series. It is deferred, never admitted to H, and is admitted with its delta
+    whole once the clock returns inside the retained window.
   - **Other caps.** The 2,000 and 10,000 caps still apply alongside the budget.
 - **Shape change, starting from nonzero totals with journal facts still pending:**
   - build nonzero counter, histogram and gauge totals on a delta destination, and export them
@@ -491,3 +513,9 @@ approved optimizations.
   survive it. This is grounded in `CATALOG_PROJECTION` holding no state. Added a test that
   starts from nonzero totals with pending journal facts, and a rule forbidding projection-held
   cumulative totals. No other phase's contract changed.
+- 2026-09-29, pull request review: the retention rule deleted an hour's rows after two hours,
+  and the plan did not say whether a late batch could then admit series to that hour again.
+  It now states that admission happens once, at batch build, in the pass clock's hour, so late
+  delivery never admits. A high-water hour keeps a backwards wall clock from reopening a swept
+  hour, and retention is defined against it. Tests cover late delivery and the clock moving
+  backwards.

@@ -959,8 +959,25 @@ admissible because its weight was reserved;</li>
 <li>a contribution for an instrument that has neither room for a series nor a reservation is
 dropped and counted as a <code>budget_exhausted</code> gap.</li>
 </ul>
-<p>Whatever the usage, no installation can exceed 1,500 custom metrics in any hour, which is
-$75 a month at list price. The realistic high case is far below that.</p>
+<p><strong>The hourly export ledger.</strong> That admission rule bounds the live series of one shape and
+consent epoch. The billing guarantee is enforced separately, where points are exported:</p>
+<ul>
+<li>a durable ledger records, for each clock hour, the distinct series already exported and
+their weights;</li>
+<li>it is keyed by profile and hour, <strong>not</strong> by shape or epoch, so a shape change, a
+consent-epoch change or a restart earlier in the hour cannot reset what that hour has
+already used;</li>
+<li>a point for a series already in the hour&#39;s ledger always goes out;</li>
+<li>a point for a new series goes out only if the hour&#39;s weight stays within 1,500. Otherwise
+it waits for the next hour: its delta is not lost, the delay is counted as an
+<code>hourly_cap_deferred</code> gap, and a gauge sends its then-current value.</li>
+</ul>
+<p>As a result, no installation exports more than 1,500 weighted distinct series in any clock
+hour, measured by point timestamp, even across shape and epoch changes. That is $75 a month
+at list price, and the realistic high case is far below it.</p>
+<p>One case the ledger cannot control is how Datadog counts a backlog delivered late, for
+example after a day offline with Historical Metrics Ingestion enabled. Phase 6&#39;s pilot
+measures it.</p>
 </li>
 </ol>
 <p><strong>After the optimizations.</strong></p>
@@ -1323,7 +1340,7 @@ shown, never a path, query or header.</p>
 </tr>
 <tr>
 <td>Datadog custom-metric cost</td>
-<td>The <code>datadog-lean</code> shape brings the expected figure from about $60 to about $4.60 per installation per month. The series budget caps any installation at 1,500 custom metrics in an hour. The pilot gate requires 150 or fewer before default-on.</td>
+<td>The <code>datadog-lean</code> shape brings the expected figure from about $60 to about $4.60 per installation per month. The hourly export ledger caps any installation at 1,500 weighted distinct series per clock hour, across shape and epoch changes. The pilot gate requires 150 or fewer before default-on.</td>
 </tr>
 <tr>
 <td>The constant host value makes Datadog bill laptops as infrastructure hosts</td>

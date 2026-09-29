@@ -500,8 +500,25 @@ up to the 24-slice limit. The expected case therefore drifts towards about $100.
    - a contribution for an instrument that has neither room for a series nor a reservation is
      dropped and counted as a `budget_exhausted` gap.
 
-   Whatever the usage, no installation can exceed 1,500 custom metrics in any hour, which is
-   $75 a month at list price. The realistic high case is far below that.
+   **The hourly export ledger.** That admission rule bounds the live series of one shape and
+   consent epoch. The billing guarantee is enforced separately, where points are exported:
+   - a durable ledger records, for each clock hour, the distinct series already exported and
+     their weights;
+   - it is keyed by profile and hour, **not** by shape or epoch, so a shape change, a
+     consent-epoch change or a restart earlier in the hour cannot reset what that hour has
+     already used;
+   - a point for a series already in the hour's ledger always goes out;
+   - a point for a new series goes out only if the hour's weight stays within 1,500. Otherwise
+     it waits for the next hour: its delta is not lost, the delay is counted as an
+     `hourly_cap_deferred` gap, and a gauge sends its then-current value.
+
+   As a result, no installation exports more than 1,500 weighted distinct series in any clock
+   hour, measured by point timestamp, even across shape and epoch changes. That is $75 a month
+   at list price, and the realistic high case is far below it.
+
+   One case the ledger cannot control is how Datadog counts a backlog delivered late, for
+   example after a day offline with Historical Metrics Ingestion enabled. Phase 6's pilot
+   measures it.
 
 **After the optimizations.**
 
@@ -752,7 +769,7 @@ flowchart LR
 | The off-network response is not a recognizable Cloudflare 403 | Phase 1 builds the gate to Cloudflare's documented edge response and tests it with a fake collector, without sending to the real gateway. Phase 6's pilot captures the real response with the VPN off before default-on. If it differs, Phase 6 corrects the fingerprint, recorded in Phase 1's audit record. |
 | The gateway owners move to `corp-otel.upstart.com` | Bump the preset version. The next start moves every Upstart Mac to the new address. |
 | An Upstart user wants to change or stop the lane | By the 2026-09-29 decision, Upstart manages it: Settings is view-only and the daemon refuses direct changes. Questions go to the lane's owners, and the source of truth is `docs/upstart.md`. |
-| Datadog custom-metric cost | The `datadog-lean` shape brings the expected figure from about $60 to about $4.60 per installation per month. The series budget caps any installation at 1,500 custom metrics in an hour. The pilot gate requires 150 or fewer before default-on. |
+| Datadog custom-metric cost | The `datadog-lean` shape brings the expected figure from about $60 to about $4.60 per installation per month. The hourly export ledger caps any installation at 1,500 weighted distinct series per clock hour, across shape and epoch changes. The pilot gate requires 150 or fewer before default-on. |
 | The constant host value makes Datadog bill laptops as infrastructure hosts | The pilot checks the host list and usage. The fallback is a fixed hostname set by the gateway for this service. |
 | Trace cost is unmeasured | The pilot records APM span volume before default-on. |
 | Filters on `env:corp` also match test and local data | The preset gives real installs `env:corp` alone. Datadog views exclude `env:test`, `env:local` and `env:development`. |

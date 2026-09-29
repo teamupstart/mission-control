@@ -99,6 +99,13 @@ Inherited:
      - **Replay:** a deliberately re-sent delta batch either overwrites or adds. This phase is
        the only one that measures it against the real gateway. Record which, and state the
        consequence in `docs/observability.md`.
+   - **Hourly ceiling across transitions and backlog.** Run these with a person's help:
+     - on one pilot installation, change the export shape mid-hour after series have been sent,
+       and confirm from `datadog.estimated_usage.metrics.custom.by_metric{metric_name:mission.*}`
+       for that installation and hour that it stays within 1,500. Record `hourly_cap_deferred`;
+     - deliver a multi-hour offline backlog, and record how Datadog counts it in the hour it
+       arrives;
+     - if either exceeds the ceiling, stop and report, as for the cost gate.
    - **Late points:** record `latePointsSent` across the pilot, and whether Datadog's admins
      enabled Historical Metrics Ingestion for `mission.*`.
 2. **If the gate fails** (more than 150 per installation, or a host is billed):
@@ -222,6 +229,8 @@ This is the final phase. It leaves:
   - `shareTurnedOffByUser` and its upgrade conditions are removed.
   - Pilot enrollment through the API replaces the Settings switch, and is retired at the flip.
   - The notice says the setting is managed instead of telling people how to turn it off.
+- **2026-09-29, repair round 8:** added the measured check of the hourly ceiling across a
+  mid-hour shape change and a late backlog, which Phase 2's export ledger cannot fully control.
 - **2026-09-29, repair round 5:** stated this phase as the sole owner of the real-gateway replay
   measurement and the real off-VPN capture, including any fingerprint correction. The root plan
   and Phase 1 now say the same.

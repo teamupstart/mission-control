@@ -198,9 +198,12 @@ Inherited from Phase 1:
      - if the pair has neither, which only happens for a brand-new instrument or resource when
        the budget is already full, the contribution is dropped and a `budget_exhausted` gap is
        recorded, with the instrument name and a count.
-   - **The invariant.** Committed weight never exceeds `seriesBudget`, so live series, overflow
-     included, never do either. Datadog bills distinct series per hour, and live-within-7-days is
-     a superset of reported-this-hour, so no hour can exceed the budget.
+   - **The invariant.** Committed weight never exceeds `seriesBudget`, so live series in the
+     current epoch and shape, overflow included, never do either.
+   - **What that invariant does not cover.** It is a steady-state bound. A shape change deletes
+     the series rows, and a consent-epoch change starts a new set of series, but Datadog still
+     counts the series already sent earlier in that hour. The billing guarantee is therefore
+     enforced separately, at export time, by the hourly export ledger in step 5.
    - **Freeing room.** A pair whose series all age out of live releases its reservation too, so
      retired app versions free their room after 7 idle days. An overflow series that ages out
      stops counting the same way. If its pair has live series again, the reservation reappears
@@ -218,6 +221,37 @@ Inherited from Phase 1:
    - Add the shape's `resourceAttributes` to the batch payload's resource at build time, so the
      digest covers them and a queued batch never changes on the wire.
    - The probe payload in `diagnostics.ts` adds the same attributes for its destination's shape.
+   - **The hourly export ledger.** This is the hard billing guarantee, for a destination whose
+     shape has a `seriesBudget`. It limits what is actually exported in each clock hour,
+     whatever happened to series rows, shapes or epochs in between.
+     - **Storage.** A new table, `telemetry_export_hours (profile, hour_start, series_digest, weight)`,
+       keyed by profile and UTC hour of the point's `endTimeMs`. It is **not** keyed by policy
+       epoch or shape, so it survives shape changes, consent-epoch changes, series deletion and
+       restarts.
+     - **The digest** is taken over what Datadog sees as one custom metric for that point:
+       - the exported metric name;
+       - the exported data-point attributes;
+       - the batch resource's attributes, including the shape's constant host attribute,
+         `service.version` and `deployment.environment.name`.
+
+       The `weight` is the shape weight of its exported kind.
+     - **Admitting a point to a batch.** A point whose digest is already in that hour's ledger
+       costs nothing more. Otherwise it is added only if the hour's summed weight plus its own
+       stays within `seriesBudget`. Otherwise it is **deferred**:
+       - its watermark is not advanced, so a counter's or histogram's delta carries into the
+         next hour's batch whole, with nothing lost;
+       - a deferred gauge sends its then-current value next hour;
+       - an `hourly_cap_deferred` gap is recorded with a count;
+       - ledger rows are written in the same transaction as the batch.
+     - **Retention.** Rows older than two hours are deleted by the retention sweep and charged
+       to the byte budget. `purgeProfileQueue` and the shape and epoch resets deliberately keep
+       the current hour's rows.
+     - **The guarantee.** In every clock hour, measured by point timestamp, a destination
+       exports distinct series whose weights sum to at most `seriesBudget`. That holds across
+       shape and epoch changes.
+     - **What it does not control.** It cannot control how Datadog attributes a backlog
+       delivered late, for example after a day offline with Historical Metrics Ingestion
+       enabled. Phase 6's pilot measures that case.
 6. **Changing shape (`src/server/telemetry/config.ts`).** When `exportShape` changes for a
    profile, in the same transaction:
    - bump `generation`, which fences queued batches of the old shape exactly as an endpoint
@@ -333,6 +367,23 @@ Unit tests:
     - never create more than one overflow series per pair;
     - never let a resumed series bypass admission.
   - **Freeing room.** A series 8 days idle is not live, and its pair's reservation is released.
+- **The hourly export ledger, across transitions:**
+  - **Shape change within an hour.** In hour H, export series of weighted total W under
+    `datadog-lean`, then change the shape in the same hour and generate enough new series to
+    exceed `seriesBudget - W`. Assert:
+    - the hour's exported weight never exceeds `seriesBudget`;
+    - the surplus points are deferred and recorded as `hourly_cap_deferred`;
+    - in hour H+1 the deferred counters' deltas arrive whole, with the sum across H and H+1
+      equal to the contributions;
+    - the ledger rows for H survive the shape reset.
+  - **Epoch change within an hour.** The same, with consent withdrawn and re-given in hour H,
+    starting a new policy epoch.
+  - **Re-sending a known series.** A point for a series already in the hour's ledger is never
+    deferred, even at the cap.
+  - **Restart.** A daemon restart mid-hour keeps the ledger, and does not grant a fresh
+    allowance.
+  - **Rollover.** At the hour boundary the allowance resets, and rows older than two hours are
+    swept.
   - **Other caps.** The 2,000 and 10,000 caps still apply alongside the budget.
 - **Shape change, starting from nonzero totals with journal facts still pending:**
   - build nonzero counter, histogram and gauge totals on a delta destination, and export them
@@ -408,6 +459,15 @@ approved optimizations.
 - 2026-09-29, repair round 1: added the editable Export shape control, following the human
   decision that people on machines that are not Upstart-managed edit their telemetry settings.
   This phase now changes UI, so it gains an e2e spec.
+- 2026-09-29, repair round 8:
+  - The live-series budget alone could not guarantee the hourly ceiling. A shape change deletes
+    series rows, and an epoch change starts new ones, while Datadog still counts what was sent
+    earlier that hour.
+  - Added the hourly export ledger: durable, keyed by profile and hour and not by epoch or
+    shape. It limits distinct exported weight per clock hour, and defers the surplus without
+    losing deltas.
+  - The late-backlog case is handed to Phase 6's pilot as a measured check.
+  - Phase 1's watermark is consumed unchanged, because a deferral simply does not advance it.
 - 2026-09-29, repair round 6:
   - A stored series that aged out of live and then reported again could bypass admission,
     because today's caps check only new series.

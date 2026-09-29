@@ -158,8 +158,16 @@ Inherited from Phase 1:
    - Keep the undeclared-dimension check against the instrument's full dimension list, so a
      dropped label is never reported as a defect.
 4. **Weighted, live budget (`fold`), with the overflow series paid for inside it.**
-   - **Live** means: current policy epoch, and a `last_time` or `exported_end` within
-     `payloadRetentionMs` (7 days). Phase 1's gauge heartbeat keeps a reporting gauge live.
+   - **Live** means: current policy epoch, and a `last_activity` within `payloadRetentionMs`
+     (7 days).
+     - `last_activity` is a new column on `telemetry_series`, equal to
+       `max(last_time, exported_end)`. It is updated in the same statement whenever either
+       changes, and indexed by `idx_telemetry_series_live` on
+       `(profile, policy_epoch, last_activity)`, created in `migrateTelemetry` after the column
+       exists.
+     - Phase 1's gauge heartbeat keeps a reporting gauge live.
+     - Liveness is evaluated at the moment of the check, so a series that has aged out stops
+       counting immediately and needs no sweep to free its room.
    - **Weight** comes from the shape, by the series' exported kind: a distribution, a histogram
      exported as sum and count, a counter or a gauge.
    - **The overflow series.** Each `(resource, instrument)` pair has at most one overflow series,
@@ -169,9 +177,20 @@ Inherited from Phase 1:
      is counted as live, and the reservation ends.
    - **Committed weight** = weighted live series + reservations, over the profile's current
      epoch.
-   - **Admitting a new non-overflow series** requires
-     `committed + weight(new) + (the pair's reservation, if it has none yet) <= seriesBudget`.
-     The pair's first series therefore also reserves room for its overflow series.
+   - **Admission applies to every contribution for a series that is not live right now.**
+     Admission is not only for series being created. Today's caps in `fold` check only when a
+     series is new (`projection.ts:696-697`). The budget must also check a stored series that
+     has aged out of live and now receives a contribution again, which is a resumed series.
+     Otherwise it could fill up behind other series and bypass admission. A contribution to a
+     series that is already live needs no admission.
+   - **Admitting a new or resumed non-overflow series** requires
+     `committed + weight(series) + (the pair's reservation, if it has none yet) <= seriesBudget`.
+     The pair's first live series therefore also reserves room for its overflow series.
+   - **A resumed series that does not fit** is handled exactly like a new one that does not
+     fit, below. Its contribution goes to the overflow series or is dropped, not to the stored
+     row. So the row's value, `last_time` and watermark stay as they were, and it stays not
+     live. If it is later admitted, its next delta is computed from its own untouched
+     watermark, so nothing that went to overflow is counted twice.
    - **Otherwise:**
      - if the pair holds a reservation or already has a live overflow series, the contribution
        folds into that overflow series. Creating it only converts the reservation, so committed
@@ -183,11 +202,13 @@ Inherited from Phase 1:
      included, never do either. Datadog bills distinct series per hour, and live-within-7-days is
      a superset of reported-this-hour, so no hour can exceed the budget.
    - **Freeing room.** A pair whose series all age out of live releases its reservation too, so
-     retired app versions free their room after 7 idle days.
-   - **Keep it cheap.** Keep committed weight maintained incrementally in the same transaction,
-     for example as a per-profile row in `telemetry_destinations` or a small sibling table
-     charged to the byte budget. Recompute and verify it in the retention sweep, recording a gap
-     if they disagree.
+     retired app versions free their room after 7 idle days. An overflow series that ages out
+     stops counting the same way. If its pair has live series again, the reservation reappears
+     by definition.
+   - **Computing committed weight.** Compute it at admission time with one query over
+     `idx_telemetry_series_live`. It needs no incrementally maintained counter, which could
+     drift as series age out. Admissions only happen for new or resumed series, so the query
+     is off the per-contribution path.
    - The existing 2,000 and 10,000 caps still apply to every shape. The budget is an additional,
      tighter bound, never a looser one.
 5. **Applying the shape at batch build (`Collector.apply`, `toPoint`).**
@@ -294,9 +315,23 @@ Unit tests:
     - a new pair's first series, which needs its own weight plus its reservation, is refused
       and counted as `budget_exhausted`;
     - a distribution series that would exceed the budget by 8 folds into its overflow series.
-  - **A property test.** Randomized admissions across the instruments and resources never let
-    live weight plus reservations exceed `seriesBudget`, and never create more than one
-    overflow series per pair.
+  - **Resumed series at the boundary.**
+    - Series S of pair A goes 8 days idle and stops counting. Other series then fill committed
+      weight to the budget, and then S receives a contribution. Assert all of these:
+      - the contribution folds into A's overflow series when A holds a reservation or a live
+        overflow series, or is dropped with a counted `budget_exhausted` gap when A holds
+        neither;
+      - S's stored value, `last_time` and watermark are unchanged, and S stays not live;
+      - committed weight never exceeds the budget.
+    - Then free room, and send S another contribution. Assert all of these:
+      - S is admitted and resumes;
+      - committed weight rises by exactly S's weight, plus A's reservation if A had none;
+      - S's next delta excludes the contributions that went to overflow.
+  - **A property test.** Randomized admissions, clock advances past the 7-day live window,
+    and resumptions across the instruments and resources:
+    - never let live weight plus reservations exceed `seriesBudget` at any step;
+    - never create more than one overflow series per pair;
+    - never let a resumed series bypass admission.
   - **Freeing room.** A series 8 days idle is not live, and its pair's reservation is released.
   - **Other caps.** The 2,000 and 10,000 caps still apply alongside the budget.
 - **Shape change, starting from nonzero totals with journal facts still pending:**
@@ -373,6 +408,15 @@ approved optimizations.
 - 2026-09-29, repair round 1: added the editable Export shape control, following the human
   decision that people on machines that are not Upstart-managed edit their telemetry settings.
   This phase now changes UI, so it gains an e2e spec.
+- 2026-09-29, repair round 6:
+  - A stored series that aged out of live and then reported again could bypass admission,
+    because today's caps check only new series.
+  - Admission now applies to every contribution for a series that is not live right now.
+    Liveness is evaluated at check time from an indexed `last_activity` column. Committed weight
+    is computed at admission instead of maintained incrementally, so expiry cannot drift it.
+  - A refused resume leaves the stored row untouched.
+  - Added resumed-series boundary tests, and resumption in the property test.
+  - No other phase's contract changed.
 - 2026-09-29, repair round 5:
   - The hard budget sent over-budget combinations into overflow series that it never paid for,
     so it could be exceeded.

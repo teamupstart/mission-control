@@ -488,8 +488,10 @@ up to the 24-slice limit. The expected case therefore drifts towards about $100.
    and a counter or gauge 1. **The overflow series count toward that limit too:**
    - when an instrument gets its first live series for a resource, the budget also reserves
      the weight of that instrument's one overflow series;
-   - a new series is admitted only if the live weight, plus every reservation, plus its own
-     weight (and its instrument's reservation, if it has none yet) stays within 1,500;
+   - a series is admitted only if the live weight, plus every reservation, plus its own weight
+     (and its instrument's reservation, if it has none yet) stays within 1,500. That applies to a
+     brand-new series, and equally to a stored series that went more than 7 days without
+     reporting and then reports again;
    - a series that does not fit folds into its instrument's overflow series, which is always
      admissible because its weight was reserved;
    - a contribution for an instrument that has neither room for a series nor a reservation is

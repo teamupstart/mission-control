@@ -450,7 +450,7 @@ the other&#39;s code.</li>
 <td>2 (budget liveness), 5 (adoption query)</td>
 </tr>
 <tr>
-<td>The weighted budget counts overflow series: each <code>(resource, instrument)</code> pair reserves its overflow weight at its first series, admission is against live weight plus reservations, and a pair with no room is dropped with a counted <code>budget_exhausted</code> gap</td>
+<td>The weighted budget counts overflow series: each <code>(resource, instrument)</code> pair reserves its overflow weight at its first live series, admission applies to new and resumed (aged-out) series against live weight plus reservations computed at check time, and a pair with no room is dropped with a counted <code>budget_exhausted</code> gap</td>
 <td>2</td>
 <td>6 (pilot measures against it)</td>
 </tr>

@@ -6,7 +6,7 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
-import { BrowserWindow, screen, shell } from "electron";
+import { BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
 import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { isQuitting } from "./lifecycle.ts";
@@ -120,11 +120,21 @@ export function createWindow(preloadPath: string): BrowserWindow {
   // Both local status pages and the dashboard must release navigation on Retry or quit.
   const navigate = async (target: string, signal: AbortSignal): Promise<void> => {
     signal.throwIfAborted();
+    let responseStatus = -1;
+    const didNavigate = (_event: ElectronEvent, _url: string, status: number) => { responseStatus = status; };
     const stop = () => { if (!window.isDestroyed()) window.webContents.stop(); };
     const timer = setTimeout(stop, WINDOW_STARTUP_TIMEOUT_MS);
     signal.addEventListener("abort", stop, { once: true });
-    try { await window.loadURL(target); }
-    finally { clearTimeout(timer); signal.removeEventListener("abort", stop); }
+    window.webContents.on("did-navigate", didNavigate);
+    try {
+      await window.loadURL(target);
+      // Electron resolves loadURL for a fully rendered HTTP error page as well.
+      if (responseStatus >= 400) throw new Error(`Dashboard navigation returned HTTP ${responseStatus}`);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", stop);
+      window.webContents.removeListener("did-navigate", didNavigate);
+    }
   };
   const loading = new WindowStartup({
     now: () => Date.now(),

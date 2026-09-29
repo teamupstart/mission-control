@@ -22,8 +22,9 @@ depend on the daemon. It checks for a compatible daemon before loading the dashb
 60 seconds, **Still starting Mission Control** explains the delay and offers **Retry now**.
 Readiness checks continue once a second, including after this message, so a late daemon opens
 the dashboard automatically. Retry starts a fresh wait; it does not launch a second daemon.
-A failed dashboard navigation returns to a visible reconnecting screen. Navigation itself
-also has a 60-second bound in case the daemon disappears after its health response.
+A failed dashboard navigation, including a completed HTTP error response, returns to a visible
+reconnecting screen. Navigation itself also has a 60-second bound in case the daemon disappears
+after its health response.
 Local startup-page navigation uses the same bound and cancellation signal. If a local page
 fails to load, the shell retries it too, including the first page before the window is visible.
 

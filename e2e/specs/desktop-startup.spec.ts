@@ -12,11 +12,16 @@ test.skip(process.platform !== "darwin", "the desktop shell requires the macOS G
 async function gatedDaemon(target: string) {
   let ready = false;
   let failDashboard = false;
+  let dashboardStatus = 200;
   let dashboardRequests = 0;
   const server = createServer((incoming, outgoing) => {
     if (incoming.url === "/") dashboardRequests++;
     if (ready && failDashboard && incoming.url === "/") {
       outgoing.destroy();
+      return;
+    }
+    if (ready && dashboardStatus >= 400 && incoming.url === "/") {
+      outgoing.writeHead(dashboardStatus, { "content-type": "text/html" }).end("<h1>Dashboard temporarily unavailable</h1>");
       return;
     }
     if (!ready) {
@@ -38,8 +43,9 @@ async function gatedDaemon(target: string) {
   if (!address || typeof address === "string") throw new Error("missing fixture port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
-    release: () => { ready = true; failDashboard = false; },
+    release: () => { ready = true; failDashboard = false; dashboardStatus = 200; },
     loseNavigation: () => { ready = true; failDashboard = true; },
+    httpError: (status: number) => { ready = true; dashboardStatus = status; },
     dashboardRequests: () => dashboardRequests,
     async close() {
       server.closeAllConnections();
@@ -55,7 +61,7 @@ async function evidence(page: Page, name: string) {
   await page.screenshot({ path: join(dir, `${name}.png`) });
 }
 
-for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "local page failure", "local page cancellation"] as const) {
+for (const scenario of ["late readiness", "timeout and retry", "readiness after timeout", "navigation loss", "HTTP 404", "HTTP 503", "local page failure", "local page cancellation"] as const) {
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
     const gate = await gatedDaemon(daemon.baseURL);
@@ -86,8 +92,9 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
         // Cross the old 15-second retry budget before making health reachable.
         await page.waitForTimeout(17_000);
         await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
-      } else if (scenario === "navigation loss") {
-        gate.loseNavigation();
+      } else if (scenario === "navigation loss" || scenario === "HTTP 404" || scenario === "HTTP 503") {
+        if (scenario === "navigation loss") gate.loseNavigation();
+        else gate.httpError(scenario === "HTTP 404" ? 404 : 503);
         await expect(page.getByRole("heading", { name: "Reconnecting to Mission Control" })).toBeVisible();
         await expect(page.getByRole("link", { name: "Retry now" })).toBeVisible();
         await evidence(page, "reconnecting");
@@ -105,7 +112,7 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
           await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
         }
       }
-      if (scenario !== "navigation loss") expect(gate.dashboardRequests()).toBe(0);
+      if (scenario !== "navigation loss" && scenario !== "HTTP 404" && scenario !== "HTTP 503") expect(gate.dashboardRequests()).toBe(0);
       gate.release();
       await expect(page.getByRole("button", { name: "Dispatch" }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toHaveCount(0);

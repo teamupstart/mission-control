@@ -77,6 +77,11 @@ function wideSnapshot(): string | null {
   return wide;
 }
 
+/** The widths right now, outside React. */
+export function columnWidths(): ColumnWidths {
+  return { collapsed: new Set(uiConfig().collapsedBoardColumns), wide };
+}
+
 /** The live widths, re-rendering on a change to either the saved or the unsaved half. */
 export function useColumnWidths(): ColumnWidths {
   const stored = useUiConfig().collapsedBoardColumns;
@@ -85,22 +90,35 @@ export function useColumnWidths(): ColumnWidths {
   return useMemo(() => ({ collapsed, wide: expanded }), [collapsed, expanded]);
 }
 
+function setWide(next: string | null): void {
+  if (next === wide) return;
+  wide = next;
+  for (const listener of listeners) listener();
+}
+
 /**
  * Set one column's width. The collapsed half is written through `updateUiConfig`, which
  * applies it at once and takes it back if the daemon refuses, so a strip is never drawn for
  * a fold that was not saved.
+ *
+ * A refused save takes the expanded half back too. Expanding a collapsed column moves both
+ * halves at once, and a rollback of only the collapsed set would leave the column both
+ * collapsed and expanded: drawn wide, then snapping back to a strip, not to normal, the moment
+ * another column was expanded. Collapsing the expanded column is the mirror case.
  */
 export function setColumnWidth(id: BoardColumnId, width: ColumnWidth): void {
   const stored = uiConfig().collapsedBoardColumns;
+  const before = wide;
   const next = withColumnWidth({ collapsed: new Set(stored), wide }, id, width);
-  if (next.wide !== wide) {
-    wide = next.wide;
-    for (const listener of listeners) listener();
-  }
+  setWide(next.wide);
   if (next.collapsed.has(id) !== stored.includes(id)) {
     // Only this column's entry moves. Ids this build does not know - from a newer build, or
     // one this build retired - are carried through untouched.
     const list = stored.filter((entry) => entry !== id);
-    void updateUiConfig({ collapsedBoardColumns: width === "collapsed" ? [...list, id] : list });
+    void updateUiConfig({ collapsedBoardColumns: width === "collapsed" ? [...list, id] : list })
+      .then((saved) => {
+        // Only while nothing newer has moved the expansion: a later gesture is the truth.
+        if (!saved && wide === next.wide) setWide(before);
+      });
   }
 }

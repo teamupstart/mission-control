@@ -9,9 +9,8 @@ Collapsing is added beside expanding, not in place of it. Expanded keeps working
 does today.
 
 **Decided: mock-up A, the three-stop switch.** The other three mock-ups are kept below as the
-record of what was compared. They are interactive in [plan.html](plan.html), beside this file:
-every control in the page works, including a button that sends a new session to **Needs you**,
-which shows what a collapsed column does when something arrives.
+record of what was compared. [plan.html](plan.html) renders all four as interactive prototypes,
+including a control that simulates a session arriving in a collapsed **Needs you**.
 
 ## What the repository already provides
 

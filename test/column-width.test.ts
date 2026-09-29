@@ -37,6 +37,7 @@ Object.defineProperty(globalThis, "fetch", {
 const {
   collapsedColumnSessionIds,
   columnWidthOf,
+  columnWidths,
   setColumnWidth,
   withColumnWidth,
 } = await import("../src/web/lib/column-width.ts");
@@ -146,4 +147,39 @@ test("a fold the daemon refuses is taken back, so no strip is drawn for an unsav
   } finally {
     refuse = false;
   }
+});
+
+test("a refused save takes the expansion back too, so no column is left both collapsed and wide", async () => {
+  // Expanding a collapsed column moves both halves at once. With only the collapsed set rolled
+  // back, the column read wide while still in the collapsed set, and expanding another column
+  // then snapped it back to a strip instead of normal.
+  const widthNow = (id: string): string => columnWidthOf(columnWidths(), id);
+  await updateUiConfig({ collapsedBoardColumns: ["backlog"] });
+  refuse = true;
+  try {
+    setColumnWidth("backlog", "wide");
+    assert.equal(widthNow("backlog"), "wide", "applied at once");
+    await settle();
+    await settle();
+    assert.equal(widthNow("backlog"), "collapsed", "back to exactly where it was");
+    assert.equal(columnWidths().wide, null, "and not also still expanded");
+  } finally {
+    refuse = false;
+  }
+  setColumnWidth("idle", "wide");
+  assert.equal(widthNow("backlog"), "collapsed");
+  assert.equal(widthNow("idle"), "wide");
+
+  // The mirror case: collapsing the expanded column, refused, leaves it expanded.
+  refuse = true;
+  try {
+    setColumnWidth("idle", "collapsed");
+    await settle();
+    await settle();
+    assert.equal(widthNow("idle"), "wide");
+  } finally {
+    refuse = false;
+  }
+  setColumnWidth("idle", "normal");
+  await updateUiConfig({ collapsedBoardColumns: [] });
 });

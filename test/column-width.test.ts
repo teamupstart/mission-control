@@ -16,6 +16,8 @@ import { mkSession } from "./helpers/session-fixture.ts";
 const cache = new Map<string, string>();
 const writes: unknown[] = [];
 let refuse = false;
+/** Refuse only the writes this matches, so one gesture's save fails and a later one lands. */
+let refuseWhen: ((body: unknown) => boolean) | null = null;
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
   value: {
@@ -27,8 +29,9 @@ Object.defineProperty(globalThis, "localStorage", {
 Object.defineProperty(globalThis, "fetch", {
   configurable: true,
   value: async (_url: string, init?: RequestInit) => {
-    if (init?.body) writes.push(JSON.parse(String(init.body)));
-    return refuse
+    const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (body !== undefined) writes.push(body);
+    return refuse || (body !== undefined && refuseWhen?.(body))
       ? new Response(JSON.stringify({ error: "refused" }), { status: 503 })
       : new Response(JSON.stringify({ ok: true }), { status: 200 });
   },
@@ -182,4 +185,25 @@ test("a refused save takes the expansion back too, so no column is left both col
   }
   setColumnWidth("idle", "normal");
   await updateUiConfig({ collapsedBoardColumns: [] });
+});
+
+test("a stale refused save never overrides a newer gesture that left the expansion alone", async () => {
+  // Idle expanded, then collapsed, then restored to normal before the collapse's save is
+  // refused. The restore left `wide` null, exactly where the collapse did, so a guard on its
+  // value took the old refusal for the latest gesture and re-expanded Idle over the choice.
+  const widthNow = (id: string): string => columnWidthOf(columnWidths(), id);
+  setColumnWidth("idle", "wide");
+  refuseWhen = (body) =>
+    JSON.stringify(body) === JSON.stringify({ collapsedBoardColumns: ["idle"] });
+  try {
+    setColumnWidth("idle", "collapsed");
+    setColumnWidth("idle", "normal");
+    await settle();
+    await settle();
+    assert.equal(widthNow("idle"), "normal", "the latest gesture stands");
+    assert.equal(columnWidths().wide, null);
+    assert.deepEqual(uiConfig().collapsedBoardColumns, []);
+  } finally {
+    refuseWhen = null;
+  }
 });

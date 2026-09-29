@@ -90,6 +90,12 @@ export function useColumnWidths(): ColumnWidths {
   return useMemo(() => ({ collapsed, wide: expanded }), [collapsed, expanded]);
 }
 
+/**
+ * Counts width gestures, so a refused save can tell whether it is still the latest one. The
+ * value of `wide` cannot: a later gesture may leave it exactly where the refused one did.
+ */
+let gesture = 0;
+
 function setWide(next: string | null): void {
   if (next === wide) return;
   wide = next;
@@ -107,6 +113,7 @@ function setWide(next: string | null): void {
  * another column was expanded. Collapsing the expanded column is the mirror case.
  */
 export function setColumnWidth(id: BoardColumnId, width: ColumnWidth): void {
+  const mine = ++gesture;
   const stored = uiConfig().collapsedBoardColumns;
   const before = wide;
   const next = withColumnWidth({ collapsed: new Set(stored), wide }, id, width);
@@ -117,8 +124,9 @@ export function setColumnWidth(id: BoardColumnId, width: ColumnWidth): void {
     const list = stored.filter((entry) => entry !== id);
     void updateUiConfig({ collapsedBoardColumns: width === "collapsed" ? [...list, id] : list })
       .then((saved) => {
-        // Only while nothing newer has moved the expansion: a later gesture is the truth.
-        if (!saved && wide === next.wide) setWide(before);
+        // Only while this is still the latest gesture: a later one is the truth, even when
+        // it left the expansion where this one did.
+        if (!saved && gesture === mine) setWide(before);
       });
   }
 }

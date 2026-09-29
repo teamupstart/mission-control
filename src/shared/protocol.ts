@@ -5742,6 +5742,18 @@ const WorkflowContextSnapshotInputSchema = z.object({
   evidence: z.object({
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    publication: z.object({
+      version: z.literal(1),
+      treeOid: CommitOidSchema,
+      unpublishedPaths: z.array(z.string().max(4_096)).max(500),
+      artifactProblems: z.array(z.string().max(2_000)).max(100).default([]),
+      pathsTruncated: z.boolean(),
+      localArtifacts: z.array(z.object({
+        path: z.string().min(1).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.displayNameChars),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
+      })).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount),
+    }).optional(),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
     diffTruncated: z.boolean(),

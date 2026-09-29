@@ -1,3 +1,4 @@
+import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
@@ -4511,7 +4512,7 @@ export class WorkflowManager {
       );
       return;
     }
-    if (fullContext?.success && fullContext.data.evidence.workingTreeDirty) {
+    if (fullContext?.success && workflowHasUnpublishedChanges(fullContext.data.evidence)) {
       this.transitionInspectorGate(
         run,
         state,
@@ -4554,6 +4555,28 @@ export class WorkflowManager {
         now,
       );
       return;
+    }
+    // Compare the complete published commit tree, never a filtered remote view. This
+    // refuses both missing deliverables and unexpected committed artifacts.
+    if (fullContext?.success && fullContext.data.evidence.publication && repositoryRoot) {
+      const publishedTree = await (this.options.resolveCommitTree ?? resolveCommitTree)(
+        repositoryRoot, submittedHead,
+      ).catch(() => null);
+      // A shipping-only continuation has captured the author's packaging result, not a
+      // new semantic review. Keep the parent's accepted content as a second obligation.
+      const parent = submission.refinementReason === "session_action"
+        && submission.parentSubmissionId && submission.continuationNodeId
+        && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId)
+        ? this.store.getSubmission(submission.parentSubmissionId) : null;
+      const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+      const acceptedTree = accepted?.success && accepted.data.evidence.publication
+        ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
+        || (acceptedTree !== null && publishedTree !== acceptedTree)) {
+        this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
+          "waiting_for_session", "inspector_working_tree_not_pushed", null, null, now);
+        return;
+      }
     }
     if (state.targetHeadSha && state.targetHeadSha !== state.observedHeadSha) {
       this.transitionInspectorGate(
@@ -5597,7 +5620,7 @@ export class WorkflowManager {
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
       capturedHeadOid,
       acceptedContentTreeOid: parentContext.success
-        ? parentContext.data.evidence.contentTreeOid ?? null
+        ? workflowPublicationTree(parentContext.data.evidence)
         : null,
     });
     if (decision.kind === "blocked") {
@@ -6476,7 +6499,8 @@ export class WorkflowManager {
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
       await captureSubmissionImages(this.store, submission.id);
-      await captureSubmissionTextArtifacts(this.store, submission.id);
+      await captureSubmissionTextArtifacts(this.store, submission.id, Date.now(),
+        recovered ? [] : captured.context.evidence.artifacts ?? []);
       /*
        * Then carry forward what the previous submission proved and this one did not re-stage.
        *

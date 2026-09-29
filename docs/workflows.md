@@ -260,15 +260,14 @@ after the reviews and before End.** That is a change of *where the pull request 
 Versions 5 through 7 reach End first and then have the completion policy type a handoff, so the
 run is already successful at the moment the pull request is asked for and nothing proves one
 arrived. In version 8 the pull request is an authored stage: it types the same skill, and its
-`complete` route reaches End only once an open pull request has been observed at the commit the
-continuation captured and the content tree at that commit matches the content tree accepted by
-the parent judged submission. A packaging commit may have a new commit id while preserving that
-tree. End still means the authored graph succeeded - and by the time the
-GitHub Inspector claims that success there is provably something for it to review. Because the graph
+`complete` route reaches End once the pull request action has durable adoption evidence.
+Comparisons with the reviewed head and publication tree are retained as warnings when they do
+not match. A packaging commit may have a new commit id while preserving that tree. End still
+means the authored graph succeeded; the separate Inspector completion policy verifies the
+published submission before the run can finish. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 19 preserve that verified publication
-contract. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
+would ask for one the run already has. Versions 9 through 19 preserve that action and completion-policy separation. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
 immediately before the action, with Slop Filter joining it in versions 12 through 19.
 
 A passed review in versions 1 through 8 and versions 18 onward is then gated on the
@@ -2176,12 +2175,49 @@ pull request and never grants permission to comment on it.
 
 Gate entry records the local committed HEAD, then waits for a normal GitHub Inspector sweep observed
 after entry. It does not start a second GitHub poller. The observed PR must still be open, its
-remote head must equal that captured HEAD, and the captured working tree must have no staged,
-unstaged, or untracked changes outside the commit. A dirty tree requires commit, push, and a fresh
-full submission. A pre-pin mismatch waits for GitHub Inspector to observe the captured committed head; a
+remote head must equal that captured HEAD, and its complete Git tree must match the submission's
+publication tree. Required changes need commit, push, and a fresh full submission. Local report
+artifacts can remain uncommitted under the publication policy below. A pre-pin mismatch waits for
+GitHub Inspector to observe the captured committed head; a
 push after pinning requires a fresh full submission. A stale ledger timestamp or reviewed head
 alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
 GitHub Inspector observation must first prove which head is current.
+
+### Publication content and local artifacts
+
+New submissions retain both the complete worktree tree and a versioned publication tree. Every
+changed or new file belongs in the publication tree by default, including source files, tests,
+configuration, tracked documentation, and staged additions. The daemon makes one narrow exception:
+an untracked `docs/reports/<slug>/report.html` that passes static archive validation, together with
+bounded UTF-8 `.txt`, `.log`, `.csv`, and `.json` companions in that same directory. The report must
+use inline images and styles, contain no scripts or external resource requests, and link only to
+retained companions. Files in Git's index or HEAD are never exempted by this convention. Other
+HTML, binary companions, source files beside a report, and arbitrary evidence registrations do not
+create publication exemptions. Existing gitignored evidence continues through the evidence tray.
+
+The daemon preserves the exact report bytes in the existing submission text-evidence store before
+using the exemption, with path, byte count and SHA-256 receipts. Workflow text limits apply:
+64 KiB per file, 48 files and 384 KiB total including other text evidence. Invalid reports stay
+required until corrected; the Intent tab's **Evidence snapshot** names the validation problem and
+required publication paths. Do not commit a report to silence the gate. Correct it and resubmit.
+The same view shows how many local artifacts were retained outside Git.
+
+The PR action compares the accepted publication tree with the complete published commit tree.
+Inspector also compares the complete tree when deciding completion. A shipping-only continuation
+must still match its parent's accepted publication tree; recapturing a packaging result does not
+review newly added or omitted code. Neither comparison filters the PR tree,
+so missing deliverables and unexpected committed content remain visible. Check nodes verify that
+their pinned commit has the captured publication tree before running: commit required deliverables
+and resubmit if it does not. Checks run in their existing isolated committed worktree, so excluded
+local fixtures cannot make a test pass. An unconfigured or unavailable check retains its existing
+explicit skipped outcome; this policy does not invent a test result.
+
+Report-only edits leave publication content unchanged but change evidence identity, so evidence
+reviews can be refreshed. Resumption probes include full tree identity and policy version; an old
+blocked capture can acquire the new proof on its next submission without modifying history.
+Existing snapshots without the policy keep the conservative dirty-tree rule. Missing or pruned
+retention receipts cannot authorize an exemption. Externally supplied ensemble artifacts still
+require their exact commit and a completely clean worktree.
 
 **The gate reads in the run record's Completion tab**, which is present only on a run that has
 an Inspector gate or a Foreman completion claim - most runs have neither and are offered no such

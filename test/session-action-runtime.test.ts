@@ -142,6 +142,8 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  localReport?: boolean;
+  inspector?: boolean;
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
   /** A reviewer AFTER the last action, so downstream activation is observable. */
@@ -237,11 +239,23 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
         evidence: {
           headSha: captureHead.sha ?? head.sha,
-          contentTreeOid: contentTree.oid,
+          contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
+          ...(options.localReport ? {
+            publication: {
+              version: 1 as const, treeOid: contentTree.oid, unpublishedPaths: [], pathsTruncated: false,
+              localArtifacts: [{ path: "docs/reports/result/report.html", sha256: createHash("sha256").update("report").digest("hex"), bytes: 6 }],
+            },
+            artifacts: [{
+              id: "local-report", ordinal: 0, displayName: "docs/reports/result/report.html",
+              caption: "Retained local report", repositoryScope: "all" as const, mimeType: "text/plain" as const,
+              bytes: 6, sha256: createHash("sha256").update("report").digest("hex"), content: "report",
+              availability: "retained" as const, prunedAt: null, createdAt: 1,
+            }],
+          } : {}),
           diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
           diff: `patch at ${captureHead.sha ?? head.sha}`,
           diffTruncated: false,
-          workingTreeDirty: false,
+          workingTreeDirty: !!options.localReport,
           workingTreeStatus: [],
           workingTreeStatusTruncated: false,
           transcript: [],
@@ -389,7 +403,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     name: `Action runtime ${sessionId}`,
     description: "",
     draft: { nodes, edges } as never,
-    completionPolicy: { kind: "none" },
+    completionPolicy: options.inspector
+      ? { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }
+      : { kind: "none" },
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     // The resumption observer is the OTHER way a parked round reopens and would race the
     // assertions below about which path produced round two.
@@ -1758,5 +1774,69 @@ test("a pull request already open at the reviewed commit completes without a sec
     assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();
+  }
+});
+
+
+test("the PR comparison uses reviewed publication content while retaining the local report", async () => {
+  const h = await harness("pr-with-local-report", { pullRequest: true, localReport: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the pull request packet was never delivered");
+    h.head.sha = "packaging-head";
+    h.runActionTurn();
+    h.adoptPr({ atHead: "packaging-head" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "the PR continuation did not finish");
+    const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    const output = attempt.output as { warnings?: Array<{ code: string }> };
+    assert.equal(output.warnings?.length ?? 0, 0,
+      "an uncommitted retained report must not create a PR content-mismatch warning");
+    for (const submission of h.store.listSubmissions(runId)) {
+      assert.equal(h.store.listSubmissionTextArtifacts(submission.id)[0]?.content, "report");
+    }
+  } finally {
+    await h.stop();
+  }
+});
+
+
+test("Inspector holds a shipping continuation to its parent's accepted publication tree", async () => {
+  const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+  const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+  setInspectorConfig({ enabled: true });
+  for (const changed of [false, true]) {
+    const h = await harness(`publication-inspector-${changed}`, { pullRequest: true, localReport: true, inspector: true });
+    try {
+      const runId = await runToAction(h);
+      await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
+      if (changed) h.contentTree.oid = h.full("omitted-required-file");
+      h.head.sha = "packaged";
+      h.runActionTurn();
+      const number = changed ? 72 : 71;
+      const key = `owner/repo#${number}`;
+      const url = `https://github.com/owner/repo/pull/${number}`;
+      h.adoptPr({ atHead: h.head.sha, key, url, number });
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.getRun(runId)?.gateState != null, "the Inspector gate never started");
+      const now = Date.now();
+      const head = h.full(h.head.sha);
+      adoptInspectorPr({
+        key, url, owner: "owner", repo: "repo", number,
+        repoRoot: "/repo", cwd: "/repo", sessionId: h.sessionId, source: "hook", state: "open",
+        headSha: head, reviewPosture: "live", round: 1, lastReviewedAt: now, lastError: null,
+        failCount: 0, lastFailKind: null, nextAttemptAt: null, lastAttemptSha: head,
+        mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN", observedAt: now,
+        headRefName: "feature", title: "Publish", adoptedAt: now, updatedAt: now,
+      });
+      updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
+        reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
+      h.registry.inspectionUpdated(key, head, "OPEN", now);
+      await waitFor(() => h.store.getRun(runId)?.status === (changed ? "waiting_for_session" : "completed"),
+        changed ? "unreviewed packaging changes escaped the accepted parent proof" : "retained reports prevented completion");
+    } finally {
+      await h.stop();
+    }
   }
 });

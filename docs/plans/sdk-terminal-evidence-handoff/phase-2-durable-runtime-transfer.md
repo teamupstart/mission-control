@@ -1,6 +1,6 @@
 # Phase 2: durable task and workflow ownership transfer
 
-Read [plan.md](plan.md), [phased-plan.md](phased-plan.md), and [Phase 1](phase-1-managed-resume-tools.md) first. The fixed goal is transparent task/workflow/evidence continuity to a proven terminal successor, with explicit recovery when continuity cannot be proven. This file proposes the implementation route; adapt to the repository and record justified deviations in the PR.
+Guidance for the future Phase 2 implementer: read [plan.md](plan.md), [phased-plan.md](phased-plan.md), and [Phase 1](phase-1-managed-resume-tools.md) first. The fixed goal is transparent task/workflow/evidence continuity to a proven terminal successor, with explicit recovery when continuity cannot be proven. This file proposes the implementation route; adapt to the repository and record justified deviations in the PR.
 
 ## Outcome, entry and scope
 
@@ -16,7 +16,7 @@ In scope: one durable transfer reservation, lifecycle guards, exact successor ve
 
 `WorkflowManager.start` handles both `session_remove` and first-observation reconciliation. Both must recognize the same reservation. `WorkflowStore.reattachBinding` is used by explicit recovery that changes run behavior; do not call it as if it were transparent transfer. `activeBindingsForNote` supplies primary and repository siblings, while `activeBindingForNote` does not.
 
-Phase 1 supplies one fully prepared home, exact tool transport, preserved permission/write scope and a distinction between definite non-launch and unknown outcome. Existing TaskManager disappearance settlement respects merged work and retains resources unless an explicit final-completion or accepted safe-Kill return authorizes cleanup. Registry remains sole session owner, `beginEviction` remains sole durable removal path, and WorkflowManager remains sole workflow policy owner. MCP and Foreman do not access SQLite.
+Phase 1 supplies one fully prepared home, its durable resource lease and claim/revoke/reconcile operations, exact tool transport, preserved permission/write scope and a distinction between definite non-launch and unknown outcome. Its never-started launch cleanup already works across daemon restart. This phase adds task/workflow ownership recovery using the same lease; it must not create a second credential-home collector. Existing TaskManager disappearance settlement respects merged work and retains resources unless an explicit final-completion or accepted safe-Kill return authorizes cleanup. Registry remains sole session owner, `beginEviction` remains sole durable removal path, and WorkflowManager remains sole workflow policy owner. MCP and Foreman do not access SQLite.
 
 ## 1. Durable reservation and state machine
 
@@ -28,7 +28,7 @@ Use a single `session_runtime_transfers` table or equivalent narrow store. Store
 | --- | --- |
 | Identity | Transfer ID and generation/revision; source Mission session ID; agent; native conversation ID and `noteKeyFor`; source work-episode ID; canonical primary checkout/repository; optional task ID and expected task ownership/status. |
 | Workflow ownership | IDs and expected immutable versions of all active bindings for this source, with their existing repository scope. Capture mutable ownership expectations, not copies of graphs, submissions, or all run state. |
-| Launch attempt | Selected/default backend policy resolved for this attempt; unique attempt identity; prepared home locator; launch-intent time; backend resource/home facts when known; wrapper PID plus process start time when observed; successor ID only after verification. No bearer, argv config body or raw credentials in SQLite or SSE. |
+| Launch attempt | Selected/default backend policy resolved for this attempt; unique attempt identity and Phase 1 resource lease ID; launch-intent time; backend resource/home facts when known; wrapper PID plus process start time when observed; successor ID only after verification. Resolve the prepared home through the lease owner. No bearer, argv config body or raw credentials in SQLite or SSE. |
 | State | Append-only state vocabulary, timestamps, bounded failure/recovery reason, launch outcome knowledge and completion time. Unknown persisted states fail closed and remain visible. |
 
 Permit at most one unresolved transfer per source conversation and per task. Use transactional uniqueness/CAS, including a partial unique index for non-null task IDs, rather than trusting the supervisor set. Define unresolved-state predicates once. Terminal records can be compacted after a bounded retention period, but never expire a reservation still protecting an unknown live launch or required cleanup. References needed by an active reservation must survive task/session removal until that operation is explicitly resolved.
@@ -131,9 +131,11 @@ Crash-point expectations:
 | `launching` before a launch result was stored | Treat spawn as possibly performed. Read persisted wrapper/resource proof and discover; never repeat spawn merely because no result was written. |
 | `awaiting_successor` or `recovery_required` | Re-evaluate exact candidates and current ownership. Adopt once if all guards pass. Missing/inaccessible inventory is unknown, not dead. |
 | Adoption transaction committed, SSE not sent | Rehydrate task, bindings and transfer projection; publish consistent state without changing evidence or delivering a packet twice. |
-| Proven source and launch absent | Settle using TaskManager and WorkflowManager; keep checkout for ordinary explicit cleanup. Dispose only this transfer's unused private home after proving no process can still use it. |
+| Proven source and launch absent | Settle using TaskManager and WorkflowManager; keep checkout for ordinary explicit cleanup. Ask Phase 1's lease owner to dispose this attempt's home; do not recursively delete it from the transfer coordinator. |
 
 Use the existing launcher/wrapper proof and process inventory. Do not put a secret recovery token in shell argv, fabricate task ownership from a marker alone, or use age as proof of death. SDK driver restore must explicitly exclude unresolved attempts that crossed `stopping`; otherwise a restart can launch the SDK beside its terminal successor.
+
+Compose with Phase 1's resource reconciliation after loading transfer guards. A lease atomically revoked before any wrapper claim proves that attempt cannot start; let the coordinator apply the appropriate source/task/workflow outcome. A claimed or ambiguous lease never implies an absent successor. Reconcile a crash between lease completion/revocation and transfer settlement idempotently, without re-provisioning credentials or replaying launch. Preserve the lease outcome until its referencing transfer acknowledges it; a revoked lease can retain non-secret outcome metadata after the credential home is removed.
 
 ## 7. Expose pending and recovery states in the existing dashboard
 
@@ -195,3 +197,4 @@ There is no later phase to fix lifecycle safety, fill in browser coverage or cle
 - Delivery audit: prepared destinations may change after proof; delivered/uncertain history and immutable submissions cannot. No active run is replaced with the latest workflow, and manual reattach remains explicit recovery.
 - Episode audit: source ownership must not rotate during reservation, but the discovered successor gets its own episode. Existing PR-bearing archival and dependency provenance remain authoritative.
 - Final set audit: direct prerequisite is Phase 1; no parallel execution; H1-H6 final ownership is here. The required UI, migration, cleanup and restart work has no dependency on an unplanned third phase.
+- Inspector round 1 reconciliation: resource lease recovery ships in Phase 1, including unclaimed 504 cleanup and a late-wrapper fence. This phase references the lease and retains its outcome until transfer settlement; task/workflow recovery remains here. A lease owns credential deletion, while this coordinator alone owns transfer adoption/settlement, preventing competing cleanup policies.

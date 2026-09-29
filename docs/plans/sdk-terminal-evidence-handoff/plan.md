@@ -35,7 +35,7 @@ Use a shared managed terminal resume preparation seam, composed with the existin
 
 Reuse `missionMcpDescriptor`, the existing per-harness renderers, `kindMissionMcpRequirement`, and `verifyMissionMcpTools`. Requirements must include the active pinned Persona binding, even if the task has no dispatch-time workflow selection. Preserve task-kind requirements for scouts, plans, and ensemble members as applicable.
 
-Mint a fresh disposable terminal state home. Do not retain the SDK's `MISSION_SESSION_ID`, pane identity, or soon-to-be-cleaned credential file. The terminal wrapper owns cleanup after launch. A failed preparation leaves the SDK and bindings untouched; a failed spawn releases the unused prepared home.
+Mint a fresh disposable terminal state home. Do not retain the SDK's `MISSION_SESSION_ID`, pane identity, or soon-to-be-cleaned credential file. Phase 1 gives that home a durable resource lease before credential provisioning. The wrapper claims the lease before agent start and owns cleanup after launch. A failed preparation leaves the SDK and bindings untouched; definite non-launch revokes the unused lease and releases the home. An unknown launch has its own Phase 1 recovery: revoke an unclaimed lease atomically after its start deadline, fence late wrappers, and reclaim the home. Claimed or ambiguous owners retain their credentials until positive completion proof. This resource lifetime does not wait for Phase 2's task/workflow transfer record.
 
 Apply the preparation seam to both terminal backend routes. Review the exited-session resume route for the same missing registration so it cannot remain an alternative route into this failure. Preserve each harness's existing permission-mode and conversation-resume semantics.
 
@@ -95,7 +95,7 @@ Registry remains the only session owner and eviction path. TaskManager owns task
 ## Implementation order and validation
 
 1. In Phase 1, write permanent launch/preflight regressions for the transport portions of H1 and H4. Keep the incident diagnostic as gitignored evidence only.
-2. Complete Phase 1 with the prepared terminal launch seam, scoped configuration lifetime, both backend routes, exited resume and its browser proof.
+2. Complete Phase 1 with the prepared terminal launch seam, recoverable credential-home leases, both backend routes, exited resume and its browser proof. Include never-launched 504/restart cleanup and claim-versus-revoke races in its merge criteria.
 3. In Phase 2, write permanent H2-H3 lifecycle regressions, then add the durable reservation, hook/adoption guards and restart reconciliation.
 4. Transfer pinned workflows and preserve delivery/evidence semantics in that same Phase 2 merge; cover H4-H5 negative paths.
 5. Complete H1-H6 end-to-end acceptance, update the lifecycle and session docs, then run the affected tests, typecheck, lint, build, smoke and focused browser specs. No model tokens are needed for these checks.

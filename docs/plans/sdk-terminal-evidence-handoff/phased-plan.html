@@ -5,7 +5,7 @@
 main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30px,4vw,46px);line-height:1.15;letter-spacing:-.035em;max-width:900px;margin:0 0 28px}h2{font-size:25px;line-height:1.3;margin-top:48px;border-top:1px solid var(--line);padding-top:25px}h3{font-size:19px;margin-top:32px}p{max-width:980px}a{color:var(--link);text-underline-offset:3px}strong{font-weight:700}code,pre{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.86em}code{overflow-wrap:anywhere;background:var(--panel);padding:2px 4px;border-radius:4px}pre{background:var(--panel);padding:16px;overflow:auto}.scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:13px 16px;border-bottom:1px solid var(--line)}th{background:var(--panel);color:var(--accent);font-weight:700}td code{font-size:12px}li{margin:9px 0}svg{display:block;width:100%;min-width:900px;margin:16px 0}svg rect{fill:var(--panel);stroke:var(--line)}svg text{fill:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}svg path{stroke:var(--accent);fill:none;stroke-width:2}footer{margin-top:48px;color:var(--muted);font-size:13px}
 </style></head><body><main><h1>Reliable SDK-to-terminal handoff: phased implementation</h1>
 <p>Status: implementation design ready for review; phase tasks scheduled; planning PR awaiting merge. No implementation has been performed. Prepared September 28, 2026 against checkout <code>7db363f462737dfb428ce40252dbcc9de667166c</code>.</p>
-<p>Read the <a href="plan.md">accepted source plan</a> first. Open <a href="phased-plan.html">this index as a rendered page</a> for review. The two phase files are the implementation guides; this index owns their order and shared contracts.</p>
+<p>Future implementers start with the <a href="plan.md">accepted source plan</a>. The <a href="phased-plan.html">rendered index</a> provides a review page. The two phase files are the implementation guides; this index owns their order and shared contracts.</p>
 <h2>Outcome and accepted decisions</h2>
 <p>Continue in terminal must preserve the same conversation&#39;s Mission tools, running task, pinned workflow versions, active runs, and evidence. Preparation must fail before stopping a usable SDK session. A slow or uncertain terminal launch must not cause a second launch, a guessed task owner, or lost work.</p>
 <p>The operator selected the recommendation and requested phased planning in chat on September 28. No approach choice remains open. The implementation stays in Mission Control, the current repository; no additional repositories are required. The prior investigation is historical evidence, not a deployed fix. The Backlog feature in the investigated task remains outside implementation scope.</p>
@@ -36,8 +36,8 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <td>Extend harness capabilities with resume preparation, reuse their renderers, and retain the original permission posture. Do not call a dispatch helper with auto mode enabled or force Pi through an MCP-client path.</td>
 </tr>
 <tr>
-<td><code>claudeMissionMcpArgs</code> currently writes one shared config path. <code>launchAgentTerminal</code> creates another state home internally. <code>agent-subprocess-env.ts</code> also removes parent-tracked homes at daemon exit.</td>
-<td>Prepared resumes use one private home and an isolated config path. Transfer that home&#39;s cleanup ownership to the terminal wrapper on success or unknown launch outcome. Do not delete a live terminal&#39;s credentials on daemon shutdown. Preserve existing dispatch behavior unless sharing the mechanism requires a bounded compatibility edit.</td>
+<td><code>claudeMissionMcpArgs</code> currently writes one shared config path. <code>launchAgentTerminal</code> creates another state home internally. <code>agent-subprocess-env.ts</code> also removes parent-tracked homes at daemon exit; its startup sweep only expires Pipeline caller files.</td>
+<td>Prepared resumes use one private home and a durable resource lease. Wrapper claim transfers cleanup ownership; uncertain unclaimed launches use atomic revocation and restart reconciliation in Phase 1. Do not delete a live terminal&#39;s credentials on daemon shutdown or defer orphaned credential cleanup to Phase 2. Preserve existing dispatch behavior unless sharing the mechanism requires a bounded compatibility edit.</td>
 </tr>
 <tr>
 <td><code>Registry.findSessionByEnv</code> can select the lingering SDK by native ID; <code>rebindTaskAtCwd</code> then binds an unowned running task.</td>
@@ -70,7 +70,7 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 </tbody></table></div>
 <p>Confidence: high for these directly inspected source contracts and the previously reproduced race. The historical cause of tool loss remains the report&#39;s 95% inference, not a claim about an unobserved MCP child error. The durable state machine and new seams below are design decisions, to be verified by the implementing phase, not existing APIs.</p>
 <h2>Sizing and phase-count rationale</h2>
-<p>Estimate <strong>1,150 to 1,900 gross non-test production lines</strong> added or materially changed, excluding documentation and tests. Phase 1 is approximately 350 to 600 lines across harness preparation, scoped configuration, environment lifetime and three route consumers. Phase 2 is approximately 800 to 1,300 lines across storage, coordination, Registry/task/workflow integration, recovery projection and browser behavior. Tests may be comparable in size; they are not included in the estimate.</p>
+<p>Estimate <strong>1,450 to 2,350 gross non-test production lines</strong> added or materially changed, excluding documentation and tests. Phase 1 is approximately 650 to 1,050 lines across harness preparation, scoped configuration, durable resource leases and their wrapper/startup/diagnostic integration, plus three route consumers. Phase 2 is approximately 800 to 1,300 lines across storage, coordination, Registry/task/workflow integration, recovery projection and browser behavior. The Phase 1 estimate includes the resource lifetime gap identified in review. Tests may be comparable in size; they are not included in the estimate.</p>
 <p>Assumptions behind the range: reuse existing terminal adapters, process ancestry checks, WorkflowStore transactions, evidence intake, and recovery UI primitives. No new agent protocol, MCP tool, external service, terminal backend, or generalized job framework is required. If implementation needs one, revise the estimate and phase contract rather than hiding it in a helper.</p>
 <p>Two phases are justified by one independently useful merge boundary: complete managed resume launches can be verified without changing durable task/workflow ownership. Combining both would mix configuration and credential lifetime with a multi-owner, crash-sensitive state machine. Splitting Phase 2 further would be less safe: task adoption, workflow adoption, hook suppression and restart reconciliation must agree in the same merge. A separate test, UI, migration or cleanup phase would leave the behavior incomplete, so those belong to their owning phase.</p>
 <h2>Phase table and dependency graph</h2>
@@ -115,6 +115,11 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <td>Phase 2 calls a harness-owned preparation seam yielding absolute executable/argv, exact verified transport descriptor or extension result, disposable state-home handle, and cleanup ownership. It does not compose agent flags itself.</td>
 </tr>
 <tr>
+<td>Credential-home lease and recovery</td>
+<td>Phase 1</td>
+<td>Persist before provisioning/launch; atomic wrapper claim versus revocation fences delayed commands. Phase 1 reclaims never-started attempts across restart and retains claimed/ambiguous owners. Phase 2 references the same lease ID and consumes its outcome; it does not implement another collector.</td>
+</tr>
+<tr>
 <td>Requirement derivation</td>
 <td>Phase 1</td>
 <td>Derive task-kind, ensemble membership and active pinned Persona requirements from durable/current owners, including a taskless manually bound workflow. Do not use only <code>Task.workflowId</code>. Preserve repository write scopes.</td>
@@ -122,7 +127,7 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <tr>
 <td>Launch outcome knowledge</td>
 <td>Phase 1</td>
-<td>Definite non-launch, successful launch and outcome-unknown remain distinct. Phase 2 persists the decision before side effects and never retries an unknown spawn automatically.</td>
+<td>Definite non-launch, successful launch and outcome-unknown remain distinct. The resource lease persists before launch side effects; Phase 2 adds the task/workflow reservation around it. Neither layer retries an unknown spawn automatically.</td>
 </tr>
 <tr>
 <td>Transfer identity and durable reservation</td>
@@ -163,9 +168,9 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <td>Harness/HTTP tests plus a fake-agent MCP round trip and missing-tool refusal before stop.</td>
 </tr>
 <tr>
-<td>Fresh home; no stale SDK/pane identity; explicit cleanup ownership</td>
+<td>Fresh home; no stale SDK/pane identity; recoverable cleanup ownership</td>
 <td>Phase 1</td>
-<td>Two concurrent launches, credential isolation, terminal survival across daemon shutdown, and definite/unknown launch cleanup tests.</td>
+<td>Credential isolation, terminal survival across shutdown, never-launched 504 before/after restart, atomic claim/revoke races, duplicate-attempt suppression and fail-closed path/process checks.</td>
 </tr>
 <tr>
 <td>Durable reservation, early-hook guard, exact successor, timeout and restart behavior</td>
@@ -216,6 +221,8 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <li><p>Source-plan ordering reconciled with the two merge units. Successor episode IDs may differ while native conversation and task attempt remain stable; existing PR-bearing episode archival is preserved.</p>
 </li>
 <li><p>Publication preflight: the later operator request authorizes the planning PR. The branch is current with <code>1676a398</code>; Phase 2 must preserve PR #1148 final-completion/safe-Kill cleanup policy while guarding unresolved runtime transfers. The separate Backlog work in PR #1144 is already merged.</p>
+</li>
+<li><p>Inspector round 1 reconciliation: Phase 1 now owns durable credential-home recovery and its merge criteria, including a backend that returns 504 without starting anything. The wrapper claim/revoke fence makes safe reclamation possible without treating age as process-death proof. Phase 2 consumes this primitive while retaining all task/workflow ownership guards. Sizing was revised; phase count, task IDs and dependency edges remain unchanged.</p>
 </li>
 </ul>
 <footer>Mission Control · phased implementation proposal · September 28, 2026</footer></main></body></html>

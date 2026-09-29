@@ -4,11 +4,11 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30px,4vw,46px);line-height:1.15;letter-spacing:-.035em;max-width:900px;margin:0 0 28px}h2{font-size:25px;line-height:1.3;margin-top:48px;border-top:1px solid var(--line);padding-top:25px}h3{font-size:19px;margin-top:32px}p{max-width:980px}a{color:var(--link);text-underline-offset:3px}strong{font-weight:700}code,pre{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.86em}code{overflow-wrap:anywhere;background:var(--panel);padding:2px 4px;border-radius:4px}pre{background:var(--panel);padding:16px;overflow:auto}.scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:13px 16px;border-bottom:1px solid var(--line)}th{background:var(--panel);color:var(--accent);font-weight:700}td code{font-size:12px}li{margin:9px 0}svg{display:block;width:100%;min-width:900px;margin:16px 0}svg rect{fill:var(--panel);stroke:var(--line)}svg text{fill:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}svg path{stroke:var(--accent);fill:none;stroke-width:2}footer{margin-top:48px;color:var(--muted);font-size:13px}
 </style></head><body><main><h1>Phase 1: complete managed terminal resume launches</h1>
-<p>Read <a href="plan.md">plan.md</a> and <a href="phased-plan.md">phased-plan.md</a> first. This guide is the proposed route, not a specification of internal APIs. The fixed goal is that a managed terminal resume receives the correct tool transport and scope before a usable source SDK is stopped. Adapt to repository changes and record deviations with reasons in the PR.</p>
+<p>Guidance for the future Phase 1 implementer: read <a href="plan.md">plan.md</a> and <a href="phased-plan.md">phased-plan.md</a> first. This guide is the proposed route, not a specification of internal APIs. The fixed goal is that a managed terminal resume receives the correct tool transport and scope before a usable source SDK is stopped. Adapt to repository changes and record deviations with reasons in the PR.</p>
 <h2>Outcome, entry and scope</h2>
 <p>An operator continuing a conversation in a terminal keeps Mission tools and its permission posture. A missing required tool or unusable launch configuration produces an actionable refusal while the original SDK remains usable. The prepared environment has one explicit lifetime, including uncertain terminal launches.</p>
 <p>Direct prerequisites: the planning session&#39;s artifacts must be published. There are no preceding implementation phases. Work is entirely in Mission Control; attach no other repositories.</p>
-<p>In scope: harness resume preparation, required-tool derivation, fresh scoped environment/config, default and selected terminal launch arms, exited-session resume, and focused integration/browser coverage for those changes. Non-goals: durable task/workflow transfer, new Backlog controls, automatic workflow reattachment, new MCP tools, global integration installation, new terminal vendors, and redesigning all dispatch.</p>
+<p>In scope: harness resume preparation, required-tool derivation, fresh scoped environment/config, recoverable credential-home leases, default and selected terminal launch arms, exited-session resume, and focused integration/browser coverage for those changes. Non-goals: durable task/workflow transfer, new Backlog controls, automatic workflow reattachment, new MCP tools, global integration installation, new terminal vendors, and redesigning all dispatch.</p>
 <p>Phase 1 is useful independently, but the known early-hook task/workflow race remains until Phase 2. Do not update operator docs to claim transparent lifecycle continuity yet.</p>
 <h2>Repository contracts to preserve</h2>
 <ul>
@@ -20,6 +20,7 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <li><code>src/server/harness/codex/launch.ts</code> includes dispatch posture as well as configuration. Reuse/extract its registration and hook rendering; never let dispatch auto-mode overwrite a resumed permission mode.</li>
 <li><code>src/server/ask-channel.ts</code> composes redirect text and tool flags together. Do not add an unpaired <code>AskUserQuestion</code> ban or a second <code>--append-system-prompt</code>. Mission transport registration for a resume does not itself require replacing the conversation&#39;s question policy.</li>
 <li><code>spawnUniquely</code> in <code>dispatcher.ts</code> accepts a state home. <code>launchAgentTerminal</code> in <code>terminal/targets.ts</code> currently allocates its own. Both end in <code>isolatedAgentArgv</code> and a cleanup wrapper.</li>
+<li><code>reconcileDisposableAgentStateHomes</code> currently expires only <code>pipeline-caller-*.json</code> files; it cannot reclaim an abandoned resume home or its <code>loopback-token</code>. A wrapper&#39;s exit trap cannot run if the backend never starts it. Phase 1 must close that resource gap itself.</li>
 </ul>
 <h2>Implementation sequence</h2>
 <h3>1. Pin the launch regressions and contract</h3>
@@ -28,6 +29,7 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 <ul>
 <li>absolute executable and final unwrapped argv;</li>
 <li>the single disposable state-home handle and explicit dispose/transfer ownership behavior;</li>
+<li>a durable credential-home lease ID and guarded claim/revoke operations, separate from task/workflow ownership;</li>
 <li>required Mission tool names and verified transport result, with the exact descriptor for MCP-client harnesses;</li>
 <li>any hook/instrumentation facts the existing launch consumers need;</li>
 <li>write scope inherited from the task&#39;s primary and attached worktrees, using existing scope helpers.</li>
@@ -54,26 +56,37 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 </thead>
 <tbody><tr>
 <td>Preparation, verification or stop fails before launch</td>
-<td>Preparation owner disposes the unused home. Existing stop-failure task rollback remains unchanged.</td>
+<td>Preparation owner revokes its unclaimed lease and disposes the unused home. Existing stop-failure task rollback remains unchanged.</td>
 </tr>
 <tr>
 <td>Terminal definitely did not launch</td>
-<td>Caller disposes; no live wrapper owns the files.</td>
+<td>Caller revokes an unclaimed lease and disposes; conflicting claim or uncertain backend cleanup is not a definite non-launch.</td>
 </tr>
 <tr>
-<td>Terminal launched successfully</td>
+<td>Backend reports success, wrapper has not claimed</td>
+<td>Lease remains pending until the wrapper claims or the bounded start deadline permits revocation. An acknowledgement alone cannot transfer cleanup ownership.</td>
+</tr>
+<tr>
+<td>Wrapper claims and starts the agent</td>
 <td>Wrapper owns cleanup until the agent exits. Remove that home from the daemon&#39;s exit-cleanup set without deleting it.</td>
 </tr>
 <tr>
 <td>Terminal launch result is unknown, including selected-backend 504</td>
-<td>Retain the home and marker because a process may use them; no immediate cleanup and no second spawn. Phase 2 adds durable resolution of this uncertainty.</td>
+<td>Phase 1&#39;s durable lease retains the home, blocks a duplicate attempt and resolves an unclaimed launch through atomic revocation. A claimed or ambiguous owner is observed, never deleted by age.</td>
 </tr>
 <tr>
 <td>Agent exits</td>
-<td>Wrapper removes its home; repeated cleanup must remain safe.</td>
+<td>Wrapper completes its lease and removes its home; repeated cleanup and restart reconciliation remain safe.</td>
 </tr>
 </tbody></table></div>
-<p>Add the smallest explicit ownership-release helper to <code>agent-subprocess-env.ts</code>; do not remove cleanup for SDK or unlaunched homes. An orderly daemon restart while the terminal survives must not remove its config, credential or marker. At this phase, preserve unresolved homes rather than inventing an age-only collector that could delete live credentials. Phase 2 owns evidence-based cleanup for durable transfer attempts.</p>
+<p>Add the smallest explicit ownership-release helper to <code>agent-subprocess-env.ts</code>; do not remove cleanup for SDK or unlaunched homes. An orderly daemon restart while the terminal survives must not remove its config, credential or marker. Resource recovery below ships in Phase 1 and does not depend on Phase 2&#39;s task/workflow reservation.</p>
+<h3>4a. Make unknown-launch resources recoverable before this phase merges</h3>
+<p>The prepared home needs a small durable resource lease, owned by <code>agent-subprocess-env.ts</code> or a focused sibling module. Persist it before credential provisioning and external launch. Use a private control directory outside the credential home, partitioned by the owning daemon&#39;s stable state identity, with an unguessable attempt ID and validated canonical home locator. Record version/revision, conversation key, creation/start deadline, claim state and exact wrapper/process lifetime when known. No credential value or full argv belongs in the lease. Neither this journal nor its helper reads or writes task/workflow ownership or SQLite.</p>
+<p>Every managed resume wrapper must claim that exact lease before reading the launch configuration or starting the agent. Claim and revoke share one crash-safe atomic exclusion mechanism across the daemon and wrapper processes; a check followed by a separate write is insufficient. The claim records the wrapper PID and start time within that boundary. A missing, revoked, foreign or already claimed lease refuses execution without recreating credentials. The wrapper must use the same guard on both terminal axes, including a command delivered late after a backend timeout. Include the local guard helper in the existing build/package contract and use fixture equivalents in source-only tests.</p>
+<p>Use a bounded start deadline, proposed default two minutes from the persisted external-launch intent immediately before calling the backend; SDK drain time must not consume that budget. At expiry, the daemon tries to revoke only a still-unclaimed lease atomically. If revocation wins, no wrapper can subsequently start from that attempt, so remove its credential home and mark cleanup complete even when the backend returned 504 and created nothing. If claim wins, retain the home and observe its exact owner. Time merely schedules the revocation attempt; it is not evidence that a claimed process died. Revoked or missing tickets fail closed forever, so a delayed wrapper cannot race cleanup or recreate a deleted home.</p>
+<p>Extend startup reconciliation in <code>index.ts</code> and add a bounded periodic sweep using that same resource owner. Reconcile interrupted provisioning, revocation and deletion idempotently. Reload unresolved leases before admitting another managed resume for the same conversation; return the existing attempt&#39;s bounded status instead of allocating another home. Inaccessible or malformed records stay quarantined with an actionable diagnostic and cannot authorize a recursive delete. Restrict every cleanup to a lease-owned canonical path beneath this daemon&#39;s disposable namespace; reject symlinks and foreign-daemon entries. Keep existing unleased SDK/dispatch homes on their current policy.</p>
+<p>For a claimed attempt, normal wrapper completion releases the home. Crash recovery may release it only with positive proof that the exact wrapper and any agent using it have stopped; a missing marker, recycled PID, unavailable inventory or wrapper absence alone is insufficient. Expose a non-spawning recheck through the existing launch error/status path, with a documented recovery action for an exact owned resource. If stopping that resource is needed, use the existing terminal policy and ordinary confirmation; never offer raw path deletion or a guessed pane kill. Uncertain owners remain retained and visible, with no duplicate launch. This resource diagnostic belongs to Phase 1; Phase 2 adds task/workflow recovery presentation.</p>
+<p>This is one resource-lifetime primitive, not a second session ledger. Phase 2 references its lease ID and uses its claim/revoke/reconcile result. It must not add a competing home collector or treat lease revocation as authority to settle a task. The lease&#39;s pre-claim fence is the concrete cleanup path for the review&#39;s never-launched 504 case, without deleting any live agent&#39;s credentials.</p>
 <p>Use the same preparation in the exited <code>/launch</code> resume arm. Preserve the existing status/outcome semantics, default-backend uniqueness policy and selected-backend no-fallback policy. Do not leak config bodies, bearer values, or an argv containing secrets in errors. Keep existing human resume advice sanitized and clearly distinguish a bare manual resume from a managed continuation with tools.</p>
 <h3>5. Prove actual transport, then document the limited result</h3>
 <p>Add <code>test/managed-resume-tools.test.ts</code> as a focused fixture-driven transport suite if existing files become unwieldy. Launch the prepared MCP child against a disposable fixture bundle and perform a real initialize/tools-list through the rendered configuration, with no model request. A stub that only asserts a boolean <code>missionMcp: true</code> is insufficient. Reuse <code>test/helpers/mcp-fixture.ts</code> and the patterns in <code>test/mission-mcp.test.ts</code>. These unit tests must pass on a fresh checkout without pre-existing <code>dist/</code>; the built production bundle and its authenticated tool round trip belong to the browser/integration case below.</p>
@@ -109,7 +122,27 @@ main{max-width:1120px;margin:auto;padding:64px 32px 100px}h1{font-size:clamp(30p
 </tr>
 <tr>
 <td>Stop error, definite spawn refusal, unknown spawn</td>
-<td>Correct home ownership and existing task failure/rollback semantics; unknown is not retried.</td>
+<td>Correct lease/home ownership and existing task failure/rollback semantics; unknown is not retried.</td>
+</tr>
+<tr>
+<td>Selected backend returns 504 and never starts a wrapper, including daemon restart</td>
+<td>Persisted unclaimed lease is revoked at its deadline; home and token are removed; repeated requests allocate no additional unresolved home.</td>
+</tr>
+<tr>
+<td>Late wrapper races deadline or restart cleanup</td>
+<td>Exactly one of claim/revoke wins. Revoked or missing lease starts zero agents; successful claim retains credentials until proven completion.</td>
+</tr>
+<tr>
+<td>Crash during provisioning, claim, revocation or home deletion</td>
+<td>Startup finishes safe cleanup or retains a proven/uncertain owner; no age-only deletion, duplicate launch or lost cleanup record.</td>
+</tr>
+<tr>
+<td>Claimed wrapper survives restart, PID is recycled, inventory fails, or wrapper dies with a surviving child</td>
+<td>Preserve live/ambiguous credentials; show recovery status; exact process proof governs eventual cleanup.</td>
+</tr>
+<tr>
+<td>Corrupt lease, path traversal/symlink, foreign daemon, or legacy unleased home</td>
+<td>Fail closed without deleting another owner&#39;s files or changing legacy cleanup policy.</td>
 </tr>
 <tr>
 <td>Two simultaneous resumes</td>
@@ -130,8 +163,8 @@ MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/sdk-terminal-handoff.spec.ts e2e
 </code></pre>
 <p>The new suite/spec must be created before these commands are claimed as passing. Keep the build before smoke/E2E; use scoped outside-sandbox approval when required by the repository. Do not change production security settings to make a fixture work.</p>
 <h2>Exit, merge and downstream handoff</h2>
-<p>Phase 1 can merge when all managed resume entry points consume the same prepared contract; focused transport, environment, refusal and browser checks pass; docs accurately describe the partial repair; and there are no changes to durable task/workflow identity semantics. Register final command output and rendered preflight evidence before completion. Commit/push/PR steps follow the implementation task&#39;s then-current handoff owner.</p>
-<p>Phase 2 may rely on one prepared home, verified tool transport, preserved scope, and explicit definite/unknown launch outcomes. It must reuse the preparation seam and extend existing launch proof, not duplicate agent argv or credentials. Phase 1 must leave no production feature flag or dead preparatory API for Phase 2 to enable.</p>
+<p>Phase 1 can merge when all managed resume entry points consume the same prepared contract; focused transport, environment, refusal and browser checks pass; the never-launched 504 is reclaimed before and after daemon restart; claim/revoke race tests prove a late wrapper cannot use revoked credentials; docs accurately describe the partial repair; and there are no changes to durable task/workflow identity semantics. Add Playwright coverage for any visible resource diagnostic/recheck introduced here. Register final command output and rendered preflight evidence before completion. Commit/push/PR steps follow the implementation task&#39;s then-current handoff owner.</p>
+<p>Phase 2 may rely on one prepared home, its recoverable resource lease, verified tool transport, preserved scope, and explicit definite/unknown launch outcomes. It must reuse the preparation and lease seams and extend existing launch proof, not duplicate agent argv, credentials or home cleanup. Phase 1 must leave no production feature flag or dead preparatory API for Phase 2 to enable.</p>
 <h2>Cross-phase audit record</h2>
 <ul>
 <li><p>September 28, initial: route inventory includes both active handoff paths and exited resume. No task/workflow schema work belongs here.</p>
@@ -141,6 +174,8 @@ MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/sdk-terminal-handoff.spec.ts e2e
 <li><p>Final set audit: H1/H4 transport subproofs support Phase 2&#39;s end-state acceptance. The same browser spec is intentionally extended sequentially; phases cannot run concurrently. Durable adoption, orphan suppression and restart claims remain Phase 2 responsibilities.</p>
 </li>
 <li><p>Final verification audit: unit protocol tests use disposable fixture bundles and run without <code>dist/</code>; the built production MCP round trip is in the browser suite after the explicit build.</p>
+</li>
+<li><p>Inspector round 1 reconciliation: uncertain credential-home recovery, atomic wrapper claim/revoke, restart sweep and resource diagnostics move into Phase 1. Phase 2 retains task/workflow ownership recovery. The two-phase boundary now delivers independently complete resource lifetime safety; no unknown home waits for a later phase to gain a cleanup owner.</p>
 </li>
 </ul>
 <footer>Mission Control · phased implementation proposal · September 28, 2026</footer></main></body></html>

@@ -29,6 +29,7 @@ import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
+import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
@@ -170,6 +171,13 @@ try {
 warnIfSessionAttributionDisabled();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+const reconcileManagedResumeResources = () => {
+  try { recheckManagedResumes(); } catch (error) {
+    console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
+  }
+};
+reconcileManagedResumeResources();
+setInterval(reconcileManagedResumeResources, 30_000).unref();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.

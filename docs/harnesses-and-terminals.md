@@ -1,5 +1,54 @@
 # Harnesses and terminal backends
 
+## Managed terminal resumes
+
+`harness/resume.ts` prepares native resume arguments through `resumeArgvFor`, then uses the
+harness's `resumeTools` renderer. It preserves the recorded permission mode and grants only
+the task's existing primary and attached worktrees. Model and effort stay in the native
+conversation. Claude receives a private atomic MCP config and required-tool allow rules;
+Codex receives MCP overrides and its paired hook/trust configuration without dispatch auto
+flags. Pi uses the installed extension's verified bridge.
+
+Requirements combine task kind, ensemble membership and every active pinned Persona binding,
+including manual, taskless and secondary repository bindings. SDK resumes conservatively
+verify the complete Mission tool vocabulary because there is no persisted launch subset.
+Unmanaged discovered conversations keep native resume semantics without becoming task owners.
+
+One disposable home follows preparation through either terminal backend. Its lease lives
+outside the credential home, beneath the temporary `mission-control-resumes` namespace
+partitioned by canonical daemon state identity. No task, Workflow or SQLite ownership lives
+there. Preparation writes a versioned lease before provisioning secrets. The packaged guard
+must win an immutable claim/revoke decision before reading its launch config or spawning.
+Atomic hard-link publication supplies the cross-process exclusion without a stale lock file.
+
+`spawnManagedResume` and `launchManagedAgentTerminal` take a `ManagedResumeLaunch`, whose
+command, checkout and state home come only from `PreparedResume`. Their shared
+`terminal/resume-launch.ts` helper records launch intent and owns refusal cleanup and
+uncertain-result retention. Callers dispose preparation only if they abandon it before
+invoking a managed launcher, for example when SDK stop fails. Ordinary dispatch and terminal
+launch inputs remain separate and keep their existing disposable-home policy.
+
+The start deadline is two minutes from external launch intent, after SDK drain. Startup and
+the 30-second resource sweep revoke unclaimed expired attempts and finish interrupted cleanup.
+Revoked or missing leases permanently refuse delayed wrappers. Acknowledgement alone never
+authorizes deletion. Claimed homes are outside daemon exit cleanup; the guard releases them
+after normal agent completion and a successful process-group check. Missing owners, recycled
+PIDs and failed inventory do not authorize crash cleanup. A crashed guard therefore retains
+an ambiguous home for inspection, even after its observed child disappears.
+
+`GET /api/sessions/:id/launch` rechecks without spawning and returns attempt IDs, deadlines,
+claim states and exact observed wrapper lifetimes. Repeating a resume while an unresolved
+lease exists reports that attempt rather than allocating another home. Close the exact
+resumed agent normally to let its guard finish; use the discovered session's existing Stop
+action when needed. An ambiguous crashed guard or malformed journal needs inspection, not
+raw path deletion or a guessed pane kill. Records with foreign or symlinked paths fail closed.
+
+The source guard is built by `npm run build:resume-guard` into
+`dist/satellites/resume-guard.mjs`; `MISSION_RESUME_GUARD` redirects it for isolated fixtures.
+Source tests build their own guard and MCP fixtures and require no pre-existing `dist/`.
+Phase 2 must reuse this prepared value and lease rather than allocate credentials again.
+Task adoption, pinned Workflow transfer and early-hook ownership remain Phase 2 work.
+
 Mission Control supports several coding agents and terminal environments without spreading
 vendor-specific conditionals through the application. A harness describes an agent's
 capabilities. Terminal backends describe how Mission Control can discover, focus, capture,

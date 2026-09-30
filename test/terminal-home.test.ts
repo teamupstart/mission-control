@@ -90,6 +90,17 @@ test("a multiplexer wins the axis, and the emulator is not consulted at all", as
   assert.equal(tabs, 0);
 });
 
+test("an unknown home launch never falls through to another backend", async () => {
+  let second = 0;
+  const result = await launchHome(SPEC, deps(
+    fakeMultiplexer({ sessions: sessions({ spawnDetached: async () => ({ ok: false, outcomeUnknown: true, error: "timeout" }) }) }),
+    fakeEmulator(), () => true,
+    fakeMultiplexer({ id: "cmux", sessions: sessions({ spawnDetached: async () => { second++; return OK; } }) }),
+  ));
+  assert.deepEqual(result, { ok: false, outcomeUnknown: true, error: "timeout" });
+  assert.equal(second, 0);
+});
+
 test("an unsupported multiplexer is excluded before installation or home operations", () => {
   const herdr = fakeMultiplexer({
     id: "herdr",

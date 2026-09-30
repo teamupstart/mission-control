@@ -9837,6 +9837,9 @@ mark.find-hit.is-current {
   white-space: nowrap;
 }
 .launch-flash.is-error {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
   background: color-mix(in oklab, var(--danger) 10%, transparent);
   color: var(--danger);

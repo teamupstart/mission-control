@@ -1,6 +1,7 @@
 import { LAUNCH_PID_FILE } from "../../src/server/terminal/launch-process.ts";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 import type { Proc } from "../../src/server/discovery/processes.ts";
 import type { TerminalDeps } from "../../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
@@ -68,6 +69,14 @@ export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGh
         // Ghostty ignores the requested title. A fixture that echoed it would hide the bug.
         tabTitle: "shell reports the working directory", startedAt: Date.now(),
       };
+      if (process.env.MC_E2E_RESUME_TOOLS === "1") {
+        // Only OS launch I/O is replaced. Execute the production wrapper and MCP child.
+        const child = spawn(spec.argv[0]!, spec.argv.slice(1), {
+          cwd: spec.cwd, stdio: "ignore", detached: true,
+          env: { ...process.env, TMUX_PANE: "", WEZTERM_PANE: "", ITERM_SESSION_ID: "" },
+        });
+        child.unref();
+      }
       writeFileSync(join(dirname(spec.argv[1]!), LAUNCH_PID_FILE), String(WRAPPER_PID));
       writeFileSync(`${statePath()}.tmp`, JSON.stringify(state));
       renameSync(`${statePath()}.tmp`, statePath());

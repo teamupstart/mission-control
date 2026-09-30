@@ -34,6 +34,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
 
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -235,6 +236,42 @@ const TOOL_TURN = "E2E_OBSERVED_TOOLS";
 const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
+if (process.env.MC_E2E_RESUME_TOOLS === "1" && RESUME_ID && !process.argv.includes("--output-format")) {
+  const configPath = argvValue("--mcp-config");
+  if (!configPath || !recordDir) throw new Error("managed terminal resume omitted its config");
+  const descriptor = JSON.parse(readFileSync(configPath, "utf8")).mcpServers["mission-control"];
+  const child = spawn(descriptor.command, descriptor.args, { cwd: process.cwd(),
+    env: { ...process.env, ...descriptor.env }, stdio: ["pipe", "pipe", "pipe"] });
+  const pending = new Map();
+  let sequence = 0;
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.id) pending.get(message.id)?.(message);
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    const timeout = setTimeout(() => reject(new Error(`MCP ${method} timed out`)), 10_000);
+    pending.set(id, (message) => { clearTimeout(timeout); pending.delete(id); resolve(message); });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+  await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-resumed-cli", version: "1" } });
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  const listed = await request("tools/list", {});
+  const result = await request("tools/call", { name: "report_status", arguments: { activity: "Resumed terminal reached Mission tools" } });
+  writeFileSync(join(recordDir, "resume-mcp.json"), JSON.stringify({
+    nativeId: RESUME_ID, missionHome: process.env.MISSION_HOME,
+    sdkIdentity: process.env.MISSION_SESSION_ID ?? null,
+    tools: listed.result.tools.map((tool) => tool.name), result: result.result,
+  }));
+  child.stdin.end();
+  await new Promise((resolve) => child.once("exit", resolve));
+  await new Promise((resolve) => {
+    const timer = setInterval(() => {
+      if (existsSync(join(recordDir, "resume-stop"))) { clearInterval(timer); resolve(); }
+    }, 50);
+  });
+  process.exit(0);
+}
 if (recordDir) {
   const resolvedMissionState =
     process.env.MISSION_HOME ?? process.env.FLEET_HOME ?? process.env.HARNESS_HOME ?? homedir();

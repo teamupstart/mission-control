@@ -1169,6 +1169,8 @@ export type Harness = HarnessCapabilities & HarnessDaemonSlots;
  * capability and every daemon slot on one flat object.
  */
 interface HarnessDaemonSlots {
+  /** Launch-scoped registration for a managed resume, separate from native resume grammar. */
+  resumeTools: (context: import("./resume-tools.ts").ResumeToolsContext) => import("./resume-tools.ts").ResumeToolsRender;
   /** Matches this harness's key in `HARNESSES`. */
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */

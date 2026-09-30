@@ -101,6 +101,11 @@ Read it as a terminal stream or a chat, queue and reorder messages, answer struc
 change permission posture, interrupt a turn, and drop images directly into the composer.
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
+
+Managed terminal resumes [verify Mission tools before stopping the SDK](docs/harnesses-and-terminals.md#managed-terminal-resumes),
+preserve permission posture and attached checkout scope, and retain their prepared environment
+while a terminal launch is uncertain. Durable task and Workflow handoff continuity remains the
+separate Phase 2 repair.
 Every message follows one delivery policy, with nothing to choose before sending: it waits for the
 current turn, steers an embedded agent one minute after it was queued, and interrupts the turn three
 minutes after it was queued, keeping the other queued messages. Steer now and Interrupt and deliver are there

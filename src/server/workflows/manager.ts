@@ -1496,6 +1496,16 @@ export class WorkflowManager {
     return binding && version && versionSupportsWorkflowEvidence(version) ? binding : null;
   }
 
+  /** Resume obligations include secondary repository bindings and exited projections. */
+  resumeNeedsEvidence(session: Session): boolean {
+    const noteKey = noteKeyFor(session);
+    return this.store.listBindings().some((binding) => {
+      if (binding.noteKey !== noteKey || binding.state !== "active") return false;
+      const version = this.store.getWorkflowVersionById(binding.workflowVersionId);
+      return Boolean(version && versionSupportsWorkflowEvidence(version));
+    });
+  }
+
   /**
    * Session-attributed intake used by the bundled Mission MCP tool.
    *

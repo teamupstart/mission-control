@@ -2,15 +2,16 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
 import { captureWorkflowPublication } from "../src/server/workflows/publication.ts";
-import { captureSubmissionTextArtifacts } from "../src/server/workflows/images.ts";
+import { captureSubmissionTextArtifacts, WorkflowImageEvidenceError } from "../src/server/workflows/images.ts";
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "../src/shared/workflow-publication.ts";
 import { probeMatchesEvidence } from "../src/server/workflows/context.ts";
-import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { WORKFLOW_TEXT_EVIDENCE_LIMITS, type WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-publication-"));
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -81,13 +82,87 @@ test("tracked and staged reports cannot be exempted, including a staged deletion
   const root = repo();
   report(root);
   git(root, "add", reportPath);
-  assert.equal((await captureWorkflowPublication(root)).artifacts.length, 0);
+  const staged = await captureWorkflowPublication(root);
+  assert.equal(staged.artifacts.length, 0);
+  assert.equal(staged.publication.treeOid, git(root, "write-tree"));
+  assert.deepEqual(staged.publication.unpublishedPaths, [reportPath]);
   git(root, "commit", "-qm", "tracked report");
   git(root, "rm", "--cached", reportPath);
-  assert.equal((await captureWorkflowPublication(root)).artifacts.length, 0);
+  const removedFromIndex = await captureWorkflowPublication(root);
+  assert.equal(removedFromIndex.artifacts.length, 0);
+  // Capture follows the working tree, where the previously tracked report still exists.
+  assert.equal(removedFromIndex.publication.treeOid, git(root, "rev-parse", "HEAD^{tree}"));
+  assert.deepEqual(removedFromIndex.publication.unpublishedPaths, []);
   await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath,
     sha256: createHash("sha256").update(html).digest("hex") }] }), /Tracked artifact must be published/);
+
+  report(root, html + "Updated evidence");
+  const modified = await captureWorkflowPublication(root);
+  assert.equal(modified.artifacts.length, 0);
+  assert.deepEqual(modified.publication.unpublishedPaths, [reportPath]);
+  git(root, "add", reportPath);
+  assert.equal(modified.publication.treeOid, git(root, "write-tree"));
 });
+
+for (const boundary of [
+  { name: "file count", reservedBytes: 1, localCount: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount - 1, localBytes: 256 },
+  {
+    name: "aggregate UTF-8 bytes",
+    reservedBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact,
+    localCount: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes / WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact - 1,
+    localBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact,
+  },
+]) {
+  test(`reserved evidence and local reports accept the ${boundary.name} limit and reject one above it`, async () => {
+    const root = realpathSync(repo());
+    const padding = boundary.localBytes - Buffer.byteLength(html);
+    report(root, html + "é".repeat(Math.floor(padding / 2)) + "x".repeat(padding % 2));
+    for (let index = 1; index < boundary.localCount; index++) {
+      writeFileSync(join(root, `docs/reports/result/evidence-${index}.txt`), "é".repeat(boundary.localBytes / 2));
+    }
+    const atLimit = await captureWorkflowPublication(root);
+    assert.equal(atLimit.artifacts.length, boundary.localCount);
+    const overflowPath = join(root, "docs/reports/result/overflow.txt");
+    writeFileSync(overflowPath, "x");
+    const aboveLimit = await captureWorkflowPublication(root);
+    assert.equal(aboveLimit.artifacts.length, boundary.localCount + 1);
+
+    const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+    const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
+    const store = new WorkflowStore();
+    const id = `publication-retention-${boundary.name}`;
+    const reservedContent = "r".repeat(boundary.reservedBytes);
+    writeFileSync(join(root, "reserved.txt"), reservedContent);
+    store.stageWorkflowEvidence(id, [{
+      id: `${id}-reserved`, clientItemId: "reserved", sourceKind: "agent", evidenceKind: "text",
+      sourceRoot: root, sourceLocator: "reserved.txt", displayName: "reserved.txt", caption: "Reserved evidence",
+      repositoryScope: "repo-01", mimeType: "text/plain", bytes: Buffer.byteLength(reservedContent),
+      sha256: createHash("sha256").update(reservedContent).digest("hex"),
+    }], 1);
+    const binding = store.insertBinding({
+      id: `${id}-binding`, workflowVersionId: BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!,
+      noteKey: id, sessionId: `${id}-session`, sessionAgent: "codex", sessionName: "retention limits",
+      sessionCwd: root, sessionRepoRoot: root, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 2,
+    });
+    const { submission } = store.createInitialSubmission(
+      { id: `${id}-run`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: id, now: 3 },
+      { id, triggerSource: "manual", triggerKey: id, context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(submission.id).length, 1);
+    await assert.rejects(
+      captureSubmissionTextArtifacts(store, submission.id, 4, aboveLimit.artifacts),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_aggregate",
+    );
+    assert.deepEqual(store.listSubmissionTextArtifacts(submission.id), [], "rejection must not retain a partial capture");
+
+    rmSync(overflowPath);
+    const retained = await captureSubmissionTextArtifacts(store, submission.id, 5, atLimit.artifacts);
+    assert.equal(retained.length, boundary.localCount + 1);
+    assert.equal(retained.reduce((sum, item) => sum + item.bytes, 0), boundary.reservedBytes + boundary.localCount * boundary.localBytes);
+    assert.deepEqual(retained.map((item) => item.content), [reservedContent, ...atLimit.artifacts.map((item) => item.content)]);
+    assert.deepEqual(store.listSubmissionTextArtifacts(submission.id), retained);
+  });
+}
 
 test("invalid, linked-outside, oversized, and symlinked reports stay required", async () => {
   for (const content of [html + '<script>alert(1)</script>', html + '<a href="../../outside.txt">Outside</a>', html + "x".repeat(65_536)]) {

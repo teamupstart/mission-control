@@ -1322,7 +1322,7 @@ test("failed mapping is infrastructure and explicit recovery freezes a same-roun
   assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 1);
 });
 
-test("unique recovery requests share a durable per-run budget without spending author repairs", async (t) => {
+test("each explicit mapping recovery gets a fresh bounded operation without spending author repairs", async (t) => {
   let calls = 0;
   const h = await harness(t, "mapping-recovery-budget", undefined, {
     compactContext: async (raw) => compactWorkflowContext(raw, {
@@ -1339,35 +1339,134 @@ test("unique recovery requests share a durable per-run budget without spending a
   const { run } = created.value;
   let parentId = created.value.submission.id;
   let lastParentId = parentId;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     lastParentId = parentId;
     const result = await h.manager.recoverEvidence(run.id, parentId, `retry-${attempt}`);
     assert.equal(result.ok, true); if (!result.ok) return;
     parentId = result.value.submission.id;
     assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
   }
-  const replay = await h.manager.recoverEvidence(run.id, lastParentId, "retry-3");
+  const replay = await h.manager.recoverEvidence(run.id, lastParentId, "retry-4");
   assert.equal(replay.ok, true);
   if (replay.ok) assert.equal(replay.idempotent, true);
-  const refused = await h.manager.recoverEvidence(run.id, parentId, "retry-4");
-  assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.message, /recovery limit reached/i);
-  // A fresh store sees the same bound, including callers bypassing the manager projection.
   const reopened = new WorkflowStore(openDb());
   const storedReplay = reopened.reserveEvidenceRecovery({ id: "unused-replay", runId: run.id,
-    parentId: lastParentId, requestId: "retry-3", reason: "mapping", now: Date.now() });
+    parentId: lastParentId, requestId: "retry-4", reason: "mapping", now: Date.now() });
   assert.equal(storedReplay?.idempotent, true);
   assert.equal(storedReplay?.submission.id, parentId);
-  assert.equal(reopened.reserveEvidenceRecovery({ id: "over-budget", runId: run.id, parentId,
-    requestId: "direct-retry", reason: "mapping", now: Date.now() }), null);
-  assert.equal(reopened.listSubmissions(run.id).length, 4);
-  assert.equal(calls, 8, "two executions for the source and each of three recoveries");
+  assert.equal(reopened.listSubmissions(run.id).length, 5);
+  assert.equal(calls, 10, "each click permits two calls; replay permits none");
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  assert.equal(calls, 10, "polling must not start another recovery");
   assert.equal(reopened.consecutiveEvidencePreflightRefinements(parentId), 0);
   assert.equal(reopened.getRun(run.id)?.status, "blocked");
   assert.equal(reopened.listDeliveries(run.id).length, 0);
   const detail = h.manager.run(run.id);
   assert.equal(detail.kind, "found");
-  if (detail.kind === "found") assert.equal(detail.detail.evidenceRecovery, null);
+  if (detail.kind === "found") assert.equal(detail.detail.evidenceRecovery?.kind, "mapping");
+});
+
+// A new operator intent must not inherit the provider budget of a failed earlier round.
+// Automatic capture without a grant still preserves that budget.
+for (const action of ["resubmit", "grant", "automatic"] as const) test(`mapping budget follows the ${action} operation boundary`, async (t) => {
+  let calls = 0;
+  const head = { sha: "abc" };
+  const id = `mapping-operation-${action}`;
+  const h = await harness(t, id, undefined, {
+    head,
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+        constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"],
+        canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }],
+      } }),
+    }),
+    reconcileContext: async () => { calls++; return { kind: "failed", cause: "transport", reason: "mapping unavailable" }; },
+  });
+  await stageRecoveryProof(h, id, "The user can inspect the rendered result");
+  const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run, submission } = created.value;
+  const initialRound = action === "grant" ? 2 : 1;
+  if (action === "grant") {
+    openDb().prepare("UPDATE workflow_submissions SET round = 2 WHERE id = ?").run(submission.id);
+  }
+  const original = h.store.getSubmission(submission.id)!;
+  assert.equal(calls, 2);
+  if (action === "resubmit") {
+    const [fresh, replay] = await Promise.all([
+      h.manager.resubmit(run.id, { requestId: "explicit-retry", resubmitUnchanged: true }),
+      h.manager.resubmit(run.id, { requestId: "explicit-retry", resubmitUnchanged: true }),
+    ]);
+    assert.equal(fresh.ok, true); assert.equal(replay.ok, true);
+    if (fresh.ok && replay.ok) assert.equal(fresh.value.submission.id, replay.value.submission.id);
+  } else {
+    // Recreate an automatic repair about to capture unchanged mapping inputs on a new tree.
+    h.store.setRunState(run.id, "waiting_for_session", "persona_feedback", null, Date.now());
+    if (action === "grant") {
+      openDb().prepare("UPDATE workflow_runs SET max_repair_rounds = 1 WHERE id = ?").run(run.id);
+      h.store.blockForRoundLimit(h.store.getRun(run.id)!);
+      const grant = h.manager.grantRepairRounds(run.id, { requestId: "explicit-grant", rounds: 2 });
+      assert.equal(grant.ok, true);
+    }
+    head.sha = "changed-tree";
+    h.registry.getSession(id)!.state = "idle";
+    await h.manager.sweepResumptions(Date.now() + 60_000);
+  }
+  const latest = h.store.latestSubmission(run.id)!;
+  assert.equal(latest.round, initialRound + 1);
+  assert.equal(calls, action === "automatic" ? 2 : 4);
+  assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
+  assert.deepEqual(h.store.getSubmission(submission.id), original, "earlier failure remains immutable");
+  if (action === "resubmit") {
+    // A restart after the last provider checkpoint resumes the SAME manual submission.
+    openDb().prepare("UPDATE workflow_submissions SET status = 'capturing', completed_at = NULL WHERE id = ?").run(latest.id);
+    h.store.setRunState(run.id, "capturing", "evidence_readiness_capture", null);
+    const captureDriver = h.manager as unknown as {
+      captureAndActivate: (...args: unknown[]) => Promise<unknown>;
+    };
+    await captureDriver.captureAndActivate(h.binding, h.store.getRun(run.id)!, h.store.getSubmission(latest.id)!, undefined, true);
+    assert.equal(calls, 4, "a manual trigger must not reset its own saved checkpoint");
+    assert.equal(h.store.latestSubmission(run.id)?.id, latest.id);
+    assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
+  }
+  if (action === "grant") {
+    const replay = h.manager.grantRepairRounds(run.id, { requestId: "explicit-grant", rounds: 2 });
+    assert.equal(replay.ok, true);
+    assert.equal(replay.idempotent, true);
+    // The same grant must not keep resetting every later automatic round.
+    h.store.setRunState(run.id, "waiting_for_session", "persona_feedback", null, Date.now());
+    head.sha = "another-tree";
+    await h.manager.sweepResumptions(Date.now() + 120_000);
+    assert.equal(h.store.latestSubmission(run.id)?.round, initialRound + 2);
+    assert.equal(calls, 4);
+  }
+});
+
+test("manual resubmission keeps a successful no-match mapping cached", async (t) => {
+  let calls = 0;
+  const h = await harness(t, "mapping-success-cache", undefined, {
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+        constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"],
+        canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }],
+      } }),
+    }),
+    reconcileContext: async () => { calls++; return { kind: "ok", value: { criterionMappings: [] } }; },
+  });
+  await stageRecoveryProof(h, "mapping-success-cache", "The user can inspect the rendered result");
+  const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run, submission } = created.value;
+  const before = WorkflowContextSnapshotSchema.parse(h.store.getSubmission(submission.id)!.context);
+  assert.equal(before.reconciliation?.status, "complete");
+  h.store.setRunState(run.id, "waiting_for_session", "persona_feedback", null);
+  const fresh = await h.manager.resubmit(run.id, { requestId: "retry", resubmitUnchanged: true });
+  assert.equal(fresh.ok, true); if (!fresh.ok) return;
+  assert.equal(calls, 1, "a completed mapping is a result, not a failed operation to retry");
+  const after = WorkflowContextSnapshotSchema.parse(h.store.getSubmission(fresh.value.submission.id)!.context);
+  assert.deepEqual(after.reconciliation, before.reconciliation);
+  assert.deepEqual(after.criterionMappings, before.criterionMappings);
+  assert.equal(h.store.getRun(run.id)?.status, "waiting_for_evidence_readiness");
 });
 
 for (const scenario of ["registration", "mixed", "parse"] as const) test(`Persona ${scenario} correction has one durable budget and emits no false repair`, async (t) => {

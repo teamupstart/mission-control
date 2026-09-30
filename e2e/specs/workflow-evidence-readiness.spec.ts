@@ -392,7 +392,13 @@ function seedUnreadableAuditorWithValidPreflight(daemon: DaemonHandle): void {
   });
 }
 
-test("criterion readiness waits, repairs in the same round, and records an operator override", async ({
+// This flow exercises the manual retry button. Keep the automatic sweep from consuming
+// staged proof and removing that button between staging and Playwright's click.
+const manualPreflightTest = test.extend({
+  daemonEnv: { MISSION_WORKFLOW_SWEEP_MS: "600000" },
+});
+
+manualPreflightTest("criterion readiness waits, repairs in the same round, and records an operator override", async ({
   dashboard,
   daemon,
 }) => {
@@ -956,7 +962,78 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
   await capture(dashboard, "09-readiness-review-disagreement", timeline);
 });
 
-test("mapping infrastructure recovery reuses frozen evidence and stops at its run budget", async ({ dashboard, daemon }) => {
+for (const grant of [false, true]) test(`manual resubmission retries failed mapping${grant ? " after granting rounds" : ""}`, async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const versionId = await createWorkflow(daemon);
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(daemon, "/api/sessions"))
+    .find((item) => item.id === sessionId)!;
+  const noteKey = session.agentSessionId ?? session.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare("INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at) VALUES (?, 0, 0, ?)")
+      .run(noteKey, Date.now());
+  });
+  stageLaterPacket(daemon, noteKey, session.cwd, 1, "manual-mapping", false);
+  // Different wording forces the fake provider through semantic mapping, so preserving the
+  // successful fingerprint while changing its result to a failure reproduces the real stall.
+  withDaemonDb(daemon, (db) => {
+    db.prepare("UPDATE workflow_evidence_coverage_staging SET criterion = ? WHERE note_key = ?")
+      .run("The rendered output meets the acceptance requirement", noteKey);
+  });
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", { workflowVersionId: versionId, sessionId, deliveryMode: "preview" });
+  const created = await api<{ run: { id: string }; submission: { id: string } }>(daemon,
+    `/api/workflow-bindings/${binding.id}/submit`, { requestId: "manual-mapping-root" });
+  const runPath = `/api/workflow-runs/${created.run.id}`;
+  await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status)
+    .toBe("waiting_for_evidence_readiness");
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT context_json FROM workflow_submissions WHERE id = ?")
+      .get(created.submission.id) as { context_json: string };
+    const context = JSON.parse(row.context_json);
+    expect(context.reconciliation.method).toBe("semantic");
+    context.criterionMappings = [];
+    context.reconciliation = { ...context.reconciliation, status: "failed", attempts: 2, error: "mapping unavailable", cause: "transport" };
+    delete context.coverageSelection;
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'failed', round = ? WHERE id = ?")
+      .run(JSON.stringify(context), grant ? 2 : 1, created.submission.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'cancelled' WHERE run_id = ?").run(created.run.id);
+    db.prepare("UPDATE workflow_runs SET status = 'blocked', current_phase = ?, gate_state_json = ?, max_repair_rounds = ? WHERE id = ?")
+      .run(grant ? "round_limit" : "evidence_reconciliation_error", JSON.stringify(grant
+        ? { maxRepairRounds: 1, parkedPhase: "evidence_reconciliation_error" }
+        : { submissionId: created.submission.id, error: "mapping unavailable" }), grant ? 1 : 5, created.run.id);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${created.run.id}`);
+  const header = dashboard.locator("header.wf-run-head");
+  if (grant) {
+    await header.getByRole("button", { name: "Grant 2 more rounds" }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Grant 2 more repair rounds" });
+    await expectContentClearsBorder(dialog);
+    await dialog.getByRole("button", { name: "Grant the rounds" }).click();
+    await expect(dialog).toBeHidden();
+  }
+  await header.getByRole("button", { name: "Preview fresh evidence" }).click();
+  const fresh = dashboard.getByRole("dialog", { name: "Preview fresh evidence" });
+  await expectContentClearsBorder(fresh);
+  await fresh.getByRole("button", { name: "Preview fresh evidence" }).click();
+  await expect(fresh).toBeHidden();
+  await header.getByRole("button", { name: "Preview unchanged" }).click();
+  const unchanged = dashboard.getByRole("dialog", { name: "Preview unchanged work" });
+  await expectContentClearsBorder(unchanged);
+  await unchanged.getByRole("button", { name: "Preview unchanged" }).click();
+  await expect(unchanged).toBeHidden();
+  await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status)
+    .toBe("waiting_for_evidence_readiness");
+  const detail = await api<{ submissions: WorkflowSubmission[]; llmCalls: Array<{ submissionId: string; purpose: string }> }>(daemon, runPath);
+  const latest = detail.submissions.at(-1)!;
+  expect(latest.round).toBe(grant ? 3 : 2);
+  expect(WorkflowContextSnapshotSchema.parse(latest.context).reconciliation?.status).toBe("complete");
+  expect(detail.llmCalls.filter((call) => call.submissionId === latest.id && call.purpose === "context_reconciliation")).toHaveLength(1);
+  const pane = await evidencePane(dashboard);
+  await expect(pane).toContainText("missing rendered output");
+  await capture(dashboard, grant ? "17-granted-mapping-retry" : "16-manual-mapping-retry", pane);
+});
+
+test("manual mapping recovery reuses frozen evidence beyond three failed operations", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   const sessionId = await dispatch(dashboard, daemon);
   const versionId = await createWorkflow(daemon);
@@ -1013,10 +1090,11 @@ test("mapping infrastructure recovery reuses frozen evidence and stops at its ru
   };
   expect(frozenContent(detail.submissions[1]!)).toEqual(frozenContent(detail.submissions[0]!));
   let latest = detail.submissions[1]!;
-  for (let recoveryNumber = 2; recoveryNumber <= 3; recoveryNumber++) {
+  for (let recoveryNumber = 2; recoveryNumber <= 4; recoveryNumber++) {
     failMapping(latest.id);
     await dashboard.reload();
     await evidencePane(dashboard);
+    await expect(recovery.getByRole("button", { name: "Retry criterion mapping" })).toBeVisible();
     await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
     await expect.poll(async () => {
       const next = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
@@ -1027,17 +1105,11 @@ test("mapping infrastructure recovery reuses frozen evidence and stops at its ru
   failMapping(latest.id);
   await dashboard.reload();
   const pane = await evidencePane(dashboard);
-  await expect(recovery).toHaveCount(0);
-  await expect(dashboard.getByRole("button", { name: "Retry criterion mapping" })).toHaveCount(0);
-  await capture(dashboard, "15-recovery-budget-exhausted", pane);
-  const refused = await fetch(`${daemon.baseURL}/api/workflow-runs/${created.run.id}/submissions/${latest.id}/evidence-recovery`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "over-budget" }),
-  });
-  expect(refused.status).toBe(409);
-  expect(await refused.text()).toContain("Evidence recovery limit reached");
+  await expect(recovery.getByRole("button", { name: "Retry criterion mapping" })).toBeVisible();
+  await capture(dashboard, "15-manual-recovery-still-available", pane);
   const blocked = await api<{ run: { status: string }; submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
   expect(blocked.run.status).toBe("blocked");
-  expect(blocked.submissions).toHaveLength(4);
+  expect(blocked.submissions).toHaveLength(5);
 });
 
 /**

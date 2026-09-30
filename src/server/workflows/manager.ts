@@ -186,7 +186,6 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
-  EVIDENCE_RECOVERY_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
@@ -2252,7 +2251,6 @@ export class WorkflowManager {
   private evidenceRecoveryFor(run: WorkflowRun, submission: WorkflowSubmission): WorkflowRunDetail["evidenceRecovery"] {
     if (submission.mode !== "full_workflow") return null;
     if (!["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
-    if (this.store.evidenceRecoveryCount(run.id) >= EVIDENCE_RECOVERY_LIMIT) return null;
     const binding = this.store.getBinding(run.bindingId);
     if (!binding?.sessionId || binding.state !== "active") return null;
     const session = this.registry.getSession(binding.sessionId);
@@ -2300,9 +2298,6 @@ export class WorkflowManager {
     const key = `evidence-recovery:${runId}:${requestId}`;
     const existing = this.store.submissionByTrigger(key);
     if (existing?.parentSubmissionId === submissionId) return { ok: true, value: { run, submission: existing }, idempotent: true };
-    if (this.store.evidenceRecoveryCount(runId) >= EVIDENCE_RECOVERY_LIMIT) {
-      return { ok: false, reason: "conflict", message: `Evidence recovery limit reached (${EVIDENCE_RECOVERY_LIMIT} per run). No new recovery was started.` };
-    }
     const latest = this.store.latestSubmission(runId);
     const recovery = latest?.id === submissionId ? this.evidenceRecoveryFor(run, latest) : null;
     if (!recovery || !latest) return { ok: false, reason: "conflict", message: "This snapshot has no eligible evidence recovery" };
@@ -6770,10 +6765,18 @@ export class WorkflowManager {
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+        const grant = parent ? this.store.runRepairGrant(run.id) : null;
+        const startsMappingOperation = submission.triggerSource === "manual"
+          || Boolean(parent && grant && parent.round <= grant.round && grant.round < submission.round);
+        // An explicit retry or the first round after a grant gets a fresh failure budget.
+        // Completed mappings stay cached. A checkpoint on THIS submission always wins,
+        // so restarting its capture cannot turn the operator's one request into a loop.
+        const inherited = source?.success
+          && (!startsMappingOperation || source.data.reconciliation?.status === "complete")
+          ? source.data : undefined;
         context = await this.schedule(() => reconcileWorkflowCoverage(context, frozenCoverage, {
           previous: priorCapture.success && priorCapture.data.reconciliation
-            ? priorCapture.data : context.reconciliation ? context : submission.refinementReason === "evidence_recovery"
-            ? undefined : source?.success ? source.data : undefined,
+            ? priorCapture.data : context.reconciliation ? context : inherited,
           sourceCoverage: bridge.coverage, sourceMappings: bridge.mappings,
           reconcile: this.options.reconcileContext,
           // Injected compactors never fall through to a real provider in tests or embedders.

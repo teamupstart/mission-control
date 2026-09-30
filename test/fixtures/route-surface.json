@@ -78,6 +78,7 @@
   "GET /api/sessions/:id/files": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/foreman-episodes": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/goal": "404 {\"error\":\"no goal for this session\"}",
+  "GET /api/sessions/:id/launch": "404 {\"error\":\"no such session or managed resume\"}",
   "GET /api/sessions/:id/note": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/pane": "404 {\"error\":\"no such session\"}",
   "GET /api/sessions/:id/plan-publication": "503 {\"error\":\"Workflow manager unavailable\"}",

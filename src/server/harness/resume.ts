@@ -83,7 +83,7 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
         const checked = await verifyMissionMcpTools(requiredTools, descriptor);
         if (!checked.ok) throw new Error(checked.reason);
       }
-      const rendered = harness.resumeTools({ descriptor, stateHome: lease.home,
+      const rendered = await harness.resumeTools({ descriptor, stateHome: lease.home,
         requiredTools });
       argv.push(...rendered.args);
       instrumented = rendered.instrumented;

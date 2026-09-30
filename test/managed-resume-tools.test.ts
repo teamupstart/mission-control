@@ -88,7 +88,7 @@ test("Codex resumes retain each permission posture, exact scope and coupled hook
 });
 
 test("Pi uses its extension capability and refuses an unavailable installation", async () => {
-  assert.deepEqual(HARNESSES.pi.resumeTools({ descriptor: null, stateHome: home, requiredTools: MISSION_MCP_TOOLS }),
+  assert.deepEqual(await HARNESSES.pi.resumeTools({ descriptor: null, stateHome: home, requiredTools: MISSION_MCP_TOOLS }),
     { args: [], instrumented: true });
   process.env.PI_EXTENSIONS_DIR = join(home, "missing-pi-extensions");
   try {

@@ -10,7 +10,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-complete-satisfies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { blockersFor, readyBacklog } = await import("../src/shared/backlog.ts");
 const { CompleteTaskSchema } = await import("../src/shared/protocol.ts");

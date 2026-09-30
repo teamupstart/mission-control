@@ -911,10 +911,12 @@ export class TaskManager {
   private closureTimer: ReturnType<typeof setTimeout> | null = null;
   /** When that timer is due, so an earlier kick can pre-empt a pending retry. */
   private closureDueAt: number | null = null;
-  private sweepingClosures = false;
+  private closureSweep: Promise<void> | null = null;
   /** A pass asked for while one was running, so the urgent request is not lost to the retry. */
   private sweepUrgentlyRequested = false;
   private closuresStopped = false;
+  private readonly subscriptions: (() => void)[] = [];
+  private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
@@ -1026,7 +1028,7 @@ export class TaskManager {
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
-    registry.subscribe((e) => {
+    this.subscriptions.push(registry.subscribe((e) => {
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1065,14 +1067,14 @@ export class TaskManager {
         // path - a task whose agent is right here costs no query at all.
         this.reconcileMergedTasks();
       }
-    });
+    }));
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
     // rebuilds it, so the same reconciliation waits for the first completed sweep. This is
     // the half the startup loop above cannot reach: it only visits a task still holding a
     // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
     // it never had resources of ours - was skipped by it on every restart, forever.
-    registry.onSessionsObserved(() => {
+    this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession();
@@ -1081,17 +1083,17 @@ export class TaskManager {
       // not been observed to be gone. See `sweepMissionSessionClosures`.
       this.scheduleMissionSessionClosureSweep(0);
       this.resumeCompletedWorktreeReturns();
-    });
+    }));
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
-    registry.onTaskPrMerged((e) => this.settleMergedTask(e));
+    this.subscriptions.push(registry.onTaskPrMerged((e) => this.settleMergedTask(e)));
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
-    registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
+    this.subscriptions.push(registry.onPrMergesRecorded(() => this.reconcileMergedTasks()));
     // A pipeline task belongs to the provider run rather than to any one child agent.
     // The provider projection is therefore its durable completion authority, including
     // the boot-time restore of a run that finished while Mission Control was down.
-    registry.onPipelineRun((run) => this.settlePipelineTask(run));
+    this.subscriptions.push(registry.onPipelineRun((run) => this.settlePipelineTask(run)));
   }
 
   /** Persist the strong terminal-home plus projected-worktree join for a pipeline task. */
@@ -1669,6 +1671,15 @@ export class TaskManager {
     this.closureDueAt = null;
   }
 
+  /** Detach producers before draining their work. Durable obligations resume on next start. */
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.stopMissionSessionClosures();
+    for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    this.stopping = this.settleWorktreeReturns();
+    return this.stopping;
+  }
+
   /**
    * One pass over every owed closure, and the reschedule that keeps the guarantee alive.
    *
@@ -1680,18 +1691,27 @@ export class TaskManager {
    * the process table has not been read yet - and clearing a row there would abandon exactly
    * the closure a restart exists to resume.
    */
-  async sweepMissionSessionClosures(): Promise<void> {
-    if (!this.completedInitialSessionSweep) return;
+  sweepMissionSessionClosures(): Promise<void> {
+    if (this.stopping || !this.completedInitialSessionSweep) return Promise.resolve();
     // A pass asked for while one is already running is REMEMBERED rather than dropped, and
     // that is not tidiness. The urgent caller is `interceptWorkOnClosingSession`: an agent we
     // are closing has started working, and the answer must not be "in up to ten seconds".
     // Dropping the request left exactly that, because the running pass then rescheduled on
     // the ordinary retry interval and the news that a turn had started was already gone.
-    if (this.sweepingClosures) {
+    if (this.closureSweep) {
       this.sweepUrgentlyRequested = true;
-      return;
+      return Promise.resolve();
     }
-    this.sweepingClosures = true;
+    // Publish ownership before a stop callback can synchronously re-enter this boundary.
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const sweep = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
+    this.closureSweep = sweep;
+    void this.runMissionSessionClosureSweep().then(resolve, reject);
+    return sweep;
+  }
+
+  private async runMissionSessionClosureSweep(): Promise<void> {
     try {
       // Every row has its own deadline. Serial stops multiply the 20s budget by fleet
       // size and can leave later runs waiting past four minutes after a restart.
@@ -1703,7 +1723,7 @@ export class TaskManager {
         }
       }));
     } finally {
-      this.sweepingClosures = false;
+      this.closureSweep = null;
       const urgent = this.sweepUrgentlyRequested;
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
@@ -5604,8 +5624,10 @@ export class TaskManager {
     return this.cleanupQueue.size;
   }
 
-  /** Shutdown drains the same queue used by startup, retention and lifecycle return. */
+  /** Drain producers first: an empty queue alone says nothing about a pending closure/archive. */
   async settleWorktreeReturns(): Promise<void> {
+    await Promise.allSettled([...this.completing.values()]);
+    await this.closureSweep;
     await this.cleanupQueue.settled();
   }
 

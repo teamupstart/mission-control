@@ -11,7 +11,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { PrUrlPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const {

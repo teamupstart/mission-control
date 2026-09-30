@@ -126,6 +126,15 @@ the done status and optional session closure. Startup resumes only those explici
 historical done tasks are never backfilled and keep the existing retention policy. The obligation
 survives partial return and is cleared when the last checkout returns or the task attempt changes.
 
+`TaskManager.stop()` detaches its registry subscriptions and stops retry scheduling, then drains
+in-flight scout completions, the closure sweep, and the shared cleanup queue before the allocator
+or database can close. An unreferenced retry timer does not make its subprocesses unreferenced.
+Tests constructing per-case managers use `test/helpers/task-manager-fixture.ts`: it stops and
+drains every manager after each test and supplies unknown occupancy unless the test injects
+explicit evidence. This keeps invented checkout paths off the host process table while exercising
+the same fail-closed return policy. Lifecycle and occupancy tests supply known, occupied, and
+unknown evidence through the existing dependency seam.
+
 A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
 
 Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.

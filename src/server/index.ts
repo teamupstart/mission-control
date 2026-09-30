@@ -850,8 +850,7 @@ async function shutdown(): Promise<void> {
   await retentionObserver.stop();
   // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
   // any recurring mission run whose agent it has not yet observed leave.
-  tasks.stopMissionSessionClosures();
-  await tasks.settleWorktreeReturns();
+  await tasks.stop();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

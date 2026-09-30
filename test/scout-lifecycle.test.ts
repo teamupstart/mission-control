@@ -41,7 +41,7 @@ process.env.HARNESS_HOME = home;
 process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
+const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("./helpers/task-manager-fixture.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { collectScoutPromptTrail } = await import("../src/server/scouts/prompt-collector.ts");

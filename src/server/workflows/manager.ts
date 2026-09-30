@@ -7306,7 +7306,8 @@ export class WorkflowManager {
    * The order of the gates below is deliberate: every free in-memory question is asked before
    * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
    * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
-   * capturing child because its reservation commits before capture begins. An override or an
+   * capturing child because its reservation commits before capture begins. Root mapping
+   * checkpoints also resume, including after startup marks capture interrupted. An override or an
    * exhausted preflight left in the durable `activating` handoff also resumes graph activation.
    * Historical exhaustion blocks advance through the same bounded handoff.
    */
@@ -7319,6 +7320,7 @@ export class WorkflowManager {
         if (
           run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)
+          || (run.status === "blocked" && run.currentPhase === "capture_interrupted")
           || run.status === "capturing"
           || (run.status === "running" && run.currentPhase === "activating")
         ) {
@@ -7373,6 +7375,26 @@ export class WorkflowManager {
     // from joining live work without weakening restart recovery for an orphaned reservation.
     if (this.captureLocks.has(binding.noteKey)) return;
     if (this.continueExhaustedEvidenceReadiness(run.id, latest.id, binding, now)) return;
+
+    const checkpoint = WorkflowContextSnapshotSchema.safeParse(latest.context);
+    if (
+      latest.segment === 0
+      && latest.refinementReason === null
+      && ["manual", "session"].includes(latest.triggerSource)
+      && checkpoint.success && checkpoint.data.reconciliation
+    ) {
+      // Startup marks interrupted captures failed. Reopen only this mapping checkpoint,
+      // never a new submission or budget. Live owners were excluded above; external and
+      // session-action captures retain their own recovery and activation contracts.
+      const resumed = run.status === "capturing" && latest.status === "capturing"
+        ? { run, submission: latest }
+        : this.store.resumeCapture(run.id, latest.id, ["capture_interrupted"], now);
+      if (resumed) {
+        this.publishRun(run.id);
+        await this.captureAndActivate(binding, resumed.run, resumed.submission, undefined, true);
+        return;
+      }
+    }
 
     let parent: WorkflowSubmission;
     let triggerKey: string;

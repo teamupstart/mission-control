@@ -1158,7 +1158,10 @@ An explicit retry or resubmission starts a fresh mapping operation when the prev
 even with identical mapping inputs. Granting repair rounds gives the first resumed round that
 same fresh budget. Later automatic rounds retain the failed budget until inputs change or the
 operator intervenes again. Replayed requests and daemon restarts resume the current operation's
-checkpoint rather than resetting its two-execution cap. Successful mappings stay cached.
+checkpoint rather than resetting its two-execution cap. The resumption observer picks up root
+manual and session submissions with a saved mapping checkpoint, including captures marked
+interrupted during startup. Captures without that checkpoint keep their existing recovery path.
+Successful mappings stay cached.
 
 Eligible attached runs expose an explicit evidence recovery action. It reserves one idempotent
 `evidence_recovery` segment in the same round using frozen criteria and evidence, without a live

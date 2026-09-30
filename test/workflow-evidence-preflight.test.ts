@@ -1417,14 +1417,11 @@ for (const action of ["resubmit", "grant", "automatic"] as const) test(`mapping 
   assert.equal(calls, action === "automatic" ? 2 : 4);
   assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
   assert.deepEqual(h.store.getSubmission(submission.id), original, "earlier failure remains immutable");
-  if (action === "resubmit") {
-    // A restart after the last provider checkpoint resumes the SAME manual submission.
+  if (action !== "automatic") {
+    // The observer must finish an orphaned root capture from its exhausted checkpoint.
     openDb().prepare("UPDATE workflow_submissions SET status = 'capturing', completed_at = NULL WHERE id = ?").run(latest.id);
     h.store.setRunState(run.id, "capturing", "evidence_readiness_capture", null);
-    const captureDriver = h.manager as unknown as {
-      captureAndActivate: (...args: unknown[]) => Promise<unknown>;
-    };
-    await captureDriver.captureAndActivate(h.binding, h.store.getRun(run.id)!, h.store.getSubmission(latest.id)!, undefined, true);
+    await h.manager.sweepResumptions(Date.now() + 90_000);
     assert.equal(calls, 4, "a manual trigger must not reset its own saved checkpoint");
     assert.equal(h.store.latestSubmission(run.id)?.id, latest.id);
     assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
@@ -1441,6 +1438,72 @@ for (const action of ["resubmit", "grant", "automatic"] as const) test(`mapping 
     assert.equal(calls, 4);
   }
 });
+
+for (const action of ["resubmit", "grant"] as const) {
+  for (const interruptedAttempt of [1, 2]) test(`restart resumes ${action} mapping checkpoint ${interruptedAttempt} without refilling its budget`, async (t) => {
+    let calls = 0;
+    let release!: () => void;
+    const interrupted = new Promise<void>((resolve) => { release = resolve; });
+    t.after(() => release());
+    const head = { sha: "abc" };
+    const id = `mapping-restart-${action}-${interruptedAttempt}`;
+    const h = await harness(t, id, undefined, {
+      head,
+      compactContext: async (raw) => compactWorkflowContext(raw, {
+        deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+          constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"],
+          canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }],
+        } }),
+      }),
+      reconcileContext: async () => {
+        calls++;
+        if (calls === 2 + interruptedAttempt) await interrupted;
+        if (interruptedAttempt === 1 && calls === 4) {
+          return { kind: "ok", value: { criterionMappings: [{ canonicalCriterionOrdinal: 1, matchedClientCriterionIds: ["repair-claim"] }] } };
+        }
+        return { kind: "failed", cause: "transport", reason: "mapping unavailable" };
+      },
+    });
+    await stageRecoveryProof(h, id, "The user can inspect the rendered result");
+    const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+    assert.equal(created.ok, true); if (!created.ok) return;
+    const { run } = created.value;
+    if (action === "grant") {
+      h.store.setRunState(run.id, "waiting_for_session", "persona_feedback", null, Date.now());
+      openDb().prepare("UPDATE workflow_submissions SET round = 2 WHERE id = ?").run(created.value.submission.id);
+      openDb().prepare("UPDATE workflow_runs SET max_repair_rounds = 1 WHERE id = ?").run(run.id);
+      h.store.blockForRoundLimit(h.store.getRun(run.id)!);
+      assert.equal(h.manager.grantRepairRounds(run.id, { requestId: "grant", rounds: 2 }).ok, true);
+      head.sha = "changed-tree";
+      h.registry.getSession(id)!.state = "idle";
+    }
+    const capture = action === "resubmit"
+      ? h.manager.resubmit(run.id, { requestId: "retry", resubmitUnchanged: true })
+      : h.manager.sweepResumptions(Date.now() + 60_000);
+    await waitFor(() => calls === 2 + interruptedAttempt, "retry never reached its checkpoint");
+    const checkpoint = h.store.latestSubmission(run.id)!;
+    assert.equal(checkpoint.triggerSource, action === "resubmit" ? "manual" : "session");
+    assert.equal(checkpoint.segment, 0);
+    assert.equal(WorkflowContextSnapshotSchema.parse(checkpoint.context).reconciliation?.attempts, interruptedAttempt);
+    await h.manager.stop();
+    h.manager.start();
+    assert.equal(h.store.getRun(run.id)?.currentPhase, "capture_interrupted");
+    // Let the stopped owner's fake call settle before the new observer resumes its row.
+    release();
+    await capture;
+    await h.manager.sweepResumptions(Date.now() + 120_000);
+    if (interruptedAttempt === 1) {
+      await waitFor(() => h.store.getRun(run.id)?.status === "completed", "remaining mapping attempt did not activate review");
+    } else {
+      assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
+    }
+    assert.equal(h.store.latestSubmission(run.id)?.id, checkpoint.id);
+    assert.equal(h.store.listSubmissions(run.id).length, 2);
+    assert.equal(calls, 4, "restart must spend only the original operation's remaining calls");
+    await h.manager.sweepResumptions(Date.now() + 180_000);
+    assert.equal(calls, 4, "later sweeps cannot spend more on the settled operation");
+  });
+}
 
 test("manual resubmission keeps a successful no-match mapping cached", async (t) => {
   let calls = 0;

@@ -1031,6 +1031,36 @@ for (const grant of [false, true]) test(`manual resubmission retries failed mapp
   const pane = await evidencePane(dashboard);
   await expect(pane).toContainText("missing rendered output");
   await capture(dashboard, grant ? "17-granted-mapping-retry" : "16-manual-mapping-retry", pane);
+
+  // Recreate a crash after this root retry durably charged its first mapping call.
+  // Use the real restart path: engine recovery fails capture before the observer resumes it.
+  await daemon.crash();
+  withDaemonDb(daemon, (db) => {
+    const context = WorkflowContextSnapshotSchema.parse(latest.context);
+    context.criterionMappings = [];
+    context.reconciliation = { ...context.reconciliation!, status: "pending", attempts: 1, error: null, cause: null };
+    delete context.coverageSelection;
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'capturing', completed_at = NULL WHERE id = ?")
+      .run(JSON.stringify(context), latest.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'cancelled' WHERE run_id = ?").run(created.run.id);
+    db.prepare("UPDATE workflow_runs SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL WHERE id = ?")
+      .run(created.run.id);
+  });
+  await daemon.restart();
+  await dashboard.reload();
+  await expect.poll(async () => (await api<{ run: { status: string } }>(daemon, runPath)).run.status,
+    { timeout: 40_000 }).toBe("waiting_for_evidence_readiness");
+  const resumed = await api<typeof detail>(daemon, runPath);
+  expect(resumed.submissions).toHaveLength(detail.submissions.length);
+  const resumedRoot = resumed.submissions.at(-1)!;
+  expect(resumedRoot.id).toBe(latest.id);
+  expect(WorkflowContextSnapshotSchema.parse(resumedRoot.context).reconciliation)
+    .toMatchObject({ status: "complete", attempts: 2 });
+  expect(resumed.llmCalls.filter((call) => call.submissionId === latest.id && call.purpose === "context_reconciliation")).toHaveLength(2);
+  const resumedPane = await evidencePane(dashboard);
+  await expect(resumedPane).toContainText("missing rendered output");
+  await expect(resumedPane.getByRole("button", { name: "Retry criterion mapping" })).toHaveCount(0);
+  await capture(dashboard, grant ? "19-granted-mapping-restart" : "18-manual-mapping-restart", resumedPane);
 });
 
 test("manual mapping recovery reuses frozen evidence beyond three failed operations", async ({ dashboard, daemon }) => {

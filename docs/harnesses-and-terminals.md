@@ -103,6 +103,10 @@ must win an immutable claim/revoke decision before reading its launch config or 
 The initial lease record is staged outside the published journal and renamed into place
 before any credentials are created. An interrupted staging write cannot block unrelated resumes.
 Claim and revoke use atomic hard-link publication for cross-process exclusion without a stale lock file.
+Only the daemon holding the exclusive state-home lock prepares leases. Conversation admission,
+publication and the in-flight preparation reservation run synchronously, so concurrent session
+aliases cannot prepare two launches for the same native conversation. Guards only claim or
+complete existing leases; they never prepare a second one.
 
 `spawnManagedResume` and `launchManagedAgentTerminal` take a `ManagedResumeLaunch`, whose
 command, checkout and state home come only from `PreparedResume`. Their shared

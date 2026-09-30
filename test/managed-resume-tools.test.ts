@@ -31,6 +31,27 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const session = (id: string) => mkSession({ id, runtime: "sdk", agentSessionId: id, cwd: home, terminals: [] });
 const context = { managed: true, requiredTools: [], extraDirs: [] } as const;
 
+test("concurrent session aliases admit only one preparation for a native conversation", async () => {
+  const source = session("shared-native-conversation");
+  const results = await Promise.allSettled([
+    prepareTerminalResume({ ...source, id: "source-alias-one" }, context),
+    prepareTerminalResume({ ...source, id: "source-alias-two" }, context),
+  ]);
+  const prepared = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  try {
+    assert.equal(prepared.length, 1, "session aliases must share native-conversation admission");
+    const refused = results.find((result) => result.status === "rejected");
+    assert.ok(refused && refused.status === "rejected");
+    assert.match(String(refused.reason), /Managed resume .* is preparing/);
+    const winner = prepared[0]!;
+    assert.ok(existsSync(join(winner.stateHome, "launch.json")));
+    winner.beginLaunch();
+    await assert.rejects(prepareTerminalResume({ ...source, id: "source-alias-three" }, context), /Managed resume .* is pending/);
+  } finally { for (const value of prepared) value.dispose(); }
+  const retry = await prepareTerminalResume({ ...source, id: "source-alias-after-refusal" }, context);
+  retry.dispose();
+});
+
 test("Claude config is private, isolated and actually serves the required MCP protocol", async () => {
   process.env.MISSION_SESSION_ID = "stale-sdk";
   process.env.TMUX_PANE = "%unrelated";

@@ -189,6 +189,9 @@ export function reconcileResumeLeases(root: string, now = Date.now(), preparing 
   return statuses;
 }
 
+// Only the state-home-owning daemon creates leases. Keep admission through publication and
+// preparing.add synchronous: concurrent requests cannot interleave before reserving a native
+// conversation. Guards arbitrate claim/revoke across processes, but never create leases.
 export function createResumeLease(root: string, conversation: string, preparing: Set<string>, sourceSessionId = ""): ResumeLease {
   const current = reconcileResumeLeases(root, Date.now(), preparing).find((s) =>
     s.lease.conversation === conversation && ["preparing", "pending", "claimed"].includes(s.state));

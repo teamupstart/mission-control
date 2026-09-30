@@ -1,8 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import type { Session } from "../../src/shared/types.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { resumeLeaseRoot } from "../../src/server/terminal/resume-lease.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { test, expect } from "../fixtures/test.ts";
@@ -40,6 +41,7 @@ async function resume(page: Page, daemon: DaemonHandle, source: Session) {
 test("managed resume actually invokes the built Mission MCP transport", async ({ dashboard, daemon }) => {
   const source = await dispatch(dashboard, daemon);
   let preparedHome: string | undefined;
+  let guardPid: number | undefined;
   try {
     const response = await resume(dashboard, daemon, source);
     expect(response.ok(), await response.text()).toBe(true);
@@ -47,6 +49,7 @@ test("managed resume actually invokes the built Mission MCP transport", async ({
     await expect.poll(() => existsSync(proof), { timeout: 30_000 }).toBe(true);
     const observed = JSON.parse(readFileSync(proof, "utf8"));
     preparedHome = observed.missionHome;
+    guardPid = JSON.parse(readFileSync(join(observed.missionHome, "terminal-launch.json"), "utf8")).pid;
     expect(observed.nativeId).toBe(source.agentSessionId);
     expect(observed.sdkIdentity).toBeNull();
     expect(observed.missionHome).not.toBe(daemon.home);
@@ -62,9 +65,26 @@ test("managed resume actually invokes the built Mission MCP transport", async ({
       mkdirSync(evidence, { recursive: true });
       await dashboard.screenshot({ path: join(evidence, "managed-terminal.png") });
     }
-  } finally {
     writeFileSync(join(daemon.recordDir, "resume-stop"), "stop");
-    if (preparedHome) await expect.poll(() => existsSync(preparedHome!), { timeout: 10_000 }).toBe(false);
+    await expect.poll(() => {
+      try { process.kill(guardPid!, 0); return false; } catch { return true; }
+    }, { timeout: 10_000 }).toBe(true);
+    // The replacement daemon is a new process under a shared ancestor. The guard cannot
+    // distinguish it from an adopted descendant, so normal agent exit must retain the home.
+    const status = await (await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(source.id)}/launch`)).json();
+    expect(status.attempts).toContainEqual(expect.objectContaining({ state: "claimed" }));
+    expect(existsSync(join(observed.missionHome, "loopback-token"))).toBe(true);
+  } finally {
+    // A failed daemon restart removes its fixture home. Still release the held fake and
+    // preserve that original failure instead of replacing it with an ENOENT in teardown.
+    mkdirSync(daemon.recordDir, { recursive: true });
+    writeFileSync(join(daemon.recordDir, "resume-stop"), "stop");
+    if (guardPid) await expect.poll(() => {
+      try { process.kill(guardPid!, 0); return false; } catch { return true; }
+    }, { timeout: 10_000 }).toBe(true);
+    // This fixture's only agent and MCP client have exited. Remove its private retained
+    // namespace explicitly; production reconciliation must not infer this from PID absence.
+    if (preparedHome) rmSync(resumeLeaseRoot(daemon.home), { recursive: true, force: true });
   }
 });
 

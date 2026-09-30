@@ -164,7 +164,7 @@ export function revokeResumeLease(lease: ResumeLease): boolean {
   return true;
 }
 
-/** Called only by the guard after its child and process group have positively exited. */
+/** Called only by the guard after child exit and a successful descendant lifetime check. */
 export function completeResumeLease(lease: ResumeLease, pid: number, startMs: number): void {
   const status = resumeLeaseStatus(lease);
   if ((status.state !== "claimed" && status.state !== "completed") || status.owner?.pid !== pid || status.owner.startMs !== startMs) {

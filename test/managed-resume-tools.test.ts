@@ -274,7 +274,7 @@ test("interrupted provisioning, revocation and deletion reconcile idempotently",
   assert.equal(existsSync(lease.home), false);
 });
 
-for (const crash of [false, true]) test(`real wrapper ${crash ? "crash retains a surviving child" : "completion releases its home"}`, async () => {
+for (const crash of [false, true]) test(`real wrapper ${crash ? "crash retains a surviving child" : "completion releases its home with an unambiguous inventory"}`, async () => {
   const nativeId = `real-wrapper-${crash}`;
   const p = await prepareTerminalResume(session(nativeId), context);
   const marker = join(home, `agent-started-${crash}.json`);
@@ -288,9 +288,17 @@ const t=setInterval(()=>{if(existsSync(${JSON.stringify(stop)}))clearInterval(t)
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, script] }));
   p.beginLaunch();
-  // A terminal gives the command its own foreground process group. Do not share the test
-  // runner's group, where unrelated parallel test subprocesses correctly prevent cleanup.
-  const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const env = { ...process.env };
+  if (!crash) {
+    // Parallel workers can start new orphans that correctly make real inventory ambiguous.
+    // Isolate only this positive cleanup proof; crash and detached regressions use real ps.
+    const ps = join(home, "unambiguous-ps.mjs");
+    writeFileSync(ps, `#!${process.execPath}
+const date='Wed Sep 30 12:34:56 2026';
+console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 '+date);`, { mode: 0o755 });
+    env.MISSION_PS_BIN = ps;
+  }
+  const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -324,6 +332,69 @@ const t=setInterval(()=>{if(existsSync(${JSON.stringify(stop)}))clearInterval(t)
     writeFileSync(stop, "stop");
     if (child.exitCode === null) child.kill("SIGTERM");
     await exited;
+  }
+});
+
+for (const doubleFork of [false, true]) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant`, { timeout: 20_000 }, async () => {
+  writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
+  const p = await prepareTerminalResume(session(`detached-${doubleFork}`), context);
+  const marker = join(home, `detached-${doubleFork}.json`);
+  const check = `${marker}.check`, result = `${marker}.result`, stop = `${marker}.stop`;
+  const descendantScript = join(home, `descendant-${doubleFork}.mjs`);
+  writeFileSync(descendantScript, `import {writeFileSync,renameSync,existsSync,readFileSync} from 'node:fs';
+import {join} from 'node:path';
+writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME}));
+renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});
+const t=setInterval(()=>{
+  if(existsSync(${JSON.stringify(stop)})){clearInterval(t);return;}
+  if(existsSync(${JSON.stringify(check)})&&!existsSync(${JSON.stringify(result)})){
+    let usable=false;try{usable=readFileSync(join(process.env.MISSION_HOME,'loopback-token'),'utf8').length>0;}catch{}
+    writeFileSync(${JSON.stringify(result)},String(usable));
+  }
+},30);`);
+  const spawnDescendant = `import {spawn} from 'node:child_process';
+spawn(process.execPath,[${JSON.stringify(descendantScript)}],{detached:true,stdio:'ignore',env:process.env}).unref();`;
+  const intermediate = join(home, `intermediate-${doubleFork}.mjs`);
+  writeFileSync(intermediate, spawnDescendant);
+  const agentScript = join(home, `detaching-agent-${doubleFork}.mjs`);
+  writeFileSync(agentScript, `import {existsSync} from 'node:fs';
+${doubleFork ? `import {spawn} from 'node:child_process';
+const middle=spawn(process.execPath,[${JSON.stringify(intermediate)}],{detached:true,stdio:'ignore',env:process.env});
+await new Promise(resolve=>middle.once('exit',resolve));` : spawnDescendant}
+await new Promise(resolve=>{const t=setInterval(()=>{if(existsSync(${JSON.stringify(marker)})){clearInterval(t);resolve();}},30);});`);
+  const configPath = join(p.stateHome, "launch.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, agentScript] }));
+  p.beginLaunch();
+  const guard = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  guard.stderr.on("data", (data) => { stderr += data; });
+  const exited = new Promise((resolve) => guard.once("exit", resolve));
+  try {
+    assert.equal(await exited, 0, stderr);
+    assert.ok(existsSync(marker), "the descendant started before its parents exited");
+    const observed = JSON.parse(readFileSync(marker, "utf8"));
+    process.kill(observed.pid, 0);
+    assert.equal(observed.home, p.stateHome);
+    assert.ok(existsSync(configPath), "agent exit must not remove a detached descendant's environment");
+    assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
+    reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
+    assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
+    await assert.rejects(prepareTerminalResume(session(`detached-${doubleFork}`), context), /unresolved|already|still/i);
+    writeFileSync(check, "check credentials after guard exit");
+    for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
+    assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");
+  } finally {
+    writeFileSync(stop, "stop");
+    if (guard.exitCode === null) guard.kill("SIGTERM");
+    await exited;
+    if (existsSync(marker)) {
+      const { pid } = JSON.parse(readFileSync(marker, "utf8"));
+      for (let i = 0; i < 100; i++) {
+        try { process.kill(pid, 0); } catch { break; }
+        await delay(30);
+      }
+    }
   }
 });
 

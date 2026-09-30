@@ -32,9 +32,13 @@ The start deadline is two minutes from external launch intent, after SDK drain. 
 the 30-second resource sweep revoke unclaimed expired attempts and finish interrupted cleanup.
 Revoked or missing leases permanently refuse delayed wrappers. Acknowledgement alone never
 authorizes deletion. Claimed homes are outside daemon exit cleanup; the guard releases them
-after normal agent completion and a successful process-group check. Missing owners, recycled
-PIDs and failed inventory do not authorize crash cleanup. A crashed guard therefore retains
-an ambiguous home for inspection, even after its observed child disappears.
+after normal agent completion and a successful descendant lifetime check across process
+groups. New processes must trace to an unrelated, still-live process from before the agent
+started. New orphans, including detached and double-forked children, retain the home when
+their origin cannot be proven. This may also retain a home for an unrelated new orphan or a
+process adopted by a shared ancestor. Missing owners, recycled PIDs, incomplete ancestry and
+failed inventory do not authorize cleanup. A crashed guard likewise retains an ambiguous
+home for inspection, even after its observed child disappears.
 
 `GET /api/sessions/:id/launch` rechecks without spawning and returns attempt IDs, deadlines,
 claim states and exact observed wrapper lifetimes. Repeating a resume while an unresolved

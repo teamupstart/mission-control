@@ -3,6 +3,9 @@ import { isAbsolute, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { run } from "../util/exec.ts";
 import { claimResumeLease, completeResumeLease, readResumeLease, writeResumeRecord } from "./resume-lease.ts";
+import { parseResumeProcesses, resumeDescendantsExited } from "./resume-processes.ts";
+
+const inventoryOptions = { timeoutMs: 5_000, env: { ...process.env, LC_ALL: "C", LANG: "C" } };
 
 // A separate packaged process, deliberately independent of the daemon's exit handlers.
 // No config read and no agent spawn precedes the immutable claim/revoke decision.
@@ -10,10 +13,8 @@ async function main(): Promise<number> {
   const [root, id] = process.argv.slice(2);
   if (!root || !id) throw new Error("missing resume lease");
   const lease = readResumeLease(root, id);
-  const observed = await run("ps", ["-p", String(process.pid), "-o", "lstart=", "-o", "pgid="], { timeoutMs: 5_000 });
-  const match = observed.code === 0 && observed.stdout.trim().match(/^(.*?)\s+(\d+)$/);
-  const startMs = match ? Date.parse(match[1]!) : NaN;
-  const group = match ? Number(match[2]) : NaN;
+  const observed = await run("ps", ["-p", String(process.pid), "-o", "lstart="], inventoryOptions);
+  const startMs = observed.code === 0 && !observed.outcomeUnknown && !observed.overflowed ? Date.parse(observed.stdout.trim()) : NaN;
   if (!Number.isFinite(startMs) || !claimResumeLease(lease, process.pid, startMs)) {
     throw new Error("resume lease unavailable, expired, or already claimed");
   }
@@ -29,28 +30,26 @@ async function main(): Promise<number> {
     delete env[key];
   Object.assign(env, input.env);
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
-  const before = await groupMembers(group);
+  const before = await processInventory();
   const child = spawn(executable, input.argv.slice(1), { cwd: input.cwd, env, stdio: "inherit" });
   // No EXIT/signal trap deletes credentials. Killing this guard leaves its child protected.
   const code = await new Promise<number>((resolve) => {
     child.once("error", () => resolve(127));
     child.once("exit", (code) => resolve(code ?? 1));
   });
-  const after = await groupMembers(group);
-  // An unavailable inventory or any surviving new member is ambiguous, never age-expired.
-  if (before && after && [...after].every((pid) => before.has(pid))) {
+  const after = await processInventory();
+  // Detached children can leave the process group and double-forked children lose their
+  // original parent. Unavailable inventory or ambiguous ancestry cannot authorize deletion.
+  if (resumeDescendantsExited(before, after, { pid: process.pid, startMs })) {
     completeResumeLease(lease, process.pid, startMs);
   }
   return code;
 }
 
-async function groupMembers(group: number): Promise<Set<number> | null> {
-  const result = await run("ps", ["-axo", "pid=,pgid="], { timeoutMs: 5_000 });
+async function processInventory() {
+  const result = await run("ps", ["-axo", "pid=,ppid=,lstart="], inventoryOptions);
   if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
-  return new Set(result.stdout.split("\n").flatMap((line) => {
-    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
-    return match && Number(match[2]) === group && Number(match[1]) !== result.childPid ? [Number(match[1])] : [];
-  }));
+  return parseResumeProcesses(result.stdout, result.childPid);
 }
 
 try {

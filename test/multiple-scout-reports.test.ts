@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -126,6 +127,126 @@ test("explicit ship reports settle at cleanup without becoming a mandatory compl
   h.write("second");
   assert((await h.manager.settleBeforeCleanup(h.subject.taskId!)).ok);
   assert.equal(h.jobs().length, 2);
+});
+
+test("operator-deleted reports stay deleted across cleanup, restart, and retries while other reports settle", async () => {
+  for (const kind of ["scout", "ship", "plan", null] as const) {
+    const h = fixture(kind);
+    h.write("deleted");
+    const published = await h.submit("deleted");
+    assert(published.ok && published.archive);
+    const { key, relativePath } = published.archive;
+    await h.manager.delete(key, key);
+    assert.equal(existsSync(join(h.options.root, relativePath)), false);
+    if (kind === "scout") assert.equal((await h.manager.ensureReady(h.subject.taskId!)).ok, false,
+      "a deleted report cannot satisfy scout completion or be rebuilt by the gate");
+
+    h.write("owed", "<script>invalid()</script>");
+    assert.equal((await h.submit("owed")).ok, false);
+    h.write("owed");
+    if (kind) assert.deepEqual(await h.manager.settleBeforeCleanup(h.subject.taskId!), { ok: true });
+    const restarted = new ArchiveManager(h.options);
+    await restarted.recoverJobs();
+    await restarted.reconcileNow();
+    assert.equal(existsSync(join(h.options.root, relativePath)), false, `${kind}: deleted bundle must not return`);
+    assert.equal(restarted.detail(key), null);
+    assert.equal(h.jobs().find((job) => job.submission?.summary === "deleted")?.status, "deleted");
+    assert.equal(h.jobs().find((job) => job.submission?.summary === "owed")?.status, "published");
+    const retry = await h.submit("deleted");
+    assert.equal(retry.ok, false);
+    if (!retry.ok) assert.match(retry.problems.join(" "), /deleted.*new slug/);
+    assert.equal(h.jobs().length, 2, "retry cannot reserve a fresh identity for a deleted directory");
+  }
+});
+
+test("cleanup and report retry cannot cross an in-flight archive deletion", async () => {
+  let deleting = false;
+  let reachedRename!: () => void;
+  const atRename = new Promise<void>((resolve) => { reachedRename = resolve; });
+  let releaseRename!: () => void;
+  const released = new Promise<void>((resolve) => { releaseRename = resolve; });
+  const h = fixture("scout", { rename: async (from, to) => {
+    if (deleting) { reachedRename(); await released; }
+    await rename(from, to);
+  } });
+  h.write("deleted");
+  const published = await h.submit("deleted");
+  assert(published.ok && published.archive);
+  deleting = true;
+  const deletion = h.manager.delete(published.archive.key, published.archive.key);
+  await atRename;
+  const retry = h.submit("deleted");
+  const cleanup = h.manager.settleBeforeCleanup(h.subject.taskId!);
+  releaseRename();
+  await deletion;
+  assert.equal((await retry).ok, false);
+  assert.deepEqual(await cleanup, { ok: true });
+  assert.equal(existsSync(join(h.options.root, published.archive.relativePath)), false);
+  assert.equal(h.jobs()[0]?.status, "deleted");
+  assert.equal(h.jobs().length, 1, "cleanup must not reserve automatic recovery for a deleted report");
+});
+
+test("deleting a recovered legacy report retains its directory identity", async () => {
+  const h = fixture();
+  h.write("recovered");
+  assert.deepEqual(await h.manager.settleBeforeCleanup(h.subject.taskId!), { ok: true });
+  const legacy = h.jobs()[0]!;
+  assert.equal(legacy.scope, null);
+  assert.equal(legacy.submission, null);
+  const key = `${legacy.producerId}~${legacy.archiveId}`;
+  await h.manager.delete(key, key);
+  assert.equal((await h.submit("recovered")).ok, false);
+  assert.equal(h.jobs().length, 1);
+  assert.deepEqual(await h.manager.settleBeforeCleanup(h.subject.taskId!), { ok: true });
+  assert.equal(existsSync(join(h.options.root, legacy.relativePath!)), false);
+  h.write("replacement");
+  assert((await h.submit("replacement")).ok);
+});
+
+test("a failed deletion retains durable intent and remains retryable after restart", async () => {
+  let failDeletion = false;
+  const h = fixture("ship", { rename: async (from, to) => {
+    if (failDeletion) throw new Error("fixture rename failure");
+    await rename(from, to);
+  } });
+  h.write("deleted");
+  const published = await h.submit("deleted");
+  assert(published.ok && published.archive);
+  failDeletion = true;
+  await assert.rejects(h.manager.delete(published.archive.key, published.archive.key), /fixture rename failure/);
+  const restarted = new ArchiveManager({ ...h.options, rename });
+  await restarted.recoverJobs();
+  await restarted.delete(published.archive.key, published.archive.key);
+  assert.deepEqual(await restarted.settleBeforeCleanup(h.subject.taskId!), { ok: true });
+  assert.equal(h.jobs()[0]?.status, "deleted");
+  assert.equal(existsSync(join(h.options.root, published.archive.relativePath)), false);
+});
+
+test("deletion waits for an in-flight rebuild and removes its published bytes", async () => {
+  let rebuilding = false;
+  let reachedPublish!: () => void;
+  const atPublish = new Promise<void>((resolve) => { reachedPublish = resolve; });
+  let releasePublish!: () => void;
+  const released = new Promise<void>((resolve) => { releasePublish = resolve; });
+  const h = fixture("ship", { rename: async (from, to) => {
+    if (rebuilding && !to.includes(".trash")) { reachedPublish(); await released; }
+    await rename(from, to);
+  } });
+  h.write("deleted");
+  const published = await h.submit("deleted");
+  assert(published.ok && published.archive);
+  await h.manager.reconcileNow();
+  rmSync(join(h.options.root, published.archive.relativePath), { recursive: true });
+  rebuilding = true;
+  const capture = h.submit("deleted");
+  await atPublish;
+  const deletion = h.manager.delete(published.archive.key, published.archive.key);
+  releasePublish();
+  await capture;
+  assert.deepEqual(await deletion, { ok: true, deletedBundle: true });
+  assert.deepEqual(await h.manager.settleBeforeCleanup(h.subject.taskId!), { ok: true });
+  assert.equal(existsSync(join(h.options.root, published.archive.relativePath)), false);
+  assert.equal(h.jobs()[0]?.status, "deleted");
 });
 
 test("cleanup refuses an incomplete explicit report for every task kind", async () => {

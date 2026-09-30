@@ -6,6 +6,7 @@ import {
   parseArchivePromptTrail,
   type ArchiveCaptureStatus,
   type ArchiveKind,
+  type ArchiveIdentity,
   type ArchiveSessionOrigin,
   type ArchiveManifestPromptTrail,
 } from "@shared/archives.ts";
@@ -38,7 +39,7 @@ import { openDb } from "../db.ts";
  * recognise is treated as unfinished, because the alternative - reading an unknown value as
  * "done" - would let a newer build's row convince this one that an archive exists.
  */
-export const ARCHIVE_CAPTURE_JOB_STATUSES = ["reserved", "submitted", "published", "failed"] as const;
+export const ARCHIVE_CAPTURE_JOB_STATUSES = ["reserved", "submitted", "published", "failed", "deleted"] as const;
 export type ArchiveCaptureJobStatus = (typeof ARCHIVE_CAPTURE_JOB_STATUSES)[number];
 
 /**
@@ -260,7 +261,7 @@ export class ArchiveCaptureStore {
       if (existing) {
         // Never after publication: a published bundle is immutable, and refreshing the
         // locators of a job whose archive already exists could only serve a second capture.
-        if (existing.status === "published") return existing;
+        if (existing.status === "published" || existing.status === "deleted") return existing;
         const at = this.now();
         this.db
           .prepare(
@@ -318,7 +319,7 @@ export class ArchiveCaptureStore {
   recordSubmission(operationKey: string, submission: ScoutSubmissionInput): ArchiveCaptureJob | null {
     return this.inTransaction(() => {
       const job = this.get(operationKey);
-      if (!job || job.status === "published") return null;
+      if (!job || job.status === "published" || job.status === "deleted") return null;
       this.db
         .prepare(
           `UPDATE archive_capture_jobs
@@ -343,7 +344,7 @@ export class ArchiveCaptureStore {
     this.db
       .prepare(
         `UPDATE archive_capture_jobs SET attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
-          WHERE operation_key = ?`,
+          WHERE operation_key = ? AND status != 'deleted'`,
       )
       .run(this.now(), this.now(), operationKey);
   }
@@ -358,7 +359,7 @@ export class ArchiveCaptureStore {
       .prepare(
         `UPDATE archive_capture_jobs
             SET status = 'published', relative_path = ?, capture_status = ?, error = NULL, updated_at = ?
-          WHERE operation_key = ?`,
+          WHERE operation_key = ? AND status != 'deleted'`,
       )
       .run(relativePath, captureStatus, this.now(), operationKey);
     return this.get(operationKey);
@@ -369,9 +370,25 @@ export class ArchiveCaptureStore {
     this.db
       .prepare(
         `UPDATE archive_capture_jobs SET status = 'failed', error = ?, updated_at = ?
-          WHERE operation_key = ? AND status != 'published'`,
+          WHERE operation_key = ? AND status NOT IN ('published', 'deleted')`,
       )
       .run(clip(error, ARCHIVE_TEXT_LIMITS.error), this.now(), operationKey);
+  }
+
+  /** Local deletion intent survives index rebuilds and must never become capture work again. */
+  markDeleted(identity: ArchiveIdentity, recoveredScope: ArchiveCaptureScope | null): void {
+    this.db.prepare(
+      `UPDATE archive_capture_jobs SET status = 'deleted', error = NULL,
+        scope_json = COALESCE(scope_json, ?), updated_at = ?
+        WHERE producer_id = ? AND archive_id = ? AND status != 'deleted'`,
+    ).run(recoveredScope ? JSON.stringify(recoveredScope) : null, this.now(), identity.producerId, identity.archiveId);
+  }
+
+  forArchive(identity: ArchiveIdentity): ArchiveCaptureJob | null {
+    const row = this.db.prepare(
+      "SELECT * FROM archive_capture_jobs WHERE producer_id = ? AND archive_id = ?",
+    ).get(identity.producerId, identity.archiveId) as unknown as JobRowShape | undefined;
+    return row ? rowToJob(row) : null;
   }
 
   get(operationKey: string): ArchiveCaptureJob | null {
@@ -406,7 +423,7 @@ export class ArchiveCaptureStore {
   /** Jobs that still have work to do, oldest first - the restart-recovery worklist. */
   unfinished(): ArchiveCaptureJob[] {
     const rows = this.db
-      .prepare(`SELECT * FROM archive_capture_jobs WHERE status != 'published' ORDER BY created_at`)
+      .prepare(`SELECT * FROM archive_capture_jobs WHERE status NOT IN ('published', 'deleted') ORDER BY created_at`)
       .all() as unknown as JobRowShape[];
     return rows.map(rowToJob);
   }

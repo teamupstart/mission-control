@@ -553,22 +553,30 @@ re-run its own bounded query.
 `DELETE /api/archives/:archiveKey` requires `{"confirmArchiveKey": "<the same key>"}` in the
 body and refuses a mismatch before it resolves any path. Then it:
 
-1. atomically renames the bundle into `.trash`,
-2. removes its local display-name sidecar,
-3. removes its index rows,
-4. removes the trash entry.
+1. marks any matching local capture job as deleted,
+2. atomically renames the bundle into `.trash`,
+3. removes its local display-name sidecar,
+4. removes its index rows,
+5. removes the trash entry.
 
-The durable step is the rename, so a crash in the middle leaves an archive that is gone from
-the library and rows the next complete pass prunes; a crash before it leaves the archive
-intact. A display-name cleanup failure is returned as an error and remains retryable: the
-index row is kept as a marker, and the durable sidecar itself authorizes a cleanup-only retry
+Capture and deletion share the archive's mutation lock. The local capture ledger records
+deletion intent before the rename, so cleanup, session exit, restart recovery, and same-directory
+submission retries cannot republish a deleted report. Other reports still owed are settled
+normally. A deleted report cannot satisfy scout completion; a replacement needs a new slug.
+For a recovered legacy report, its verified directory is retained in the deletion marker.
+
+The rename removes the bundle from discovery. A crash after it leaves rows the next complete
+pass prunes; a crash or I/O error before it leaves the bundle available for a deletion retry,
+with automatic capture already cancelled. A display-name cleanup failure is returned as an
+error and remains retryable: the index row is kept as a marker, and the durable sidecar itself authorizes a cleanup-only retry
 if reconciliation or a restart removes that row first. A retry also discovers and removes
 the exact key's bundle from `.trash` before it reports success, including after a restart.
 An interrupted deletion is finished on the next start. A bundle under the legacy root is
 trashed inside that root, so the durable step stays a rename within one directory tree.
 
-This removes **a local file and its rows**. It touches no task, no session, and no
-repository, and it makes no claim about copies elsewhere: a two-way sync tool may propagate
+This removes **a local file and its index rows**, retaining its local capture deletion marker.
+It touches no task, no session, and no repository, and it makes no claim about copies
+elsewhere: a two-way sync tool may propagate
 the deletion, or may restore the same immutable bundle later. Mission Control publishes no
 portable tombstone and cannot promise either behaviour.
 
@@ -687,8 +695,8 @@ only after the daemon confirms; a refusal keeps the dialog open with the reason.
 
 ### Reports from a session
 
-Checkout cleanup requires every explicitly submitted report to have a complete archive,
-including when replay finds an existing partial bundle. An incomplete explicit report blocks
+Checkout cleanup requires every explicitly submitted report that has not been deleted to have
+a complete archive, including when replay finds an existing partial bundle. An incomplete explicit report blocks
 release and names its report path. Automatic scout recovery may still preserve an honest
 partial when no report was submitted; ordinary task completion rules remain unchanged.
 

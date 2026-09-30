@@ -801,7 +801,7 @@ test("cleanup reserves the current episode when only a superseded episode was pu
   assert.equal(jobs.find((job) => job.episodeId === newEpisode)?.status, "published");
 });
 
-test("cleanup rebuilds a deleted current archive before releasing the checkout", async () => {
+test("cleanup rebuilds an externally missing current archive before releasing the checkout", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree({
     "docs/reports/resume/report.html": validReportHtml(),
@@ -838,6 +838,28 @@ test("cleanup rebuilds a deleted current archive before releasing the checkout",
     }).archives[0]?.status,
     "ready",
   );
+});
+
+test("reclaim releases the checkout without republishing an operator-deleted report", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({
+    "docs/reports/deleted/report.html": validReportHtml(),
+    "docs/reports/retained/report.html": validReportHtml(),
+  });
+  const task = mkScout({ worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  h.registry.upsertTask(task);
+  const deleted = await submit(h, task, cwd, { reportPath: "docs/reports/deleted/report.html" });
+  const retained = await submit(h, task, cwd, { reportPath: "docs/reports/retained/report.html" });
+  assert(deleted.ok && deleted.archive && retained.ok && retained.archive);
+  await h.scouts.delete(deleted.archive.key, deleted.archive.key);
+  h.registry.upsertTask({ ...h.registry.getTask(task.id)!, status: "failed" });
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, true, reclaimed.error);
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, null);
+  await h.scouts.reconcileNow();
+  assert.equal(h.scouts.detail(deleted.archive.key), null);
+  assert.equal(h.scouts.detail(retained.archive.key)?.status, "ready");
+  assert.equal(h.scouts.captureJobsForTask(task.id).filter((job) => job.status === "deleted").length, 1);
 });
 
 test("cleanup refuses a corrupt current archive and keeps the source checkout", async () => {

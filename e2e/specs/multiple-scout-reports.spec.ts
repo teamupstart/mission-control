@@ -6,6 +6,12 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 // Only the agent is faked. Publication, session attribution, SSE and the reader are real.
 test("a ship session publishes separate reports and its Scouts tab refreshes live", async ({ dashboard, daemon }) => {
+  // Exercise archive cleanup with a disposable Git checkout, without depending on the
+  // host-wide occupancy scan used to return native pool leases.
+  const pool = await fetch(`${daemon.baseURL}/api/worktrees/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: false }),
+  });
+  expect(pool.ok, await pool.text()).toBe(true);
   await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -172,4 +178,16 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   await expect(dashboard.getByRole("tab", { name: /Files/ })).toHaveAttribute("aria-selected", "true");
   await expect(dashboard.frameLocator('iframe[title="Preview of docs/reports/first-report/report.html"]')
     .getByText("the resume path never replayed the repository grant.")).toBeVisible();
+  const owner = tasks.find((task: { sessionId: string }) => task.sessionId === source!.id);
+  const cancelled = await fetch(`${daemon.baseURL}/api/tasks/${owner.id}/cancel`, { method: "POST" });
+  expect(cancelled.ok, await cancelled.text()).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/scouts`);
+  await dashboard.reload();
+  await expect(rail.getByRole("button", { name: /^First finding / })).toBeVisible();
+  await expect(rail.getByRole("button", { name: /^Second finding / })).toHaveCount(0);
+  const remaining = await (await fetch(`${daemon.baseURL}/api/archives?session=${source!.id}`)).json();
+  expect(remaining.archives.map((archive: { title: string }) => archive.title)).toEqual(["First finding"]);
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.screenshot({ path: join(directory, "deleted-after-cleanup.png"), fullPage: true });
+  }
 });

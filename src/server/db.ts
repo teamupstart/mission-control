@@ -2418,7 +2418,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- archived. The migration below carries the same value onto rows copied from the
       -- table this one replaces.
       kind            TEXT NOT NULL DEFAULT 'scout',
-      -- reserved | submitted | published | failed. Append-only: a status this build does not
+      -- reserved | submitted | published | failed | deleted. Append-only: a status this build does not
       -- know is treated as unfinished rather than as done, which is the safe direction.
       status          TEXT NOT NULL,
       producer_id     TEXT,

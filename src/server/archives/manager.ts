@@ -315,7 +315,7 @@ export class ArchiveManager {
     const subject = this.tasks?.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true, archive: null, replayed: false };
     await this.submissionClaims.get(this.submissionKey(subject))?.settled;
-    const jobs = this.jobsForSubject(subject).filter((job) => job.kind === "scout");
+    const jobs = this.jobsForSubject(subject).filter((job) => job.kind === "scout" && job.status !== "deleted");
     const submitted = jobs.filter((job) => job.submission !== null);
     const reports = submitted.length ? submitted : jobs.filter((job) => job.status === "published");
     if (reports.length === 0) return { ok: false, conflict: false, problems: [
@@ -354,7 +354,8 @@ export class ArchiveManager {
   private async settleTaskArchives(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const kind = this.tasks?.captureKind(taskId) ?? null;
     for (const job of this.captureStore.forTask(taskId).filter((entry) => entry.kind === "scout" && entry.submission !== null)) {
-      const outcome = await this.runCapture(job.operationKey);
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
       if (!outcome.ok) return { ok: false, error: `${job.submission!.reportPath}: ${outcome.problems.join("; ")}` };
       if (outcome.captureStatus !== "complete") return { ok: false,
         error: `${job.submission!.reportPath}: this explicitly submitted report's archive is incomplete; retaining its source checkout` };
@@ -403,7 +404,8 @@ export class ArchiveManager {
     for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
 
     for (const job of jobs.values()) {
-      const outcome = await this.runCapture(job.operationKey);
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
       if (!outcome.ok) {
         return {
           ok: false,
@@ -443,7 +445,8 @@ export class ArchiveManager {
     }
 
     for (const job of current) {
-      const outcome = await this.runCapture(job.operationKey);
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
       if (!outcome.ok) {
         return {
           ok: false,
@@ -470,7 +473,7 @@ export class ArchiveManager {
   reserveOnExit(session: Session): void {
     if (!this.tasks || !this.acceptingJobs) return;
     try {
-      const explicit = this.captureStore.forSession(session.id).filter((job) => job.kind === "scout" && job.submission !== null);
+      const explicit = this.captureStore.forSession(session.id).filter((job) => job.kind === "scout" && job.submission !== null && job.status !== "deleted");
       for (const job of explicit) {
         const claimed = this.submissionClaims.get(this.submissionKey(job))?.settled;
         void Promise.resolve(claimed).then(() => this.runCapture(job.operationKey));
@@ -484,7 +487,7 @@ export class ArchiveManager {
       const jobs = this.captureStore
         .forTask(subject.taskId!)
         .filter((job) => job.episodeId === subject.episodeId);
-      if (jobs.some((job) => job.submission !== null || job.status === "published")) return;
+      if (jobs.some((job) => job.submission !== null || job.status === "published" || job.status === "deleted")) return;
       const job = this.reserve(subject);
       const activeSubmission = this.submissionClaims.get(this.submissionKey(subject))?.settled;
       if (activeSubmission) {
@@ -523,8 +526,8 @@ export class ArchiveManager {
     for (const job of this.captureStore.unfinished()) {
       if (!this.acceptingJobs) return;
       if (job.submission === null && job.taskId && this.tasks.awaitsAgent(job.taskId)) continue;
-      const outcome = await this.runCapture(job.operationKey);
-      if (!outcome.ok) {
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (outcome && !outcome.ok) {
         this.log("could not resume a capture job", {
           taskId: job.taskId,
           operationKey: job.operationKey,
@@ -592,6 +595,9 @@ export class ArchiveManager {
     const existing = this.captureStore.get(operationKey);
     if (existing) return existing;
     const jobs = this.jobsForSubject(subject);
+    const deleted = jobs.find((job) => job.kind === "scout" && job.status === "deleted"
+      && job.scope?.slot === scope.slot && job.scope.directory === scope.directory);
+    if (deleted) return deleted;
     const legacy = jobs.find((job) => job.kind === "scout" && job.scope === null);
     if (legacy) {
       // An unpublished reservation without a recorded path cannot identify this report.
@@ -715,7 +721,13 @@ export class ArchiveManager {
     const previous = this.captureRuns.get(operationKey) ?? Promise.resolve(null);
     const run: Promise<ArchiveCaptureOutcome> = previous
       .catch(() => null)
-      .then(() => this.captureOnce(operationKey));
+      .then(() => {
+        const job = this.captureStore.get(operationKey);
+        if (!job) return this.captureOnce(operationKey);
+        // Deletion and publication share one identity lock. Re-read the ledger inside it,
+        // so neither a queued retry nor a capture already in flight can undo deletion.
+        return this.withMutation(archiveKey(job.producerId, job.archiveId), () => this.captureOnce(operationKey));
+      });
     const tracked = run.finally(() => {
       if (this.captureRuns.get(operationKey) === tracked) this.captureRuns.delete(operationKey);
     });
@@ -723,9 +735,18 @@ export class ArchiveManager {
     return tracked;
   }
 
+  /** Deletion cancels capture obligations, including work queued before the deletion. */
+  private async captureUnlessDeleted(operationKey: string): Promise<ArchiveCaptureOutcome | null> {
+    const outcome = await this.runCapture(operationKey);
+    return this.captureStore.get(operationKey)?.status === "deleted" ? null : outcome;
+  }
+
   private async captureOnce(operationKey: string): Promise<ArchiveCaptureOutcome> {
     const job = this.captureStore.get(operationKey);
     if (!job) return { ok: false, problems: ["that capture job is no longer on this machine"] };
+    if (job.status === "deleted") return { ok: false, conflict: true, problems: [
+      "this report was deleted; submit a replacement under a new slug",
+    ] };
     this.captureStore.noteAttempt(operationKey);
     let outcome: ArchiveCaptureOutcome;
     try {
@@ -960,6 +981,22 @@ export class ArchiveManager {
     if (!indexed && !bundle && !hasLocalTitle && graves.length === 0) {
       throw new ArchiveError("no such archive", 404);
     }
+
+    // Persist intent before moving any bytes. A crash or later deletion error must not
+    // turn the missing bundle into an instruction to recapture the operator's report.
+    // The existing typed-key retry still removes any bundle or sidecar left behind.
+    // A recovered legacy job may have no submission locator. Keep its verified directory
+    // in the tombstone before losing the bundle, so a same-directory retry keeps that identity.
+    const job = this.captureStore.forArchive(identity);
+    let recoveredScope: ArchiveCaptureScope | null = null;
+    if (job?.kind === "scout" && !job.scope && !job.submission && bundle) {
+      const verified = await verifyArchiveBundle(bundle.root, identity).catch(() => null);
+      const primary = verified?.kind === "verified"
+        ? verified.bundle.manifest.artifacts.find((artifact) => artifact.role === "primary_report") : null;
+      const directory = primary?.originalPath ? scoutReportDirectory(primary.originalPath) : null;
+      if (directory && primary?.repoSlot) recoveredScope = { slot: primary.repoSlot, directory };
+    }
+    this.captureStore.markDeleted(identity, recoveredScope);
 
     let deletedBundle = false;
     if (bundle) {

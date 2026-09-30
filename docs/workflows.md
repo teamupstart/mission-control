@@ -2213,7 +2213,9 @@ The same view shows how many local artifacts were retained outside Git.
 The PR action compares the accepted publication tree with the complete published commit tree.
 Inspector also compares the complete tree when deciding completion. A shipping-only continuation
 must still match its parent's accepted publication tree; recapturing a packaging result does not
-review newly added or omitted code. Neither comparison filters the PR tree,
+review newly added or omitted code. For a legacy parent without publication proof, Inspector
+compares its accepted full content tree instead. A missing accepted tree requires a fresh full
+review before completion. Neither comparison filters the PR tree,
 so missing deliverables and unexpected committed content remain visible. Check nodes verify that
 their pinned commit has the captured publication tree before running: commit required deliverables
 and resubmit if it does not. Checks run in their existing isolated committed worktree, so excluded

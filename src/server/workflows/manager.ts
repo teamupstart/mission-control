@@ -4569,10 +4569,10 @@ export class WorkflowManager {
         && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId)
         ? this.store.getSubmission(submission.parentSubmissionId) : null;
       const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
-      const acceptedTree = accepted?.success && accepted.data.evidence.publication
+      const acceptedTree = accepted?.success
         ? workflowPublicationTree(accepted.data.evidence) : null;
       if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
-        || (acceptedTree !== null && publishedTree !== acceptedTree)) {
+        || (parent !== null && publishedTree !== acceptedTree)) {
         this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
           "waiting_for_session", "inspector_working_tree_not_pushed", null, null, now);
         return;

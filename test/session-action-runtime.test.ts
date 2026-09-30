@@ -40,6 +40,7 @@ const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
+const { WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -143,6 +144,7 @@ interface HarnessOptions {
    */
   pullRequest?: boolean;
   localReport?: boolean;
+  omitContentTree?: boolean;
   inspector?: boolean;
   trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
@@ -239,7 +241,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
         evidence: {
           headSha: captureHead.sha ?? head.sha,
-          contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
+          ...(options.omitContentTree ? {} : {
+            contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
+          }),
           ...(options.localReport ? {
             publication: {
               version: 1 as const, treeOid: contentTree.oid, unpublishedPaths: [], pathsTruncated: false,
@@ -1802,19 +1806,35 @@ test("the PR comparison uses reviewed publication content while retaining the lo
 });
 
 
-test("Inspector holds a shipping continuation to its parent's accepted publication tree", async () => {
-  const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
-  const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
-  setInspectorConfig({ enabled: true });
-  for (const changed of [false, true]) {
-    const h = await harness(`publication-inspector-${changed}`, { pullRequest: true, localReport: true, inspector: true });
+for (const { parentProof, changed, number } of [
+  { parentProof: "publication", changed: false, number: 71 },
+  { parentProof: "publication", changed: true, number: 72 },
+  { parentProof: "legacy", changed: false, number: 73 },
+  { parentProof: "legacy", changed: true, number: 74 },
+  { parentProof: "missing", changed: false, number: 75 },
+]) {
+  test(`Inspector holds a shipping continuation to its parent's accepted tree: ${parentProof}, changed=${changed}`, async () => {
+    const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
+    const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    setInspectorConfig({ enabled: true });
+    const options = {
+      pullRequest: true, localReport: parentProof === "publication", inspector: true,
+      omitContentTree: parentProof === "missing",
+    };
+    const h = await harness(`publication-inspector-${parentProof}-${changed}`, options);
     try {
       const runId = await runToAction(h);
       await waitFor(() => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"), "no PR packet");
+      const parent = h.store.listSubmissions(runId)[0]!;
+      const parentEvidence = WorkflowContextSnapshotSchema.parse(parent.context).evidence;
+      assert.equal(parentEvidence.publication !== undefined, parentProof === "publication");
+      assert.equal(parentEvidence.contentTreeOid != null, parentProof !== "missing");
+      // An upgrade captures the shipping child with publication proof but leaves its parent immutable.
+      options.localReport = true;
+      options.omitContentTree = false;
       if (changed) h.contentTree.oid = h.full("omitted-required-file");
       h.head.sha = "packaged";
       h.runActionTurn();
-      const number = changed ? 72 : 71;
       const key = `owner/repo#${number}`;
       const url = `https://github.com/owner/repo/pull/${number}`;
       h.adoptPr({ atHead: h.head.sha, key, url, number });
@@ -1833,10 +1853,17 @@ test("Inspector holds a shipping continuation to its parent's accepted publicati
       updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
         reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
       h.registry.inspectionUpdated(key, head, "OPEN", now);
-      await waitFor(() => h.store.getRun(runId)?.status === (changed ? "waiting_for_session" : "completed"),
-        changed ? "unreviewed packaging changes escaped the accepted parent proof" : "retained reports prevented completion");
+      const mustWait = changed || parentProof === "missing";
+      await waitFor(() => ["waiting_for_session", "completed"].includes(h.store.getRun(runId)?.status ?? ""),
+        "the Inspector gate never decided the publication proof");
+      assert.equal(h.store.getRun(runId)?.status, mustWait ? "waiting_for_session" : "completed",
+        mustWait ? "shipping escaped the accepted parent proof" : "matching accepted content prevented completion");
+      if (mustWait) assert.equal(
+        WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState).waitReason,
+        "working_tree_not_pushed",
+      );
     } finally {
       await h.stop();
     }
-  }
-});
+  });
+}

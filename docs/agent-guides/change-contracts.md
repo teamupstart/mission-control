@@ -280,8 +280,10 @@ Search for the owning constant and its contract tests before extending a tuple.
 A scout archive outlives its task, session, worktree and transcript, so the two facts it
 needs about the conversation have to be recorded while they are still true. Both live in
 `src/server/scouts/prompt-context.ts` (the tables) and `prompt-journal.ts` (the decision),
-keyed `(task_id, episode_id)` - the same key `archiveOperationKey` uses, for the same
-reason: a re-dispatched task is new work and gets its own boundary.
+keyed `(task_id, episode_id)`: a re-dispatched task is new work and gets its own boundary.
+Each scout report directory freezes an independent snapshot from that journal. Do not clear
+the journal after the first submission; retain it until durable session removal or task
+cleanup. Startup reconciliation prunes departed sessions only after their capture is frozen.
 
 - **Both task-delivery seams freeze a boundary**, and a dispatcher-only one would leave every
   ASSIGNED scout collecting whatever its session was doing beforehand. `dispatcher.ts` and

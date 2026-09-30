@@ -34,7 +34,7 @@ test("one comment renders as the turn plan.md specifies", () => {
   assert.equal(
     payload,
     [
-      "Comment 3 of 12 on this review.",
+      "Review comment 3; 9 more queued behind it.",
       "",
       "docs/plans/x/plan.md, lines 84-86:",
       "",
@@ -53,16 +53,19 @@ test("the position line states how many follow, which is the whole mitigation", 
   // line is what buys that back, so an agent on comment three does not restructure the
   // document for the nine it has not been shown.
   const { payload } = renderFileCommentPayload(BASE);
-  assert.match(payload, /^Comment 3 of 12 on this review\.$/m);
+  assert.match(payload, /^Review comment 3; 9 more queued behind it\.$/m);
   assert.match(payload, /the remaining 9 follow one at a time/);
 });
 
-test("the LAST comment promises nothing that is not coming", () => {
+test("the comment at the end of the queue promises nothing either way", () => {
   // "the remaining 0 follow" would be a lie in the direction that teaches an agent to hold
-  // work back on every future review.
+  // work back on every future review. "the last of this review" is now the opposite lie:
+  // comments are sent as they are written, so the reviewer may still be adding one.
   const { payload } = renderFileCommentPayload({ ...BASE, position: 12, total: 12 });
-  assert.match(payload, /it is the last of this review/);
+  assert.match(payload, /^Review comment 12; nothing else is queued yet\.$/m);
+  assert.match(payload, /more comments may still follow\.$/m);
   assert.doesNotMatch(payload, /remaining/);
+  assert.doesNotMatch(payload, /the last of this review/);
 });
 
 test("one comment left reads as one, not as 1 follows", () => {

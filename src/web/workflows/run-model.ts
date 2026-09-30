@@ -57,7 +57,7 @@ import {
   WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
 import { relativeTime } from "../lib/format.ts";
-import type { PipelineStatus } from "./pipeline-bits.tsx";
+import type { ElapsedSpan, PipelineStatus } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmDescriptor } from "./run-actions.ts";
 import { WorkflowApiError } from "./workflowApi.ts";
 
@@ -202,6 +202,81 @@ export function latestAttemptsFor(
     newest.set(attempt.nodeId, attempt);
   }
   return newest;
+}
+
+/** Attempt states whose clock is still running. Every other state has settled. */
+const LIVE_ATTEMPT_STATES: ReadonlySet<WorkflowNodeAttemptState> = new Set([
+  "queued",
+  "running",
+  "retry_wait",
+  "waiting",
+]);
+
+/** Node id -> its span over exactly one submission's own attempts, with no carried action. */
+function ownElapsedSpans(detail: WorkflowRunDetail, submissionId: string): Map<string, ElapsedSpan> {
+  const spans = new Map<string, ElapsedSpan>();
+  const runEndedAt = workflowRunIsOpen(detail.run.status)
+    ? null
+    : detail.run.completedAt ?? detail.run.updatedAt;
+  const latest = latestAttemptsFor(detail, submissionId);
+  for (const attempt of attemptsFor(detail, submissionId)) {
+    const newest = latest.get(attempt.nodeId);
+    if (!newest) continue;
+    const previous = spans.get(attempt.nodeId);
+    const startedAt = Math.min(previous?.startedAt ?? attempt.createdAt, attempt.createdAt);
+    const finishedAt = LIVE_ATTEMPT_STATES.has(newest.state)
+      ? runEndedAt
+      : newest.finishedAt ?? newest.updatedAt;
+    spans.set(attempt.nodeId, { startedAt, finishedAt });
+  }
+  return spans;
+}
+
+/**
+ * Node id -> its elapsed span in one submission.
+ *
+ * The span covers EVERY attempt the node made in the round - from the first one's launch to
+ * the newest one's finish - because a retried command took all of that time, and a clock that
+ * restarted at each retry would report the last try as the component's whole cost.
+ *
+ * A settled attempt freezes at `finishedAt`, falling back to its last write for a row that
+ * settled without one. A live attempt on a run that has itself finished freezes at the run's
+ * end rather than ticking forever beside a run nothing will ever advance.
+ *
+ * The action that authorized a continuation segment brings its span along, exactly as
+ * `nodeStatusesForSubmission` brings its status: its attempt lives on the parent, so a map
+ * scoped strictly to this segment would draw that action "Complete" with no record of how
+ * long it took - on the very view a finished live action lands on. Read from the parent's
+ * own attempts only, never recursively, so a corrupt parent chain cannot loop.
+ */
+export function elapsedSpansFor(
+  detail: WorkflowRunDetail,
+  submissionId: string | null,
+): Map<string, ElapsedSpan> {
+  if (!submissionId) return new Map();
+  const spans = ownElapsedSpans(detail, submissionId);
+  const source = continuationSourceAttempt(detail, submissionId);
+  if (source && !spans.has(source.nodeId)) {
+    const carried = ownElapsedSpans(detail, source.submissionId).get(source.nodeId);
+    if (carried) spans.set(source.nodeId, carried);
+  }
+  return spans;
+}
+
+/**
+ * A stage's wall time: from its first member's launch to its last member's finish, live until
+ * every timed member has settled. A member with no span - one this round carried forward, or
+ * one not launched yet - neither starts nor holds open the stage's clock.
+ */
+export function stageElapsed(spans: ReadonlyArray<ElapsedSpan | null>): ElapsedSpan | null {
+  const timed = spans.filter((span): span is ElapsedSpan => span !== null);
+  if (timed.length === 0) return null;
+  const startedAt = Math.min(...timed.map((span) => span.startedAt));
+  const finishes = timed.map((span) => span.finishedAt);
+  const finishedAt = finishes.every((finish): finish is number => finish !== null)
+    ? Math.max(...finishes)
+    : null;
+  return { startedAt, finishedAt };
 }
 
 /** Whether a prior attempt is a pass this round is entitled to carry forward. */

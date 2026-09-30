@@ -13,7 +13,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FileCommentThread as FileCommentThreadModel } from "@shared/types.ts";
-import { canResolveThread, threadStateLabel } from "../lib/fileComments.ts";
+import {
+  canResolveThread,
+  replyTooltip,
+  threadStateLabel,
+  type ComposerDeliveryHint,
+} from "../lib/fileComments.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 function when(at: number): string {
@@ -30,6 +35,9 @@ function lineRange(startLine: number, endLine: number): string {
  * A new comment on a line, and the one surface in this feature that is NOT purely
  * presentational about its text.
  *
+ * Send IS delivery: the comment goes to the agent as its own turn, or waits in the queue
+ * behind the ones already there. `hint` says which before the button is pressed.
+ *
  * The text lives here and is reported out on every keystroke, because the workspace turns
  * the first keystroke into a durable `draft` row and every one after it into an edit of
  * that row. Holding the string in the composer as well would be a second copy of the same
@@ -41,6 +49,7 @@ export function FileCommentComposer({
   endLine,
   quote,
   value,
+  hint,
   busy,
   error,
   onChange,
@@ -51,6 +60,8 @@ export function FileCommentComposer({
   endLine: number;
   quote: string;
   value: string;
+  /** What Send will do: go now, wait its turn, or be held. */
+  hint: ComposerDeliveryHint;
   busy: boolean;
   error: string | null;
   onChange: (value: string) => void;
@@ -114,16 +125,23 @@ export function FileCommentComposer({
       />
       {error && <p className="file-comment-error" role="alert">{error}</p>}
       <footer className="file-comment-panel-foot">
-        <Tooltip label={busy ? "This comment is being submitted" : "Discard this comment"}>
+        {/*
+          Plain text rather than a live region: it restates the queue the reader is already
+          looking at, and announcing it on every change would talk over their typing. The
+          queue panel's own status line is the announced one.
+        */}
+        <span className={`file-comment-hint is-${hint.tone}`}>{hint.text}</span>
+        <span className="file-comment-panel-spacer" />
+        <Tooltip label={busy ? "This comment is being sent" : "Discard this comment"}>
           <button className="btn" disabled={busy} onClick={onCancel}>Cancel</button>
         </Tooltip>
-        <Tooltip label="Add this comment to the review">
+        <Tooltip label="Send this comment to the agent as its own turn">
           <button
             className="btn btn-primary"
             disabled={busy || value.trim().length === 0}
             onClick={onSubmit}
           >
-            Comment
+            Send
           </button>
         </Tooltip>
       </footer>
@@ -134,9 +152,8 @@ export function FileCommentComposer({
 /**
  * An existing thread, expanded: what was said, in time order, and a box to say more.
  *
- * A reply is a durable note on the thread and nothing else in this phase. Phase 3 is what
- * makes one re-enter the review queue; until it merges, writing here records the follow-up
- * where the reader wrote it rather than in a scrollback.
+ * A reply on a thread the agent has finished with re-enters the queue and goes to the agent
+ * in its turn, exactly like a new comment; `replyTooltip` says which case this thread is.
  */
 export function FileCommentThreadCard({
   thread,
@@ -258,7 +275,7 @@ export function FileCommentThreadCard({
               </Tooltip>
             )}
             <span className="file-comment-panel-spacer" />
-            <Tooltip label="Add this reply to the thread">
+            <Tooltip label={replyTooltip(thread)}>
               <button
                 className="btn btn-primary"
                 disabled={busy || sending || reply.trim().length === 0}

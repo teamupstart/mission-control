@@ -35,6 +35,7 @@ type Registry = import("../src/server/registry.ts").Registry;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
+type FileCommentWalkthroughPort = import("../src/server/file-comment-walkthrough.ts").FileCommentWalkthroughPort;
 type FileCommentThread = import("../src/shared/types.ts").FileCommentThread;
 type FileCommentReview = import("../src/shared/types.ts").FileCommentReview;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
@@ -137,7 +138,7 @@ const stub = <T,>() => ({}) as unknown as T;
  * outbox, which is what keeps this file about routes.
  */
 const submitted: string[] = [];
-const walkthrough = new FileCommentWalkthrough({
+const port: FileCommentWalkthroughPort = {
   now: () => Date.now(),
   replyTool: () => Promise.resolve("mcp__mission-control__respond_to_file_comments"),
   session: () => ({ id: "live", runtime: "sdk", state: "idle", terminals: [], lastActivity: 0, firstSeen: 0, pendingTurns: [] }) as never,
@@ -167,7 +168,8 @@ const walkthrough = new FileCommentWalkthrough({
   // here is the doors, so this reads nothing and files nothing.
   agentTurnsSince: () => [],
   appendAgentReply: () => null,
-});
+};
+const walkthrough = new FileCommentWalkthrough(port);
 const app = buildApp({
   registry,
   reviews: stub<ReviewManager>(),
@@ -884,6 +886,84 @@ test("the walkthrough controls are one route with an action", async () => {
   assert.equal(afterDismiss.state, "paused");
   assert.equal(afterDismiss.pauseReason, null);
   assert.equal(submitted.length, 0, "dismiss does not resume or send the queued comment");
+});
+
+/**
+ * The daemon's own wiring, rebuilt: the manager announces a queued thread and the walkthrough
+ * starts. `app` above leaves it off so its route tests can hold a queue still. This one reads a
+ * checkout that holds the quoted text, so a comment can actually go.
+ */
+function wiredApp(): { sender: InstanceType<typeof FileCommentWalkthrough>; wired: ReturnType<typeof buildApp> } {
+  const sender = new FileCommentWalkthrough({
+    ...port,
+    readFile: () => Promise.resolve({ text: `# Plan\n\n${COMMENT.quote}\n`, revision: "r1" }),
+  });
+  const manager = new FileCommentManager(registry);
+  manager.onQueued((sessionId) => sender.onQueued(sessionId));
+  const wired = buildApp({
+    registry,
+    reviews: stub<ReviewManager>(),
+    tasks: stub<TaskManager>(),
+    queues: stub<QueueManager>(),
+    fileComments: manager,
+    fileCommentWalkthrough: sender,
+  });
+  return { sender, wired };
+}
+
+const drain = async (): Promise<void> => {
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+
+test("sending a comment starts delivery on its own, with no Start", async () => {
+  reset();
+  const { sender, wired } = wiredApp();
+  try {
+    const t = await create();
+    const res = await wired.request(`/api/file-comments/${t.id}/queue`, { method: "POST", headers: HEADERS });
+    assert.equal(res.status, 200);
+    await drain();
+
+    assert.equal(loadFileCommentReview("live").state, "running");
+    assert.equal(submitted.length, 1, "the comment went as its own turn");
+    assert.match(submitted[0]!, /^Review comment 1; nothing else is queued yet\./);
+  } finally {
+    sender.stop();
+  }
+});
+
+test("a reply to a thread the agent has finished with is delivered on its own, with no Start or Resume", async () => {
+  reset();
+  const { sender, wired } = wiredApp();
+  try {
+    // The comment's first turn went, and the grace window gave up on it. Written straight to
+    // the store so nothing here has sent anything yet: the only delivery below is the reply's.
+    const t = await create();
+    await post(`/api/file-comments/${t.id}/queue`);
+    beginFileCommentDelivery(t.id, "turn-0", Date.now());
+    markFileCommentMessageDelivered(t.messages[0]!.id, Date.now());
+    setFileCommentThreadStatus(t.id, "unanswered", Date.now());
+    assert.equal(loadFileCommentReview("live").state, "idle", "precondition: nothing is running");
+    assert.equal(submitted.length, 0);
+
+    const REPLY = "Still not right: the table says sixty.";
+    const res = await wired.request(`/api/file-comments/${t.id}/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ author: "human", body: REPLY }),
+    });
+    assert.equal(res.status, 200);
+    await drain();
+
+    assert.equal(submitted.length, 1, "the reply went as its own turn");
+    // The reply, not the opening comment again, as the thread's SECOND human message.
+    assert.ok(submitted[0]!.includes(REPLY), submitted[0]);
+    assert.ok(!submitted[0]!.includes(COMMENT.body), "the opening comment is not resent");
+    assert.match(submitted[0]!, new RegExp(`quoting id ${t.shortId}\\.2\\.`));
+    assert.equal(loadFileCommentReview("live").state, "running");
+  } finally {
+    sender.stop();
+  }
 });
 
 test("a reason is refused on anything but a pause, and an unknown action is refused", async () => {

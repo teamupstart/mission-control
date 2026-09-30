@@ -16,6 +16,7 @@ import {
   type ArchiveManifestPromptTrail,
   type ArchiveManifestRepository,
   type ArchiveSearchQuery,
+  type ArchiveSessionOrigin,
   type ArchiveSearchSegmentKind,
   type ArchiveSearchSnippet,
 } from "@shared/archives.ts";
@@ -35,6 +36,7 @@ import type { ArchiveBundleFingerprint, VerifiedArchiveBundle } from "./bundle.t
 
 /** One row of the index as the rest of the daemon reads it. */
 export interface ArchiveRow {
+  sourceSession: ArchiveSessionOrigin | null;
   key: string;
   producerId: string;
   archiveId: string;
@@ -110,6 +112,8 @@ export interface UnreadableArchiveInput {
 }
 
 interface ArchiveRowShape {
+  source_session_id: string | null;
+  source_session_json: string | null;
   key: string;
   producer_id: string;
   archive_id: string;
@@ -163,7 +167,7 @@ const ARCHIVE_COLUMNS = `key, producer_id, archive_id, producer_label, kind, for
   capture_status, title, question, prompts_json, summary, tags_json, agent, model, source, repositories_json,
   repo_labels, missing_json, primary_artifact_id, content_digest, manifest_digest, library_root,
   relative_path, manifest_bytes, manifest_mtime_ns, artifact_count, bytes, error, created_at,
-  completed_at, sort_at, indexed_at, last_seen_epoch`;
+  completed_at, sort_at, indexed_at, last_seen_epoch, source_session_id, source_session_json`;
 
 const ARCHIVE_PLACEHOLDERS = ARCHIVE_COLUMNS.split(",").map(() => "?").join(", ");
 
@@ -238,6 +242,8 @@ export class ArchiveStore {
         completedAt ?? createdAt ?? indexedAt,
         indexedAt,
         epoch,
+        manifest.origin.session?.id ?? null,
+        manifest.origin.session ? JSON.stringify(manifest.origin.session) : null,
       );
       const insertArtifact = this.db.prepare(
         `INSERT INTO archive_artifacts
@@ -310,6 +316,8 @@ export class ArchiveStore {
         input.indexedAt,
         input.indexedAt,
         input.epoch,
+        null,
+        null,
       );
     });
   }
@@ -473,6 +481,10 @@ export class ArchiveStore {
       where.push(`a.producer_id = ?`);
       params.push(query.producer);
     }
+    if (query.session) {
+      where.push(`a.source_session_id = ?`);
+      params.push(query.session);
+    }
     if (query.repo) {
       where.push(`instr(a.repo_labels, ?) > 0`);
       params.push(`|${query.repo.trim().toLowerCase().replaceAll("|", " ")}|`);
@@ -612,6 +624,7 @@ function cutSnippet(text: string, needle: string, width: number): string {
 
 function rowToArchive(row: ArchiveRowShape): ArchiveRow {
   return {
+    sourceSession: row.source_session_json ? JSON.parse(row.source_session_json) as ArchiveSessionOrigin : null,
     key: row.key,
     producerId: row.producer_id,
     archiveId: row.archive_id,

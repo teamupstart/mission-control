@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
@@ -95,7 +96,7 @@ import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
-import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
+import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
   ProductIssueService,
@@ -196,6 +197,7 @@ const reviews = new ReviewManager(registry);
 // dispatcher branches on it and the startup reconciliation below asks it whether an
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
+maintainScoutSessionCredentials(registry);
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
@@ -223,6 +225,9 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+registry.subscribe((event) => {
+  if (event.type === "session_remove") archives.sessionRemoved(event.id);
+});
 const tasks = new TaskManager(
   registry,
   undefined,
@@ -635,6 +640,8 @@ fileComments.start();
 // comment, hands it to `pendingTurns.submit`, and waits for the confirmed-delivery signal that
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
+// Sending a comment is the request to deliver it: there is no separate Start step.
+fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -711,6 +718,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // the walkthrough's existing pause-and-confirm path. Ordered after `pendingTurns.start()` for
   // exactly that reason.
   fileCommentWalkthrough.resume(registry.listFileCommentReviews().map((r) => r.sessionId));
+  // Comments left queued in an idle review - written before sending started delivery on its
+  // own - are sent too, once the first completed sweep has put every live session back in the
+  // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
+  adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
   reviews.startContinuationRecovery((review, text) =>
     pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
   );
@@ -727,7 +738,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
-  void archives.recoverJobs().catch((error: unknown) => {
+  void archives.recoverJobs().then(() => {
+    registry.onSessionsObserved(() => archives.reconcilePromptContexts(new Set(registry.liveSessions().map((session) => session.id))));
+  }).catch((error: unknown) => {
     console.warn("[mission-control] could not resume archive captures:", error);
   });
   // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves
@@ -850,8 +863,7 @@ async function shutdown(): Promise<void> {
   await retentionObserver.stop();
   // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
   // any recurring mission run whose agent it has not yet observed leave.
-  tasks.stopMissionSessionClosures();
-  await tasks.settleWorktreeReturns();
+  await tasks.stop();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

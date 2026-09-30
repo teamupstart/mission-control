@@ -653,6 +653,25 @@ test("settling twice publishes one bundle, not two", async () => {
   assert.equal(h.archives.captureJobsForTask(task.id).length, 1);
 });
 
+test("an operator-deleted plan is not reserved again when cleanup rediscovers its directory", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath } = makeCheckout({
+    written: {
+      "docs/plans/archive-rename/plan.md": "# The archive\n",
+      "docs/plans/archive-rename/plan.html": planHtml("The archive"),
+    },
+  });
+  const task = mkPlan({ worktreePath, repoRoot, status: "done" });
+  h.registry.upsertTask(task);
+  assert.deepEqual(await h.archives.settleBeforeCleanup(task.id), { ok: true });
+  const job = h.archives.captureJobsForTask(task.id)[0]!;
+  const key = `${job.producerId}~${job.archiveId}`;
+  await h.archives.delete(key, key);
+  assert.deepEqual(await h.archives.settleBeforeCleanup(task.id), { ok: true });
+  assert.equal(existsSync(join(h.library, job.relativePath!)), false);
+  assert.deepEqual(h.archives.captureJobsForTask(task.id).map((entry) => entry.status), ["deleted"]);
+});
+
 test("a checkout that vanished after a refusal publishes an honest partial, not a wedge", async () => {
   const h = harness({ rename: () => Promise.reject(new Error("the disk went away")) });
   const { repoRoot, worktreePath } = makeCheckout({

@@ -24,6 +24,7 @@ const {
   setFileCommentReviewState,
   pruneFileCommentThreads,
   queueFileCommentThread,
+  setFileCommentThreadStatus,
 } = await import("../src/server/db.ts");
 type Registry = import("../src/server/registry.ts").Registry;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
@@ -239,4 +240,57 @@ test("a manager that was never started leaves no timer behind", () => {
   h.manager.start();
   h.manager.stop();
   assert.ok(true);
+});
+
+test("a person putting a thread in the queue is announced once; a draft edit is not", () => {
+  // Sending a comment is the request to deliver it, and this is how the walkthrough hears it.
+  const h = harness();
+  h.live("s-send");
+  const heard: string[] = [];
+  h.manager.onQueued((sessionId) => heard.push(sessionId));
+
+  seq += 1;
+  const draft = createFileCommentThread({
+    id: `lt-${seq}`,
+    messageId: `lm-${seq}`,
+    sessionId: "s-send",
+    path: "docs/plan.md",
+    startLine: 1,
+    endLine: 1,
+    quote: "alpha",
+    quoteHash: `h-${seq}`,
+    revision: "r1",
+    surface: "editor",
+    body: "half a sentence",
+    now: 1_000,
+  });
+  // Typing into a draft is not sending it.
+  h.manager.appendMessage(draft.id, "human", "the rest of the sentence");
+  assert.deepEqual(heard, []);
+
+  h.manager.queue(draft.id);
+  assert.deepEqual(heard, ["s-send"], "Send is announced");
+
+  // A reply on a thread the agent has finished with re-enters the queue, and is announced too.
+  setFileCommentThreadStatus(draft.id, "unanswered", 2_000);
+  h.manager.appendMessage(draft.id, "human", "a follow-up");
+  assert.deepEqual(heard, ["s-send", "s-send"]);
+  assert.equal(loadFileCommentThread(draft.id)!.status, "queued");
+});
+
+test("a subscriber that throws does not turn a successful queue into an error", () => {
+  const h = harness();
+  h.live("s-throw");
+  h.manager.onQueued(() => {
+    throw new Error("delivery could not start");
+  });
+  const thread = seed("s-throw");
+  setFileCommentThreadStatus(thread.id, "draft", 1_500);
+  const original = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(h.manager.queue(thread.id).status, "queued");
+  } finally {
+    console.error = original;
+  }
 });

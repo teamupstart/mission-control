@@ -294,9 +294,9 @@ session stays live for later turns until you choose **Complete**. If you explici
 Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
-prompt, to write one self-contained static page at `docs/reports/<slug>/report.html`
-and submit it. Normal completion waits until Mission Control has captured and verified that
-page into a durable [scout archive](archives.md). If the report is unavailable, the operator
+prompt, to write self-contained static reports at `docs/reports/<slug>/report.html`, one
+directory per report, and submit them. Normal completion requires at least one complete report
+and verifies every explicit submission as a durable [scout archive](archives.md). If the report is unavailable, the operator
 must separately confirm **Close without report** after seeing the archive warning. Its worktree
 is not reclaimed by completion, so the answer remains available for explicit cleanup. No pull
 request is expected, and the conversation is not archived.
@@ -1542,3 +1542,15 @@ new instructions into a running agent.
 
 [Writing back](#writing-back-to-the-source) is separate: its optional notices and resolution
 publish task progress upstream. Enabling inbound updates enables none of those switches.
+
+
+### Optional scout reports from other work
+
+Any registered session can publish scout reports when the operator requests them, including
+ship, plan, pipeline, chat, bugfix, and taskless sessions. Call `submit_scout_artifacts` once
+per report with a distinct `docs/reports/<slug>/report.html` path and optional title. Repeating
+a directory returns its immutable archive; revisions need a new slug. Publishing changes
+neither task kind nor completion state. Scout completion checks at least one complete report
+and every explicit submission in the episode. Other task kinds keep their completion rules,
+while checkout cleanup preserves their explicitly submitted reports. The session’s Scouts
+tab and the archive reader’s source-session filter show the related reports.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tmpdir } from "node:os";
 /**
  * A stand-in for the `claude` binary, speaking enough of Claude Code's control protocol
  * for the daemon's SDK-runtime driver to bind a session, run turns, and show a transcript.
@@ -108,6 +109,13 @@ const REVIEW_HELD_TURN_MS = 15_000;
 // rather than after a timer a slow run could outlast.
 const DEFERRED_STEER = "read this steer at your next step";
 const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
+// A turn that stays open until the spec writes this file into the record dir. Matched by
+// INCLUSION, unlike `HELD_TURN`, because the prompt that carries it is a workflow session
+// action's packet: the daemon wraps the authored Markdown in its own envelope, so no exact
+// string can ever equal it. Released by a file rather than a timer so a spec can hold the
+// action waiting for as long as its assertions take, and a slow run cannot outlast it.
+const RELEASED_TURN = "E2E_HOLD_TURN_UNTIL_RELEASED";
+const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-release-held-turn");
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -853,6 +861,16 @@ function daemonToken() {
 
 /** The opaque credential the daemon provisioned for this exact scout checkout. */
 function scoutCredential() {
+  // The fake is the agent itself, so use its PID (a real MCP child uses its parent PID).
+  const servers = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
+  const locator = process.env.MISSION_SCOUT_SESSION_LOCATOR ?? Object.values(servers)
+    .find((server) => server.env?.MISSION_SCOUT_SESSION_LOCATOR)?.env.MISSION_SCOUT_SESSION_LOCATOR;
+  const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
+  const key = createHash("sha256").update(identity).digest("hex");
+  try {
+    return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",
+      `scouts-${process.env.MISSION_PORT ?? "7317"}`, key), "utf8").trim();
+  } catch { /* Legacy scout fixtures retain their original credential path below. */ }
   const direct = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
   if (direct) return direct;
   const isolatedFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
@@ -882,7 +900,9 @@ function scoutCredential() {
  */
 async function runScout(prompt) {
   const valid = !prompt.includes(SCOUT_INVALID);
-  const relative = `docs/reports/${SCOUT_SLUG}/report.html`;
+  const requested = /E2E_REPORT_(FIRST|SECOND|RETRY)/.exec(prompt)?.[1];
+  const slug = requested === "SECOND" ? "second-report" : requested ? "first-report" : SCOUT_SLUG;
+  const relative = `docs/reports/${slug}/report.html`;
   const target = join(process.cwd(), relative);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, scoutReportHtml(valid));
@@ -906,6 +926,7 @@ async function runScout(prompt) {
       },
       body: JSON.stringify({
         reportPath: relative,
+        ...(requested ? { title: requested === "SECOND" ? "Second finding" : "First finding" } : {}),
         summary: "Resume rebuilt the session without replaying the repository grant.",
         tags: ["resume", "permissions"],
         supporting: [],
@@ -1251,7 +1272,7 @@ rl.on("line", (line) => {
     // spec wrote - which is what makes the requirement's delivery the thing under test. The
     // turn is held open across the write and the submission because both are real I/O; the
     // card stays "working" until the archive exists, exactly as a real one would.
-    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED) {
+    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED || prompt.includes("E2E_REPORT_")) {
       beginScoutTurn(prompt);
       return;
     }
@@ -1294,6 +1315,17 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    if (prompt.includes(RELEASED_TURN)) {
+      const turnState = { prompts: [prompt] };
+      turnState.timer = setInterval(() => {
+        if (!existsSync(RELEASE_TURN_SIGNAL)) return;
+        clearInterval(turnState.timer);
+        openTurn = null;
+        answer(turnState.prompts);
+      }, 100);
+      openTurn = turnState;
+      return;
+    }
     const heldTurnMs = prompt === HELD_TURN
       ? HELD_TURN_MS
       : prompt === REVIEW_HELD_TURN

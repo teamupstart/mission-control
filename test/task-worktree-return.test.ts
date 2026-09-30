@@ -1,4 +1,4 @@
-import { after, afterEach, test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,18 +12,11 @@ import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-return-"));
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
 const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
   getTask: durableTask, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
-const managers: InstanceType<typeof TaskManager>[] = [];
-afterEach(async () => {
-  for (const manager of managers.splice(0)) {
-    manager.stopMissionSessionClosures();
-    await manager.settleWorktreeReturns();
-  }
-});
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function world(over: Partial<Task> = {}, observed = true, deps: TaskManagerStartupDeps = {}) {
@@ -70,7 +63,6 @@ function world(over: Partial<Task> = {}, observed = true, deps: TaskManagerStart
     },
     ...deps,
   });
-  managers.push(manager);
   if (observed) registry.applyDiscovery([]);
   const task = mkTask({ id: "return-task", status: "running", sessionId: "return-session",
     worktreePath: "/pool/one", provider: "mission", worktreeLeaseId: "lease-one", ...over });
@@ -300,7 +292,6 @@ test("completion recovery waits for observed sessions before returning a newly c
     occupancy: async (paths) => new Map(paths.map((path) => [path, w.state.occupancy])),
     teardown: async (task) => { w.state.released.push(task.worktreePath!); },
   });
-  managers.push(manager);
   await manager.settleWorktreeReturns();
   assert.deepEqual(w.state.released, []);
   assert.equal(taskOwesWorktreeReturn(registry.getTask(w.task.id)!), true);

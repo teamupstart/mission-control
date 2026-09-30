@@ -330,6 +330,7 @@ test("file actions own Shift+F, Shift+O, and l and every default round-trips fro
     chordFromEvent(key("T", { shift: true })),
     chordFromEvent(key("q")),
     chordFromEvent(key("y")),
+    chordFromEvent(key("Y", { shift: true })),
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),

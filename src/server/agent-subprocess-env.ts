@@ -18,6 +18,7 @@ import {
   PORT,
   SCOUT_SUBMISSION_CREDENTIAL_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV,
+  SCOUT_SESSION_LOCATOR_ENV,
   isolatedScoutSubmissionCredentialPath,
   readToken,
 } from "../shared/harness-runtime.mjs";
@@ -141,6 +142,8 @@ export function agentSubprocessEnv(
   env.MISSION_HOME = stateHome;
   delete env[MISSION_API_TOKEN_ENV];
   delete env[MISSION_API_TOKEN_FILE_ENV];
+  // Only the SDK supervisor may issue a report locator for this particular launch.
+  delete env[SCOUT_SESSION_LOCATOR_ENV];
 
   try {
     if (options.loopbackAccess) {

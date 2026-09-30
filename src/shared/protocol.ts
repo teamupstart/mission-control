@@ -3387,6 +3387,8 @@ export const UI_CONFIG_DEFAULTS = {
    * the board spent those pixels on the columns that hold sessions.
    */
   showEmptyColumnStash: true,
+  /** No column starts collapsed: a fresh board shows everything it has. */
+  collapsedBoardColumns: [],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3525,6 +3527,18 @@ export const UiConfigSchema = z.object({
    * something needs you.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
+  /**
+   * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
+   *
+   * Saved, unlike the expanded column. Folding Backlog away to give the live columns the room
+   * is how someone wants their board to look, so it should still be folded tomorrow; expanding
+   * a column is "let me read this properly" and stays a gesture (see `lib/column-width.ts`).
+   *
+   * Ids are not validated, for the reason `hiddenDisplayItems` gives: the column set is a
+   * web-side concept, and an id a later build retires must stay readable here rather than
+   * failing the whole config. An unknown id simply matches no column.
+   */
+  collapsedBoardColumns: z.array(z.string().min(1)).default([]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -7510,6 +7524,7 @@ export type EnsembleMemberSubmitBody = z.infer<typeof EnsembleMemberSubmitSchema
  * declares, so a filter names a kind this build understands or is refused.
  */
 export const ArchiveSearchQuerySchema = z.object({
+  session: z.string().min(1).max(256).optional(),
   q: z.string().max(ARCHIVE_SEARCH_LIMITS.queryChars).optional(),
   producer: z.string().refine(isArchiveId, "not a producer id").optional(),
   repo: z.string().max(ARCHIVE_TEXT_LIMITS.label).optional(),
@@ -7581,6 +7596,7 @@ const ScoutSupportingLocatorSchema = z.object({
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
 export const SubmitScoutArtifactsSchema = z.object({
+  title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
   reportPath: z
     .string()
     .trim()

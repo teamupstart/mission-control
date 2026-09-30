@@ -25,6 +25,7 @@ import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
 import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
+import type { ColumnWidth } from "../lib/column-width.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { InlineRenameEditor } from "./InlineRenameEditor.tsx";
@@ -2418,49 +2419,114 @@ export function BacklogTaskNotice({
 }
 
 /**
- * The one control that widens a board column, drawn on BOTH kinds of column head.
+ * The width control on a Board column head: collapsed, normal, expanded, as three stops.
  *
- * The board has two of them - the tone columns BoardView builds and the Backlog column
- * that builds its own - and a widen affordance written twice is the mark vocabulary
- * problem this file exists to stop: the two would agree on the day they were written
- * and drift on the first retune. It lives here for the same reason `ScheduleSwitch`
- * does, and both heads render THIS.
+ * Drawn on BOTH kinds of column head - the tone columns `BoardView` builds and the Backlog
+ * column that builds its own - so it lives here, like `ScheduleSwitch`, rather than being
+ * written twice and drifting on the first retune.
  *
- * It is quiet until wanted: the header reveals it on hover, and it stays out while
- * narrow so five column heads do not each carry a permanent button nobody is looking
- * for. It is still focusable at all times though - `opacity`, never `display` - because
- * a control that leaves the tab order is one a keyboard cannot reach at all, and
- * double-click, the gesture this backs up, has no keyboard equivalent to fall back on.
- * A wide column keeps it visible regardless: the way back must never be the thing you
- * have to hunt for.
+ * Three pressed buttons in a group rather than a radio group. A radio group's arrow keys would
+ * fight the board's own: ←/→/↑/↓ already walk the cards, and a focused head control that
+ * swallowed them would strand the cursor. Each stop is its own tab stop, and `aria-pressed`
+ * says which one is in force.
+ *
+ * Quiet until wanted, as the old `‹›` toggle was: the head reveals it on hover or focus, and it
+ * stays drawn while the column is expanded, so the way back is never the thing you hunt for.
+ * `opacity`, never `display`, so it stays in the tab order - double-click, the gesture it
+ * backs up, has no keyboard equivalent. A collapsed column has no head; its strip restores it.
  */
-export function ColumnWidthToggle({
-  wide,
+export function ColumnWidthControl({
+  width,
   label,
-  onToggle,
+  onChange,
 }: {
-  wide: boolean;
-  /** The column's own name, so the tooltip and the label name what is moving. */
+  width: ColumnWidth;
+  /** The column's own name, so every tooltip and accessible name says which column moves. */
   label: string;
-  onToggle: () => void;
+  onChange: (width: ColumnWidth) => void;
 }): React.JSX.Element {
+  const stops: { width: ColumnWidth; name: string; tip: string }[] = [
+    { width: "collapsed", name: `Collapse ${label}`, tip: `Collapse ${label} to a strip` },
+    { width: "normal", name: `${label} at normal width`, tip: `Show ${label} at normal width` },
+    {
+      width: "wide",
+      name: `Expand ${label}`,
+      tip: `Expand ${label} to read more of each card (or double-click the header)`,
+    },
+  ];
   return (
-    <Tooltip
-      label={
-        wide
-          ? `Narrow ${label} (or double-click the header)`
-          : `Widen ${label} to read more of each card (or double-click the header)`
-      }
+    <div
+      className="board-col-width"
+      role="group"
+      aria-label={`${label} width`}
+      data-width={width}
+      // The head's double-click expands the column, so two quick clicks on a stop would press
+      // it twice and then flip the column again underneath. The control's clicks are its own.
+      onDoubleClick={(e) => e.stopPropagation()}
     >
+      {stops.map((stop) => (
+        <Tooltip key={stop.width} label={stop.tip}>
+          <button
+            type="button"
+            className="board-col-width-stop"
+            aria-pressed={width === stop.width}
+            aria-label={stop.name}
+            onClick={() => onChange(stop.width)}
+          >
+            <span className={`bcw-bar bcw-${stop.width}`} aria-hidden />
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A collapsed Board column: a thin strip that still says what the column is and how much it
+ * holds, and is itself the button that restores it.
+ *
+ * `announce` makes the count pulse when it goes UP while collapsed - on for Needs you, so a
+ * session that starts waiting on you is not hidden by a fold you made an hour ago. It pulses
+ * rather than reopening the column: the operator chose to fold it, and a board that undid that
+ * choice on every arrival would be one you could not keep folded at all.
+ */
+export function CollapsedColumnStrip({
+  label,
+  count,
+  announce = false,
+  onRestore,
+}: {
+  label: string;
+  count: number;
+  announce?: boolean;
+  onRestore: () => void;
+}): React.JSX.Element {
+  const previous = useRef(count);
+  const [pulses, setPulses] = useState(0);
+  useEffect(() => {
+    if (announce && count > previous.current) setPulses((n) => n + 1);
+    previous.current = count;
+  }, [announce, count]);
+  return (
+    <Tooltip label={`Restore ${label} to normal width`}>
       <button
-        className="board-col-width"
-        // A pressed toggle, not two buttons: the column is wide or it is not, and
-        // `aria-pressed` is what says which without a second glyph to keep in sync.
-        aria-pressed={wide}
-        aria-label={wide ? `Narrow ${label}` : `Widen ${label}`}
-        onClick={onToggle}
+        type="button"
+        className="board-col-strip"
+        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}`}
+        onClick={onRestore}
       >
-        {wide ? "›‹" : "‹›"}
+        <span className="board-swatch" aria-hidden />
+        {/* Keyed by the pulse count so each arrival remounts it and the animation replays. */}
+        <span
+          key={pulses}
+          className={`board-col-n board-col-strip-n${pulses > 0 ? " is-pulsing" : ""}`}
+          aria-hidden
+        >
+          {count}
+        </span>
+        <span className="board-col-strip-name" aria-hidden>
+          {label}
+        </span>
       </button>
     </Tooltip>
   );

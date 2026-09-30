@@ -13,7 +13,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-task-status-contract-"));
 process.env.MISSION_HOME = home;
 const db = await import("../src/server/db.ts");
 const { Registry, completableByMerge } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { findActiveTaskForSchedule } = await import("../src/server/schedules/store.ts");
 

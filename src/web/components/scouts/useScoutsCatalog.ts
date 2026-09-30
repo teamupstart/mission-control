@@ -59,6 +59,8 @@ export interface ScoutsCatalog {
 /** The filters, in the shape the API takes. One place converts, so no component does. */
 function toQuery(filters: ScoutFilters | undefined): Partial<ArchiveSearchQuery> {
   return {
+    ...(filters?.session ? { session: filters.session } : {}),
+    ...(filters?.kind ? { kind: filters.kind } : {}),
     ...(filters?.q ? { q: filters.q } : {}),
     ...(filters?.producer ? { producer: filters.producer } : {}),
     ...(filters?.repo ? { repo: filters.repo } : {}),

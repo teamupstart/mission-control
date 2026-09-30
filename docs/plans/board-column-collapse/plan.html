@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board column widths: collapsed, normal, expanded</title>
+<style>
+  /* ---------- page chrome: follows the reader's scheme ---------- */
+  :root {
+    --p-bg: #f6f7f9; --p-fg: #1b2029; --p-muted: #545e6c; --p-dim: #6b7482;
+    --p-rule: #dde1e7; --p-code: #eceff3; --p-accent: #1f6fd1;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --p-bg: #0e1116; --p-fg: #e7ebf1; --p-muted: #a3adbb; --p-dim: #7c8798;
+      --p-rule: #232a33; --p-code: #171c23; --p-accent: #6fb1ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--p-bg); color: var(--p-fg);
+    font: 15px/1.6 var(--sans); padding: 44px 24px 96px;
+  }
+  .page { max-width: 1240px; margin: 0 auto; }
+  .prose { max-width: 820px; }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 16px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 44px 0 10px; padding-top: 18px; border-top: 1px solid var(--p-rule); }
+  h3 { font-size: 16px; margin: 0; }
+  p, li { color: var(--p-fg); }
+  ul, ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: var(--mono); font-size: 0.86em; background: var(--p-code);
+    padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere;
+  }
+  a { color: var(--p-accent); }
+  .note { color: var(--p-muted); }
+
+  /* ---------- mock-up frame ---------- */
+  .mock { margin: 34px 0 52px; }
+  .mock-cap { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .mock-letter {
+    font: 600 12px var(--mono); color: #0a0c0f; background: #f6a733;
+    border-radius: 5px; padding: 2px 8px; flex: none;
+  }
+  .mock-desc { max-width: 820px; }
+  .mock-desc ul { margin: 6px 0 14px; }
+
+  /* The app's own palette, always dark: this is a picture of the dashboard. */
+  .viewport {
+    --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733;
+    --exited: #707a88; --neutral: #8b94a3; --held: #45c4d8; --select: #6fb1ff;
+    --radius: 11px;
+    position: relative;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid #232a33; border-radius: 13px; overflow: hidden;
+    font-size: 13px; line-height: 1.45;
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-2); font-size: 12px; color: var(--muted);
+  }
+  .toolbar .hint { margin-right: auto; }
+  .toolbar button {
+    font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 7px; padding: 4px 10px; cursor: pointer;
+  }
+  .toolbar button:hover { border-color: #3a4552; }
+  .toolbar button.sim { border-color: color-mix(in oklab, var(--attention) 50%, var(--border)); color: var(--attention); }
+
+  /* ---------- the board, reproduced from styles.css ---------- */
+  .board {
+    display: flex; align-items: stretch; height: 400px;
+    padding: 16px 20px 20px; overflow-x: auto;
+  }
+  .col {
+    --tone-color: var(--neutral);
+    position: relative; display: flex; flex-direction: column; min-height: 0;
+    flex: 1 1 0; min-width: 250px; margin-right: 14px; overflow: hidden;
+    border: 1px solid var(--border-soft); border-radius: var(--radius);
+    background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+    transition: flex-grow .34s ease, flex-basis .34s ease, min-width .34s ease,
+      margin-right .34s ease, opacity .26s ease, border-width .34s ease;
+  }
+  .tone-backlog { --tone-color: var(--muted); }
+  .tone-attention { --tone-color: var(--attention); }
+  .tone-working { --tone-color: var(--working); }
+  .tone-idle { --tone-color: var(--idle); }
+  .col.tone-attention {
+    border-color: color-mix(in oklab, var(--attention) 32%, var(--border));
+    background: color-mix(in oklab, var(--attention) 5%, transparent);
+  }
+  .col.is-wide { flex-grow: 2; min-width: 520px; }
+  .col.is-collapsed { flex: 0 0 40px; min-width: 40px; }
+  /* Mock-up C: the column leaves its place for the dock. */
+  .col.is-docked { flex: 0 0 0; min-width: 0; margin-right: 0; opacity: 0; border-width: 0; }
+
+  /* Content keeps its width while the track animates, so it clips instead of reflowing. */
+  .col-inner {
+    display: flex; flex-direction: column; min-height: 0; flex: 1;
+    min-width: 226px; transition: opacity .2s ease;
+  }
+  .col.is-collapsed .col-inner, .col.is-docked .col-inner { opacity: 0; pointer-events: none; }
+
+  .head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    border-bottom: 1px solid var(--border-soft); user-select: none; position: relative;
+  }
+  .swatch { width: 7px; height: 7px; border-radius: 50%; background: var(--tone-color); flex: none; }
+  .tone-attention .swatch { box-shadow: 0 0 10px var(--attention); }
+  .head h4 {
+    margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--tone-color); white-space: nowrap;
+  }
+  .n {
+    margin-left: auto; font-size: 11.5px; font-weight: 680; font-variant-numeric: tabular-nums;
+    color: var(--dim); padding: 1px 7px; border: 1px solid var(--border-soft);
+    border-radius: 999px; background: var(--panel); white-space: nowrap;
+  }
+  .n.free {
+    color: var(--idle); border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+    background: color-mix(in oklab, var(--idle) 10%, var(--panel));
+  }
+  .body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+  /* head controls: hover-revealed like today's ‹› toggle, drawn whenever the column is not normal */
+  .ctl { display: inline-flex; gap: 3px; opacity: 0; transition: opacity .14s ease; }
+  .head:hover .ctl, .head:focus-within .ctl, .col:not(.is-normal) .ctl, .viewport.show-ctl .ctl { opacity: 1; }
+  .ctl button, .strip-step {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 18px; min-width: 18px; padding: 0 3px; font: 11px/1 var(--sans);
+    color: var(--muted); background: none; border: 1px solid var(--border-soft);
+    border-radius: 5px; cursor: pointer;
+  }
+  .ctl button:hover:not(:disabled) { color: var(--fg); border-color: var(--border); background: var(--panel); }
+  .ctl button:disabled { opacity: .35; cursor: default; }
+  .ctl button:focus-visible, .strip:focus-visible, .dock-tab:focus-visible, .menu button:focus-visible {
+    outline: 2px solid var(--select); outline-offset: 2px;
+  }
+  .ctl button[aria-pressed="true"] { color: var(--fg); border-color: var(--border); background: var(--panel-2); }
+
+  /* A: three-stop switch */
+  .seg { gap: 0; border: 1px solid var(--border-soft); border-radius: 6px; padding: 1px; }
+  .seg button { border: 0; border-radius: 4px; width: 20px; min-width: 20px; }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
+  .bar { display: block; height: 8px; background: currentColor; border-radius: 1.5px; opacity: .75; }
+  .seg button[aria-pressed="true"] .bar { color: var(--tone-color); opacity: 1; }
+
+  /* collapsed strip, in place (A, B, D) */
+  .strip {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    gap: 9px; padding: 10px 0; opacity: 0; pointer-events: none;
+    background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+    transition: opacity .2s ease .08s;
+  }
+  .col.is-collapsed .strip { opacity: 1; pointer-events: auto; }
+  .strip:hover { background: color-mix(in oklab, var(--tone-color) 7%, transparent); }
+  .vname {
+    writing-mode: vertical-rl; transform: rotate(180deg);
+    font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+    color: var(--tone-color); white-space: nowrap;
+  }
+  .strip .n, .dock-tab .n { margin: 0; padding: 1px 6px; }
+  .tone-attention .strip .n, .dock-tab.tone-attention .n {
+    color: var(--attention); border-color: color-mix(in oklab, var(--attention) 50%, var(--border));
+    background: color-mix(in oklab, var(--attention) 14%, var(--panel));
+  }
+  .strip-step { pointer-events: none; }
+  .dots { display: flex; flex-direction: column; gap: 5px; align-items: center; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--tone-color); }
+  .dots i.bl { border-radius: 2px; background: var(--muted); opacity: .7; }
+
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--attention) 70%, transparent); transform: scale(1); }
+    30% { transform: scale(1.18); }
+    100% { box-shadow: 0 0 0 10px transparent; transform: scale(1); }
+  }
+  .pulse { animation: pulse .9s ease-out 2; }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse { animation: none; }
+    .col, .col-inner, .strip { transition: none; }
+  }
+
+  /* C: dock at the board's left edge */
+  .dock {
+    flex: 0 0 0; display: flex; flex-direction: column; gap: 7px; overflow: hidden auto;
+    scrollbar-width: none;
+    margin-right: 0; opacity: 0; transition: flex-basis .34s ease, margin-right .34s ease, opacity .2s ease;
+  }
+  .dock.has-tabs { flex-basis: 40px; margin-right: 14px; opacity: 1; }
+  .dock-label {
+    font-size: 9.5px; font-weight: 800; letter-spacing: .7px; text-transform: uppercase;
+    color: var(--dim); text-align: center; padding-top: 2px;
+  }
+  .dock-tab {
+    --tone-color: var(--neutral);
+    display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 8px 0;
+    flex: none; width: 40px; font: inherit; color: inherit; cursor: pointer;
+    border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-2);
+  }
+  .dock-tab:hover { border-color: var(--border); background: var(--panel); }
+  .dock-tab.tone-backlog { --tone-color: var(--muted); }
+  .dock-tab.tone-attention { --tone-color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+  .dock-tab.tone-working { --tone-color: var(--working); }
+  .dock-tab.tone-idle { --tone-color: var(--idle); }
+
+  /* D: width menu and peek */
+  .menu {
+    position: absolute; z-index: 5; min-width: 212px; padding: 5px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  }
+  .menu[hidden] { display: none; }
+  .menu button {
+    display: grid; grid-template-columns: 16px 1fr; column-gap: 8px; width: 100%;
+    text-align: left; font: inherit; color: var(--fg); background: none; border: 0;
+    border-radius: 7px; padding: 6px 8px; cursor: pointer;
+  }
+  .menu button:hover { background: var(--panel-2); }
+  .menu .tick { color: var(--select); grid-row: span 2; }
+  .menu small { grid-column: 2; color: var(--dim); font-size: 11.5px; }
+  .peek {
+    position: absolute; z-index: 4; width: 260px; display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-2);
+    box-shadow: 0 14px 40px rgba(0,0,0,.55); overflow: hidden;
+  }
+  .peek[hidden] { display: none; }
+  .peek .peek-foot { padding: 7px 12px; font-size: 11.5px; color: var(--dim); border-top: 1px solid var(--border-soft); }
+
+  /* cards */
+  .card {
+    padding: 9px 11px; border-radius: 9px; background: var(--panel);
+    border: 1px solid var(--border-soft); border-left: 2px solid var(--tone-color);
+  }
+  .card .t { font-weight: 620; font-size: 12.5px; }
+  .card .m { color: var(--dim); font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card .s { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .card.bl { border-left-color: var(--border); }
+  .card.new { animation: slidein .35s ease-out; }
+  @keyframes slidein { from { opacity: 0; transform: translateY(-6px); } }
+  .prio { font-weight: 700; }
+  .prio.high { color: var(--attention); }
+  .prio.med { color: var(--working); }
+
+  .stash { flex: none; display: flex; flex-direction: column; gap: 7px; padding-top: 2px; }
+  .stash-chip {
+    font-size: 10.5px; color: var(--dim); border: 1px dashed var(--border);
+    border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="prose">
+<h1>Board column widths: collapsed, normal, expanded</h1>
+<p>Every board column gets three widths instead of two. Today a column is either <b>normal</b> or
+<b>expanded</b> (the <code>‹›</code> toggle and the head double-click, which gives it twice a normal
+column's share). This plan adds a third, <b>collapsed</b>: the column folds down to a thin strip that
+still says what it is and how many cards it holds, and one click brings it back to its normal size.</p>
+<p>Collapsing is added beside expanding, not in place of it. Expanded keeps working exactly as it
+does today.</p>
+<p><b>Decided: mock-up A, the three-stop switch.</b> The other three mock-ups are kept below as the record of
+what was compared. Every control in them works, including a button that sends a new session to <b>Needs you</b>
+so you can see what a collapsed column does when something arrives.</p>
+
+<h2>What the repository already provides</h2>
+<p>Checked against the code:</p>
+<ul>
+  <li><b>Expanded already exists.</b> <code>BoardView</code> holds <code>wideCol</code> (one column id or
+    <code>null</code>) and <code>toggleWide</code>. <code>ColumnWidthToggle</code> in
+    <code>src/web/components/session-bits.tsx</code> is the <code>‹›</code> control, and
+    <code>.board[data-focus="none"] .board-col.is-wide</code> in <code>src/web/styles.css</code> gives the
+    column <code>flex-grow: 2</code> with a <code>--board-col-wide</code> (520px) floor. The Backlog column
+    (<code>BacklogColumn.tsx</code>) takes the same <code>wide</code> and <code>onToggleWide</code> props as
+    the tone columns.</li>
+  <li><b>Column ids are already shared.</b> <code>"backlog"</code> plus the five tones from
+    <code>TONE_GROUPS</code> in <code>src/web/lib/tone.ts</code>: needs you, working, idle, unconfirmed,
+    gone.</li>
+  <li><b>Hiding cards already has one correct pattern.</b> Folding a repository frame takes cards out of
+    the DOM, so <code>src/web/lib/repo-collapse.ts</code> is a module store that <code>App</code> reads to
+    drop those cards from <code>boardColumns</code>, the arrays the arrow keys and the ⌘-number shortcuts
+    walk. A collapsed column has the same problem and uses the same approach.</li>
+  <li><b>Empty columns are already stashed.</b> <code>boardColumnModes</code> hides empty columns in the
+    <code>board-stash</code> chip rail. That is about emptiness, not the operator's choice, and stays
+    separate from collapsing.</li>
+</ul>
+
+<h2>Behavior shared by every mock-up</h2>
+<p>These rules hold whichever mock-up is picked:</p>
+<ol>
+  <li><b>Three widths, per column.</b> Collapsed, normal, expanded. Any column can be collapsed, including
+    Backlog and Needs you. Several columns can be collapsed at once.</li>
+  <li><b>One expanded column at a time</b>, as today. Expanding a column returns the previously expanded
+    one to normal. It does not collapse it.</li>
+  <li><b>Collapsed is a strip about 40px wide.</b> It shows the column's colored dot, its card count, and
+    its name written vertically. It is never blank, and it never takes more room than the strip.</li>
+  <li><b>Collapsed Needs you still asks for attention.</b> The strip uses the attention color, and its
+    count pulses when a new session arrives. How loud that is depends on the decision below.</li>
+  <li><b>Double-clicking a column head still toggles expanded.</b> Nothing about that gesture changes.</li>
+  <li><b>Opening a session works as today.</b> The column holding that session becomes the rail at its
+    fixed width, whatever width it had been set to. The other columns fold away during the morph. Coming
+    back to the board restores every column to the width it had before.</li>
+  <li><b>Hidden cards are out of keyboard reach.</b> Arrow keys and ⌘-number shortcuts skip the cards in a
+    collapsed column, the same way they skip a folded repository frame.</li>
+  <li><b>Keyboard reachable.</b> Every width change is a real button with an accessible name ("Collapse
+    Backlog", "Restore Backlog", "Expand Working"). A collapsed strip is itself a button.</li>
+</ol>
+
+<h2>The mock-ups</h2>
+<p>All four are drawn at the app's real sizes and colors: a 250px column minimum, a 520px expanded floor,
+and a 40px collapsed strip. They differ in the control that changes the width and in what a collapsed
+column looks like.</p>
+<p class="note">Column controls appear when a column head is hovered or focused, as today's <code>‹›</code>
+does. Use <b>Show controls</b> in any toolbar to keep them visible while you compare.</p>
+</div>
+
+<section class="mock" data-variant="A">
+  <div class="mock-desc">
+    <div class="mock-cap"><span class="mock-letter">A</span><h3>Three-stop switch (chosen)</h3></div>
+    <p>A small three-segment switch in each column head: a thin bar (collapsed), a medium bar (normal), and a
+    wide bar (expanded). The current width is highlighted. Like today's <code>‹›</code>, the switch appears when
+    the head is hovered or focused and stays visible whenever the column is not at normal width. A collapsed
+    column is an in-place strip. Clicking anywhere on it restores the column to normal.</p>
+    <ul>
+      <li><b>For:</b> All three widths are visible at once, so there is nothing to discover. The switch shows
+        where the column is now as well as where it can go.</li>
+      <li><b>Against:</b> It is the widest control in the head, about 54px, against today's 22px. On a crowded
+        head (Idle, with its <code>free</code> and <code>held</code> pills) that space is taken from the title.</li>
+    </ul>
+  </div>
+  <div class="viewport"></div>
+</section>
+
+<section class="mock" data-variant="B">
+  <div class="mock-desc">
+    <div class="mock-cap"><span class="mock-letter">B</span><h3>Narrower / wider stepper</h3></div>
+    <p>Two chevrons in the head: <code>‹</code> makes the column one step narrower and <code>›</code> one step
+    wider. The steps are collapsed, normal, expanded. At either end the chevron that cannot move further is
+    disabled. A collapsed strip shows only <code>›</code>, and clicking the strip does the same thing.</p>
+    <ul>
+      <li><b>For:</b> It is the smallest change from today (two 18px buttons where one 22px button is now),
+        and it is one idea: narrower or wider. It works well from the keyboard.</li>
+      <li><b>Against:</b> Going from collapsed to expanded takes two clicks. The current width is shown only by
+        which chevrons are enabled.</li>
+    </ul>
+  </div>
+  <div class="viewport"></div>
+</section>
+
+<section class="mock" data-variant="C">
+  <div class="mock-desc">
+    <div class="mock-cap"><span class="mock-letter">C</span><h3>Collapse to a dock</h3></div>
+    <p>The head has a <code>–</code> (collapse) button next to today's <code>‹›</code> (expand) toggle. A
+    collapsed column leaves its place and becomes a vertical tab in a dock at the left edge of the board.
+    Collapsing several columns stacks them in that one dock instead of leaving a strip where each one was.
+    Clicking a tab puts the column back in its usual position at normal width.</p>
+    <ul>
+      <li><b>For:</b> It frees the most space. Four collapsed columns take one 40px dock instead of four 40px
+        strips. It matches the existing empty-column stash, so the board has one idea of "columns set aside".</li>
+      <li><b>Against:</b> A collapsed column is no longer where it was. On a board you read left to right,
+        Needs you moving from first place into a dock is a real change of layout. When more columns are
+        docked than fit its height, the dock scrolls.</li>
+    </ul>
+  </div>
+  <div class="viewport"></div>
+</section>
+
+<section class="mock" data-variant="D">
+  <div class="mock-desc">
+    <div class="mock-cap"><span class="mock-letter">D</span><h3>Width menu with peek</h3></div>
+    <p>A single width button (<code>⇔</code>) in the head opens a small menu with three choices: Collapse,
+    Normal, Expand, each with a one-line hint. A collapsed column is an in-place strip that also shows <b>one
+    dot per card</b> in the card's own color, so a collapsed Working column still shows three sessions
+    running. Hovering a strip for a moment <b>peeks</b>: the column floats over its neighbors at normal width
+    without changing the board's layout. Clicking the strip restores it.</p>
+    <ul>
+      <li><b>For:</b> It carries the most information while collapsed (dots and peek), and the head gains only
+        one 22px button, no bigger than today's.</li>
+      <li><b>Against:</b> Changing the width takes two clicks (open the menu, pick). Peek is a hover behavior
+        with no touch equivalent, and it must not steal the cursor while a card is being dragged. It is also
+        the most work to build and test.</li>
+    </ul>
+  </div>
+  <div class="viewport"></div>
+</section>
+
+<div class="prose">
+<h2>Decisions</h2>
+<p>Resolved in the Mission Control plan review on 2026-09-25:</p>
+<ul>
+  <li><b>Mock-up: A, the three-stop switch.</b></li>
+  <li><b>Collapsed columns survive a reload</b>, stored in <code>UiConfig</code>. Expanded stays unsaved, as
+    today.</li>
+  <li><b>A collapsed Needs you stays collapsed when a session arrives</b>, and its count pulses in the attention
+    color.</li>
+  <li><b>No phased implementation plan for now.</b> This plan stops here.</li>
+</ul>
+
+<h2>Implementation</h2>
+<p>Built in this branch, following the decisions above. Items 3 and 4 are where mock-up A differs from the
+others: the head control is the three-stop switch, and a collapsed column is an in-place strip.</p>
+<ol>
+  <li><b>Width store</b>: <code>src/web/lib/column-width.ts</code>. A module store, like
+    <code>repo-collapse.ts</code>. The collapsed set comes from <code>UiConfig</code>; the expanded column is the
+    store's own unsaved state, moved out of <code>BoardView</code>'s <code>wideCol</code>, so the one-expanded rule
+    lives in one place. It exports <code>useColumnWidths()</code>, <code>setColumnWidth(id, width)</code>, and the pure
+    <code>columnWidthOf</code>, <code>withColumnWidth</code> and <code>collapsedColumnSessionIds</code>. Expanding a
+    collapsed column removes it from the collapsed set, and collapsing the expanded column clears the
+    expansion.</li>
+  <li><b>Persistence</b>: <code>collapsedBoardColumns: string[]</code> in <code>UiConfig</code> (default
+    <code>[]</code>) in <code>src/shared/protocol.ts</code>, registered in
+    <code>src/shared/app-config-entries.ts</code> and copied by <code>src/web/lib/uiCache.ts</code>. Ids are not
+    validated, like <code>hiddenDisplayItems</code>, and an id this build does not know is carried through
+    untouched. A fold the daemon refuses is taken back by <code>updateUiConfig</code>.</li>
+  <li><b>Head control</b>: <code>ColumnWidthControl</code> in <code>session-bits.tsx</code> replaces
+    <code>ColumnWidthToggle</code>. It is a group labelled "&lt;name&gt; width" of three pressed buttons: "Collapse
+    &lt;name&gt;", "&lt;name&gt; at normal width" and "Expand &lt;name&gt;". It is not a radio group, because a
+    radio group's arrow keys would fight the board's own card navigation. Both the tone heads in
+    <code>BoardView.tsx</code> and the Backlog head in <code>BacklogColumn.tsx</code> draw it, never while the column
+    is the drill-in rail. It stays drawn while its column is expanded.</li>
+  <li><b>Collapsed rendering</b>: <code>CollapsedColumnStrip</code> in <code>session-bits.tsx</code> (swatch, count,
+    vertical name), a button labelled "Restore &lt;name&gt;, &lt;n&gt; cards", rendered in place of the head and
+    body. CSS: <code>.board[data-focus="none"] .board-col.is-collapsed</code> fixes the track at
+    <code>--board-col-collapsed</code> (40px) in both <code>flex-basis</code> and <code>min-width</code>, the same
+    properties the morph animates.</li>
+  <li><b>Keyboard</b>: <code>App.tsx</code> adds a collapsed column's session ids to <code>foldedIds</code>, so the
+    arrow keys and ⌘-numbers skip them. Only on the Board overview: the Console has no columns, and in a
+    drill-in the focused column is drawn as the rail in full, so its rows stay walkable.</li>
+  <li><b>Needs you signal</b>: the strip's count pulses when the Needs you count goes up while collapsed, and
+    not under <code>prefers-reduced-motion</code>.</li>
+  <li><b>The empty Needs you rail</b>: since this plan was written, an empty Needs you became a slim all-clear
+    rail (#1141). That rail keeps its behavior and offers no width control or double-click, because it is
+    already slim. Collapsed wins over it: a Needs you the operator collapsed stays the same strip when it
+    empties, so the strip is still mounted to pulse when a session arrives.</li>
+</ol>
+
+<h2>Testing</h2>
+<ul>
+  <li><code>test/column-width.test.ts</code>: the store rules. Only one expanded column at a time, expanding a
+    collapsed column, collapsing the expanded one, the collapsed sessions navigation skips, and saving
+    (including a refused save being taken back).</li>
+  <li><code>test/board-column-width.test.ts</code>: both heads draw the shared control and the shared strip, the
+    drill-in rail is never a strip, and the stylesheet answers the classes.</li>
+  <li><code>test/ui-config-cache.test.ts</code>: the new field round-trips the cache.</li>
+  <li><code>e2e/specs/board-column-width.spec.ts</code>: collapse Backlog, Needs you and Idle and measure each strip
+    at 40px; restore from the strip; expand a column beside the strips; reload and check that the folds
+    persisted and the expansion did not; one expanded column at a time; a session arriving in a collapsed
+    Needs you updates and pulses its count; and the arrow keys never land on a hidden card. The browser
+    measures the strip width, so no separate Electron geometry test was needed.</li>
+</ul>
+</div>
+</div>
+
+<script>
+(() => {
+  const COLS = [
+    { id: "backlog", name: "Backlog", tone: "backlog", cards: [
+      { t: "Collapse board columns", m: ["mission-control"], p: ["high", "High"] },
+      { t: "Rebalance e2e shard 6", m: ["mission-control"], p: ["med", "Medium"] },
+      { t: "Pi desktop relocation follow-up", m: ["mission-control"], p: ["", "Low"] },
+      { t: "GitHub label sync for task sources", m: ["task-sources"], p: ["med", "Medium"] },
+    ] },
+    { id: "attention", name: "Needs you", tone: "attention", cards: [
+      { t: "fix-auth-redirect", m: ["web-app", "3m"], s: "Wants to run npm publish" },
+      { t: "docs-sweep", m: ["mission-control", "11m"], s: "Asked: keep the old anchor links?" },
+    ] },
+    { id: "working", name: "Working", tone: "working", cards: [
+      { t: "column-width-store", m: ["mission-control", "1m"], s: "Editing src/web/lib/column-width.ts" },
+      { t: "e2e-shard-rebalance", m: ["mission-control", "4m"], s: "Running npm test" },
+      { t: "release-notes", m: ["mission-control", "7m"], s: "Reading CHANGELOG.md" },
+    ] },
+    { id: "idle", name: "Idle", tone: "idle", free: 2, cards: [
+      { t: "triage-bot", m: ["mission-control", "22m"], s: "Free, can take work" },
+      { t: "nightly-schedule", m: ["ops", "1h"], s: "Free, can take work" },
+    ] },
+  ];
+  const ARRIVALS = [
+    { t: "migrate-db-v42", s: "Wants approval to run a migration" },
+    { t: "flaky-shard-6", s: "Asked: skip or quarantine?" },
+    { t: "pr-1135-review", s: "Review finished, needs a decision" },
+  ];
+  const STEPS = ["collapsed", "normal", "wide"];
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const cardHtml = (c, col, isNew) =>
+    `<div class="card${col.id === "backlog" ? " bl" : ""}${isNew ? " new" : ""}">` +
+    `<div class="t">${esc(c.t)}</div>` +
+    `<div class="m">${c.m.map(esc).map((x) => `<span>${x}</span>`).join("")}${
+      c.p ? `<span class="prio ${c.p[0]}">${c.p[1]}</span>` : ""}</div>` +
+    (c.s ? `<div class="s">${esc(c.s)}</div>` : "") + `</div>`;
+
+  function mount(section) {
+    const variant = section.dataset.variant;
+    const vp = section.querySelector(".viewport");
+    const state = { width: new Map(COLS.map((c) => [c.id, "normal"])), arrivals: 0 };
+    const cards = new Map(COLS.map((c) => [c.id, c.cards.slice()]));
+
+    vp.innerHTML =
+      `<div class="toolbar"><span class="hint">Mock-up ${variant}. Hover a column head for its controls; double-click a head to expand it.</span>` +
+      `<button class="sim">Send a session to Needs you</button><button class="showctl" aria-pressed="false">Show controls</button><button class="reset">Reset</button></div>` +
+      `<div class="board">${variant === "C" ? `<div class="dock" aria-label="Collapsed columns"><div class="dock-label">set aside</div></div>` : ""}</div>` +
+      (variant === "D" ? `<div class="menu" role="menu" hidden></div><div class="peek" hidden></div>` : "");
+    const board = vp.querySelector(".board");
+    const dock = vp.querySelector(".dock");
+    const menu = vp.querySelector(".menu");
+    const peek = vp.querySelector(".peek");
+
+    const els = new Map();
+    for (const col of COLS) {
+      const el = document.createElement("section");
+      el.className = `col tone-${col.tone} is-normal`;
+      el.innerHTML =
+        `<div class="col-inner"><header class="head"><span class="swatch"></span><h4>${col.name}</h4>` +
+        `<span class="ctl"></span>` +
+        (col.free ? `<span class="n free">${col.free} free</span>` : `<span class="n cnt"></span>`) +
+        `</header><div class="body"></div></div>` +
+        (variant === "C" ? "" : `<button class="strip"></button>`);
+      el.querySelector(".body").innerHTML = cards.get(col.id).map((c) => cardHtml(c, col)).join("");
+      el.querySelector(".head").addEventListener("dblclick", () =>
+        setWidth(col.id, state.width.get(col.id) === "wide" ? "normal" : "wide"));
+      const strip = el.querySelector(".strip");
+      if (strip) {
+        strip.addEventListener("click", () => setWidth(col.id, "normal"));
+        if (variant === "D") wirePeek(strip, col);
+      }
+      board.appendChild(el);
+      els.set(col.id, el);
+    }
+    const stash = document.createElement("div");
+    stash.className = "stash";
+    stash.innerHTML = `<span class="dock-label">empty</span><span class="stash-chip">unconfirmed</span><span class="stash-chip">gone</span>`;
+    board.appendChild(stash);
+
+    function setWidth(id, w) {
+      if (w === "wide") for (const [k, v] of state.width) if (v === "wide") state.width.set(k, "normal");
+      state.width.set(id, w);
+      hideMenu();
+      render();
+    }
+
+    function controls(col, w) {
+      const n = col.name;
+      if (variant === "A") {
+        const seg = (step, label, px) =>
+          `<button aria-pressed="${w === step}" aria-label="${label}" title="${label}" data-w="${step}">` +
+          `<span class="bar" style="width:${px}px"></span></button>`;
+        return `<span class="ctl seg" role="group" aria-label="${n} width">` +
+          seg("collapsed", `Collapse ${n}`, 3) + seg("normal", `Normal width`, 8) + seg("wide", `Expand ${n}`, 15) + `</span>`;
+      }
+      if (variant === "B") {
+        const i = STEPS.indexOf(w);
+        return `<span class="ctl"><button data-step="-1" aria-label="Narrower ${n}" title="Narrower" ${i === 0 ? "disabled" : ""}>‹</button>` +
+          `<button data-step="1" aria-label="Wider ${n}" title="Wider" ${i === 2 ? "disabled" : ""}>›</button></span>`;
+      }
+      if (variant === "C") {
+        return `<span class="ctl"><button data-w="collapsed" aria-label="Collapse ${n}" title="Collapse to the dock">–</button>` +
+          `<button data-toggle-wide aria-pressed="${w === "wide"}" aria-label="${w === "wide" ? "Narrow" : "Expand"} ${n}" title="${w === "wide" ? "Narrow" : "Expand"}">${w === "wide" ? "›‹" : "‹›"}</button></span>`;
+      }
+      return `<span class="ctl"><button data-menu aria-haspopup="menu" aria-label="${n} width" title="Column width" aria-pressed="${w !== "normal"}">⇔</button></span>`;
+    }
+
+    function stripHtml(col, count) {
+      const step = variant === "B" ? `<span class="strip-step">›</span>` : "";
+      const dots = variant === "D"
+        ? `<span class="dots">${cards.get(col.id).map(() => `<i class="${col.id === "backlog" ? "bl" : ""}"></i>`).join("")}</span>` : "";
+      return `${step}<span class="swatch"></span><span class="n">${count}</span>${dots}<span class="vname">${col.name}</span>`;
+    }
+
+    function render(pulseId) {
+      for (const col of COLS) {
+        const el = els.get(col.id);
+        const w = state.width.get(col.id);
+        const count = cards.get(col.id).length;
+        const docked = variant === "C" && w === "collapsed";
+        el.classList.toggle("is-normal", w === "normal");
+        el.classList.toggle("is-wide", w === "wide");
+        el.classList.toggle("is-collapsed", w === "collapsed" && !docked);
+        el.classList.toggle("is-docked", docked);
+        el.querySelector(".ctl").outerHTML = controls(col, w);
+        const cnt = el.querySelector(".cnt");
+        if (cnt) cnt.textContent = count;
+        const strip = el.querySelector(".strip");
+        if (strip) {
+          strip.innerHTML = stripHtml(col, count);
+          strip.setAttribute("aria-label", `Restore ${col.name} (${count} ${count === 1 ? "card" : "cards"})`);
+          strip.tabIndex = w === "collapsed" ? 0 : -1;
+          if (pulseId === col.id && w === "collapsed") strip.querySelector(".n").classList.add("pulse");
+        }
+        el.querySelector(".col-inner").inert = w === "collapsed";
+      }
+      if (dock) {
+        dock.querySelectorAll(".dock-tab").forEach((t) => t.remove());
+        const docked = COLS.filter((c) => state.width.get(c.id) === "collapsed");
+        dock.classList.toggle("has-tabs", docked.length > 0);
+        for (const col of docked) {
+          const count = cards.get(col.id).length;
+          const tab = document.createElement("button");
+          tab.className = `dock-tab tone-${col.tone}`;
+          tab.setAttribute("aria-label", `Restore ${col.name} (${count} cards)`);
+          tab.innerHTML = `<span class="swatch"></span><span class="n${pulseId === col.id ? " pulse" : ""}">${count}</span><span class="vname">${col.name}</span>`;
+          tab.addEventListener("click", () => setWidth(col.id, "normal"));
+          dock.appendChild(tab);
+        }
+      }
+    }
+
+    // One delegated listener for every head control, since controls re-render.
+    board.addEventListener("click", (e) => {
+      const b = e.target.closest(".ctl button");
+      if (!b) return;
+      const id = COLS[[...els.values()].indexOf(b.closest(".col"))].id;
+      const w = state.width.get(id);
+      if (b.dataset.w) setWidth(id, b.dataset.w);
+      else if (b.dataset.step) setWidth(id, STEPS[STEPS.indexOf(w) + Number(b.dataset.step)]);
+      else if ("toggleWide" in b.dataset) setWidth(id, w === "wide" ? "normal" : "wide");
+      else if ("menu" in b.dataset) showMenu(id, b);
+    });
+
+    function showMenu(id, anchor) {
+      const col = COLS.find((c) => c.id === id);
+      const w = state.width.get(id);
+      const item = (step, label, hint) =>
+        `<button role="menuitemradio" aria-checked="${w === step}" data-w="${step}"><span class="tick">${w === step ? "✓" : ""}</span>${label}<small>${hint}</small></button>`;
+      menu.innerHTML =
+        item("collapsed", `Collapse ${col.name}`, "A thin strip with its count") +
+        item("normal", "Normal", "An equal share of the board") +
+        item("wide", `Expand ${col.name}`, "Twice the room to read each card");
+      const a = anchor.getBoundingClientRect(), v = vp.getBoundingClientRect();
+      menu.style.left = `${Math.min(a.left - v.left - 8, v.width - 224)}px`;
+      menu.style.top = `${a.bottom - v.top + 6}px`;
+      menu.hidden = false;
+      menu.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setWidth(id, b.dataset.w)));
+      menu.querySelector('[aria-checked="true"]').focus();
+    }
+    function hideMenu() { if (menu) menu.hidden = true; }
+    if (menu) {
+      document.addEventListener("click", (e) => { if (!menu.contains(e.target) && !e.target.closest("[data-menu]")) hideMenu(); });
+      vp.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
+    }
+
+    function wirePeek(strip, col) {
+      let timer = null;
+      const hide = () => { clearTimeout(timer); peek.hidden = true; };
+      strip.addEventListener("mouseenter", () => {
+        timer = setTimeout(() => {
+          if (state.width.get(col.id) !== "collapsed") return;
+          const s = strip.getBoundingClientRect(), v = vp.getBoundingClientRect();
+          peek.className = `peek tone-${col.tone}`;
+          peek.innerHTML = `<div class="head"><span class="swatch"></span><h4>${col.name}</h4><span class="n">${cards.get(col.id).length}</span></div>` +
+            `<div class="body">${cards.get(col.id).map((c) => cardHtml(c, col)).join("")}</div>` +
+            `<div class="peek-foot">Peeking. Click the strip to restore ${col.name}.</div>`;
+          peek.style.left = `${s.right - v.left + 6}px`;
+          peek.style.top = `${s.top - v.top}px`;
+          peek.style.height = `${s.height}px`;
+          peek.hidden = false;
+        }, 350);
+      });
+      strip.addEventListener("mouseleave", hide);
+      strip.addEventListener("click", hide);
+    }
+
+    vp.querySelector(".sim").addEventListener("click", () => {
+      const a = ARRIVALS[state.arrivals++ % ARRIVALS.length];
+      const col = COLS[1];
+      const card = { t: a.t, m: ["mission-control", "now"], s: a.s };
+      cards.get("attention").unshift(card);
+      const body = els.get("attention").querySelector(".body");
+      body.insertAdjacentHTML("afterbegin", cardHtml(card, col, true));
+      render("attention");
+    });
+    vp.querySelector(".showctl").addEventListener("click", (e) => {
+      const on = vp.classList.toggle("show-ctl");
+      e.currentTarget.setAttribute("aria-pressed", String(on));
+    });
+    vp.querySelector(".reset").addEventListener("click", () => {
+      for (const col of COLS) {
+        state.width.set(col.id, "normal");
+        cards.set(col.id, col.cards.slice());
+        els.get(col.id).querySelector(".body").innerHTML = col.cards.map((c) => cardHtml(c, col)).join("");
+      }
+      hideMenu();
+      render();
+    });
+
+    // Open each mock-up on the state that shows its idea: Backlog collapsed.
+    state.width.set("backlog", "collapsed");
+    render();
+  }
+
+  document.querySelectorAll(".mock").forEach(mount);
+})();
+</script>
+</body>
+</html>

@@ -76,12 +76,14 @@ test("agent launch env replaces every inherited state alias and preserves loopba
     FLEET_HOME: join(root, "old-fleet"),
     HARNESS_HOME: join(root, "old-harness"),
     ORDINARY_TOOL_SETTING: "kept",
+    MISSION_SCOUT_SESSION_LOCATOR: "inherited-launch-secret",
   };
   const cwd = join(root, "checkout");
   const first = agentSubprocessEnv(inherited, { loopbackAccess: true, cwd });
   const second = agentSubprocessEnv(inherited, { loopbackAccess: true });
 
   assert.equal(first.ORDINARY_TOOL_SETTING, "kept");
+  assert.equal(first.MISSION_SCOUT_SESSION_LOCATOR, undefined);
   assert.equal(first.FLEET_HOME, undefined);
   assert.equal(first.HARNESS_HOME, undefined);
   assert.notEqual(first.MISSION_HOME, operatorState);

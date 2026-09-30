@@ -563,14 +563,22 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     return sessions.find((session) => session.id === task!.sessionId)?.workspace ?? null;
   }).toMatchObject({ availability: "retired", reason: "provider_retired" });
   await request(daemon, `/api/sessions/${encodeURIComponent(task!.sessionId!)}/diff`);
-  await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
+  // Filtered, not the only status: the comment queued above is sent, and a Pipeline-driven
+  // session reads nothing sent to its pane, so the review queue opens with its own status line.
+  await expect(
+    detail.getByRole("status").filter({ hasText: /^Read-only Pipeline evidence from/ }),
+  ).toBeVisible();
   await expect(activeComposer).toHaveCount(0);
   await tabs.getByRole("tab", { name: /Diff$/ }).click();
   await expect(detail.getByRole("region", { name: "Session diff" })).toContainText(
     "pipeline-change.html",
   );
   await tabs.getByRole("tab", { name: /Files$/ }).click();
-  await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
+  // Filtered, not the only status: the comment queued above is sent, and a Pipeline-driven
+  // session reads nothing sent to its pane, so the review queue opens with its own status line.
+  await expect(
+    detail.getByRole("status").filter({ hasText: /^Read-only Pipeline evidence from/ }),
+  ).toBeVisible();
   await expect(
     detail
       .getByRole("listbox", { name: "Session files" })

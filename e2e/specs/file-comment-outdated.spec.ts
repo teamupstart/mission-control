@@ -17,7 +17,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * re-reading it, deciding, persisting the flag, and refusing to deliver.
  *
  * The edit here stands in for the agent's own. That is the case `plan.md` is actually about:
- * you queued twelve comments, the agent answered comment one by deleting the paragraph
+ * you sent twelve comments, the agent answered comment one by deleting the paragraph
  * comment two quotes, and delivering comment two would produce exactly the confused exchange
  * one-at-a-time exists to prevent.
  *
@@ -55,6 +55,8 @@ const REWRITTEN = [
   "",
 ].join("\n");
 
+/** Out with the agent while the others wait behind it - which is when the edit lands. */
+const OPENER = "Is this spec still current?";
 const FIRST = "Thirty seconds is not what the code does.";
 const SECOND = "Add a units column here.";
 
@@ -133,7 +135,7 @@ async function comment(page: Page, line: number, body: string): Promise<void> {
   const box = page.getByRole("textbox", { name: `Comment on line ${line}` });
   await expect(box).toBeVisible();
   await box.fill(body);
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(box).toBeHidden();
 }
 
@@ -177,13 +179,17 @@ test.describe("a comment whose text the agent deleted", () => {
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
+    // Sending is delivering, so the opener goes at once and the two behind it wait their turn.
+    // Those two are the ones the edit below is measured against.
+    await comment(page, 1, OPENER);
     await comment(page, 3, FIRST);
     await comment(page, 5, SECOND);
     await expect
       .poll(() => storedQueue(daemon).map((row) => row.start_line), {
-        message: "the two comments never reached the queue",
+        message: "the three comments never reached the queue",
       })
-      .toEqual([3, 5]);
+      .toEqual([1, 3, 5]);
+    expect(storedQueue(daemon)[0]!.status, "the opener is out with the agent").not.toBe("queued");
 
     // ---- the edit that removes what the head comment quotes ----
     //
@@ -192,18 +198,24 @@ test.describe("a comment whose text the agent deleted", () => {
     // browser has to have noticed.
     writeFileSync(onDisk, REWRITTEN);
 
-    await page.getByRole("button", { name: "Review queue" }).click();
-    const queue = page.getByRole("region", { name: "Review queue" });
-    await queue.getByRole("button", { name: "Start review" }).click();
-
     // ---- held, not sent ----
+    //
+    // The opener resolves on the grace window, and the head behind it is re-checked against
+    // the file on its way out. The run state is the store's; the opener leaves the queue order
+    // once it resolves, so `held` below starts at the comment that was held.
     await expect
       .poll(() => storedReview(daemon)?.state, {
-        message: "the review never settled after Start",
-        timeout: 20_000,
+        message: "delivery never stopped at the outdated head",
+        timeout: 40_000,
+        intervals: [1_000],
       })
       .toBe("paused");
+    // A pause that needs a person opens the queue on its own: that is where its reason and
+    // Resume are, and nothing else here would have opened it.
+    const queue = page.getByRole("region", { name: "Review queue" });
+    await expect(queue).toBeVisible();
     const held = storedQueue(daemon);
+    expect(held.map((row) => row.start_line)).toEqual([3, 5, 1]);
     expect(held[0]!.status, "a comment quoting deleted text is not delivered").toBe("queued");
     expect(held[0]!.delivered, "and nothing reached the agent").toBe(0);
     // The outcome was PERSISTED, not merely computed: `reanchor()` is pure, and a re-anchor
@@ -258,8 +270,8 @@ test.describe("a comment whose text the agent deleted", () => {
     await head.getByRole("button", { name: /^Drop comment MC-/ }).click();
     await expect
       .poll(() => storedQueue(daemon).length, { message: "the held comment was not dropped" })
-      .toBe(1);
-    await queue.getByRole("button", { name: /^(Resume|Start) review$/ }).click();
+      .toBe(2);
+    await queue.getByRole("button", { name: "Resume review" }).click();
     await expect
       .poll(() => storedQueue(daemon)[0]?.delivered, {
         message: "the surviving comment never went out once the held one was dropped",

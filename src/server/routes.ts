@@ -3499,6 +3499,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = ArchiveSearchQuerySchema.safeParse({
       q: c.req.query("q"),
       producer: c.req.query("producer"),
+      session: c.req.query("session"),
       repo: c.req.query("repo"),
       agent: c.req.query("agent"),
       kind: c.req.query("kind"),
@@ -3514,6 +3515,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       library.list({
         q: query.q ?? null,
         producer: query.producer ?? null,
+        session: query.session ?? null,
         repo: query.repo ?? null,
         agent: query.agent ?? null,
         kind: query.kind ?? null,
@@ -4842,11 +4844,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER),
     );
     if (!authority) {
-      return c.json({ error: "this scout submission has no valid session credential" }, 403);
+      return c.json({ error: "this session has no valid report capability. Let Mission Control observe the live session, then use its current MCP bridge to retry." }, 403);
     }
     const result = await library.submit({
       authority,
       submission: {
+        title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
         tags: parsed.data.tags,

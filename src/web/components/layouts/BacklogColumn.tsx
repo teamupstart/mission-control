@@ -16,11 +16,13 @@ import {
   type BacklogTaskNoticeView,
   type BacklogTrustView,
 } from "../../lib/backlog-copy.ts";
+import type { ColumnWidth } from "../../lib/column-width.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
 import { boxFrom, boxesOverlap, rangeBetween, toggled } from "../../lib/backlog-selection.ts";
 import { BacklogBulkEditModal } from "../BacklogBulkEditModal.tsx";
 import {
-  ColumnWidthToggle,
+  CollapsedColumnStrip,
+  ColumnWidthControl,
   BacklogTaskNotice,
   DeadBlockerButton,
   LabelChips,
@@ -91,8 +93,9 @@ export function BacklogColumn({
   tasks,
   allTasks,
   plan,
-  wide = false,
-  onToggleWide,
+  width,
+  onWidthChange,
+  inert = false,
   onAssignError,
   onDragging,
   onEdit,
@@ -109,14 +112,20 @@ export function BacklogColumn({
   /** Foreman's reading of the backlog, or null when it has none. */
   plan: BacklogPlan | null;
   /**
-   * Whether the board has widened this column to read more of each card.
+   * How wide the board draws this column: collapsed to a strip, normal, or expanded.
    *
-   * Optional, and the default is the honest answer rather than a convenience: width is
-   * a BOARD arrangement, and this component is also rendered on its own in tests. A
-   * column with no board around it has no width to toggle, so it draws no control.
+   * Optional, and absent is the honest answer rather than a convenience: width is a BOARD
+   * arrangement, and this component is also rendered on its own in tests. A column with no
+   * board around it has no width to change, so it draws no control.
    */
-  wide?: boolean;
-  onToggleWide?: () => void;
+  width?: ColumnWidth;
+  onWidthChange?: (width: ColumnWidth) => void;
+  /**
+   * Whether the board has drilled into a session. The Backlog is never the rail, so the morph
+   * folds it to zero width, and a column nobody can see must not keep its controls in the tab
+   * order. The same rule the board applies to every non-rail tone column.
+   */
+  inert?: boolean;
   onAssignError: (message: string) => void;
   /** The repo of the card now in the air, or null when nothing is being dragged. */
   onDragging: (repoRoot: string | null) => void;
@@ -345,11 +354,30 @@ export function BacklogColumn({
     },
   });
 
+  // Folded to a strip: the head and the cards go, and the strip is the way back. After every
+  // hook above, so folding and unfolding never changes the hook order.
+  if (width === "collapsed" && onWidthChange) {
+    return (
+      <section className="board-col board-backlog is-collapsed" inert={inert}>
+        <CollapsedColumnStrip
+          label="Backlog"
+          count={tasks.length}
+          onRestore={() => onWidthChange("normal")}
+        />
+      </section>
+    );
+  }
+  const wide = width === "wide";
+  const toggleWide = onWidthChange
+    ? (): void => onWidthChange(wide ? "normal" : "wide")
+    : undefined;
+
   return (
     <section
       className={`board-col board-backlog${wide ? " is-wide" : ""}${
         inAir === null ? "" : " is-reordering"
       }${selectedTasks.length > 0 ? " has-selection" : ""}`}
+      inert={inert}
       // Keys for the selection, only while focus is inside this column, so neither one
       // reaches past it: Escape here does not also close the board's drill-in, and
       // Cmd/Ctrl-A selects cards rather than the page's text. A form control keeps both
@@ -370,12 +398,12 @@ export function BacklogColumn({
       }}
     >
       {/* The same two ways in as every other column head - see BoardView. */}
-      <header className="board-col-head" onDoubleClick={onToggleWide}>
+      <header className="board-col-head" onDoubleClick={toggleWide}>
         <span className="board-swatch" aria-hidden />
         <h2>Backlog</h2>
         {/* Before the count, for the reason BoardView's head states. */}
-        {onToggleWide && (
-          <ColumnWidthToggle wide={wide} label="Backlog" onToggle={onToggleWide} />
+        {width && onWidthChange && (
+          <ColumnWidthControl width={width} label="Backlog" onChange={onWidthChange} />
         )}
         <span className="board-col-n">{tasks.length}</span>
       </header>

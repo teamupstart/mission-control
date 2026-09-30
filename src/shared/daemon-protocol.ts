@@ -6,6 +6,7 @@
 export const DAEMON_PROTOCOL_CAPABILITIES = {
   criterionMappedWorkflowEvidence: "criterion-mapped-workflow-evidence-v1",
   daemonExecutableEnvironment: "daemon-executable-environment-v1",
+  multipleScoutReports: "multiple-scout-reports-v1",
 } as const;
 
 export type DaemonProtocolCapability =

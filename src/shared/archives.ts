@@ -434,8 +434,17 @@ export interface ArchiveManifestArchive {
   tags: string[];
 }
 
+/** Producer-scoped source identity, frozen with each explicitly submitted report. */
+export interface ArchiveSessionOrigin {
+  id: string;
+  name: string;
+  taskId: string | null;
+  episodeId: string | null;
+}
+
 /** Where the archived work ran. Every field is nullable: a foreign bundle may know none. */
 export interface ArchiveManifestOrigin {
+  session?: ArchiveSessionOrigin;
   agent: string | null;
   model: string | null;
   source: string | null;
@@ -597,6 +606,12 @@ const ManifestV1Schema = z.object({
   }),
   origin: z
     .object({
+      session: z.object({
+        id: z.string().min(1).max(256),
+        name: z.string().min(1).max(ARCHIVE_TEXT_LIMITS.title),
+        task_id: z.string().min(1).max(256).nullable(),
+        episode_id: z.string().min(1).max(256).nullable(),
+      }).optional(),
       agent: z.string().max(ARCHIVE_TEXT_LIMITS.label).nullish(),
       model: z.string().max(ARCHIVE_TEXT_LIMITS.label).nullish(),
       source: z.string().max(ARCHIVE_TEXT_LIMITS.label).nullish(),
@@ -860,6 +875,12 @@ export function parseArchiveManifest(value: unknown): ArchiveManifestParseResult
         tags: data.archive.tags,
       },
       origin: {
+        ...(data.origin.session ? { session: {
+          id: data.origin.session.id,
+          name: data.origin.session.name,
+          taskId: data.origin.session.task_id,
+          episodeId: data.origin.session.episode_id,
+        } } : {}),
         agent: data.origin.agent ?? null,
         model: data.origin.model ?? null,
         source: data.origin.source ?? null,
@@ -911,6 +932,12 @@ export function serializeArchiveManifest(manifest: ArchiveManifest): string {
       tags: manifest.archive.tags,
     },
     origin: {
+      ...(manifest.origin.session ? { session: {
+        id: manifest.origin.session.id,
+        name: manifest.origin.session.name,
+        task_id: manifest.origin.session.taskId,
+        episode_id: manifest.origin.session.episodeId,
+      } } : {}),
       agent: manifest.origin.agent,
       model: manifest.origin.model,
       source: manifest.origin.source,
@@ -967,6 +994,7 @@ export interface ArchiveSearchSnippet {
 
 /** The compact row the list route returns. */
 export interface ArchiveSummary {
+  sourceSession?: ArchiveSessionOrigin | null;
   key: string;
   producerId: string;
   producerLabel: string | null;
@@ -1029,6 +1057,8 @@ export interface ArchivePage {
 
 /** The bounded query the list route accepts. */
 export interface ArchiveSearchQuery {
+  /** Paired with producer; omitted producer defaults to this daemon for a session filter. */
+  session?: string | null;
   q: string | null;
   producer: string | null;
   repo: string | null;

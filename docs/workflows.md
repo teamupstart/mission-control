@@ -1493,7 +1493,15 @@ a completed one still reads **Complete** in the very segment its completion crea
 A check skipped because its command is not configured stays amber, with its reason available
 on the check and stage status - a skipped command is not a passed one, so it keeps its own
 explanation rather than being folded into a carried pass.
-A stage of two or more members shows each one and passes only when all do. A version
+A stage of two or more members shows each one and passes only when all do.
+Every reviewer, Command and session action that the viewed round launched shows how long it has
+run beside its chip, and so does its stage header. The clock counts from the moment the round
+launched that member, not from when its process actually started, so time spent queued for a
+provider counts too. A retried member's clock covers every try in the round. A live clock is
+blue with a pulsing dot. It freezes, under a stopwatch mark, the moment that member settles, so a
+finished round reads as a record of where its time went. A stage's clock runs from its first
+member's launch to its last member's finish. A member the round carried forward, or has not
+launched yet, shows no clock. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id. The same fixed
 **GitHub Inspector** footer the author saw follows End here, carrying the gate's live state.

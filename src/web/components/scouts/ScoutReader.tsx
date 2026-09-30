@@ -84,6 +84,7 @@ export function ScoutReader({
   libraryPath,
   onDelete,
   onBack,
+  onSourceSession,
   renaming,
   onRenameStart,
   onRenameClose,
@@ -95,6 +96,7 @@ export function ScoutReader({
   libraryPath: string | null;
   onDelete: (target: ScoutDeleteTarget, from: HTMLElement) => void;
   onBack: () => void;
+  onSourceSession?: () => void;
   renaming: boolean;
   onRenameStart: () => void;
   onRenameClose: () => void;
@@ -297,6 +299,17 @@ export function ScoutReader({
             // that older archive can provide.
             <p className="scouts-legacy-question">{detail.question}</p>
           ) : null}
+          {detail.sourceSession && (
+            <div className="scouts-source-session">
+              <span>Source session</span>{" "}
+              <Tooltip label="Show reports from this session">
+                <button type="button" className="btn btn-ghost" onClick={onSourceSession}>
+                  {detail.sourceSession.name}
+                </button>
+              </Tooltip>
+              <span className="mono">{detail.sourceSession.id}</span>
+            </div>
+          )}
           <div className="scouts-provenance">
             {/*
               `danger`, not `exited`. Everywhere else this page marks unreadable it uses

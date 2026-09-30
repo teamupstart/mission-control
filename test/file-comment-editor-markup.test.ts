@@ -391,6 +391,7 @@ test("the composer names the line it is anchored to and quotes it back", () => {
       endLine: 3,
       quote: "line two says something",
       value: "",
+      hint: { tone: "wait", text: "Waits behind 2 comments" },
       busy: false,
       error: null,
       onChange: () => {},
@@ -401,10 +402,12 @@ test("the composer names the line it is anchored to and quotes it back", () => {
   assert.match(html, /aria-label="New comment on line 3"/);
   assert.match(html, /aria-label="Comment on line 3"/, "the box itself is labelled too");
   assert.ok(html.includes("line two says something"), "the anchored text is shown back");
-  // Nothing to submit yet, and the button says so rather than failing at the route.
-  assert.match(html, /disabled[^>]*>Comment</);
-  assert.ok(hasTooltip(html, "Add this comment to the review"));
+  // Nothing to send yet, and the button says so rather than failing at the route.
+  assert.match(html, /disabled[^>]*>Send</);
+  assert.ok(hasTooltip(html, "Send this comment to the agent as its own turn"));
   assert.ok(hasTooltip(html, "Discard this comment"));
+  // What Send will do is said before it is pressed.
+  assert.match(html, /class="file-comment-hint is-wait"[^>]*>Waits behind 2 comments</);
 });
 
 test("a comment being submitted is frozen, not merely un-clickable", () => {
@@ -421,6 +424,7 @@ test("a comment being submitted is frozen, not merely un-clickable", () => {
       endLine: 3,
       quote: "line two says something",
       value: "already said",
+      hint: { tone: "now", text: "Goes to the agent now" },
       busy: true,
       error: null,
       onChange: () => {},
@@ -430,7 +434,7 @@ test("a comment being submitted is frozen, not merely un-clickable", () => {
   );
   assert.match(html, /<textarea[^>]*readonly/i, "the box is frozen while the submission is out");
   assert.match(html, /disabled[^>]*>Cancel</, "and there is nothing left to cancel");
-  assert.ok(hasTooltip(html, "This comment is being submitted"), "the tooltip says why");
+  assert.ok(hasTooltip(html, "This comment is being sent"), "the tooltip says why");
   // Read-only rather than disabled: the words stay selectable, and stay readable to a screen
   // reader, while the reader waits.
   assert.doesNotMatch(html, /<textarea[^>]*disabled/i);
@@ -443,6 +447,7 @@ test("a multi-line anchor reads as a range", () => {
       endLine: 3,
       quote: "\nline two says something",
       value: "typed",
+      hint: { tone: "now", text: "Goes to the agent now" },
       busy: false,
       error: "the daemon said no",
       onChange: () => {},

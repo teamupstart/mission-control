@@ -3112,7 +3112,7 @@ export type ServerEvent =
        * kilobytes here, and the ordinary installation carries one `[]`.
        *
        * Carried in the snapshot rather than waited for, for `fleetCost`'s reason: the Files
-       * toolbar draws Start review / Pause from this, so a dashboard that had to wait for the
+       * toolbar draws Pause / Resume from this, so a dashboard that had to wait for the
        * next change would open on a control that could not say what it does.
        */
       fileCommentReviews: FileCommentReview[];

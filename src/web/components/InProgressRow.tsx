@@ -1,19 +1,7 @@
-import { useEffect, useState } from "react";
 
 import { duration } from "../lib/format.ts";
 import { Tooltip } from "./Tooltip.tsx";
-
-/** The wall clock, advancing once a second while `ticking` - and not at all otherwise. */
-function useNow(ticking: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!ticking) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [ticking]);
-  return now;
-}
+import { useNow } from "../useNow.ts";
 
 /**
  * The turn currently arriving, at the tail of the log where it is arriving.

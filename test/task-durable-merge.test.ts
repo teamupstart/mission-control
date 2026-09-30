@@ -10,7 +10,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-durable-merge-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const {
   openDb,

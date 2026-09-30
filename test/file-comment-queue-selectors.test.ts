@@ -14,12 +14,17 @@ import {
   isEditableInQueue,
   outstandingThread,
   queueRowText,
+  composerDeliveryHint,
+  replyTooltip,
   reviewAnnouncement,
+  reviewControl,
   reviewQueue,
   threadForRenderedBlock,
   unreadAgentReplies,
   unsentMessage,
 } from "../src/web/lib/fileComments.ts";
+import { LEGACY_PARKED_REVIEW_REASONS } from "../src/shared/file-comments.ts";
+import type { Messageable } from "../src/shared/pane.ts";
 
 function message(over: Partial<FileCommentMessage> = {}): FileCommentMessage {
   return {
@@ -208,11 +213,15 @@ function review(over: Partial<FileCommentReview> = {}): FileCommentReview {
   return { sessionId: "s1", state: "idle", pauseReason: null, startedAt: null, updatedAt: 1, ...over };
 }
 
-test("the announcement says what the walkthrough is doing", () => {
-  assert.equal(reviewAnnouncement(null, []), "No comments are queued for review.");
+test("the announcement says what delivery is doing, with no Start to wait for", () => {
+  assert.equal(
+    reviewAnnouncement(null, []),
+    "Nothing waiting. Comments go to the agent as you send them.",
+  );
+  // Only a queue written before sending delivered on its own can sit idle with comments.
   assert.equal(
     reviewAnnouncement(null, [thread(), thread({ id: "t2", queueSeq: 2 })]),
-    "Review not started. 2 comments waiting.",
+    "2 comments waiting. Resume to send them.",
   );
   assert.equal(
     reviewAnnouncement(review({ state: "running" }), [
@@ -223,6 +232,15 @@ test("the announcement says what the walkthrough is doing", () => {
   );
 });
 
+test("a legacy review parked as paused for running dry is announced as idle", () => {
+  for (const reason of LEGACY_PARKED_REVIEW_REASONS) {
+    assert.equal(
+      reviewAnnouncement(review({ state: "paused", pauseReason: reason }), []),
+      "Nothing waiting. Comments go to the agent as you send them.",
+    );
+  }
+});
+
 test("a paused announcement leaves the reason to the alert that already carries it", () => {
   // Both are announced - `role="status"` and `role="alert"` alike - so repeating the reason
   // here said it twice to a screen reader and drew it twice on screen, one line under the
@@ -230,11 +248,11 @@ test("a paused announcement leaves the reason to the alert that already carries 
   const reason = "MC-0001 quotes text that is no longer in docs/spec.md.";
   assert.equal(
     reviewAnnouncement(review({ state: "paused", pauseReason: reason }), [thread()]),
-    "Review paused. 1 comment waiting.",
+    "Delivery paused. 1 comment waiting. New comments join the queue.",
   );
   assert.equal(
     reviewAnnouncement(review({ state: "paused" }), [thread()]),
-    "Review paused. 1 comment waiting.",
+    "Delivery paused. 1 comment waiting. New comments join the queue.",
   );
 });
 
@@ -243,6 +261,111 @@ test("a running review with nothing out says so rather than naming a comment", (
     reviewAnnouncement(review({ state: "running" }), [thread()]),
     "Review running. 1 comment waiting.",
   );
+});
+
+test("the queue's one control is Pause while going, Resume when held, and never Start", () => {
+  assert.equal(reviewControl(review({ state: "running" }), [thread({ status: "sending" })]), "pause");
+  assert.equal(reviewControl(review({ state: "paused" }), []), "resume");
+  assert.equal(reviewControl(review({ state: "paused", pauseReason: "held" }), [thread()]), "resume");
+  // Parked with nothing waiting: nothing to hold, nothing to release.
+  assert.equal(reviewControl(null, []), null);
+  assert.equal(reviewControl(review(), []), null);
+  assert.equal(
+    reviewControl(review({ state: "paused", pauseReason: LEGACY_PARKED_REVIEW_REASONS[0] }), []),
+    null,
+  );
+  // A legacy staged queue is the one parked review that still holds comments.
+  assert.equal(reviewControl(review(), [thread()]), "resume");
+});
+
+test("the composer says what Send will do before it is pressed", () => {
+  const live = { runtime: "sdk", terminals: [] } as unknown as Messageable;
+  assert.deepEqual(composerDeliveryHint(null, [], live), {
+    tone: "now",
+    text: "Goes to the agent now",
+  });
+  assert.deepEqual(
+    composerDeliveryHint(review({ state: "running" }), [thread({ status: "awaiting" })], live),
+    { tone: "wait", text: "Waits behind 1 comment" },
+  );
+  assert.deepEqual(
+    composerDeliveryHint(
+      review({ state: "running" }),
+      [thread({ status: "sending" }), thread({ id: "t2", queueSeq: 2 })],
+      live,
+    ),
+    { tone: "wait", text: "Waits behind 2 comments" },
+  );
+  assert.deepEqual(composerDeliveryHint(review({ state: "paused" }), [], live), {
+    tone: "held",
+    text: "Delivery is paused; this waits until you resume",
+  });
+  // A legacy parked row is idle, so Send goes.
+  assert.equal(
+    composerDeliveryHint(review({ state: "paused", pauseReason: LEGACY_PARKED_REVIEW_REASONS[1] }), [], live).tone,
+    "now",
+  );
+  // A session that cannot take a message is named first: Send would start nothing there.
+  const paneless = { runtime: "terminal", terminals: [] } as unknown as Messageable;
+  assert.deepEqual(composerDeliveryHint(null, [], paneless), {
+    tone: "held",
+    text: "This session cannot take messages; the comment will be held",
+  });
+});
+
+test("an empty review queue is not 'now' while the session's outbox holds another message", () => {
+  // One comment outstanding is one turn in the session's WHOLE outbox: the walkthrough will
+  // not send a comment on top of an ordinary message still waiting to be delivered.
+  const queued = { runtime: "sdk", terminals: [], pendingTurns: [{ state: "queued" }] } as unknown as Messageable;
+  assert.deepEqual(composerDeliveryHint(null, [], queued), {
+    tone: "wait",
+    text: "Waits for the message already in this session's outbox",
+  });
+  const sending = { runtime: "sdk", terminals: [], pendingTurns: [{ state: "sending" }] } as unknown as Messageable;
+  assert.equal(composerDeliveryHint(null, [], sending).tone, "wait");
+  // An unconfirmed message waits for a person, and the daemon pauses delivery behind it.
+  const uncertain = { runtime: "sdk", terminals: [], pendingTurns: [{ state: "uncertain" }] } as unknown as Messageable;
+  assert.deepEqual(composerDeliveryHint(null, [], uncertain), {
+    tone: "held",
+    text: "Waits for an unconfirmed message in this session's outbox",
+  });
+  // Comments ahead are still the count a reader wants, even with the outbox occupied.
+  assert.deepEqual(
+    composerDeliveryHint(review({ state: "running" }), [thread({ status: "sending" })], queued),
+    { tone: "wait", text: "Waits behind 1 comment" },
+  );
+  // And an empty outbox is still "now".
+  const empty = { runtime: "sdk", terminals: [], pendingTurns: [] } as unknown as Messageable;
+  assert.equal(composerDeliveryHint(null, [], empty).tone, "now");
+});
+
+test("a busy agent is not 'now' either: the turn waits in the outbox for it to be free", () => {
+  for (const state of ["starting", "working", "stopping", "awaiting_input", "awaiting_review"]) {
+    const busy = { runtime: "sdk", terminals: [], pendingTurns: [], state } as unknown as Messageable;
+    assert.deepEqual(composerDeliveryHint(null, [], busy), {
+      tone: "wait",
+      text: "Goes to the agent when it is next free",
+    }, state);
+  }
+  // A message already waiting in the outbox is the more specific thing to say.
+  const both = { runtime: "sdk", terminals: [], pendingTurns: [{ state: "queued" }], state: "working" } as unknown as Messageable;
+  assert.equal(
+    composerDeliveryHint(null, [], both).text,
+    "Waits for the message already in this session's outbox",
+  );
+  // Only a settled session is "now".
+  const idle = { runtime: "sdk", terminals: [], pendingTurns: [], state: "idle" } as unknown as Messageable;
+  assert.deepEqual(composerDeliveryHint(null, [], idle), { tone: "now", text: "Goes to the agent now" });
+});
+
+test("Reply says whether it goes to the agent on its own", () => {
+  assert.equal(replyTooltip(thread({ status: "answered" })), "Send this reply to the agent in its turn");
+  assert.equal(replyTooltip(thread({ status: "unanswered" })), "Send this reply to the agent in its turn");
+  assert.equal(
+    replyTooltip(thread({ status: "awaiting" })),
+    "Add this reply to the thread; it goes to the agent after this comment",
+  );
+  assert.equal(replyTooltip(thread({ status: "resolved" })), "Add this reply to the thread");
 });
 
 // ---- the Files tab's pip ----

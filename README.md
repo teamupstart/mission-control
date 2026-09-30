@@ -248,6 +248,8 @@ working agent, gather fresh evidence, and continue the graph. Reports, screensho
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
 round, with applicable evidence carried forward between submissions.
+You can retry failed criterion mapping from the dashboard. See
+[workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 
 A run's **Evidence** tab leads with canonical reconciliation: every criterion the run is measured
 against, worst first, so an unmet one is the first thing read rather than something to find. The

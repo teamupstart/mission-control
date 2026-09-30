@@ -186,7 +186,6 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
-  EVIDENCE_RECOVERY_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
@@ -2262,7 +2261,6 @@ export class WorkflowManager {
   private evidenceRecoveryFor(run: WorkflowRun, submission: WorkflowSubmission): WorkflowRunDetail["evidenceRecovery"] {
     if (submission.mode !== "full_workflow") return null;
     if (!["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
-    if (this.store.evidenceRecoveryCount(run.id) >= EVIDENCE_RECOVERY_LIMIT) return null;
     const binding = this.store.getBinding(run.bindingId);
     if (!binding?.sessionId || binding.state !== "active") return null;
     const session = this.registry.getSession(binding.sessionId);
@@ -2310,9 +2308,6 @@ export class WorkflowManager {
     const key = `evidence-recovery:${runId}:${requestId}`;
     const existing = this.store.submissionByTrigger(key);
     if (existing?.parentSubmissionId === submissionId) return { ok: true, value: { run, submission: existing }, idempotent: true };
-    if (this.store.evidenceRecoveryCount(runId) >= EVIDENCE_RECOVERY_LIMIT) {
-      return { ok: false, reason: "conflict", message: `Evidence recovery limit reached (${EVIDENCE_RECOVERY_LIMIT} per run). No new recovery was started.` };
-    }
     const latest = this.store.latestSubmission(runId);
     const recovery = latest?.id === submissionId ? this.evidenceRecoveryFor(run, latest) : null;
     if (!recovery || !latest) return { ok: false, reason: "conflict", message: "This snapshot has no eligible evidence recovery" };
@@ -6780,10 +6775,18 @@ export class WorkflowManager {
       if (context.compaction.status === "model") {
         const parent = previousEvidenceSubmission(this.store, submission);
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+        const grant = parent ? this.store.runRepairGrant(run.id) : null;
+        const startsMappingOperation = submission.triggerSource === "manual"
+          || Boolean(parent && grant && parent.round <= grant.round && grant.round < submission.round);
+        // An explicit retry or the first round after a grant gets a fresh failure budget.
+        // Completed mappings stay cached. A checkpoint on THIS submission always wins,
+        // so restarting its capture cannot turn the operator's one request into a loop.
+        const inherited = source?.success
+          && (!startsMappingOperation || source.data.reconciliation?.status === "complete")
+          ? source.data : undefined;
         context = await this.schedule(() => reconcileWorkflowCoverage(context, frozenCoverage, {
           previous: priorCapture.success && priorCapture.data.reconciliation
-            ? priorCapture.data : context.reconciliation ? context : submission.refinementReason === "evidence_recovery"
-            ? undefined : source?.success ? source.data : undefined,
+            ? priorCapture.data : context.reconciliation ? context : inherited,
           sourceCoverage: bridge.coverage, sourceMappings: bridge.mappings,
           reconcile: this.options.reconcileContext,
           // Injected compactors never fall through to a real provider in tests or embedders.
@@ -7303,7 +7306,8 @@ export class WorkflowManager {
    * The order of the gates below is deliberate: every free in-memory question is asked before
    * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
    * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
-   * capturing child because its reservation commits before capture begins. An override or an
+   * capturing child because its reservation commits before capture begins. Root mapping
+   * checkpoints also resume, including after startup marks capture interrupted. An override or an
    * exhausted preflight left in the durable `activating` handoff also resumes graph activation.
    * Historical exhaustion blocks advance through the same bounded handoff.
    */
@@ -7316,6 +7320,7 @@ export class WorkflowManager {
         if (
           run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)
+          || (run.status === "blocked" && run.currentPhase === "capture_interrupted")
           || run.status === "capturing"
           || (run.status === "running" && run.currentPhase === "activating")
         ) {
@@ -7370,6 +7375,26 @@ export class WorkflowManager {
     // from joining live work without weakening restart recovery for an orphaned reservation.
     if (this.captureLocks.has(binding.noteKey)) return;
     if (this.continueExhaustedEvidenceReadiness(run.id, latest.id, binding, now)) return;
+
+    const checkpoint = WorkflowContextSnapshotSchema.safeParse(latest.context);
+    if (
+      latest.segment === 0
+      && latest.refinementReason === null
+      && ["manual", "session"].includes(latest.triggerSource)
+      && checkpoint.success && checkpoint.data.reconciliation
+    ) {
+      // Startup marks interrupted captures failed. Reopen only this mapping checkpoint,
+      // never a new submission or budget. Live owners were excluded above; external and
+      // session-action captures retain their own recovery and activation contracts.
+      const resumed = run.status === "capturing" && latest.status === "capturing"
+        ? { run, submission: latest }
+        : this.store.resumeCapture(run.id, latest.id, ["capture_interrupted"], now);
+      if (resumed) {
+        this.publishRun(run.id);
+        await this.captureAndActivate(binding, resumed.run, resumed.submission, undefined, true);
+        return;
+      }
+    }
 
     let parent: WorkflowSubmission;
     let triggerKey: string;

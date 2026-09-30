@@ -108,6 +108,13 @@ const REVIEW_HELD_TURN_MS = 15_000;
 // rather than after a timer a slow run could outlast.
 const DEFERRED_STEER = "read this steer at your next step";
 const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
+// A turn that stays open until the spec writes this file into the record dir. Matched by
+// INCLUSION, unlike `HELD_TURN`, because the prompt that carries it is a workflow session
+// action's packet: the daemon wraps the authored Markdown in its own envelope, so no exact
+// string can ever equal it. Released by a file rather than a timer so a spec can hold the
+// action waiting for as long as its assertions take, and a slow run cannot outlast it.
+const RELEASED_TURN = "E2E_HOLD_TURN_UNTIL_RELEASED";
+const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-release-held-turn");
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -1294,6 +1301,17 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    if (prompt.includes(RELEASED_TURN)) {
+      const turnState = { prompts: [prompt] };
+      turnState.timer = setInterval(() => {
+        if (!existsSync(RELEASE_TURN_SIGNAL)) return;
+        clearInterval(turnState.timer);
+        openTurn = null;
+        answer(turnState.prompts);
+      }, 100);
+      openTurn = turnState;
+      return;
+    }
     const heldTurnMs = prompt === HELD_TURN
       ? HELD_TURN_MS
       : prompt === REVIEW_HELD_TURN

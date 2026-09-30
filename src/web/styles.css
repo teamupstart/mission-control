@@ -18540,6 +18540,43 @@ td.wf-command-rule-action {
 .wf-pipeline-reviewer-body { grid-column: 1; }
 .wf-pipeline-reviewer-actions { grid-column: 2; grid-row: 1; }
 .wf-pipeline-reviewer .wf-pipeline-status { grid-column: 1; justify-self: start; }
+/* The chip and its clock, as one grid item on the chip's own row. It wraps rather than
+   squeezing: beside "Changes requested" there is no room for the clock, and a clock that
+   broke one unit per line would read as three numbers. */
+.wf-pipeline-status-line {
+  grid-column: 1;
+  justify-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+/* Tabular monospace digits, so a clock ticking "1m 09s" -> "1m 10s" never changes width and
+   nudges the row beside it. Muted when frozen: the chip is the status, the time is detail. */
+.wf-pipeline-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 600 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.wf-pipeline-elapsed.is-live { color: var(--working); }
+.wf-pipeline-elapsed-mark { font-size: 10px; opacity: 0.8; }
+.wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+  opacity: 1;
+  animation: wf-pipeline-elapsed-pulse 1.4s ease-in-out infinite;
+}
+@keyframes wf-pipeline-elapsed-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark { animation: none; }
+}
 .wf-pipeline-reviewer-name {
   display: flex;
   align-items: center;

@@ -47,6 +47,7 @@ const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { collectScoutPromptTrail } = await import("../src/server/scouts/prompt-collector.ts");
 const { ArchiveCaptureStore, clearArchiveCaptureJobs } = await import("../src/server/archives/capture-store.ts");
+const { captureArchive } = await import("../src/server/archives/capture.ts");
 const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 
@@ -573,6 +574,33 @@ test("cancelling a scout that wrote nothing publishes an honest partial, never a
   });
   assert.equal(page.archives[0]!.status, "partial", "never presented as complete");
   assert.ok(page.archives[0]!.missingCount > 0);
+});
+
+test("reclaim retains a ship checkout when an explicit report was published incomplete", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath: cwd } = makeWorktree({ "notes.md": "source evidence worth retaining" });
+  const task = mkScout({ kind: "ship", worktreePath: cwd, repoRoot, provider: "git", branch: null });
+  const sessionId = `partial-session-${++seq}`;
+  const episodeId = beginEpisode(h, task, cwd, repoRoot, sessionId, `native-partial-${seq}`);
+  const session = h.registry.getSession(sessionId)!;
+  const reportPath = "docs/reports/incomplete/report.html";
+  mkdirSync(join(cwd, "docs/reports/incomplete"), { recursive: true });
+  const submitted = await h.scouts.submit({
+    authority: { taskId: task.id, sessionId: session.id, episodeId,
+      cwd, pid: session.pid, agentSessionId: session.agentSessionId },
+    submission: { reportPath, summary: "missing primary report", tags: [], supporting: [] },
+  });
+  assert.equal(submitted.ok, false);
+  const partial = await captureArchive({ ...h.scouts.captureJobsForTask(task.id)[0]!, submission: null }, {
+    libraryRoot: h.library, producerLabel: null,
+  });
+  assert(partial.ok && partial.captureStatus === "partial");
+  h.registry.upsertTask({ ...h.registry.getTask(task.id)!, status: "failed", sessionId: null });
+  const reclaimed = await h.tasks.reclaim(task.id);
+  assert.equal(reclaimed.ok, false, "an incomplete submitted report must refuse checkout release");
+  assert.match(reclaimed.error ?? "", /docs\/reports\/incomplete\/report\.html.*incomplete/);
+  assert.equal(h.registry.getTask(task.id)?.worktreePath, cwd);
+  assert.equal(readFileSync(join(cwd, "notes.md"), "utf8"), "source evidence worth retaining");
 });
 
 test("cleanup refuses new reports until the provider's checkout decision finishes", async (t) => {

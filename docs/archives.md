@@ -687,6 +687,11 @@ only after the daemon confirms; a refusal keeps the dialog open with the reason.
 
 ### Reports from a session
 
+Checkout cleanup requires every explicitly submitted report to have a complete archive,
+including when replay finds an existing partial bundle. An incomplete explicit report blocks
+release and names its report path. Automatic scout recovery may still preserve an honest
+partial when no report was submitted; ordinary task completion rules remain unchanged.
+
 The shared Board/Console detail has a **Scouts** tab immediately left of **Diff** (Shift+Y by default). It lists separate
 reports with their titles, status, and publication time, with loading, empty, and retry states.
 Selecting a report opens its recorded source path in the session's **Files** preview. This

@@ -13,6 +13,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-multiple-scouts-"));
 process.env.MISSION_HOME = home;
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");
+const { captureArchive } = await import("../src/server/archives/capture.ts");
 const { ArchiveStore, clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -125,6 +126,32 @@ test("explicit ship reports settle at cleanup without becoming a mandatory compl
   h.write("second");
   assert((await h.manager.settleBeforeCleanup(h.subject.taskId!)).ok);
   assert.equal(h.jobs().length, 2);
+});
+
+test("cleanup refuses an incomplete explicit report for every task kind", async () => {
+  for (const kind of ["scout", "ship", "plan"] as const) {
+    const h = fixture(kind);
+    const missingPath = h.write("incomplete");
+    rmSync(join(h.root, missingPath));
+    const submitted = await h.submit("incomplete");
+    assert.equal(submitted.ok, false, "fresh submissions already refuse missing source files");
+    // Seed a partial bundle left by legacy recovery while the ledger carries a submission.
+    // Replay must inspect the verified bundle's completeness, not just its existence.
+    const partial = await captureArchive({ ...h.jobs()[0]!, submission: null }, {
+      libraryRoot: h.options.root, producerLabel: null,
+    });
+    assert(partial.ok && partial.captureStatus === "partial");
+    h.write("complete");
+    assert((await h.submit("complete")).ok);
+    const cleanup = await h.manager.settleBeforeCleanup(h.subject.taskId!);
+    assert.equal(cleanup.ok, false, `${kind} must retain sources for its incomplete explicit report`);
+    if (!cleanup.ok) {
+      assert.match(cleanup.error, /docs\/reports\/incomplete\/report\.html/);
+      assert.match(cleanup.error, /incomplete/);
+    }
+    if (kind !== "scout") assert((await h.manager.ensureReady(h.subject.taskId!)).ok,
+      "report cleanup does not change ordinary task completion rules");
+  }
 });
 
 test("legacy submitted captures retain their original identity when a new report is added", async () => {

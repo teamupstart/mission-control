@@ -356,6 +356,8 @@ export class ArchiveManager {
     for (const job of this.captureStore.forTask(taskId).filter((entry) => entry.kind === "scout" && entry.submission !== null)) {
       const outcome = await this.runCapture(job.operationKey);
       if (!outcome.ok) return { ok: false, error: `${job.submission!.reportPath}: ${outcome.problems.join("; ")}` };
+      if (outcome.captureStatus !== "complete") return { ok: false,
+        error: `${job.submission!.reportPath}: this explicitly submitted report's archive is incomplete; retaining its source checkout` };
     }
     if (kind === null) return { ok: true };
     const result = await (kind === "plan" ? this.settlePlan(taskId) : this.settleScout(taskId));

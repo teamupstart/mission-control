@@ -224,6 +224,31 @@ export function readScoutSubmissionCredential(cwd) {
   }
 }
 
+/** Session capabilities live outside the isolated child state home, namespaced by daemon port. */
+export function sessionScoutCredentialDirectory() {
+  return join(tmpdir(), "mission-control-agent-capabilities", `scouts-${PORT}`);
+}
+
+export function sessionScoutCredentialPath(identity) {
+  const key = createHash("sha256").update(identity).digest("hex");
+  return join(sessionScoutCredentialDirectory(), key);
+}
+
+/** Exact process/session locators only. A checkout is never a session identity. */
+export function readSessionScoutSubmissionCredential(_cwd) {
+  const missionId = process.env[MISSION_SESSION_ID_ENV];
+  const identities = missionId
+    ? [`session:${missionId}`]
+    : [`pid:${process.ppid}`];
+  for (const identity of identities) {
+    try {
+      const value = readFileSync(sessionScoutCredentialPath(identity), "utf8").trim();
+      if (value) return value;
+    } catch { /* The Registry may not have observed the process yet. */ }
+  }
+  return "";
+}
+
 /**
  * Capture the terminal env the daemon uses to bind an event to a discovered
  * session (tmux/wezterm pane ids). Values are `undefined` when unset so they

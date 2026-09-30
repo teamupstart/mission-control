@@ -1,3 +1,4 @@
+import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 // FIRST, and above every other local import: renames a state dir from an older name
 // onto ~/.mission-control. ES modules evaluate imports in source order, so this runs
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
@@ -196,6 +197,7 @@ const reviews = new ReviewManager(registry);
 // dispatcher branches on it and the startup reconciliation below asks it whether an
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
+maintainScoutSessionCredentials(registry);
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
@@ -223,6 +225,9 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+registry.subscribe((event) => {
+  if (event.type === "session_remove") archives.sessionRemoved(event.id);
+});
 const tasks = new TaskManager(
   registry,
   undefined,
@@ -727,7 +732,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
-  void archives.recoverJobs().catch((error: unknown) => {
+  void archives.recoverJobs().then(() => {
+    registry.onSessionsObserved(() => archives.reconcilePromptContexts(new Set(registry.liveSessions().map((session) => session.id))));
+  }).catch((error: unknown) => {
     console.warn("[mission-control] could not resume archive captures:", error);
   });
   // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves

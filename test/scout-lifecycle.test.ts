@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, beforeEach } from "node:test";
+import test, { after, afterEach, beforeEach } from "node:test";
 import {
   ARCHIVE_PRIMARY_REPORT_PATH,
 } from "../src/shared/archives.ts";
@@ -42,6 +42,7 @@ process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
+const { LegacyTreehouseService } = await import("../src/server/worktrees/legacy-treehouse.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { collectScoutPromptTrail } = await import("../src/server/scouts/prompt-collector.ts");
@@ -60,6 +61,26 @@ beforeEach(() => {
 });
 
 let seq = 0;
+const managers: InstanceType<typeof TaskManager>[] = [];
+afterEach(async () => {
+  const current = managers.splice(0);
+  for (const manager of current) manager.stopMissionSessionClosures();
+  await Promise.all(current.map((manager) => manager.settleWorktreeReturns()));
+});
+
+function taskManager(...args: ConstructorParameters<typeof TaskManager>): InstanceType<typeof TaskManager> {
+  args[5] = {
+    // Foreground capture and teardown use real checkouts. Automatic completion returns
+    // have their own tests; these fabricated sessions must not trigger host process scans.
+    occupancy: async (paths) => new Map(paths.map((path) => [path, {
+      status: "unknown" as const, reason: "scout lifecycle fixture",
+    }])),
+    ...args[5],
+  };
+  const manager = new TaskManager(...args);
+  managers.push(manager);
+  return manager;
+}
 
 function mkdirp(dir: string): string {
   mkdirSync(dir, { recursive: true });
@@ -119,7 +140,7 @@ function harness(options: {
     ...managerOptions,
   });
   registry.onSessionExit((session) => scouts.reserveOnExit(session));
-  const tasks = new TaskManager(registry, undefined, undefined, undefined, scouts);
+  const tasks = taskManager(registry, undefined, undefined, undefined, scouts);
   return { registry, tasks, scouts, library };
 }
 
@@ -326,7 +347,7 @@ test("a scout becomes done once its archive is published and verified", async ()
   });
   assert.equal(page.archives.length, 1);
   assert.equal(page.archives[0]!.status, "ready");
-  assert.equal(page.archives[0]!.title, "agent");
+  assert.equal(page.archives[0]!.title, "agent / resume");
 });
 
 test("completion rebuilds a deleted bundle instead of trusting its cached ready row", async () => {
@@ -447,7 +468,7 @@ test("completion cannot overwrite a cancellation that finishes during archive ve
   );
 
   const pause = pauseCompletionGate(h.scouts);
-  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const racingTasks = taskManager(h.registry, undefined, undefined, undefined, pause.gate);
   const completion = racingTasks.complete(task.id, "found it");
   await pause.entered;
   assert.equal((await racingTasks.cancel(task.id)).ok, true);
@@ -471,7 +492,7 @@ test("completion cannot restore resources released by a concurrent reclaim", asy
   );
 
   const pause = pauseCompletionGate(h.scouts);
-  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const racingTasks = taskManager(h.registry, undefined, undefined, undefined, pause.gate);
   const completion = racingTasks.complete(task.id, "found it");
   await pause.entered;
   assert.equal((await racingTasks.reclaim(task.id)).ok, true);
@@ -575,6 +596,55 @@ test("cancelling a scout that wrote nothing publishes an honest partial, never a
   assert.ok(page.archives[0]!.missingCount > 0);
 });
 
+test("cleanup refuses new reports until the provider's checkout decision finishes", async (t) => {
+  for (const outcome of ["returned", "blocked"] as const) {
+    const h = harness();
+    const bytes = validReportHtml();
+    const { repoRoot, worktreePath: cwd } = makeWorktree({ "docs/reports/first/report.html": bytes });
+    const task = mkScout({ worktreePath: cwd, repoRoot, provider: "treehouse", branch: null });
+    const first = await submit(h, task, cwd, { reportPath: "docs/reports/first/report.html" });
+    assert(first.ok && first.archive);
+    let onEntry!: () => void; let release!: () => void;
+    const entered = new Promise<void>((resolve) => { onEntry = resolve; });
+    const decision = new Promise<void>((resolve) => { release = resolve; });
+    const legacy = new LegacyTreehouseService();
+    t.mock.method(legacy, "executeReturn", async () => {
+      onEntry();
+      await decision;
+      if (outcome === "returned") rmSync(cwd, { recursive: true, force: true });
+      return outcome === "returned" ? { outcome } : { outcome, reason: "fixture retains the checkout" };
+    });
+    const controlled = taskManager(h.registry, undefined, undefined, undefined, h.scouts, {}, undefined, legacy);
+    const cleanup = controlled.cancel(task.id);
+    try {
+      await entered;
+      mkdirp(join(cwd, "docs/reports/late"));
+      writeFileSync(join(cwd, "docs/reports/late/report.html"), bytes);
+      const late = await h.scouts.submit({
+        authority: { taskId: task.id, cwd },
+        submission: { reportPath: "docs/reports/late/report.html", summary: "late", tags: [], supporting: [] },
+      });
+      assert.equal(late.ok, false, "settlement must not reopen admission while the provider owns the checkout decision");
+      if (!late.ok) {
+        assert.equal("status" in late && late.status, 409);
+        assert.match(late.problems.join(" "), /releasing its checkout/);
+      }
+      assert.equal(h.scouts.captureJobsForTask(task.id).length, 1);
+    } finally {
+      release();
+      await cleanup;
+    }
+    const result = await cleanup;
+    assert.equal(result.ok, outcome === "returned");
+    assert.equal(h.registry.getTask(task.id)?.worktreePath, outcome === "returned" ? null : cwd);
+    assert.equal(readFileSync(join(h.library, first.archive.relativePath, ARCHIVE_PRIMARY_REPORT_PATH), "utf8"), bytes);
+    if (outcome === "blocked") {
+      assert.match(result.error ?? "", /fixture retains the checkout/);
+      assert.equal(readFileSync(join(cwd, "docs/reports/late/report.html"), "utf8"), bytes);
+    }
+  }
+});
+
 test("cancelling a launched scout stops it before recovery scans the checkout", async () => {
   const h = harness();
   const { repoRoot, worktreePath: cwd } = makeWorktree();
@@ -590,7 +660,7 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
   h.registry.upsertTask(task);
   bindSession(h, task, cwd);
   let stopped = false;
-  const controlled = new TaskManager(
+  const controlled = taskManager(
     h.registry,
     {
       resetWouldDestroyWork: async () => null,
@@ -633,7 +703,7 @@ test("terminal scout cleanup stops the agent before recovery scans the checkout"
     h.registry.upsertTask(task);
     bindSession(h, task, cwd);
     let stopped = false;
-    const controlled = new TaskManager(
+    const controlled = taskManager(
       h.registry,
       {
         resetWouldDestroyWork: async () => null,
@@ -673,7 +743,7 @@ test("a capture failure refuses the cleanup and keeps the resources tracked", as
     log: () => {},
     rename: () => Promise.reject(new Error("the disk went away")),
   });
-  const guarded = new TaskManager(h.registry, undefined, undefined, undefined, failing);
+  const guarded = taskManager(h.registry, undefined, undefined, undefined, failing);
 
   const refused = await guarded.reclaim(task.id);
   assert.equal(refused.ok, false);
@@ -898,9 +968,15 @@ test("exit recovery waits for a submission that already proved its session", asy
 
   release();
   const result = await submitted;
-  assert.equal(result.ok, true, JSON.stringify(result));
+  assert(result.ok && result.archive, JSON.stringify(result));
   assert.deepEqual(await h.scouts.settleBeforeCleanup(task.id), { ok: true });
-  const published = h.scouts.captureJobsForTask(task.id)[0]!;
+  // Exit's unknown legacy reservation and the directory-scoped submission have distinct
+  // identities. Follow the returned archive, not the ordering of their capture timestamps.
+  const jobs = h.scouts.captureJobsForTask(task.id);
+  const published = jobs.find((job) => `${job.producerId}~${job.archiveId}` === result.archive!.key)!;
+  assert.ok(published);
+  assert.notEqual(published.operationKey, reserved.operationKey);
+  assert.equal(jobs.find((job) => job.operationKey === reserved.operationKey)?.submission, null);
   assert.equal(published.status, "published");
   assert.equal(published.captureStatus, "complete");
   assert.equal(published.submission?.summary, "the completed answer");
@@ -1071,12 +1147,13 @@ test("the daemon derives the archive's identity - a submission carries none of i
   assert.equal(job.producerId, h.scouts.producer.id, "this machine's namespace, not a claim");
   assert.match(job.archiveId, /^[0-9a-f-]{36}$/, "generated, never supplied");
   assert.equal(result.archive?.relativePath, `${job.producerId}/${job.archiveId}`);
-  // And the portable record carries no local identity at all.
+  // Portable provenance records identity without leaking local checkout paths.
   await h.scouts.reconcileNow();
   const detail = h.scouts.detail(result.archive!.key);
   assert.ok(detail);
   const asText = JSON.stringify(detail);
-  assert.ok(!asText.includes(task.id), "no task id reaches the portable record");
+  assert.equal(detail.sourceSession?.taskId, task.id);
+  assert.equal(detail.sourceSession?.id, job.sessionId);
   assert.ok(!asText.includes(cwd), "and no absolute checkout path either");
 });
 

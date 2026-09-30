@@ -16,6 +16,7 @@ import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
+import { SessionScoutsPane } from "../scouts/SessionScoutsPane.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
@@ -191,8 +192,11 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   useEffect(() => {
-    return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab);
+    return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab === "scouts" ? "archives" : tab);
   }, [session.id, tab]);
+  useEffect(() => {
+    if (view.scoutsTabRequest?.sessionId === session.id) setTab("scouts");
+  }, [view.scoutsTabRequest, session.id]);
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   const workflowRuns = view.workflowRunsBySession?.get(session.id) ?? null;
@@ -879,6 +883,13 @@ export function ConsoleDetail({
                   : undefined
               }
             />
+          </div>
+        )}
+
+        {tab === "scouts" && (
+          <div ref={paneRef} className="detail-pane">
+            <SessionScoutsPane sessionId={session.id} revision={view.archivesRevision ?? 0}
+              onOpen={(archive) => view.onOpenScout?.(archive.key, session.id, archive.producerId)} />
           </div>
         )}
 

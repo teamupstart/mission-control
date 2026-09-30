@@ -6,6 +6,7 @@ import {
   parseArchivePromptTrail,
   type ArchiveCaptureStatus,
   type ArchiveKind,
+  type ArchiveSessionOrigin,
   type ArchiveManifestPromptTrail,
 } from "@shared/archives.ts";
 import {
@@ -72,14 +73,10 @@ export interface ArchiveRepoSlot {
 /**
  * WHICH unit of work inside a task's checkouts one job captures.
  *
- * Null for every scout: a scout episode produces exactly one report and therefore exactly one
- * archive, so "the episode" is the whole answer and the operation key alone says it. A kind
- * that can produce several archives from one episode - a plan task that touched two plan
- * directories - names the one this job covers here, and carries the same value in its
- * operation key so the two cannot drift apart.
+ * New scout and plan jobs name the repository slot and directory they cover. Legacy scout
+ * reservations have no scope and retain their singleton operation key. The scope comes from
+ * a validated report path or discovered plan directory; no client chooses an archive id.
  *
- * SERVER-DERIVED like everything else on a job. The directory comes from the task's own diff,
- * which the agent cannot write to, and the slot is one the task's repository manifest issued.
  * Frozen at reservation for the reason `kind` is frozen: a capture resumed after a restart
  * must archive what was reserved, not whatever the checkout holds by then.
  */
@@ -93,7 +90,7 @@ export interface ArchiveCaptureScope {
 /** The identity and source locators one capture works from. All server-derived. */
 export interface ArchiveCaptureJob {
   operationKey: string;
-  taskId: string;
+  taskId: string | null;
   sessionId: string | null;
   episodeId: string | null;
   status: ArchiveCaptureJobStatus;
@@ -129,6 +126,7 @@ export interface ArchiveCaptureJob {
 
 /** Where the archived work ran, frozen when the job was reserved. */
 export interface ArchiveCaptureOrigin {
+  session?: ArchiveSessionOrigin;
   agent: string | null;
   model: string | null;
   source: string | null;
@@ -136,8 +134,10 @@ export interface ArchiveCaptureOrigin {
 
 /** Everything the daemon knows about the work at the moment it reserves its capture. */
 export interface ArchiveCaptureReservation {
+  /** Existing legacy identity, selected by the manager after matching the report. */
+  operationKey?: string;
   kind: ArchiveKind;
-  taskId: string;
+  taskId: string | null;
   sessionId: string | null;
   episodeId: string | null;
   /**
@@ -183,9 +183,19 @@ export function archiveOperationKey(
   return scope ? `${episode}:${scope.slot}:${scope.directory}` : episode;
 }
 
+/** New scout keys are distinct from legacy scout and plan keys. */
+export function scoutOperationKey(
+  owner: Pick<ArchiveCaptureReservation, "taskId" | "sessionId" | "episodeId">,
+  scope: ArchiveCaptureScope,
+): string {
+  if (!owner.taskId && !owner.sessionId) throw new Error("a report needs a task or session owner");
+  return JSON.stringify(["scout-v2", owner.taskId ? "task" : "session",
+    owner.taskId ?? owner.sessionId, owner.episodeId, scope.slot, scope.directory]);
+}
+
 interface JobRowShape {
   operation_key: string;
-  task_id: string;
+  task_id: string | null;
   session_id: string | null;
   episode_id: string | null;
   kind: string;
@@ -242,7 +252,9 @@ export class ArchiveCaptureStore {
    * a retry must never refresh them from a conversation that continued in the meantime.
    */
   reserve(input: ArchiveCaptureReservation): ArchiveCaptureJob {
-    const key = archiveOperationKey(input.taskId, input.episodeId, input.scope ?? null);
+    const key = input.operationKey ?? (input.kind === "scout" && input.scope
+      ? scoutOperationKey(input, input.scope)
+      : archiveOperationKey(input.taskId!, input.episodeId, input.scope ?? null));
     return this.inTransaction(() => {
       const existing = this.get(key);
       if (existing) {
@@ -381,6 +393,13 @@ export class ArchiveCaptureStore {
     const rows = this.db
       .prepare(`SELECT * FROM archive_capture_jobs WHERE task_id = ? ORDER BY created_at DESC`)
       .all(taskId) as unknown as JobRowShape[];
+    return rows.map(rowToJob);
+  }
+
+  forSession(sessionId: string): ArchiveCaptureJob[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM archive_capture_jobs WHERE session_id = ? ORDER BY created_at DESC",
+    ).all(sessionId) as unknown as JobRowShape[];
     return rows.map(rowToJob);
   }
 

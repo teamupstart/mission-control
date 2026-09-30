@@ -580,8 +580,12 @@ test("find in an HTML preview marks the words a reader can see, and counts only 
     return range?.startContainer.parentElement?.closest("p")?.id ?? null;
   });
   const ring: (string | null)[] = [];
+  const expectedRing = ["visible-one", "reasserted", "visible-two"];
   for (let step = 0; step !== 3; step++) {
     await expect(readout(dashboard)).toHaveText(`${step + 1} / 3`);
+    // The parent paints its count before postMessage reaches the sandbox. Wait for the
+    // rendered highlight too, so this assertion observes the completed navigation.
+    await expect.poll(holderOf).toBe(expectedRing[step]);
     ring.push(await holderOf());
     expect((await highlighted(frame)).current).toHaveLength(1);
     if (step === 1) await shoot(dashboard, "html-in-frame-highlight");
@@ -594,7 +598,7 @@ test("find in an HTML preview marks the words a reader can see, and counts only 
    * than skipped; its unnamed hidden sibling never appears, which is the assertion that
    * descending did not cost the gate.
    */
-  expect(ring).toEqual(["visible-one", "reasserted", "visible-two"]);
+  expect(ring).toEqual(expectedRing);
   // The ring wrapped to the top on the last press of that loop.
   await expect(readout(dashboard)).toHaveText("1 / 3");
   await expect.poll(holderOf).toBe("visible-one");
@@ -774,11 +778,11 @@ test("a query typed before the preview loaded highlights by itself, and survives
   await modes.getByRole("button", { name: "Preview" }).click();
 
   const reloaded = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
-  await expect
-    .poll(async () => (await highlighted(reloaded)).count, {
-      message: "the highlight never came back after the srcDoc reload",
-    })
-    .toBe(2);
+  // The debounced edit can replace srcDoc while evaluate is reading its old context.
+  // Retry the whole read across that expected navigation, as well as the highlight count.
+  await expect(async () => {
+    expect((await highlighted(reloaded)).count).toBe(2);
+  }, "the highlight never came back after the srcDoc reload").toPass({ timeout: 20_000 });
   /*
    * And the reader is still on the hit they had selected.
    *

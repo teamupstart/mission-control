@@ -234,9 +234,9 @@ time is unknown the two cannot be ordered, and the disk check stands on its own.
 | every file beside it, recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
 | `supporting: [{ repoSlot, path }]` | `artifacts/<repo-slot>/…` |
 
-The archive title is the short `session.name` shown on the live card. If the session has
-already gone, capture uses the name frozen for that work episode, then the task title only as
-a legacy fallback. Capture does not call a title model or derive another name. The initial
+The optional submission `title` names the report. Its fallback is the session name followed
+by the report slug, so reports from one session are distinguishable. Recovery retains the
+frozen session name and legacy task-title fallback. Capture does not call a title model. The initial
 prompt entry is the stored task intent before the 1,000-character `question` preview is
 clipped. Later entries are positively delivered human user turns in conversation order.
 
@@ -253,8 +253,8 @@ than published with a dead link.
 
 ### Normal completion waits for the archive
 
-A scout's first completion attempt requires its bundle to exist, be verified, and be
-`complete`. A missing submission, an invalid report, a changed file, or a limit crossed leaves
+A scout completion requires at least one complete report and verifies every explicitly
+submitted report in its current episode. An earlier success cannot hide a later failure. A missing submission, an invalid report, a changed file, or a limit crossed leaves
 the task exactly as it was - still running, still holding its session and its checkout - and
 returns the exact problem. The dashboard then offers the explicit **Close without report**
 confirmation described above. Indexing is not part of the normal gate: the bundle is durable
@@ -366,7 +366,12 @@ plan still being written. Teardown is the only moment a plan is captured.
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
 did not survive a restart all publish the task's archives **before** they destroy its checkout,
 whichever kind it produces.
-When a launched agent is still alive, cleanup stops it before capture so the archive sees the
+Cleanup closes new report admission for the task before waiting for already accepted
+submissions, including claims that have not yet created a durable capture job. Admission stays
+closed across work episodes until the provider's checkout release or retention decision and
+the task's resource update finish. A refused or failed cleanup reopens admission against any
+retained checkout; it never accepts a report in the gap between settlement and release.
+When a launched agent is still alive, cleanup stops it before recovery capture so the archive sees the
 final bytes at the stop boundary; an agent the operator started and later assigned is never
 stopped on the task's behalf.
 If that fails, the cleanup is refused: the worktree stays, the task stays reclaimable, and you
@@ -387,8 +392,11 @@ does not need, when the plan is already committed and on its way to a pull reque
 
 ## Capture jobs are local bookkeeping
 
-`archive_capture_jobs` in the database coordinates all of this: one row per archive a task
-work episode owes - one for a scout, one per plan directory for a plan - carrying the reserved
+`archive_capture_jobs` coordinates one row per report or plan directory. New scouts use
+`(owner kind, owner id, episode id, repo slot, report directory)` as their operation key;
+the owner is the task when present, otherwise the session. Taskless rows have a null task id.
+Legacy singleton keys remain readable and matching retries reuse their original archive.
+Every row carries the reserved
 archive identity, the directory it covers, and the checkout locators recovery needs. A scout
 row also freezes the selected title and bounded prompt trail. What a row covers is frozen when
 it is reserved, so a capture resumed after a restart writes the archive that was reserved
@@ -474,13 +482,18 @@ POST   /mcp/scouts/submit
 excludes it - which is the honest answer rather than a side effect.
 
 `/mcp/scouts/submit` is the agent-facing one. It requires both the shared harness token and a
-daemon-signed credential scoped to the current task checkout. Mission Control provisions that
-credential before a dispatched or assigned scout receives its prompt; the MCP bridge reads it
-from local state at call time, so a long-lived assigned session receives the credential for its
-current task. The request body carries no attribution fields:
+daemon-signed capability scoped to the live session, process, native conversation identity,
+checkout, task (if any), and work episode. Registry observations publish and refresh capabilities
+for SDK, restored, discovered, dispatched, and assigned sessions. The bridge reads its SDK
+session or parent-process capability at call time. It never resolves authority from cwd alone.
+A missing or stale live identity is refused; it cannot fall back to another session sharing
+that checkout. Old signed task credentials remain accepted for legacy scout clients.
+The new MCP tool requires daemon capability `multiple-scout-reports-v1` before submitting.
+The request body carries no attribution fields:
 
 ```json
 { "reportPath": "docs/reports/resume/report.html",
+  "title": "Resume permission findings",
   "summary": "Resume rebuilt the session without replaying the grant.",
   "tags": ["resume"],
   "supporting": [{ "repoSlot": "repo-01", "path": "evidence/resume-debug.log" }] }
@@ -488,11 +501,23 @@ current task. The request body carries no attribution fields:
 
 There is no environment, task id, session id, cwd, work episode, producer id, archive id,
 destination, absolute path, digest, or completion status a caller can send. The signed credential
-selects one task and checkout, and the daemon confirms that task is still bound to a live session
-in that checkout before deriving the work episode and archive destination. Holding the shared
-harness token alone cannot submit for another scout. Calling the tool twice returns the same
-archive rather than publishing a second one, and it never writes task status: a scout that has
-submitted is a scout that *can* finish.
+selects one live session and the daemon validates its current binding before deriving the
+archive destination. Holding the shared harness token alone cannot submit for another session.
+Calling the tool twice for the same report directory returns the same immutable archive.
+Different directories publish separate reports. A rejected unpublished report can be fixed and
+retried; revisions of published bytes need a new slug. Publication never changes task status.
+Non-scout sessions publish only when instructed and their incidental report directories are
+never automatically scanned. Explicit accepted captures still settle before checkout cleanup.
+
+Legacy captures retain their identity only when a recorded submission or verified published
+bundle identifies the requested report. An unpublished legacy capture with no recorded report
+path remains unchanged; a new submission creates its own directory-scoped capture.
+
+New manifests optionally carry `origin.session` with `id`, `name`, `task_id`, and `episode_id`.
+These bounded provenance fields survive task/session removal and index rebuilds. Legacy
+manifests omit them without changing their serialization. Non-scout reports carry no surrounding
+conversation trail. Scout journals remain until the source episode is retired, allowing each
+report to freeze the prompt context available at its own reservation.
 
 `archiveKey` is `<producer-id>~<archive-id>`. Both routes and the index address an archive by
 that key and an artifact by a generated id - **never by a path.** A request cannot name a
@@ -589,7 +614,7 @@ Two different things can be wrong with a key, and they are answered differently:
 
 - **The rail** searches. Results are newest first under day headings, each row carrying its
   title, time, artifact count and size, plus the daemon's snippet saying *why* it matched. For
-  a newly captured scout, that title is the same short name its live session detail showed.
+  a newly captured scout, that title is the submitted report title or the session name and slug.
   Search covers titles, prompts, findings, report text and file metadata; a prompt match is
   labelled `prompt` without replacing that title. Press <kbd>/</kbd> to focus the search box;
   when focus is outside a text field or selector, <kbd>↑</kbd> and <kbd>↓</kbd> open the previous
@@ -635,7 +660,7 @@ claim in a manifest, not an authenticated identity.
 
 ### It refreshes without polling
 
-The page consumes the `scout_archive_changed` revision from the existing event stream. A
+The page consumes the `archive_changed` revision from the existing event stream. A
 reconciled batch, or a reconnect, refetches the current window and the open archive. There is
 no interval, no second SSE connection, and no archive history in the opening snapshot.
 
@@ -654,3 +679,14 @@ only after the daemon confirms; a refusal keeps the dialog open with the reason.
 - [Database and migrations](database-and-migrations.md) for why the index is disposable.
 - [Event stream](event-stream.md) for the invalidation frame.
 - [Security](security.md) for the daemon's boundary.
+
+### Reports from a session
+
+The shared Board/Console detail has a **Scouts** tab (Shift+Y by default). It lists separate
+reports with their titles, status, and publication time, with loading, empty, and retry states.
+Opening one uses the existing reader and retains a `session`, `producer`, and `kind=scout`
+filter in the URL. The reader’s **Source session** control applies the same filter and the
+session filter can be cleared independently. Session filters default to the local producer;
+foreign producer/session pairs are explicit. These filters read manifest provenance, so they
+continue working after the live session is removed. Legacy archives without provenance stay
+in the global library. Both surfaces refresh through `archive_changed` without polling.

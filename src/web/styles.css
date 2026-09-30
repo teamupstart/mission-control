@@ -35206,3 +35206,17 @@ body.foreman-sidecar-open .modal-backdrop {
 .ts-sync-comparison strong { overflow-wrap: anywhere; }
 .ts-sync-actions { display: flex; gap: 8px; margin-top: 12px; }
 @media (max-width: 700px) { .ts-sync-comparison { grid-template-columns: 1fr; } }
+
+/* Reports in the shared Board/Console session detail. */
+.session-scouts { padding: 16px; }
+.session-scouts > p { color: var(--muted); }
+.session-scouts-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+.session-scouts-report {
+  width: 100%; padding: 14px; text-align: left; display: grid; gap: 6px;
+  color: inherit; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; overflow-wrap: anywhere;
+}
+.session-scouts-report:hover { border-color: var(--working); }
+.session-scouts-report span { color: var(--muted); font-size: 12px; }
+.scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.scouts-source-session > span { font-size: 12px; color: var(--muted); }

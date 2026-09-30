@@ -1027,7 +1027,7 @@ test("a submission may not name a repository slot that is not generated", async 
 });
 
 test("a submission cannot name its own task, destination, or archive", async () => {
-  let authority: { taskId: string; cwd: string } | null = null;
+  let authority: { taskId: string | null; cwd: string } | null = null;
   const { app } = harness({
     tasks: {
       subjectForSubmission: (input) => {

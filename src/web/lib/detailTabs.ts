@@ -12,7 +12,7 @@
 
 import type { ActionId } from "./keybindings.ts";
 
-export type DetailTabId = "conversation" | "queue" | "workflows" | "diff" | "files";
+export type DetailTabId = "conversation" | "queue" | "workflows" | "diff" | "files" | "scouts";
 
 export interface DetailTab {
   id: DetailTabId;
@@ -54,6 +54,7 @@ export function detailTabs({ queueCount, fileReplyCount }: DetailTabInputs): Det
     { id: "queue", label: "Work queue", pip: queueCount, action: "queue" },
     { id: "workflows", label: "Workflows", pip: 0, action: "sessionWorkflows" },
     { id: "diff", label: "Diff", pip: 0, action: "diff" },
+    { id: "scouts", label: "Scouts", pip: 0, action: "sessionScouts" },
     { id: "files", label: "Files", pip: fileReplyCount, action: "files" },
   ];
 }

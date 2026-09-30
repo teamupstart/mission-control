@@ -11,8 +11,10 @@ import {
 } from "@shared/workflow.ts";
 import {
   ARCHIVE_INDEX_STATUSES,
+  ARCHIVE_KINDS,
   parseArchiveKey,
   type ArchiveIndexStatus,
+  type ArchiveKind,
 } from "@shared/archives.ts";
 import { pipelineRepoKey, type PipelineProviderId } from "@shared/pipeline.ts";
 
@@ -157,6 +159,8 @@ export interface PipelineRunAddress {
  * page above it.
  */
 export interface ScoutFilters {
+  session?: string;
+  kind?: ArchiveKind;
   /** Literal substring search, server-side, over every indexed segment. */
   q?: string;
   producer?: string;
@@ -327,7 +331,10 @@ export function parseMissionRoute(hash: string): MissionRoute {
     const rawStatusFilter = params.get("status");
     const rawFrom = scoutBound(params.get("from"));
     const rawTo = scoutBound(params.get("to"));
+    const rawKind = params.get("kind");
     const scoutFilters: ScoutFilters = {
+      ...(params.get("session") ? { session: params.get("session")! } : {}),
+      ...(rawKind && (ARCHIVE_KINDS as readonly string[]).includes(rawKind) ? { kind: rawKind as ArchiveKind } : {}),
       ...(params.get("q") ? { q: params.get("q")! } : {}),
       ...(params.get("producer") ? { producer: params.get("producer")! } : {}),
       ...(params.get("repo") ? { repo: params.get("repo")! } : {}),
@@ -508,6 +515,8 @@ export function missionRouteHash(route: MissionRoute): string {
     const params = new URLSearchParams();
     // Fixed order, so the same filter set always produces the same bytes and two links to
     // one search compare equal.
+    if (route.filters?.session) params.set("session", route.filters.session);
+    if (route.filters?.kind) params.set("kind", route.filters.kind);
     if (route.filters?.q) params.set("q", route.filters.q);
     if (route.filters?.producer) params.set("producer", route.filters.producer);
     if (route.filters?.repo) params.set("repo", route.filters.repo);

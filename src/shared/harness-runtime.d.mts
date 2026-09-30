@@ -24,6 +24,9 @@ export const MISSION_AGENT_SESSION_ID_ENV: string;
 export function scoutSubmissionCredentialPath(cwd: string): string;
 export function isolatedScoutSubmissionCredentialPath(cwd: string): string;
 export function readScoutSubmissionCredential(cwd: string): string;
+export function sessionScoutCredentialDirectory(): string;
+export function sessionScoutCredentialPath(identity: string): string;
+export function readSessionScoutSubmissionCredential(cwd: string): string;
 
 export interface TerminalEnv {
   tmuxPane: string | undefined;

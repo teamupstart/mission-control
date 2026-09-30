@@ -1,5 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { syntheticTaskManagers } from "./helpers/task-manager-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-task-completion-reconciler-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const createTaskManager = syntheticTaskManagers(TaskManager);
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -93,7 +95,7 @@ function insertHistorical(b: {
  */
 function departed(id: string, over: Partial<ReturnType<typeof baseTask>> = {}) {
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const tasks = createTaskManager(registry);
   const taskId = `task-${id}`;
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
@@ -347,7 +349,7 @@ test("a task whose agent is still here is left to the narrower path", () => {
 test("a live task is not completed from a partial startup session map", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const presentRegistry = new Registry();
-  const presentTasks = new TaskManager(presentRegistry);
+  const presentTasks = createTaskManager(presentRegistry);
   const presentId = "startup-live";
   const presentTaskId = "task-startup-live";
   presentRegistry.upsertTask(baseTask({
@@ -372,7 +374,7 @@ test("a live task is not completed from a partial startup session map", () => {
   assert.equal(presentRegistry.getTask(presentTaskId)?.status, "running");
 
   const absentRegistry = new Registry();
-  const absentTasks = new TaskManager(absentRegistry);
+  const absentTasks = createTaskManager(absentRegistry);
   const absentTaskId = "task-startup-absent";
   absentRegistry.upsertTask(baseTask({
     id: absentTaskId,

@@ -174,9 +174,10 @@ Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-sess
 
 ## Scouts and the archive
 
-Not every valuable result is a code change. A Scout investigates a question and produces one
-answer-first HTML report with its evidence and limitations. The report is self-contained, opens
-without Mission Control, and must exist before normal Scout completion succeeds.
+Not every valuable result is a code change. A Scout investigates a question and produces self-contained HTML reports with evidence and
+limitations. Any session can publish requested scout reports, with a separate archive for each
+report directory. Normal Scout completion requires at least one complete report and verifies
+every report submitted in that work episode. Other task kinds keep their existing completion rules.
 
 The archive makes reports and plans searchable by their question and content. They outlive the
 temporary task, agent, branch, and worktree that produced them, while preserving an honest record
@@ -184,7 +185,9 @@ of missing or incomplete evidence.
 
 ![Mission Control Scouts archive](docs/images/scouts.png)
 
-Read more in [Archives](docs/archives.md).
+Open a session’s **Scouts** tab to browse its reports, or filter the **Scouts** library by
+source session. Retrying a report path returns its existing archive; publish revisions under a
+new slug. Read more in [Archives](docs/archives.md).
 
 ## Backlog and sources
 

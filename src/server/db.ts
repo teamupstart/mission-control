@@ -2303,6 +2303,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       agent              TEXT,
       model              TEXT,
       source             TEXT,
+      source_session_id TEXT,
+      source_session_json TEXT,
       repositories_json  TEXT,
       -- Every repository label this archive names, lowercased and pipe-delimited, as in
       -- |mission-control|docs| . A filter is instr(repo_labels, ?) with a pipe-wrapped
@@ -2407,7 +2409,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- to stop being derivable. Nothing an agent typed reaches this table.
     CREATE TABLE IF NOT EXISTS archive_capture_jobs (
       operation_key   TEXT NOT NULL PRIMARY KEY,
-      task_id         TEXT NOT NULL,
+      task_id         TEXT,
       session_id      TEXT,
       episode_id      TEXT,
       -- What this capture will produce, frozen at reservation. NOT NULL with a 'scout'
@@ -3911,8 +3913,37 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archive_capture_jobs", "prompts_json", "TEXT");
   addColumn(d, "archives", "prompts_json", "TEXT");
 
+  makeArchiveCaptureTaskOptional(d);
+  addColumn(d, "archives", "source_session_id", "TEXT");
+  addColumn(d, "archives", "source_session_json", "TEXT");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
+}
+
+/** Preserve the capture ledger and its indexes while allowing genuinely taskless owners. */
+function makeArchiveCaptureTaskOptional(d: DatabaseSync): void {
+  const columns = d.prepare("PRAGMA table_info(archive_capture_jobs)").all() as unknown as Array<{ name: string; notnull: number }>;
+  if (!columns.find((column) => column.name === "task_id")?.notnull) return;
+  const schema = d.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'archive_capture_jobs'").get() as { sql: string };
+  const indexes = d.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'archive_capture_jobs' AND sql IS NOT NULL").all() as unknown as Array<{ sql: string }>;
+  const replacement = schema.sql.replace(/CREATE TABLE(?: IF NOT EXISTS)? ["`]?archive_capture_jobs["`]?/i, "CREATE TABLE archive_capture_jobs_nullable")
+    .replace(/(task_id\s+TEXT)\s+NOT NULL/i, "$1");
+  const names = columns.map(({ name }) => `"${name.replaceAll('"', '""')}"`).join(", ");
+  d.exec("SAVEPOINT archive_capture_task_optional");
+  try {
+    d.exec(replacement);
+    d.exec(`INSERT INTO archive_capture_jobs_nullable (${names}) SELECT ${names} FROM archive_capture_jobs`);
+    d.exec("DROP TABLE archive_capture_jobs");
+    d.exec("ALTER TABLE archive_capture_jobs_nullable RENAME TO archive_capture_jobs");
+    for (const index of indexes) d.exec(index.sql);
+    d.exec("RELEASE archive_capture_task_optional");
+  } catch (error) {
+    d.exec("ROLLBACK TO archive_capture_task_optional; RELEASE archive_capture_task_optional");
+    throw error;
+  }
 }
 
 /** Whether a table exists in this database, for a migration that has to read the old one. */

@@ -623,6 +623,9 @@ interface ScoutCompletionSnapshot {
  * so a plan finishes on Foreman's ordinary boundary exactly as a ship task does.
  */
 export interface TaskArchiveGate {
+  withCompletion?<T>(taskId: string, complete: () => Promise<T>): Promise<T>;
+  /** Drain accepted reports and refuse new ones until the checkout decision commits. */
+  withCleanup?<T>(taskId: string, cleanup: () => Promise<T>): Promise<T>;
   /** Resolve once the task's verified COMPLETE bundle exists, or say what is wrong. */
   ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
   /** Publish whatever this task produced before its checkout is destroyed. */
@@ -4854,14 +4857,17 @@ export class TaskManager {
     input: CompletionInput,
     gate: TaskArchiveGate,
   ): Promise<Task | null> {
-    const before = this.scoutCompletionSnapshot(id, input.requireStopped);
-    if (!before) return null;
-    const ready = await gate.ensureReady(id);
-    if (!ready.ok && !input.confirmIncompleteScout) {
-      throw new ScoutArchiveNotReadyError(ready.problems);
-    }
-    this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
-    return this.finishCompletion(id, input);
+    const complete = async () => {
+      const before = this.scoutCompletionSnapshot(id, input.requireStopped);
+      if (!before) return null;
+      const ready = await gate.ensureReady(id);
+      if (!ready.ok && !input.confirmIncompleteScout) {
+        throw new ScoutArchiveNotReadyError(ready.problems);
+      }
+      this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      return this.finishCompletion(id, input);
+    };
+    return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
   }
 
   /**
@@ -5270,81 +5276,88 @@ export class TaskManager {
       };
     }
     this.reschedulingTasks.add(id);
-    this.cleanupReservations.add(id);
     try {
-      try {
-        await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
-      } catch (error) {
-        return {
-          ok: false,
-          error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
-      // whatever the first attempt found is archived here or lost. The new attempt gets its
-      // own work episode and therefore its own archive, which is why this cannot simply be
-      // left to the relaunch.
-      const archived = await this.settleArchivesBeforeTeardown(id);
-      if (!archived.ok) return archived;
-      this.autoCompleted.delete(id);
-      // `taskHasWorktrees` rather than the primary path: a task whose primary tree was
-      // released and whose attached repository's tree survived a partial teardown still has
-      // something to release, and reading the primary alone skipped it entirely - re-filing
-      // the task on top of a checkout the previous attempt still held.
-      if (taskHasWorktrees(t) || t.homeName) {
-        try {
-          const current = this.registry.getTask(id) ?? t;
-          await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
-        } catch (error) {
-          const partial = this.registry.getTask(id) ?? t;
-          this.registry.upsertTask({
-            ...partial,
-            ...releasedTaskResources(partial, reclaimedFrom(error)),
-            updatedAt: Date.now(),
-          });
-          return {
-            ok: false,
-            error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
-          };
-        }
-      }
-      const cur = this.registry.getTask(id);
-      if (!cur) return { ok: false, error: "no such task" };
-      if (cur.status !== "cancelled" && cur.status !== "failed") {
-        return {
-          ok: false,
-          error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
-        };
-      }
-      this.registry.upsertTask({
-        ...cur,
-        status: "backlog",
-        enabled: true,
-        // A re-entering task KEEPS the rank it already has, so a recovered dispatch
-        // reappears where it was rather than at the bottom of a queue it never left. A task
-        // that never had one - dispatched straight out, never a backlog row - is appended,
-        // because arriving somewhere is the whole rule and an unranked row would sit below
-        // everything filed after it.
-        backlogRank: cur.backlogRank ?? this.allocateBacklogRank("bottom"),
-        // Everything came back: this path returns early when the teardown throws.
-        ...releasedTaskResources(cur, null),
-        homeName: null,
-        homeBackend: null,
-        terminalResourceId: null,
-        sessionId: null,
-        pipelineRun: null,
-        outcome: null,
-        outcomeUrl: null,
-        error: null,
-        dispatchedAt: null,
-        completedAt: null,
-        updatedAt: Date.now(),
-      });
-      return { ok: true };
+      return await this.withCleanupReservation<Ok>(
+        id,
+        { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+        () => this.rescheduleReserved(id, t),
+      );
     } finally {
       this.reschedulingTasks.delete(id);
-      this.cleanupReservations.delete(id);
     }
+  }
+
+  /** `reschedule`'s body, once cleanup and submission admission are reserved. */
+  private async rescheduleReserved(id: string, t: Task): Promise<Ok> {
+    try {
+      await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
+    // whatever the first attempt found is archived here or lost. The new attempt gets its
+    // own work episode and therefore its own archive, which is why this cannot simply be
+    // left to the relaunch.
+    const archived = await this.settleArchivesBeforeTeardown(id);
+    if (!archived.ok) return archived;
+    this.autoCompleted.delete(id);
+    // `taskHasWorktrees` rather than the primary path: a task whose primary tree was
+    // released and whose attached repository's tree survived a partial teardown still has
+    // something to release, and reading the primary alone skipped it entirely - re-filing
+    // the task on top of a checkout the previous attempt still held.
+    if (taskHasWorktrees(t) || t.homeName) {
+      try {
+        const current = this.registry.getTask(id) ?? t;
+        await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
+      } catch (error) {
+        const partial = this.registry.getTask(id) ?? t;
+        this.registry.upsertTask({
+          ...partial,
+          ...releasedTaskResources(partial, reclaimedFrom(error)),
+          updatedAt: Date.now(),
+        });
+        return {
+          ok: false,
+          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    const cur = this.registry.getTask(id);
+    if (!cur) return { ok: false, error: "no such task" };
+    if (cur.status !== "cancelled" && cur.status !== "failed") {
+      return {
+        ok: false,
+        error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    this.registry.upsertTask({
+      ...cur,
+      status: "backlog",
+      enabled: true,
+      // A re-entering task KEEPS the rank it already has, so a recovered dispatch
+      // reappears where it was rather than at the bottom of a queue it never left. A task
+      // that never had one - dispatched straight out, never a backlog row - is appended,
+      // because arriving somewhere is the whole rule and an unranked row would sit below
+      // everything filed after it.
+      backlogRank: cur.backlogRank ?? this.allocateBacklogRank("bottom"),
+      // Everything came back: this path returns early when the teardown throws.
+      ...releasedTaskResources(cur, null),
+      homeName: null,
+      homeBackend: null,
+      terminalResourceId: null,
+      sessionId: null,
+      pipelineRun: null,
+      outcome: null,
+      outcomeUrl: null,
+      error: null,
+      dispatchedAt: null,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
+    return { ok: true };
   }
 
   /**
@@ -5390,7 +5403,7 @@ export class TaskManager {
     if (this.cleanupReservations.has(id)) return conflict;
     this.cleanupReservations.add(id);
     try {
-      return await fn();
+      return this.archives?.withCleanup ? await this.archives.withCleanup(id, fn) : await fn();
     } finally {
       this.cleanupReservations.delete(id);
     }

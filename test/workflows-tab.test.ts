@@ -66,11 +66,11 @@ test("Workflows sits between Work queue and Diff", () => {
   const tabs = detailTabs({ queueCount: 0, fileReplyCount: 0 });
   assert.deepEqual(
     tabs.map((tab) => tab.id),
-    ["conversation", "queue", "workflows", "diff", "files"],
+    ["conversation", "queue", "workflows", "diff", "scouts", "files"],
   );
   assert.deepEqual(
     tabs.map((tab) => tab.label),
-    ["Conversation", "Work queue", "Workflows", "Diff", "Files"],
+    ["Conversation", "Work queue", "Workflows", "Diff", "Scouts", "Files"],
   );
   assert.equal(detailTabs({ queueCount: 4, fileReplyCount: 0 })[1]?.pip, 4);
   // Files takes the AGENT-REPLY count, not the review's queue depth: comments still waiting

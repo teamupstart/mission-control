@@ -1581,6 +1581,8 @@ export function archiveSearchPath(query: Partial<ArchiveSearchQuery>): string {
   const params = new URLSearchParams();
   if (query.q) params.set("q", query.q);
   if (query.producer) params.set("producer", query.producer);
+  if (query.session) params.set("session", query.session);
+  if (query.kind) params.set("kind", query.kind);
   if (query.repo) params.set("repo", query.repo);
   if (query.agent) params.set("agent", query.agent);
   if (query.status) params.set("status", query.status);

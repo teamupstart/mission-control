@@ -1,7 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
@@ -282,6 +283,79 @@ for (const failure of ["unavailable", "missing", "unreadable", "replaced"] as co
     assert.equal(f.registry.getTask(f.task!.id)?.sessionId, f.source.id);
     assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
     assert.deepEqual(f.bindings.map((id) => f.store.getBinding(id)), pins);
+  });
+}
+
+for (const [inventory, sdkStatus] of [["live", "failed"], ["live", "exited"], ["unavailable", "failed"],
+  ["unreadable", "failed"], ["throws", "failed"]] as const) {
+  test(`a failed stop with a missing handle holds ownership until source exit: ${inventory} inventory, ${sdkStatus} SDK row`, async (t) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    t.after(() => { child.kill("SIGKILL"); });
+    await once(child, "spawn");
+    const { listProcessesSnapshot } = await import("../src/server/discovery/processes.ts");
+    const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+    let live = true;
+    let proveExit = false;
+    let stops = 0;
+    const f = transferFixture(t, { workflows: 2, processSnapshot: async () => {
+      const snapshot = await listProcessesSnapshot();
+      if (live || proveExit) return snapshot;
+      if (inventory === "throws") throw new Error("process inventory failed");
+      if (inventory === "unavailable") return { ...snapshot, processes: [], unknownReason: "inventory unavailable" };
+      if (inventory === "unreadable") return { ...snapshot,
+        processes: snapshot.processes.map((p) => p.pid === child.pid ? { ...p, startMs: 0 } : p) };
+      return snapshot;
+    } });
+    t.mock.method(f.supervisor, "handleFor", () => live ? { recoveryProcessId: child.pid } : null);
+    t.mock.method(f.supervisor, "stop", async () => {
+      stops++;
+      live = false;
+      // The event pump can drop its handle and persist either outcome without observing
+      // the child exit. Reproduce that boundary while the actual child remains alive.
+      setSdkSessionStatus(f.source.id, sdkStatus);
+      f.registry.applyDriverEvent(f.source.id, { kind: "exited", reason: "driver stream ended", resumable: false });
+      throw new Error("stop rejected after the handle disappeared");
+    });
+    const pins = f.bindings.map((id) => f.store.getBinding(id));
+    const submissions = f.bindings.map((id) => f.store.getSubmission(id.replace("binding-", "submission-")));
+    const taskStates: string[] = [];
+    f.registry.subscribe((event) => { if (event.type === "task_upsert" && event.task.id === f.task!.id) taskStates.push(event.task.status); });
+    const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+    assert.equal(result.ok, false);
+    assert.equal(result.transfer?.state, "recovery_required", JSON.stringify(result));
+    const held = getSessionTransfer(result.transfer!.id)!;
+    assert.equal(held.facts.sourceProcess?.pid, child.pid);
+    assert.equal(held.facts.sourceStopped, false);
+    assert.equal(held.facts.canEnd, false);
+    assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+    assert.equal(f.registry.getTask(f.task!.id)?.sessionId, null);
+    assert.equal((await f.transfers.recheck(held.id)).state, "recovery_required");
+    await f.transfers.stop(); f.transfers.start();
+    const restarted = await f.transfers.recheck(held.id);
+    assert.equal(restarted.state, "recovery_required");
+    await assert.rejects(f.transfers.resolve(held.id, restarted.revision), /not yet safe/);
+    assert.deepEqual(f.bindings.map((id) => f.store.getBinding(id)), pins);
+    assert.deepEqual(f.bindings.map((id) => f.store.getSubmission(id.replace("binding-", "submission-"))), submissions);
+    assert.ok(!taskStates.includes("failed"), "a recheck or restart must not bypass source lifetime proof");
+    assert.equal(stops, 1);
+    assert.equal(f.counts().launches, 0);
+    assert.equal(f.counts().injections, 0);
+
+    const exited = once(child, "exit");
+    child.kill("SIGKILL"); await exited;
+    proveExit = true;
+    assert.equal((await f.transfers.recheck(held.id)).state, "failed");
+    assert.equal(getSessionTransfer(held.id)?.facts.sourceStopped, true);
+    assert.equal(f.registry.getTask(f.task!.id)?.status, "failed");
+    for (const pin of pins) {
+      const settled = f.store.getBinding(pin!.id)!;
+      assert.equal(settled.state, "orphaned");
+      assert.equal(settled.workflowVersionId, pin!.workflowVersionId);
+    }
+    assert.deepEqual(f.bindings.map((id) => f.store.getSubmission(id.replace("binding-", "submission-"))), submissions);
+    assert.equal(openDb().prepare("SELECT count(*) AS n FROM task_worktree_returns WHERE task_id = ?").get(f.task!.id)!.n, 0);
+    assert.equal(stops, 1);
+    assert.equal(f.counts().launches, 0);
   });
 }
 

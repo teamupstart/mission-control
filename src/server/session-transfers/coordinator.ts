@@ -252,7 +252,9 @@ export class SessionTransferCoordinator {
         });
         if (restored) this.registry.publishPersistedTask(restored, displaced);
         this.registry.publishSessionTransfers(transfer);
-      } else if (!surviving && revoked && !this.ownershipChanged(transfer, unbound)) {
+      } else if (!surviving && revoked && await this.sourceExitProven(transfer)
+        && !supervisor?.handleFor(source.id) && !this.ownershipChanged(transfer, unbound)) {
+        transfer = this.change(transfer, { facts: { ...transfer.facts, sourceStopped: true } });
         transfer = this.fail(transfer, "The embedded driver stopped without a replacement; its checkout was kept");
       } else transfer = this.recovery(transfer, "Could not verify that the source stopped; no replacement launch was attempted");
       this.executing.delete(transfer.id);
@@ -330,6 +332,18 @@ export class SessionTransferCoordinator {
     return work;
   }
 
+  private async sourceExitProven(transfer: SessionTransfer): Promise<boolean> {
+    const expected = transfer.facts.sourceProcess;
+    if (!expected) return false;
+    try {
+      // The pump can drop its handle and persist a failed/exited row while its child
+      // remains alive. Only a complete inventory can prove this saved lifetime ended.
+      const observed = await (this.options.processSnapshot ?? listProcessesSnapshot)();
+      const source = observed.processes.find((p) => p.pid === expected.pid);
+      return !observed.unknownReason && (!source || (source.startMs > 0 && source.startMs !== expected.startMs));
+    } catch { return false; }
+  }
+
   private async observe(id: string): Promise<SessionTransfer> {
     let transfer = getSessionTransfer(id);
     if (!transfer) throw new Error("No such terminal transfer");
@@ -343,21 +357,12 @@ export class SessionTransferCoordinator {
       const lease = this.lease(transfer);
       const status = resumeLeaseStatus(lease);
       if (!transfer.facts.sourceStopped) {
-        const row = getSdkSession(transfer.sourceSessionId);
-        if (row && (row.status === "exited" || row.status === "failed")) {
-          transfer = this.change(transfer, { facts: { ...transfer.facts, sourceStopped: true } });
-        } else {
-          const observed = transfer.facts.sourceProcess ? await (this.options.processSnapshot ?? listProcessesSnapshot)() : null;
-          const source = observed?.processes.find((p) => p.pid === transfer!.facts.sourceProcess!.pid);
-          if (observed && !observed.unknownReason && (!source || (source.startMs > 0
-            && source.startMs !== transfer.facts.sourceProcess!.startMs))) {
-            transfer = this.change(transfer, { facts: { ...transfer.facts, sourceStopped: true } });
-          } else {
-            const canEnd = !transfer.facts.stopStarted && (status.state === "revoked" || status.state === "completed");
-            if (transfer.facts.canEnd !== canEnd) transfer = this.change(transfer, { facts: { ...transfer.facts, canEnd } });
-            return this.recovery(transfer, "Source shutdown was interrupted; its outcome is unknown. No replacement was launched automatically");
-          }
+        if (!await this.sourceExitProven(transfer)) {
+          const canEnd = !transfer.facts.stopStarted && (status.state === "revoked" || status.state === "completed");
+          if (transfer.facts.canEnd !== canEnd) transfer = this.change(transfer, { facts: { ...transfer.facts, canEnd } });
+          return this.recovery(transfer, "Source shutdown was interrupted; its outcome is unknown. No replacement was launched automatically");
         }
+        transfer = this.change(transfer, { facts: { ...transfer.facts, sourceStopped: true } });
       }
       const conflict = this.ownershipChanged(transfer);
       if (conflict) {

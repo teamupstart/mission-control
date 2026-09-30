@@ -1,5 +1,6 @@
 import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1435,7 +1436,11 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
   assert.deepEqual(sessionEndingReasons("sdk:stopfail"), ["unknown"], "a failed stop must undo handoff attribution");
 });
 
-test("a stop that fails with the driver already gone settles instead", async () => {
+test("a stop that fails with the source process proven gone settles instead", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => { child.kill("SIGKILL"); });
+  await once(child, "spawn");
   const registry = new Registry();
   seed(registry, null, "sdk:stopgone");
   registry.upsertTask(
@@ -1453,11 +1458,13 @@ test("a stop that fails with the driver already gone settles instead", async () 
   const supervisor = {
     async stop() {
       sourceLive = false;
+      const exited = once(child, "exit");
+      child.kill("SIGKILL"); await exited;
       throw new Error("the driver died mid-stop");
     },
     // No handle left once the stop has run, but one BEFORE it - otherwise the preflight
     // would refuse this as a repeat rather than exercising the stop-failure path.
-    handleFor: () => sourceLive ? { recoveryProcessId: process.pid } : null,
+    handleFor: () => sourceLive ? { recoveryProcessId: child.pid } : null,
     beginHandoff: () => true,
     endHandoff: () => {},
   } as unknown as SdkSupervisor;

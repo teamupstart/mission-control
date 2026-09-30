@@ -48,6 +48,9 @@ resource lease. Later phases and the separate Backlog UI feature are unchanged.
   the daemon that hosts its in-process runtime. These are private observation identities,
   never signal targets. Restart can prove that lifetime ended even if the SDK row still says
   `running`, then settle through the existing owners once the terminal lease proves absence.
+  A rejected stop uses that same lifetime proof before settling. A missing driver handle or
+  a final SDK row can describe an ended event stream with a still-live child, so neither
+  overrides the saved lifetime on immediate failure, recheck or restart.
   A live lifetime, an unavailable inventory or an older record without proof stays held;
   recovery never repeats stop or launch. This extends the proposed process proof to SDK
   drivers because Claude does not expose a subprocess PID through its bound event.

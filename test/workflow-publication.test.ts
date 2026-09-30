@@ -176,7 +176,9 @@ test("invalid, linked-outside, oversized, and symlinked reports stay required", 
   report(root);
   rmSync(join(root, reportPath));
   symlinkSync(join(root, "source.ts"), join(root, reportPath));
-  assert.equal((await captureWorkflowPublication(root)).artifacts.length, 0);
+  const capture = await captureWorkflowPublication(root);
+  assert.equal(capture.artifacts.length, 0);
+  assert.deepEqual(capture.publication.unpublishedPaths, [reportPath]);
 });
 
 test("snapshot rejects artifact bytes that changed after validation", async () => {

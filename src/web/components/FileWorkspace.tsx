@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
+import { isParkedReview } from "@shared/file-comments.ts";
 import {
   hasUnwrittenEdits,
   isSavePending,
@@ -25,6 +26,7 @@ import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.
 import { FileCommentRail } from "./FileCommentRail.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
 import {
+  composerDeliveryHint,
   fileCommentQuoteForDisplay,
   isCommentableDocument,
   markerLabel,
@@ -702,17 +704,21 @@ function FileWorkspaceBody({
     [fileCommentReviews, session.id],
   );
   /*
-   * The queue opens itself when a review starts, and never closes itself again.
+   * The queue opens itself when a pause needs a person, and never closes itself again.
    *
-   * Opening is what makes "Start review" show its own effect - the comment that just went is
-   * at the head of a list the reader can now steer. Closing on `running` going false would be
-   * the wrong half of the pair: a review PAUSES because something needs a person, and taking
-   * the panel away at exactly that moment hides the reason and the controls together.
+   * NOT when delivery starts. Sending a comment starts it, so opening then would pop the panel
+   * over the file on every comment, while the reader is already writing the next one - the
+   * toolbar's marker says a comment is out instead. A pause that needs a person is the moment
+   * the panel's reason and Resume matter, so that is when it opens. A pause the reader chose
+   * themselves opens nothing: they pressed Pause in this panel, so it is already open.
+   *
+   * Closing on the pause clearing would be the wrong half of the pair, for the old reason:
+   * taking the panel away as it resolves hides what just happened.
    */
-  const running = review?.state === "running";
+  const pauseNeedsPerson = review?.state === "paused" && review.pauseReason !== null && !isParkedReview(review);
   useEffect(() => {
-    if (running) setShowQueue(true);
-  }, [running]);
+    if (pauseNeedsPerson) setShowQueue(true);
+  }, [pauseNeedsPerson]);
 
   const controlReview = useCallback(async (
     action: "start" | "pause" | "dismiss",
@@ -789,14 +795,22 @@ function FileWorkspaceBody({
    * re-runs when the reader navigates. Without the guard it would drag them straight back to
    * the outstanding comment's file every time they tried to look at anything else for as long
    * as that comment was out.
+   *
+   * **Never while a composer is open.** Comments go out as they are sent, so the next one
+   * leaves while the reader is often mid-sentence on another line, or in another file. Taking
+   * them there would move the view out from under the comment they are writing. The comment is
+   * marked followed anyway, so closing the composer later does not trigger a late jump to
+   * something that went out minutes ago; its queue row and marker already show it went.
    */
   const followedId = useRef<string | null>(null);
+  const writing = draft.composer !== null;
   useEffect(() => {
     if (!outstanding || followedId.current === outstanding.id) return;
     followedId.current = outstanding.id;
+    if (writing) return;
     setFollowedOutstanding((prev) => ({ id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 }));
     if (outstanding.path !== selectedPath) controller.select(session.id, outstanding.path);
-  }, [controller, outstanding, selectedPath, session.id]);
+  }, [controller, outstanding, selectedPath, session.id, writing]);
   const scrollTo = useMemo(() => {
     if (threadJump) return { line: threadJump.line, nonce: threadJump.nonce };
     if (
@@ -1967,6 +1981,14 @@ function FileWorkspaceBody({
   }, [showResolved]);
 
   const composer = draft.composer;
+  // What Send will do, from the same queue and run state the daemon decides on. Held by VALUE:
+  // `session` is a new object on every upsert, and an identity that changed with it would
+  // rebuild the open panel for a sentence that said the same thing.
+  const hint = composerDeliveryHint(review, queue, session);
+  const deliveryHint = useMemo(
+    () => ({ tone: hint.tone, text: hint.text }),
+    [hint.tone, hint.text],
+  );
   /**
    * The open panel itself, built once for BOTH places it can be drawn.
    *
@@ -1987,6 +2009,7 @@ function FileWorkspaceBody({
             composer.htmlBlockQuote,
           )}
           value={composer.text}
+          hint={deliveryHint}
           busy={composer.busy}
           error={composer.error}
           onChange={draft.change}
@@ -2017,6 +2040,7 @@ function FileWorkspaceBody({
     return null;
   }, [
     composer,
+    deliveryHint,
     draft.cancel,
     draft.change,
     draft.submit,
@@ -2335,6 +2359,8 @@ function FileWorkspaceBody({
                 <Tooltip
                   label={showQueue
                     ? "Hide the review queue"
+                    : outstanding
+                    ? `A comment is out with the agent, ${queue.length - 1} waiting. Show the review queue`
                     : `Show the ${queue.length} comment${queue.length === 1 ? "" : "s"} in this session's review`}
                 >
                   <button
@@ -2343,6 +2369,12 @@ function FileWorkspaceBody({
                     aria-pressed={showQueue}
                     onClick={() => setShowQueue((value) => !value)}
                   >
+                    {/*
+                      The panel no longer opens itself when a comment goes, so this is where a
+                      comment out with the agent shows. Decorative: the queue's own status line
+                      is the announced account, and the accessible name stays the control's.
+                    */}
+                    {outstanding && <span className="file-review-live" aria-hidden="true" />}
                     Review ({queue.length})
                   </button>
                 </Tooltip>
@@ -2483,7 +2515,7 @@ function FileWorkspaceBody({
             review={review}
             busy={reviewBusy}
             error={reviewError}
-            onStart={() => { void controlReview("start"); }}
+            onResume={() => { void controlReview("start"); }}
             onPause={() => { void controlReview("pause"); }}
             onMove={(threadId, direction) => { void moveInQueue(threadId, direction); }}
             onEdit={editQueued}

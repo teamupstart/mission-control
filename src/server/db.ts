@@ -14660,8 +14660,12 @@ export function setFileCommentReviewState(
          state = excluded.state,
          pause_reason = excluded.pause_reason,
          -- The first start is what started_at records; a pause and resume do not restart
-         -- the review, so it is kept rather than rewritten.
-         started_at = COALESCE(file_comment_reviews.started_at, excluded.started_at),
+         -- the review, so it is kept rather than rewritten. Returning to idle ends it: the
+         -- review ran dry, and the next comment sent starts a new one numbered from 1.
+         started_at = CASE
+           WHEN excluded.state = 'idle' THEN NULL
+           ELSE COALESCE(file_comment_reviews.started_at, excluded.started_at)
+         END,
          updated_at = excluded.updated_at`,
     )
     .run(sessionId, state, pauseReason, state === "running" ? now : null, now);

@@ -1,4 +1,6 @@
-// The review queue: what is going to the agent, in what order, and what you can still change.
+// The review queue: what is out with the agent, what waits behind it, and what you can still
+// change. Comments go as they are sent, so this is a view of delivery rather than a staging
+// area: there is no Start, only the optional Pause and the Resume that lifts it.
 //
 // Presentational for `FileCommentThread.tsx`'s reason - every write is a callback the
 // workspace owns - and it is the surface the whole one-at-a-time design exists to provide. A
@@ -14,11 +16,13 @@
 
 import { useEffect, useState } from "react";
 import type { FileCommentReview, FileCommentThread } from "@shared/types.ts";
+import { isParkedReview } from "@shared/file-comments.ts";
 import {
   isEditableInQueue,
   outstandingThread,
   queueRowText,
   reviewAnnouncement,
+  reviewControl,
   threadStateLabel,
   unsentMessage,
 } from "../lib/fileComments.ts";
@@ -33,7 +37,7 @@ export function FileCommentQueue({
   review,
   busy,
   error,
-  onStart,
+  onResume,
   onPause,
   onMove,
   onEdit,
@@ -47,7 +51,8 @@ export function FileCommentQueue({
   review: FileCommentReview | null;
   busy: boolean;
   error: string | null;
-  onStart: () => void;
+  /** Lift a pause. The daemon's `start` action, which is also how a pause is resumed. */
+  onResume: () => void;
   onPause: () => void;
   /** Move one comment by one position. The workspace turns that into the reorder call. */
   onMove: (threadId: string, direction: -1 | 1) => void;
@@ -60,7 +65,10 @@ export function FileCommentQueue({
   onDismissError: () => void;
 }): React.JSX.Element {
   const [editing, setEditing] = useState<{ messageId: string; body: string } | null>(null);
-  const running = review?.state === "running";
+  const control = reviewControl(review, queue);
+  // A legacy row that paused for running dry carries a sentence, but nothing needs deciding:
+  // it reads as idle everywhere, so its warning is not drawn either.
+  const pauseReason = review?.state === "paused" && !isParkedReview(review) ? review.pauseReason : null;
   const out = outstandingThread(queue);
   const waiting = queue.filter((thread) => thread.status === "queued").length;
 
@@ -84,32 +92,30 @@ export function FileCommentQueue({
             : `${waiting} of ${queue.length} waiting`}
         </span>
         <span className="file-toolbar-spacer" />
-        {running
-          ? (
-            <Tooltip label="Stop after the comment currently out with the agent. Nothing already sent is recalled.">
-              <button className="btn" aria-label="Pause review" disabled={busy} onClick={onPause}>
-                Pause
-              </button>
-            </Tooltip>
-          )
-          : (
-            <Tooltip
-              label={queue.length === 0
-                ? "Submit a comment first: there is nothing in this review to send"
-                : review?.state === "paused"
-                ? "Send the next comment and carry on from where this review stopped"
-                : "Send the first comment as its own turn, then the next when the agent has finished with it"}
+        {/*
+          No Start: sending a comment starts delivery. What is left is the optional hold and the
+          way back from it - Pause while comments are going, Resume once paused - and nothing at
+          all when there is nothing to hold or release.
+        */}
+        {control === "pause" && (
+          <Tooltip label="Hold the comments still waiting. The one out with the agent finishes; nothing already sent is recalled.">
+            <button className="btn" aria-label="Pause review" disabled={busy} onClick={onPause}>
+              Pause
+            </button>
+          </Tooltip>
+        )}
+        {control === "resume" && (
+          <Tooltip label="Send the next comment and carry on from where delivery stopped">
+            <button
+              className="btn btn-primary"
+              aria-label="Resume review"
+              disabled={busy}
+              onClick={onResume}
             >
-              <button
-                className="btn btn-primary"
-                aria-label={review?.state === "paused" ? "Resume review" : "Start review"}
-                disabled={busy || queue.length === 0}
-                onClick={onStart}
-              >
-                {review?.state === "paused" ? "Resume" : "Start review"}
-              </button>
-            </Tooltip>
-          )}
+              Resume
+            </button>
+          </Tooltip>
+        )}
       </header>
 
       {/*
@@ -121,9 +127,9 @@ export function FileCommentQueue({
         {reviewAnnouncement(review, queue)}
       </p>
 
-      {review?.state === "paused" && review.pauseReason && (
+      {pauseReason && (
         <p className="file-review-paused" role="alert">
-          <span>{review.pauseReason}</span>
+          <span>{pauseReason}</span>
           <Tooltip label="Hide this warning without resuming the review or dropping the comment">
             <button
               className="btn"
@@ -146,7 +152,7 @@ export function FileCommentQueue({
       )}
 
       {queue.length === 0
-        ? <p className="file-review-empty">Submit a comment and it joins this queue.</p>
+        ? <p className="file-review-empty">Send a comment and it goes to the agent, or waits here behind the one ahead of it.</p>
         : (
           <ol className="file-review-list">
             {queue.map((thread, index) => {

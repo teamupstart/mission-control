@@ -1970,7 +1970,7 @@ The MCP tools are:
   A reply naming an earlier delivery is still filed - it is a real answer - but advances
   nothing. `addressed` says the agent actually changed the code or document; it marks the
   thread handled and never closes it, because only a person resolves a comment. See
-  [Walk the agent through your review](ui.md#walk-the-agent-through-your-review)
+  [Comments go to the agent as you send them](ui.md#comments-go-to-the-agent-as-you-send-them)
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository

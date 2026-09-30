@@ -95,7 +95,7 @@ import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
-import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
+import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
   ProductIssueService,
@@ -635,6 +635,8 @@ fileComments.start();
 // comment, hands it to `pendingTurns.submit`, and waits for the confirmed-delivery signal that
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
+// Sending a comment is the request to deliver it: there is no separate Start step.
+fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -711,6 +713,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // the walkthrough's existing pause-and-confirm path. Ordered after `pendingTurns.start()` for
   // exactly that reason.
   fileCommentWalkthrough.resume(registry.listFileCommentReviews().map((r) => r.sessionId));
+  // Comments left queued in an idle review - written before sending started delivery on its
+  // own - are sent too, once the first completed sweep has put every live session back in the
+  // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
+  adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
   reviews.startContinuationRecovery((review, text) =>
     pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
   );

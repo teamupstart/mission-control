@@ -5916,6 +5916,15 @@ body.is-pane-resizing {
   background: color-mix(in oklab, var(--working) 16%, var(--panel));
 }
 .file-comment-toggle:disabled { opacity: .45; cursor: default; }
+/* A comment is out with the agent. The queue no longer opens itself on send, so this says it. */
+.file-review-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--attention) 25%, transparent);
+}
 
 /* The comment index is navigation, not the review outbox. It remains available when
    comment mode is off and includes resolved threads, so closing a thread never erases the
@@ -6132,6 +6141,25 @@ body.is-pane-resizing {
 .file-comment-box:focus { border-color: var(--working); outline: none; }
 .file-comment-error { margin: 0; color: var(--danger); font-size: 10.5px; }
 .file-comment-panel-foot { display: flex; align-items: center; gap: 6px; }
+/* What Send will do, said before it is pressed: go now, wait its turn, or be held. */
+.file-comment-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.file-comment-hint::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.file-comment-hint.is-now::before { background: var(--idle); }
+.file-comment-hint.is-held::before { background: var(--attention); }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
 

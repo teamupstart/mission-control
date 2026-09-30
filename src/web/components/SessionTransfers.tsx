@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { api } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 function TransferRow({ transfer }: { transfer: SessionTransferSummary }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -20,11 +21,19 @@ function TransferRow({ transfer }: { transfer: SessionTransferSummary }): React.
     <p className="report-sub">{transfer.reason}</p>
     {confirmEnd && <p className="report-sub">End this transfer and retain its checkout?</p>}
     <div className="report-row-actions">
-      <button className="btn" disabled={busy} onClick={() => void act(false)}>{busy ? "Checking…" : "Check again"}</button>
+      <Tooltip label="Look for the original terminal attempt without launching another agent">
+        <button className="btn" disabled={busy} onClick={() => void act(false)}>{busy ? "Checking…" : "Check again"}</button>
+      </Tooltip>
       {transfer.canEnd && (confirmEnd ? <>
-        <button className="btn btn-danger" disabled={busy} onClick={() => void act(true)}>Confirm end transfer</button>
-        <button className="btn btn-ghost" onClick={() => setConfirmEnd(false)}>Keep transfer</button>
-      </> : <button className="btn" disabled={busy} onClick={() => setConfirmEnd(true)}>End transfer</button>)}
+        <Tooltip label="End this transfer after rechecking absence and retain its checkout">
+          <button className="btn btn-danger" disabled={busy} onClick={() => void act(true)}>Confirm end transfer</button>
+        </Tooltip>
+        <Tooltip label="Leave this transfer available for recovery">
+          <button className="btn btn-ghost" onClick={() => setConfirmEnd(false)}>Keep transfer</button>
+        </Tooltip>
+      </> : <Tooltip label="Review ending this transfer while retaining its checkout">
+        <button className="btn" disabled={busy} onClick={() => setConfirmEnd(true)}>End transfer</button>
+      </Tooltip>)}
     </div>
     {message && <p className="report-sub" role="status">{message}</p>}
   </div>;
@@ -49,8 +58,12 @@ export function SessionTransfers({ page }: { page: SessionTransferPage }): React
     {shown?.transfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} />)}
     {error && <p role="status">{error}</p>}
     <div className="report-row-actions">
-      {offset > 0 && <button className="btn" onClick={() => { setExtra(null); setOffset(Math.max(0, offset - 100)); }}>Previous transfers</button>}
-      {Boolean(shown?.overflow) && <button className="btn" onClick={() => { setExtra(null); setOffset(offset + 100); }}>More transfers ({shown!.overflow})</button>}
+      {offset > 0 && <Tooltip label="Show the previous page of unresolved terminal transfers">
+        <button className="btn" onClick={() => { setExtra(null); setOffset(Math.max(0, offset - 100)); }}>Previous transfers</button>
+      </Tooltip>}
+      {Boolean(shown?.overflow) && <Tooltip label="Show the next page of unresolved terminal transfers">
+        <button className="btn" onClick={() => { setExtra(null); setOffset(offset + 100); }}>More transfers ({shown!.overflow})</button>
+      </Tooltip>}
     </div>
   </section>;
 }

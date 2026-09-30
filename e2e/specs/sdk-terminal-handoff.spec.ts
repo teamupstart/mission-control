@@ -230,6 +230,13 @@ test("default Continue keeps an uncertain transfer visible after source removal 
     await expectContentClearsBorder(sitrep);
     expect(await transfer.locator(".report-sub").evaluateAll((nodes) => nodes.every((node) => node.scrollWidth <= node.clientWidth + 1))).toBe(true);
     await expect(transfer.getByRole("button", { name: "End transfer", exact: true })).toHaveCount(0);
+    await expect(transfer.getByRole("button", { name: "Check again" })).toHaveAccessibleDescription("Look for the original terminal attempt without launching another agent");
+    await transfer.getByRole("button", { name: "Check again" }).hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Look for the original terminal attempt without launching another agent");
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(evidence, { recursive: true });
+      await dashboard.screenshot({ path: join(evidence, "recheck-tooltip.png") });
+    }
     await transfer.getByRole("button", { name: "Check again" }).click();
     await expect(transfer.getByRole("status")).toHaveText("Transfer checked.");
     expect(readFileSync(join(daemon.recordDir, "terminal-launches.log"), "utf8").trim().split("\n")).toHaveLength(1);
@@ -298,6 +305,7 @@ test.describe("Sitrep pagination", () => {
     await expect(rows.last()).toHaveAccessibleName("Terminal transfer: Pending transfer 100");
     await expect(previous).toHaveCount(0);
     await expect(more).toHaveText("More transfers (1)");
+    await expect(more).toHaveAccessibleDescription("Show the next page of unresolved terminal transfers");
 
     await more.click();
     await expect(rows).toHaveCount(1);
@@ -305,6 +313,7 @@ test.describe("Sitrep pagination", () => {
     await expect(first).toHaveCount(0);
     await expect(more).toHaveCount(0);
     await expect(previous).toBeVisible();
+    await expect(previous).toHaveAccessibleDescription("Show the previous page of unresolved terminal transfers");
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(evidence, { recursive: true });
       await dashboard.screenshot({ path: join(evidence, "transfers-second-page.png") });
@@ -344,8 +353,11 @@ test.describe("safe resolution", () => {
     await expectContentClearsBorder(dialog);
     const row = dialog.getByRole("group", { name: `Terminal transfer: ${source.name}` });
     await expect(row).toContainText("Task ownership or work attempt changed");
+    await expect(row.getByRole("button", { name: "End transfer", exact: true })).toHaveAccessibleDescription("Review ending this transfer while retaining its checkout");
     await row.getByRole("button", { name: "End transfer", exact: true }).click();
     await expect(row.getByRole("button", { name: "Confirm end transfer" })).toBeVisible();
+    await expect(row.getByRole("button", { name: "Confirm end transfer" })).toHaveAccessibleDescription("End this transfer after rechecking absence and retain its checkout");
+    await expect(row.getByRole("button", { name: "Keep transfer" })).toHaveAccessibleDescription("Leave this transfer available for recovery");
     await expectContentClearsBorder(dialog);
     expect(await row.getByText("End this transfer and retain its checkout?", { exact: true })
       .evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);

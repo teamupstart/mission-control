@@ -108,8 +108,8 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
     // The vendor query deliberately exposes no PID. Its supported local-spawn seam
     // lets the owning driver supply exact lifetime evidence without guessing by cwd
     // or replacing the SDK's stdin, abort, or process-cleanup protocol.
-    options.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
-      const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    options.spawnClaudeCodeProcess = ({ command: executable, args, cwd, env, signal }) => {
+      const child = spawn(executable, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       recoveryProcessId = child.pid ?? null;
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (data: string) => {

@@ -1904,13 +1904,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflows?.resumeNeedsEvidence(session) ?? false,
       task ? Boolean(ensembles?.store.memberForTask(task.id)) : false));
   };
-  const transfers = deps.sessionTransfers ?? new SessionTransferCoordinator(registry, {
-    workflows, reviews, settleTask: handoffDeps?.settleTask ?? ((id) => tasks.settleAfterFailedHandoff(id)),
-    taskBlocked: (id) => tasks.taskCleanupIsReserved?.(id) ?? false,
-  });
-  if (!deps.sessionTransfers) transfers.start();
+  let transfers = deps.sessionTransfers ?? handoffDeps?.transfers;
+  const transferCoordinator = (): SessionTransferCoordinator => {
+    if (!transfers) {
+      // The daemon injects its already-started owner. Legacy compositions only need an
+      // owner when they use a transfer; constructing unrelated routes must not recover
+      // durable work or subscribe to services those routes do not consume.
+      transfers = new SessionTransferCoordinator(registry, {
+        workflows, reviews, settleTask: handoffDeps?.settleTask ?? ((id) => tasks.settleAfterFailedHandoff(id)),
+        taskBlocked: (id) => tasks.taskCleanupIsReserved?.(id) ?? false,
+      });
+      transfers.start();
+    }
+    return transfers;
+  };
   const defaultHandoffDeps: HandoffDeps = {
-    transfers,
     spawn: spawnManagedResume,
     waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
     settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
@@ -1929,9 +1937,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       };
     }
     let label = "default terminal";
+    const handoff = { ...defaultHandoffDeps, transfers: transferCoordinator() };
     const deps = backend
       ? {
-          ...defaultHandoffDeps,
+          ...handoff,
           backend,
           spawn: async (input: Parameters<typeof spawnManagedResume>[0]) => {
             const launched = await launchManagedAgentTerminal(backend, input, terminalLauncher);
@@ -1952,9 +1961,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             };
           },
         }
-      : defaultHandoffDeps;
+      : handoff;
     const result = session.state === "exited"
-      ? await transfers.resumeExited(session, sdkSessions, deps)
+      ? await deps.transfers.resumeExited(session, sdkSessions, deps)
       : await handOffToTerminal(registry, sdkSessions!, session, deps);
     return { ...result, label };
   };
@@ -1971,14 +1980,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, RecheckSessionTransferSchema);
     if (!parsed.ok) return parsed.res;
     if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
-    return c.json({ ok: true, transfer: transferSummary(await transfers.recheck(c.req.param("id"))) });
+    return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().recheck(c.req.param("id"))) });
   });
   app.post("/api/session-transfers/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveSessionTransferSchema);
     if (!parsed.ok) return parsed.res;
     if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
     try {
-      return c.json({ ok: true, transfer: transferSummary(await transfers.resolve(c.req.param("id"), parsed.data.revision)) });
+      return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().resolve(c.req.param("id"), parsed.data.revision)) });
     } catch (error) { return c.json({ ok: false, error: error instanceof Error ? error.message : "Transfer cannot be ended safely" }, 409); }
   });
 

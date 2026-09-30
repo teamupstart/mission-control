@@ -4,7 +4,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { episodeOutcome } from "../src/shared/foreman.ts";
-import { formDelivered } from "../src/server/actions.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { FormOutcome } from "../src/shared/protocol.ts";
 
@@ -28,6 +27,7 @@ import type { FormOutcome } from "../src/shared/protocol.ts";
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-note-retire-"));
 process.env.HARNESS_HOME = home;
+const { formDelivered } = await import("../src/server/actions.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { episodesFor } = await import("../src/server/db.ts");
 

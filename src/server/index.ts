@@ -1,9 +1,9 @@
-import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 // FIRST, and above every other local import: renames a state dir from an older name
 // onto ~/.mission-control. ES modules evaluate imports in source order, so this runs
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";

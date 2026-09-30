@@ -17,7 +17,7 @@ Implement this as one coherent change in this session after approval, in the dep
 1. Ask a scout, ship, bugfix, plan, pipeline, chat, or taskless session to produce a report.
 2. The agent writes `docs/reports/<unique-slug>/report.html` and calls `submit_scout_artifacts`. It receives a link/key for that report and a confirmation that publication succeeded, without an instruction to stop working.
 3. Ask for another report in the same session. A different directory produces a second archive. Both reports remain independently readable, searchable, renameable, and deletable.
-4. Open the session's **Scouts** detail tab to see its reports. Opening an entry uses the existing archive reader. The main Scouts library also lists every report separately and can filter to the originating session.
+4. Open the session's **Scouts** detail tab to see its reports. Selecting an entry previews its source in Files; **Open archive** reads the immutable published copy in the existing archive reader. The main Scouts library also lists every report separately and can filter to the originating session.
 5. Retry the same report submission after a lost response. The existing archive is returned; the library does not gain a duplicate.
 6. Finish the underlying task through its normal completion path. A scout task still requires its submitted reports to be complete. Other task kinds keep their existing completion and workflow rules.
 
@@ -146,7 +146,7 @@ Startup resumes durable submitted jobs for both task-owned and taskless sessions
 
 Add a **Scouts** tab immediately left of **Diff** through `src/web/lib/detailTabs.ts` and the shared `layouts/ConsoleDetail.tsx`, which serves both Board and Console detail. The tab shows a bounded, paginated list for the selected session, including report title, submission time, and available archive state. An empty list says that reports explicitly requested from this session will appear here.
 
-Open reports in the existing Scouts reader. Extend the existing Scouts route/filter state with source-session filtering and show source-session context in the reader. Reuse current search, rename, delete, and archive-key navigation. No new top-level navigation segment is needed.
+Select a report to open its recorded source path in the existing Files preview. Keep **Open archive** beside each report for its immutable published copy in the existing Scouts reader, including when the source has changed or disappeared. Extend the existing Scouts route/filter state with source-session filtering and show source-session context in the reader. Reuse current search, rename, delete, and archive-key navigation. No new top-level navigation segment is needed.
 
 Fetch the relationship on demand and refresh it from the existing `archive_changed` revision. Do not place an unbounded archive array on `Session` or the global SSE snapshot. Make loading, empty, and error states distinct. Test tab overflow and keyboard access at narrow widths using the existing detail-tab layout machinery.
 
@@ -306,3 +306,13 @@ defines that order for Board, Console, and keyboard navigation. All 85 focused c
 MCP, SDK, environment, archive, and tab tests pass. The built browser feature flow passes with
 the tab order asserted in both layouts and fresh screenshots captured. Typecheck, lint, build,
 and bundle smoke checks pass; lint retains existing warnings.
+
+The follow-up Files navigation reuses the existing session file controller and HTML preview.
+Report cards resolve the archived primary artifact's original path; the adjacent archive
+action still reads the immutable copy. Failed metadata reads stay in Scouts with a retryable
+error, and leaving the pane aborts pending navigation. Both Console and Board are covered.
+
+The second Inspector repair restores state migration as the daemon's first import, before
+scout credential modules can load config transitively. The strengthened migration test fails
+against the prior order and passes with the fix. The Diff keyboard browser case also walks
+through Scouts before Diff, matching the requested tab order.

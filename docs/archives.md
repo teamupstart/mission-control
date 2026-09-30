@@ -689,7 +689,11 @@ only after the daemon confirms; a refusal keeps the dialog open with the reason.
 
 The shared Board/Console detail has a **Scouts** tab immediately left of **Diff** (Shift+Y by default). It lists separate
 reports with their titles, status, and publication time, with loading, empty, and retry states.
-Opening one uses the existing reader and retains a `session`, `producer`, and `kind=scout`
+Selecting a report opens its recorded source path in the session's **Files** preview. This
+shows the current checkout file; if it has been removed or changed, the immutable published
+copy remains available through the report's **Open archive** button. A missing recorded path
+or failed metadata read keeps the Scouts tab open with an error and the archive control available.
+**Open archive** uses the existing reader and retains a `session`, `producer`, and `kind=scout`
 filter in the URL. The reader’s **Source session** control applies the same filter and the
 session filter can be cleared independently. Session filters default to the local producer;
 foreign producer/session pairs are explicit. These filters read manifest provenance, so they

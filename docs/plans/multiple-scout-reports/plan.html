@@ -17,7 +17,7 @@
 <li>Ask a scout, ship, bugfix, plan, pipeline, chat, or taskless session to produce a report.</li>
 <li>The agent writes <code>docs/reports/&lt;unique-slug&gt;/report.html</code> and calls <code>submit_scout_artifacts</code>. It receives a link/key for that report and a confirmation that publication succeeded, without an instruction to stop working.</li>
 <li>Ask for another report in the same session. A different directory produces a second archive. Both reports remain independently readable, searchable, renameable, and deletable.</li>
-<li>Open the session&#x27;s <strong>Scouts</strong> detail tab to see its reports. Opening an entry uses the existing archive reader. The main Scouts library also lists every report separately and can filter to the originating session.</li>
+<li>Open the session&#x27;s <strong>Scouts</strong> detail tab to see its reports. Selecting an entry previews its source in Files; <strong>Open archive</strong> reads the immutable published copy in the existing archive reader. The main Scouts library also lists every report separately and can filter to the originating session.</li>
 <li>Retry the same report submission after a lost response. The existing archive is returned; the library does not gain a duplicate.</li>
 <li>Finish the underlying task through its normal completion path. A scout task still requires its submitted reports to be complete. Other task kinds keep their existing completion and workflow rules.</li>
 </ol>
@@ -83,7 +83,7 @@
 <p>Startup resumes durable submitted jobs for both task-owned and taskless sessions. Retain scout prompt journals while their episode can produce more reports; freeze a bounded snapshot into each new job, without recollecting on retries. Clear coordination state only after that episode is definitively closed and all owed jobs have frozen what they need, with restart reconciliation. Non-scout reports do not trigger broad transcript retention.</p>
 <h3>5. Expose the relationship using existing UI owners</h3>
 <p>Add a <strong>Scouts</strong> tab immediately left of <strong>Diff</strong> through <code>src/web/lib/detailTabs.ts</code> and the shared <code>layouts/ConsoleDetail.tsx</code>, which serves both Board and Console detail. The tab shows a bounded, paginated list for the selected session, including report title, submission time, and available archive state. An empty list says that reports explicitly requested from this session will appear here.</p>
-<p>Open reports in the existing Scouts reader. Extend the existing Scouts route/filter state with source-session filtering and show source-session context in the reader. Reuse current search, rename, delete, and archive-key navigation. No new top-level navigation segment is needed.</p>
+<p>Select a report to open its recorded source path in the existing Files preview. Keep <strong>Open archive</strong> beside each report for its immutable published copy in the existing Scouts reader, including when the source has changed or disappeared. Extend the existing Scouts route/filter state with source-session filtering and show source-session context in the reader. Reuse current search, rename, delete, and archive-key navigation. No new top-level navigation segment is needed.</p>
 <p>Fetch the relationship on demand and refresh it from the existing <code>archive_changed</code> revision. Do not place an unbounded archive array on <code>Session</code> or the global SSE snapshot. Make loading, empty, and error states distinct. Test tab overflow and keyboard access at narrow widths using the existing detail-tab layout machinery.</p>
 <h3>6. Align agent instructions and documentation</h3>
 <p>Update <code>submit_scout_artifacts</code> descriptions/results to say “this report was archived” and return the specific archive key/link. Tell agents that each additional report uses a unique directory, that same-directory publication is a retry, and that submitting does not finish a task.</p>
@@ -196,4 +196,12 @@ obsolete public-ID files. Capability rotation still takes effect without restart
 defines that order for Board, Console, and keyboard navigation. All 85 focused capability,
 MCP, SDK, environment, archive, and tab tests pass. The built browser feature flow passes with
 the tab order asserted in both layouts and fresh screenshots captured. Typecheck, lint, build,
-and bundle smoke checks pass; lint retains existing warnings.</p></main></body></html>
+and bundle smoke checks pass; lint retains existing warnings.</p>
+<p>The follow-up Files navigation reuses the existing session file controller and HTML preview.
+Report cards resolve the archived primary artifact&#x27;s original path; the adjacent archive
+action still reads the immutable copy. Failed metadata reads stay in Scouts with a retryable
+error, and leaving the pane aborts pending navigation. Both Console and Board are covered.</p>
+<p>The second Inspector repair restores state migration as the daemon&#x27;s first import, before
+scout credential modules can load config transitively. The strengthened migration test fails
+against the prior order and passes with the fix. The Diff keyboard browser case also walks
+through Scouts before Diff, matching the requested tab order.</p></main></body></html>

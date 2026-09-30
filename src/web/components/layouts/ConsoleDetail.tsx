@@ -172,7 +172,7 @@ function useIntent(
  * The shared Console and Board detail pane: a tabbed reading of one session.
  *
  * The chrome is fixed and always on screen (who this is, where it lives, its controls);
- * only the body switches between Conversation, Work queue, Workflows, Diff and Files. That
+ * only the body switches between Conversation, Work queue, Workflows, Scouts, Diff and Files. That
  * is the whole point of a split-pane console: each section gets a tab instead of stacking
  * and competing for height.
  *
@@ -889,7 +889,8 @@ export function ConsoleDetail({
         {tab === "scouts" && (
           <div ref={paneRef} className="detail-pane">
             <SessionScoutsPane sessionId={session.id} revision={view.archivesRevision ?? 0}
-              onOpen={(archive) => view.onOpenScout?.(archive.key, session.id, archive.producerId)} />
+              onOpenFile={(path) => view.onOpenFilePath(session.id, path)}
+              onOpenArchive={(archive) => view.onOpenScout?.(archive.key, session.id, archive.producerId)} />
           </div>
         )}
 

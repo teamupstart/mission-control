@@ -35218,5 +35218,6 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 .session-scouts-report:hover { border-color: var(--working); }
 .session-scouts-report span { color: var(--muted); font-size: 12px; }
+.session-scouts-archive { margin-top: 6px; }
 .scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .scouts-source-session > span { font-size: 12px; color: var(--muted); }

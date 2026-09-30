@@ -187,7 +187,8 @@ of missing or incomplete evidence.
 
 Open a session’s **Scouts** tab, immediately left of **Diff**, to browse its reports, or filter the **Scouts** library by
 source session. Retrying a report path returns its existing archive; publish revisions under a
-new slug. Read more in [Archives](docs/archives.md).
+new slug. Select a report card to preview its source in **Files**, or **Open archive** to read
+the immutable published copy. Read more in [Archives](docs/archives.md).
 
 SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
 internal launch secret, not a setting to configure. Public session IDs cannot select report

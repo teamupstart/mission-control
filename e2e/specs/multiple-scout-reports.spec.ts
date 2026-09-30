@@ -81,8 +81,12 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   await expect(loadMore).toHaveCount(0);
   await dashboard.unroute("**/api/archives?**");
   const firstReport = dashboard.getByRole("button", { name: "First finding", exact: true });
-  await firstReport.hover();
-  await expect(dashboard.locator(".tooltip")).toHaveText("Open First finding");
+  // A pending archive event can replace the list after paging. Hover the current
+  // button again if that replacement retired the tooltip's original anchor.
+  await expect(async () => {
+    await firstReport.hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Open First finding in Files", { timeout: 1000 });
+  }).toPass();
   const hoverColor = await firstReport.evaluate((element) => {
     const probe = document.createElement("span");
     probe.style.color = "var(--working)";
@@ -98,7 +102,25 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
     mkdirSync(directory, { recursive: true });
     await dashboard.screenshot({ path: join(directory, "session-reports.png"), fullPage: true });
   }
+  await dashboard.route("**/api/archives/*", (route) => route.fulfill({ status: 503, json: { error: "Report metadata unavailable" } }));
   await dashboard.getByRole("button", { name: "Second finding", exact: true }).click();
+  await expect(dashboard.getByRole("alert")).toContainText("Report metadata unavailable");
+  await expect(scoutsTab).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByRole("button", { name: "Open archived Second finding", exact: true })).toBeEnabled();
+  await dashboard.unroute("**/api/archives/*");
+  await dashboard.getByRole("button", { name: "Second finding", exact: true }).click();
+  await expect(dashboard.getByRole("tab", { name: /Files/ })).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.frameLocator('iframe[title="Preview of docs/reports/second-report/report.html"]')
+    .getByText("the resume path never replayed the repository grant.")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.screenshot({ path: join(directory, "report-files.png"), fullPage: true });
+  }
+  await scoutsTab.click();
+  await dashboard.getByRole("button", { name: "First finding", exact: true }).click();
+  await expect(dashboard.frameLocator('iframe[title="Preview of docs/reports/first-report/report.html"]')
+    .getByText("the resume path never replayed the repository grant.")).toBeVisible();
+  await scoutsTab.click();
+  await dashboard.getByRole("button", { name: "Open archived Second finding", exact: true }).click();
   await expect(dashboard).toHaveURL(/#\/scouts\/.*session=/);
   await expect(dashboard.getByText("Source session", { exact: true })).toBeVisible();
   await dashboard.locator(".scouts-source-session").getByRole("button").hover();
@@ -146,4 +168,8 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   await expect(dashboard.getByRole("tab")).toHaveText(tabOrder);
   await expect(dashboard.getByRole("button", { name: "First finding", exact: true })).toBeVisible();
   await expect(dashboard.getByRole("button", { name: "Second finding renamed", exact: true })).toHaveCount(0);
+  await dashboard.getByRole("button", { name: "First finding", exact: true }).click();
+  await expect(dashboard.getByRole("tab", { name: /Files/ })).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.frameLocator('iframe[title="Preview of docs/reports/first-report/report.html"]')
+    .getByText("the resume path never replayed the repository grant.")).toBeVisible();
 });

@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { holdOpenDocument } from "../fixtures/hold-open-document.ts";
 
 /**
  * Comment mode where a person actually reads a spec: on the RENDERED document.
@@ -912,6 +913,9 @@ test.describe("commenting on a rendered document", () => {
     dashboard: page,
     daemon,
   }) => {
+    // The render has to stay stale until the click, which the open document's re-check would
+    // otherwise race. Refresh is an ordinary read, so the remedy below still reaches the daemon.
+    await holdOpenDocument(page);
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);

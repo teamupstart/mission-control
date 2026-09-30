@@ -1340,12 +1340,25 @@ the agent restored the text, or you put it back yourself, the comment simply goe
 A comment further down the queue is marked *moved* in place and you meet it when it reaches the
 head.
 
-The review also pauses when the session cannot take a message at all, when the file a comment is
-anchored to has left the checkout, and when Mission Control could not confirm a comment reached
-the agent - that last one is the ordinary **Retry** and
-**Mark sent** pair in the conversation, and choosing either on *that comment's* turn resumes the
-review. Resolving some other message you had queued does not, and neither lifts a pause you
-pressed yourself.
+**A reply in a thread the agent has already seen is never held for its quote.** The hold is for
+a comment the agent has not read yet. Once a thread has reached the agent, its quote usually
+stops resolving *because* the agent rewrote that text in answer, and the agent knows what it
+changed. So a follow-up still goes, marked *moved*, and it reaches the agent with a line saying
+the quoted text is what the thread started on and is no longer in the file, or that the file has
+left the checkout. Keep replying in the same thread for as long as the iteration takes.
+
+**The open file follows the file on disk.** While a file is open in the Files tab it is
+re-checked every couple of seconds, and at once when the agent answers one of its threads, so an
+agent's edit re-renders in Preview or the Editor without leaving the file and coming back. A
+check that finds nothing new sends no text. An Editor buffer holding your own unsaved edits is
+never replaced; a newer file on disk still reaches you as the ordinary save conflict.
+
+The review also pauses when the session cannot take a message at all, when the file a comment
+the agent has not seen yet is anchored to has left the checkout (a follow-up in a thread the agent
+has already seen still goes, as described above), and when Mission Control could not confirm a
+comment reached the agent - that last one is the ordinary **Retry** and **Mark sent** pair in the
+conversation, and choosing either on *that comment's* turn resumes the review. Resolving some
+other message you had queued does not, and neither lifts a pause you pressed yourself.
 
 Nothing here lives in the browser. A daemon restart mid-review resumes rather than re-sends: a
 comment that was in flight when the daemon went down surfaces as a paused review awaiting one

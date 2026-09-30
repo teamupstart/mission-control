@@ -110,6 +110,7 @@ function controller(over: Partial<SessionFileDocument> = {}): SessionFilesContro
     pathIndex: {},
     ensure: noop,
     refresh: noop,
+    recheck: noop,
     warmPaths: noop,
     probe: async () => true,
     select: noop,

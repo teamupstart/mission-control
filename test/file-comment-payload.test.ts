@@ -48,6 +48,20 @@ test("one comment renders as the turn plan.md specifies", () => {
   );
 });
 
+test("a follow-up whose quote no longer resolves says the quote is the thread's original text", () => {
+  const current = renderFileCommentPayload({ ...BASE, anchor: "current" }).payload;
+  assert.equal(current, renderFileCommentPayload(BASE).payload, "a resolving quote adds nothing");
+
+  const outdated = renderFileCommentPayload({ ...BASE, anchor: "outdated" }).payload;
+  assert.match(
+    outdated,
+    /^docs\/plans\/x\/plan\.md, lines 84-86:\nThe quoted text is no longer in the file: it is what this thread started on, and the file has changed since\. Read the file as it is now\.\n\n> the paragraph/m,
+  );
+
+  const missing = renderFileCommentPayload({ ...BASE, anchor: "missing" }).payload;
+  assert.match(missing, /^This file is no longer in this checkout\. The quoted text is what this thread started on\.$/m);
+});
+
 test("the position line states how many follow, which is the whole mitigation", () => {
   // The one thing a batch does better is that the agent can see the shape of the review. This
   // line is what buys that back, so an agent on comment three does not restructure the

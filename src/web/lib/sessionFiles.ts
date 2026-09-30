@@ -1,7 +1,7 @@
 import { featureAction } from "./experience.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionFileDocument, SessionFileEntry } from "@shared/types.ts";
-import { api } from "./api.ts";
+import { api, type SessionFileRecheck } from "./api.ts";
 import { pathDefaultsToPreview } from "./workspaceLinks.ts";
 
 export type FileSaveState =
@@ -56,6 +56,11 @@ export interface SessionFilesController {
   pathIndex: Record<string, ReadonlySet<string>>;
   ensure: (sessionId: string) => void;
   refresh: (sessionId: string) => void;
+  /**
+   * Re-read one open document if it has moved on disk since it was loaded, so an agent's edit
+   * re-renders where the reader is looking. A buffer with local edits is left alone.
+   */
+  recheck: (sessionId: string, path: string) => void;
   /** Refresh `pathIndex` when a session conversation mounts, retaining the old set in flight. */
   warmPaths: (sessionId: string) => void;
   probe: (sessionId: string, path: string) => Promise<boolean>;
@@ -183,6 +188,30 @@ export function applyFileLoadSuccess(
       },
     },
   };
+}
+
+/**
+ * Apply a re-check of an open document.
+ *
+ * A failed check keeps what is on screen: a file mid-rewrite or briefly gone reads as a failure
+ * here, and blanking the reader for it would be worse than one stale frame. The next check that
+ * succeeds brings the document up to date as usual.
+ *
+ * A newer file applies only onto the buffer the check was taken against: still clean, and still
+ * at `known`. The check is a round trip, and anything that lands inside it - a keystroke, the
+ * reader's own save, a newer load - is fresher than this answer, so the answer is dropped rather
+ * than allowed to put an older disk read over it.
+ */
+export function applyFileRecheck(
+  state: SessionFilesState,
+  filePath: string,
+  known: string,
+  result: SessionFileRecheck,
+): SessionFilesState {
+  if (!result.ok || result.unchanged) return state;
+  const current = state.buffers[filePath];
+  if (!current || hasLocalFileChanges(current) || current.document.revision !== known) return state;
+  return applyFileLoadSuccess(state, filePath, result.file, true);
 }
 
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
@@ -476,6 +505,21 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     });
   }, [loadFile, update, updateExisting]);
 
+  const recheck = useCallback((sessionId: string, filePath: string) => {
+    const buffer = sessionsRef.current[sessionId]?.buffers[filePath];
+    // A buffer with edits of its own is the conflict path's business, and its save will
+    // report a newer file on disk as a conflict rather than have it overwritten here.
+    if (!buffer || hasLocalFileChanges(buffer) || !buffer.document.revision) return;
+    const key = `${sessionId}\0recheck\0${filePath}`;
+    if (inFlight.current.has(key)) return;
+    inFlight.current.add(key);
+    const known = buffer.document.revision;
+    void api.readFileIfChanged(sessionId, filePath, known).then((result) => {
+      inFlight.current.delete(key);
+      updateExisting(sessionId, (s) => applyFileRecheck(s, filePath, known, result));
+    });
+  }, [updateExisting]);
+
   const setMode = useCallback((sessionId: string, mode: "preview" | "editor") => {
     update(sessionId, (s) => ({ ...s, mode }));
   }, [update]);
@@ -541,10 +585,10 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, []);
 
   return useMemo(() => ({
-    sessions, pathIndex, ensure, refresh, warmPaths, probe, select, setMode, edit, flush,
+    sessions, pathIndex, ensure, refresh, recheck, warmPaths, probe, select, setMode, edit, flush,
     retry, reloadDisk, overwriteDisk, drop,
   }), [
-    sessions, pathIndex, ensure, refresh, warmPaths, probe, select, setMode, edit, flush,
+    sessions, pathIndex, ensure, refresh, recheck, warmPaths, probe, select, setMode, edit, flush,
     retry, reloadDisk, overwriteDisk, drop,
   ]);
 }

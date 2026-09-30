@@ -3081,7 +3081,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     try {
-      return c.json(await readWorkspaceDocument(session.id, parsed.data.path));
+      const document = await readWorkspaceDocument(session.id, parsed.data.path);
+      // `known` is the revision the reader already holds. The open document is re-checked
+      // while it is on screen, so an agent's edit re-renders without a reload, and a check
+      // that found nothing new should not ship up to 2 MiB back to say so.
+      const known = c.req.query("known");
+      if (known && document.revision && known === document.revision) {
+        return c.json({ unchanged: true, revision: document.revision });
+      }
+      return c.json(document);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403

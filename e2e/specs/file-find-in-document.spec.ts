@@ -579,26 +579,30 @@ test("find in an HTML preview marks the words a reader can see, and counts only 
     const range = found ? [...found][0] : undefined;
     return range?.startContainer.parentElement?.closest("p")?.id ?? null;
   });
-  const ring: (string | null)[] = [];
-  const expectedRing = ["visible-one", "reasserted", "visible-two"];
-  for (let step = 0; step !== 3; step++) {
-    await expect(readout(dashboard)).toHaveText(`${step + 1} / 3`);
-    // The parent paints its count before postMessage reaches the sandbox. Wait for the
-    // rendered highlight too, so this assertion observes the completed navigation.
-    await expect.poll(holderOf).toBe(expectedRing[step]);
-    ring.push(await holderOf());
-    expect((await highlighted(frame)).current).toHaveLength(1);
-    if (step === 1) await shoot(dashboard, "html-in-frame-highlight");
-    await dashboard.keyboard.press("Enter");
-  }
   /*
    * Document order, and every id names a paragraph a reader can see.
    *
    * `#reasserted` between them is the assertion that a hidden subtree is DESCENDED into rather
    * than skipped; its unnamed hidden sibling never appears, which is the assertion that
    * descending did not cost the gate.
+   *
+   * Each step is POLLED on the frame rather than read once. The readout is the parent's and the
+   * highlight is the frame's, and the frame hears about a step by `postMessage` - so the
+   * readout can say "2 / 3" a beat before the frame has moved its current hit. A single read
+   * straight after the readout sometimes caught the previous hit and recorded `reasserted`
+   * twice. Polling waits for the frame to arrive; it cannot accept a wrong order, because each
+   * step must reach its own expected paragraph before the next press.
    */
-  expect(ring).toEqual(expectedRing);
+  const ring = ["visible-one", "reasserted", "visible-two"];
+  for (let step = 0; step !== ring.length; step++) {
+    await expect(readout(dashboard)).toHaveText(`${step + 1} / 3`);
+    await expect
+      .poll(holderOf, { message: `find step ${step + 1} never highlighted #${ring[step]}` })
+      .toBe(ring[step]);
+    expect((await highlighted(frame)).current).toHaveLength(1);
+    if (step === 1) await shoot(dashboard, "html-in-frame-highlight");
+    await dashboard.keyboard.press("Enter");
+  }
   // The ring wrapped to the top on the last press of that loop.
   await expect(readout(dashboard)).toHaveText("1 / 3");
   await expect.poll(holderOf).toBe("visible-one");

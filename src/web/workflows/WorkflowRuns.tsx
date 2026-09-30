@@ -101,6 +101,7 @@ import {
   inspectorGateSentence,
   inspectorFooterStatus,
   latestAttemptsFor,
+  elapsedSpansFor,
   nodeStatusesForSubmission,
   readCapturedContext,
   readinessActionLabel,
@@ -3520,6 +3521,7 @@ export function WorkflowRunView({
     ...roundAttempts.filter((attempt) => attempt.sessionAction !== null),
   ];
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
+  const elapsedByNode = elapsedSpansFor(detail, viewed?.id ?? null);
   /*
    * Session actions leave; the Session, join and End attempts never belonged here at all - see
    * `reviewerAttempts`, which is also what keeps a queued or errored reviewer in the list.
@@ -4042,6 +4044,7 @@ export function WorkflowRunView({
               : previous ? checkOutcomeOf(previous)?.status ?? null : null;
           }}
           inherited={inherited}
+          elapsed={elapsedByNode}
           onOpenRound={selectRound}
           actionWaitFor={(nodeId) => {
             // The attempt's OWN durable state, not `summary.actionWait`. A repair round can

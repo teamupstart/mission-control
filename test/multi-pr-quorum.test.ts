@@ -1,6 +1,5 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { syntheticTaskManagers } from "./helpers/task-manager-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,8 +32,7 @@ import {
 const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-quorum-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const createTaskManager = syntheticTaskManagers(TaskManager);
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -174,7 +172,7 @@ function discovered(id: string, cwd: string): DiscoveredSession {
  */
 function fixture(id: string, over: Partial<Task> = {}) {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const taskId = `task-${id}`;
   const cwd = `/wt/${id}-0`;
   const extraCwd = `/wt/${id}-1`;

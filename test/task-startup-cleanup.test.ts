@@ -12,7 +12,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const {
   INTERRUPTED_BEFORE_PROVISION_ERROR,
   TaskManager,
-} = await import("../src/server/tasks.ts");
+} = await import("./helpers/task-manager-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

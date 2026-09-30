@@ -1,6 +1,5 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { syntheticTaskManagers } from "./helpers/task-manager-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +11,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const createTaskManager = syntheticTaskManagers(TaskManager);
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { PrUrlPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const {
@@ -79,7 +77,7 @@ async function historicalTaskSetup(
   includeBeforePrompt: boolean,
 ) {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = `historical-task-${suffix}`;
   const prerequisiteId = `historical-prerequisite-${suffix}`;
   const cwd = `/repo/historical-task-${suffix}`;
@@ -165,7 +163,7 @@ async function historicalTaskSetup(
 
 async function delayedTaskMergeSetup(suffix: string) {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = `delayed-task-${suffix}`;
   const prerequisiteId = `delayed-task-prerequisite-${suffix}`;
   const cwd = `/repo/delayed-task-${suffix}`;
@@ -296,7 +294,7 @@ function addStandaloneSessionDependent(
 
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.upsertTask(baseTask({ id: "force-pre", title: "Merge the foundation" }));
 
   const dependent = tasks.create({
@@ -326,7 +324,7 @@ test("an unmet dependency forces a dispatch-now create into the backlog and bloc
 
 test("drag-to-assign refuses a declared blocker before touching the destination session", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.upsertTask(baseTask({ id: "assign-pre", title: "Schema PR" }));
   const dependent = tasks.create({
     ...createInput,
@@ -342,7 +340,7 @@ test("drag-to-assign refuses a declared blocker before touching the destination 
 
 test("a merged PR durably satisfies dependencies selected through an active task session", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.upsertTask(
     baseTask({
       id: "merge-pre",
@@ -398,7 +396,7 @@ test("a merged PR durably satisfies dependencies selected through an active task
 
 test("a satisfied standalone-session dependency stays satisfied after its PR chip clears and the task is edited", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.applyDiscovery([discovered("standalone-session", "/repo")]);
   registry.applyHook({
     agent: "claude",
@@ -445,7 +443,7 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
 
 test("new work after a merge starts a dependency episode on the same session and branch", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "same-session-new-work";
   const cwd = "/repo/same-session-new-work";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reused-work" })]);
@@ -513,7 +511,7 @@ test("new work after a merge starts a dependency episode on the same session and
 
 test("a delayed merge uses the first post-merge prompt across multiple prompts", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "merge-prompt-race";
   const cwd = "/repo/merge-prompt-race";
   const url = "https://github.com/example/repo/pull/83";
@@ -620,7 +618,7 @@ test("a delayed merge uses the first post-merge prompt across multiple prompts",
 
 test("persisted merge reconciliation preserves prompt ordering after session exit", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "exited-merge-prompt-race";
   const cwd = "/repo/exited-merge-prompt-race";
   const url = "https://github.com/example/repo/pull/85";
@@ -703,7 +701,7 @@ test("persisted merge reconciliation preserves prompt ordering after session exi
 for (const transition of ["branch change", "reset"] as const) {
   test(`historical merge ordering survives a ${transition}`, async () => {
     const registry = new Registry();
-    const tasks = createTaskManager(registry);
+    const tasks = new TaskManager(registry);
     const suffix = transition === "branch change" ? "branch" : "reset";
     const id = `historical-${suffix}`;
     const cwd = `/repo/historical-${suffix}`;
@@ -906,7 +904,7 @@ test("task dependency provenance survives terminal eviction and restart", async 
   assert.ok(setup.registry.dependencyPrPollTargets().includes(setup.url));
 
   const restarted = new Registry();
-  const restartedTasks = createTaskManager(restarted);
+  const restartedTasks = new TaskManager(restarted);
   assert.equal(restarted.getTask(setup.prerequisiteId), undefined);
   const retained = restarted.getTask(setup.afterPrompt.id)?.dependencies[0];
   assert.equal(retained?.type === "task" ? retained.prUrl : null, setup.url);
@@ -937,7 +935,7 @@ test("task dependency provenance survives terminal eviction and restart", async 
 
 test("high-fanout task merge batches provenance cleanup", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "task-fanout-session";
   const taskId = "task-fanout-prerequisite";
   const cwd = "/repo/task-fanout";
@@ -1302,7 +1300,7 @@ for (const [suffix, failureIndex, boundary] of [
 
 test("an assigned agent's post-merge episode rollover preserves running task ownership", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "owned-rollover";
   const cwd = "/repo/owned-rollover";
   registry.upsertTask(baseTask({
@@ -1421,7 +1419,7 @@ test("persisted dependency PR polling is bounded and backs off per URL", async (
 
 test("persisted dependency PRs keep merging after their sessions exit", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const standaloneId = "exited-standalone";
   const standaloneCwd = "/repo/exited-standalone";
   const assignedId = "exited-assigned";
@@ -1519,7 +1517,7 @@ test("persisted dependency PRs keep merging after their sessions exit", async ()
 
 test("a standalone dependency follows an expected reset identity rebind", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "standalone-reset-rebind";
   const cwd = "/repo/standalone-reset-rebind";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
@@ -1650,7 +1648,7 @@ test("an unconfirmed clear preserves the active episode until its PR merges", as
 
 test("old-identity work disarms a pending reset rebind", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "old-identity-resumed";
   const cwd = "/repo/old-identity-resumed";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
@@ -1910,7 +1908,7 @@ test("a delayed daemon restart resolves pending ownership from hook identity", (
   const pendingEpisode = registry.workEpisodeForSession(id)!;
 
   const restarted = new Registry();
-  const restartedTasks = createTaskManager(restarted);
+  const restartedTasks = new TaskManager(restarted);
   restarted.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/delayed-restart" })]);
   assert.equal(restarted.workEpisodeForSession(id)?.episodeId, pendingEpisode.episodeId);
   assert.equal(restarted.workEpisodeForSession(id)?.awaitingAgentRebind, true);
@@ -1966,7 +1964,7 @@ test("a delayed daemon restart resolves pending ownership from hook identity", (
 
 test("a reused standalone session cannot satisfy an earlier episode with an unrelated PR", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.applyDiscovery([
     discovered("reused-standalone", "/repo", { gitBranch: "feat/original" }),
   ]);
@@ -2007,7 +2005,7 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
   assert.equal(pinned?.type === "session" ? pinned.prUrl : null, "https://github.com/example/repo/pull/10");
 
   const restarted = new Registry();
-  const restartedTasks = createTaskManager(restarted);
+  const restartedTasks = new TaskManager(restarted);
   restarted.applyDiscovery([
     discovered("reused-standalone", "/repo", { gitBranch: "feat/unrelated" }),
   ]);
@@ -2047,7 +2045,7 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
 
 test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
 
   for (const state of ["open", "merged"] as const) {
     const id = `stale-${state}`;
@@ -2106,7 +2104,7 @@ test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
 
 test("an in-flight PR poll cannot cross work episodes", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "poll-race";
   const cwd = "/repo/poll-race";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/poll-old" })]);
@@ -2173,7 +2171,7 @@ test("an in-flight PR poll cannot cross work episodes", async () => {
 
 test("manual session reuse cannot complete the task from the discarded episode", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "manual-reuse";
   const cwd = "/repo/manual-reuse";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/task-work" })]);
@@ -2259,7 +2257,7 @@ test("manual session reuse cannot complete the task from the discarded episode",
 
 test("failed cleanup keeps cancelled task resource ownership durable", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.upsertTask(baseTask({
     id: "failed-cleanup-owner",
     status: "cancelled",
@@ -2280,7 +2278,7 @@ test("failed cleanup keeps cancelled task resource ownership durable", async () 
 
 test("a dependency follows its work episode from the default branch", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "default-promotion";
   const cwd = "/repo/default-promotion";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
@@ -2329,7 +2327,7 @@ test("a dependency follows its work episode from the default branch", () => {
 
 test("a pinned PR remains attributable after its head advances", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "advanced-pr-head";
   const cwd = "/repo/advanced-pr-head";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/advanced-head" })]);
@@ -2396,7 +2394,7 @@ test("a pinned PR remains attributable after its head advances", () => {
 
 test("a current-episode PR can first pin after its remote head advances", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "advanced-before-first-poll";
   const cwd = "/repo/advanced-before-first-poll";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/advanced-before-poll" })]);
@@ -2454,7 +2452,7 @@ test("a current-episode PR can first pin after its remote head advances", async 
 
 test("an unrelated hook PR hint cannot block the validated episode PR", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "replace-hook-pr-hint";
   const cwd = "/repo/replace-hook-pr-hint";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/hook-hint" })]);
@@ -2514,7 +2512,7 @@ test("an unrelated hook PR hint cannot block the validated episode PR", () => {
 
 test("reset ownership cannot be reconstructed from a reused cwd", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "reset-cwd";
   const cwd = "/repo/reset-cwd";
   registry.upsertTask(
@@ -2567,7 +2565,7 @@ test("reset ownership cannot be reconstructed from a reused cwd", () => {
 
 test("a missing branch observation preserves task episode ownership", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "missing-branch";
   const cwd = "/repo/missing-branch";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/stable-work" })]);
@@ -2625,7 +2623,7 @@ test("a missing branch observation preserves task episode ownership", () => {
 
 test("a historical merge on a reused branch cannot satisfy a new episode", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "historical-branch";
   const cwd = "/repo/historical-branch";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reused-name" })]);
@@ -2662,7 +2660,7 @@ test("a historical merge on a reused branch cannot satisfy a new episode", async
 
 test("a session without an agent episode cannot become a dependency", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   registry.applyDiscovery([
     discovered("unknown-episode", "/repo/unknown-episode", { gitBranch: "feat/unknown" }),
   ]);
@@ -2680,7 +2678,7 @@ test("a session without an agent episode cannot become a dependency", () => {
 
 test("a hookless session and its active task cannot become new dependencies", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "hookless-dependency";
   const cwd = "/repo/hookless-dependency";
   registry.applyDiscovery([
@@ -2722,7 +2720,7 @@ test("a hookless session and its active task cannot become new dependencies", ()
 
 test("running and dispatching tasks require a non-exited live session", () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   for (const status of ["running", "dispatching"] as const) {
     const id = `stale-${status}-dependency`;
     registry.upsertTask(baseTask({ id, status }));
@@ -2791,7 +2789,7 @@ test("running and dispatching tasks require a non-exited live session", () => {
 
 test("a scout dependency waits for its merged PR, while dependency cycles are refused", async () => {
   const registry = new Registry();
-  const tasks = createTaskManager(registry);
+  const tasks = new TaskManager(registry);
   const id = "scout-session";
   const cwd = "/repo/scout-session";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/scout" })]);

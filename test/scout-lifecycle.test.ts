@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, afterEach, beforeEach } from "node:test";
+import test, { after, beforeEach } from "node:test";
 import {
   ARCHIVE_PRIMARY_REPORT_PATH,
 } from "../src/shared/archives.ts";
@@ -41,7 +41,7 @@ process.env.HARNESS_HOME = home;
 process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
+const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("./helpers/task-manager-fixture.ts");
 const { LegacyTreehouseService } = await import("../src/server/worktrees/legacy-treehouse.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
@@ -61,27 +61,6 @@ beforeEach(() => {
 });
 
 let seq = 0;
-const managers: InstanceType<typeof TaskManager>[] = [];
-afterEach(async () => {
-  const current = managers.splice(0);
-  for (const manager of current) manager.stopMissionSessionClosures();
-  await Promise.all(current.map((manager) => manager.settleWorktreeReturns()));
-});
-
-function taskManager(...args: ConstructorParameters<typeof TaskManager>): InstanceType<typeof TaskManager> {
-  args[5] = {
-    // Foreground capture and teardown use real checkouts. Automatic completion returns
-    // have their own tests; these fabricated sessions must not trigger host process scans.
-    occupancy: async (paths) => new Map(paths.map((path) => [path, {
-      status: "unknown" as const, reason: "scout lifecycle fixture",
-    }])),
-    ...args[5],
-  };
-  const manager = new TaskManager(...args);
-  managers.push(manager);
-  return manager;
-}
-
 function mkdirp(dir: string): string {
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -140,7 +119,7 @@ function harness(options: {
     ...managerOptions,
   });
   registry.onSessionExit((session) => scouts.reserveOnExit(session));
-  const tasks = taskManager(registry, undefined, undefined, undefined, scouts);
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, scouts);
   return { registry, tasks, scouts, library };
 }
 
@@ -468,7 +447,7 @@ test("completion cannot overwrite a cancellation that finishes during archive ve
   );
 
   const pause = pauseCompletionGate(h.scouts);
-  const racingTasks = taskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
   const completion = racingTasks.complete(task.id, "found it");
   await pause.entered;
   assert.equal((await racingTasks.cancel(task.id)).ok, true);
@@ -492,7 +471,7 @@ test("completion cannot restore resources released by a concurrent reclaim", asy
   );
 
   const pause = pauseCompletionGate(h.scouts);
-  const racingTasks = taskManager(h.registry, undefined, undefined, undefined, pause.gate);
+  const racingTasks = new TaskManager(h.registry, undefined, undefined, undefined, pause.gate);
   const completion = racingTasks.complete(task.id, "found it");
   await pause.entered;
   assert.equal((await racingTasks.reclaim(task.id)).ok, true);
@@ -614,7 +593,7 @@ test("cleanup refuses new reports until the provider's checkout decision finishe
       if (outcome === "returned") rmSync(cwd, { recursive: true, force: true });
       return outcome === "returned" ? { outcome } : { outcome, reason: "fixture retains the checkout" };
     });
-    const controlled = taskManager(h.registry, undefined, undefined, undefined, h.scouts, {}, undefined, legacy);
+    const controlled = new TaskManager(h.registry, undefined, undefined, undefined, h.scouts, {}, undefined, legacy);
     const cleanup = controlled.cancel(task.id);
     try {
       await entered;
@@ -660,7 +639,7 @@ test("cancelling a launched scout stops it before recovery scans the checkout", 
   h.registry.upsertTask(task);
   bindSession(h, task, cwd);
   let stopped = false;
-  const controlled = taskManager(
+  const controlled = new TaskManager(
     h.registry,
     {
       resetWouldDestroyWork: async () => null,
@@ -703,7 +682,7 @@ test("terminal scout cleanup stops the agent before recovery scans the checkout"
     h.registry.upsertTask(task);
     bindSession(h, task, cwd);
     let stopped = false;
-    const controlled = taskManager(
+    const controlled = new TaskManager(
       h.registry,
       {
         resetWouldDestroyWork: async () => null,
@@ -743,7 +722,7 @@ test("a capture failure refuses the cleanup and keeps the resources tracked", as
     log: () => {},
     rename: () => Promise.reject(new Error("the disk went away")),
   });
-  const guarded = taskManager(h.registry, undefined, undefined, undefined, failing);
+  const guarded = new TaskManager(h.registry, undefined, undefined, undefined, failing);
 
   const refused = await guarded.reclaim(task.id);
   assert.equal(refused.ok, false);

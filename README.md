@@ -121,7 +121,7 @@ its pane's shell with `exec`, keeping Focus and input available. See [Harnesses 
 backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
 
 Read more in [Sessions and conversations](docs/sessions.md) and
-[the file review UI](docs/ui.md#walk-the-agent-through-your-review).
+[the file review UI](docs/ui.md#comments-go-to-the-agent-as-you-send-them).
 
 ## Dispatch and task types
 

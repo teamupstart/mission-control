@@ -1,6 +1,5 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { syntheticTaskManagers } from "./helpers/task-manager-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,8 +10,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-durable-merge-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
-const createTaskManager = syntheticTaskManagers(TaskManager);
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const {
   openDb,
@@ -168,7 +166,7 @@ test("the historical merge stamp is COALESCEd, never overwritten by a later obse
 test("a rollover archives the merged binding, and the departed agent lands on it", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
-  createTaskManager(registry);
+  new TaskManager(registry);
   const id = "durable-archive";
   const taskId = "durable-archive-task";
   const cwd = `/repo/${id}`;
@@ -233,7 +231,7 @@ test("a rollover archives the merged binding, and the departed agent lands on it
 test("an assigned agent's idle merge survives the provisional done-to-running rollover", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
-  createTaskManager(registry);
+  new TaskManager(registry);
   const id = "durable-idle-rollover";
   const taskId = "durable-idle-rollover-task";
   const cwd = `/repo/${id}`;
@@ -297,7 +295,7 @@ test("an assigned agent's idle merge survives the provisional done-to-running ro
 test("a departed agent lands on the NEWEST merge across all of its episodes", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
-  createTaskManager(registry);
+  new TaskManager(registry);
   const id = "durable-newest";
   const taskId = "durable-newest-task";
   const cwd = `/repo/${id}`;
@@ -359,7 +357,7 @@ test("with no merge on any binding, a departed agent still fails", () => {
   // task into a success. An open (unmerged) historical PR is not an outcome.
   setShippingConfig({ closeSessionAfterMerge: false });
   const registry = new Registry();
-  createTaskManager(registry);
+  new TaskManager(registry);
   const id = "durable-unmerged";
   const taskId = "durable-unmerged-task";
   const cwd = `/repo/${id}`;

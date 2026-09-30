@@ -216,3 +216,30 @@ export function createFileCommentWalkthrough(
 
   return walkthrough;
 }
+
+/**
+ * Send the comments that were left queued while nothing was delivering them, once the first
+ * completed discovery sweep has put every live session back in the map.
+ *
+ * A queued comment is one its writer asked to deliver. Before sending started delivery on its
+ * own, a comment could sit `queued` in an idle review until somebody pressed Start, and a
+ * daemon starting over such a queue owes it the delivery it was asked for.
+ *
+ * On the first COMPLETED sweep and not before, for the reason `FileCommentManager` reconciles
+ * orphans there: until then a live session can be missing from the map, and starting its
+ * review would pause it at once with "this session has ended". Register this AFTER
+ * `FileCommentManager` is constructed, so a session that went away while the daemon was down
+ * has already been orphaned when this asks, and after the daemon owns its state, because the
+ * adoption writes durable review rows.
+ */
+export function adoptQueuedOnFirstSweep(
+  registry: Pick<Registry, "onSessionsObserved" | "listFileCommentThreads">,
+  walkthrough: Pick<FileCommentWalkthrough, "adoptQueued">,
+): () => void {
+  return registry.onSessionsObserved(() =>
+    walkthrough.adoptQueued(
+      registry.listFileCommentThreads()
+        .filter((thread) => thread.status === "queued")
+        .map((thread) => thread.sessionId),
+    ));
+}

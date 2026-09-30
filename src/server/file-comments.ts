@@ -70,6 +70,7 @@ export class FileCommentError extends Error {
  */
 export class FileCommentManager {
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private queuedListeners = new Set<(sessionId: string) => void>();
 
   constructor(private registry: Registry) {
     this.registry.subscribe((e) => {
@@ -94,6 +95,35 @@ export class FileCommentManager {
     if (!this.pruneTimer) return;
     clearInterval(this.pruneTimer);
     this.pruneTimer = null;
+  }
+
+  /**
+   * Told whenever a PERSON puts a thread into a session's queue, after the durable write.
+   *
+   * Sending a comment is the request to deliver it, so the walkthrough has to hear about it
+   * without a separate Start. A subscriber on the manager rather than a call in each route,
+   * because the manager is where a thread becomes `queued`: a later door that queues one
+   * cannot forget to start delivery. `index.ts` wires the walkthrough here; the manager
+   * itself knows nothing about delivery.
+   */
+  onQueued(fn: (sessionId: string) => void): () => void {
+    this.queuedListeners.add(fn);
+    return () => this.queuedListeners.delete(fn);
+  }
+
+  /**
+   * After the write, and never able to undo it. The comment IS queued by now, so a subscriber
+   * that throws must not turn the route into an error for a write that succeeded; the
+   * walkthrough reports its own failures as a pause reason a person can read.
+   */
+  private announceQueued(sessionId: string): void {
+    for (const fn of this.queuedListeners) {
+      try {
+        fn(sessionId);
+      } catch (error) {
+        console.error("[file-comments] could not start delivery for a queued comment:", error);
+      }
+    }
   }
 
   // ---- reads ----
@@ -279,7 +309,7 @@ export class FileCommentManager {
       // the walkthrough requeues the thread for it.
       //
       // A `draft` is left alone too, for a different reason: it is submitted by a person
-      // pressing Comment, and auto-queueing on the first keystroke would put every abandoned
+      // pressing Send, and auto-queueing on the first keystroke would put every abandoned
       // half-sentence into the review.
       if (
         author === "human" &&
@@ -288,7 +318,10 @@ export class FileCommentManager {
         // Phase 1's tail-allocating writer, never a status write plus a reorder: it refuses an
         // outstanding thread and a terminal one in the one place, where it cannot be forgotten.
         const requeued = queueFileCommentThread(threadId, Date.now());
-        if (requeued) this.registry.upsertFileCommentThread(requeued);
+        if (requeued) {
+          this.registry.upsertFileCommentThread(requeued);
+          this.announceQueued(requeued.sessionId);
+        }
         return message;
       }
       this.publish(threadId);
@@ -316,6 +349,9 @@ export class FileCommentManager {
   /**
    * Submit a thread into the review queue, or put a replied-to one back at the tail.
    *
+   * This is the composer's Send, and it is the request to deliver: `onQueued` subscribers
+   * hear it after the write, and the walkthrough starts if nothing is holding it.
+   *
    * One operation rather than a status write followed by a reorder: those are two HTTP
    * requests, and a second submit landing between them takes the same position. The
    * integrated Files tab and the extracted Files window make two concurrent submits
@@ -329,6 +365,7 @@ export class FileCommentManager {
       const thread = queueFileCommentThread(threadId, Date.now());
       if (!thread) throw new FileCommentError("no such comment thread", 404);
       this.registry.upsertFileCommentThread(thread);
+      this.announceQueued(thread.sessionId);
       return thread;
     } catch (err) {
       throw this.asRouteError(err);

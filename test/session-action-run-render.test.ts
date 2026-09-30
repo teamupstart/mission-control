@@ -21,6 +21,7 @@ import {
   actionBlockSentence,
   actionWaitSentence,
   continuationSourceAttempt,
+  elapsedSpansFor,
   nodeStatusesForSubmission,
   runRounds,
   evidenceChipLabel,
@@ -687,6 +688,41 @@ test("a completed action does not advertise Review worklist detail it cannot own
     onOpenStage: () => undefined,
   });
   assert.doesNotMatch(html, /Press Enter to load this stage/);
+});
+
+test("a session action's clock runs from its launch while it waits, and freezes when it completes", () => {
+  // Driven through `elapsedSpansFor` from a real action attempt rather than a hand-built span,
+  // because an action is the member most likely to lose its clock: it is written straight into
+  // `waiting` and never records a `startedAt`, so a clock read from there would draw nothing.
+  const clockOf = (html: string, name: string): string | null => {
+    // One member row exactly: the text before the first `<li` is stage chrome, and a row ends at
+    // its own `</li>` rather than running on into the next stage's header.
+    const row = html.split("<li ").slice(1)
+      .map((chunk) => chunk.slice(0, chunk.indexOf("</li>")))
+      .find((chunk) => chunk.includes(name)) ?? "";
+    return /class="wf-pipeline-elapsed (is-live|is-frozen)"[\s\S]*?<time dateTime="PT(\d+)S">([^<]+)<\/time>/
+      .exec(row)?.slice(1).join(" ") ?? null;
+  };
+  const markup = (action: Partial<WorkflowNodeAttempt>, runStatus: string): string => {
+    const run = detail({
+      run: { status: runStatus, updatedAt: 90_000, completedAt: null } as WorkflowRunDetail["run"],
+      submissions: [submission({ id: "sub-0" })],
+      attempts: [attempt({ id: "act", submissionId: "sub-0", nodeId: ACTION, createdAt: 1_000, ...action })],
+    });
+    return runPipelineMarkup({}, nodeStatusesForSubmission(run, "sub-0"), {
+      elapsed: elapsedSpansFor(run, "sub-0"),
+    });
+  };
+
+  const waiting = markup({ state: "waiting", startedAt: null, finishedAt: null }, "waiting_for_action");
+  assert.match(clockOf(waiting, "Tidy the workspace") ?? "", /^is-live \d+ /, "a waiting action counts live");
+  assert.match(waiting, /Running for <\/span>/);
+  assert.equal(clockOf(waiting, "Code Risk Reviewer"), null, "the reviewer after it has not launched");
+
+  const completed = markup({ state: "completed", startedAt: null, finishedAt: 43_000, updatedAt: 43_000 }, "running");
+  assert.equal(clockOf(completed, "Tidy the workspace"), "is-frozen 42 42s", "frozen at the moment it completed");
+  assert.match(completed, /Took <\/span><time dateTime="PT42S">42s<\/time>/);
+  assert.doesNotMatch(completed, /wf-pipeline-elapsed is-live/, "nothing on the strip is still counting");
 });
 
 test("the Inspector footer follows End, is marked fixed, and vanishes without the policy", () => {

@@ -1,4 +1,4 @@
-import { after, afterEach, test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -123,7 +123,7 @@ seedPreFeatureDb();
 const db = await import("../src/server/db.ts");
 const store = await import("../src/server/schedules/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { buildApp } = await import("../src/server/routes.ts");
@@ -301,14 +301,6 @@ function discovered(id: string): DiscoveredSession {
   };
 }
 
-/**
- * Every TaskManager built here, so the closure sweep a conclusion starts is stopped with the
- * test that started it. One daemon has one manager; this file has one per fixture.
- */
-const managers: Array<{ stopMissionSessionClosures(): void }> = [];
-afterEach(() => {
-  for (const m of managers.splice(0)) m.stopMissionSessionClosures();
-});
 
 /**
  * A stop that records rather than performs one.
@@ -342,7 +334,6 @@ function runningMission(over: Partial<ScheduleDefinition> = {}) {
   const registry = new Registry();
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps);
-  managers.push(tasks);
   const { schedule, occurrenceId, taskId } = filedRun(over);
   const sessionId = uid("sess");
   const agentSessionId = `${sessionId}-episode`;
@@ -450,7 +441,6 @@ test("an ordinary task's completion stays the operator's, mission policy or not"
   // has no revision to read a policy from, and nothing here may invent one for it.
   const registry = new Registry();
   const tasks = new TaskManager(registry, killRecorder().deps);
-  managers.push(tasks);
   const sessionId = uid("sess");
   registry.applyDiscovery([discovered(sessionId)]);
   registry.applyHook({
@@ -482,7 +472,6 @@ test("the prompted-consumption route is what carries the verdict to the task", a
   const registry = new Registry();
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps);
-  managers.push(tasks);
   const queues = new QueueManager(registry);
   const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues });
 

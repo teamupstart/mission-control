@@ -1,4 +1,4 @@
-import { after, afterEach, test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,18 +11,11 @@ import type { Session } from "../src/shared/types.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-merge-settles-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 
-const managers: InstanceType<typeof TaskManager>[] = [];
-afterEach(async () => {
-  for (const manager of managers.splice(0)) {
-    manager.stopMissionSessionClosures();
-    await manager.settleWorktreeReturns();
-  }
-});
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
@@ -98,7 +91,6 @@ function fleet(
   const registry = new Registry();
   for (const stale of registry.listTasks()) registry.removeTask(stale.id);
   const tasks = new TaskManager(registry, closeDeps);
-  managers.push(tasks);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({

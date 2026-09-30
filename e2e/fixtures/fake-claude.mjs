@@ -856,9 +856,9 @@ function daemonToken() {
 function scoutCredential() {
   // The fake is the agent itself, so use its PID (a real MCP child uses its parent PID).
   const servers = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
-  const missionId = process.env.MISSION_SESSION_ID ?? Object.values(servers)
-    .find((server) => server.env?.MISSION_SESSION_ID)?.env.MISSION_SESSION_ID;
-  const identity = missionId ? `session:${missionId}` : `pid:${process.pid}`;
+  const locator = process.env.MISSION_SCOUT_SESSION_LOCATOR ?? Object.values(servers)
+    .find((server) => server.env?.MISSION_SCOUT_SESSION_LOCATOR)?.env.MISSION_SCOUT_SESSION_LOCATOR;
+  const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
   const key = createHash("sha256").update(identity).digest("hex");
   try {
     return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",

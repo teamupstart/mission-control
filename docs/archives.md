@@ -484,8 +484,13 @@ excludes it - which is the honest answer rather than a side effect.
 `/mcp/scouts/submit` is the agent-facing one. It requires both the shared harness token and a
 daemon-signed capability scoped to the live session, process, native conversation identity,
 checkout, task (if any), and work episode. Registry observations publish and refresh capabilities
-for SDK, restored, discovered, dispatched, and assigned sessions. The bridge reads its SDK
-session or parent-process capability at call time. It never resolves authority from cwd alone.
+for SDK, restored, discovered, dispatched, and assigned sessions. Terminal bridges read the
+capability for their OS parent PID. SDK bridges receive a private `MISSION_SCOUT_SESSION_LOCATOR`
+through the supervisor's launch configuration. That locator is derived with a daemon-only key;
+knowing or changing the public `MISSION_SESSION_ID` cannot select another session's capability.
+The bridge rereads the credential at call time, so assignment and episode rotation still work.
+Child launches drop inherited locators, and startup retires obsolete public-id credential files.
+Neither cwd nor a public session id is an authority fallback.
 A missing or stale live identity is refused; it cannot fall back to another session sharing
 that checkout. Old signed task credentials remain accepted for legacy scout clients.
 The new MCP tool requires daemon capability `multiple-scout-reports-v1` before submitting.
@@ -682,7 +687,7 @@ only after the daemon confirms; a refusal keeps the dialog open with the reason.
 
 ### Reports from a session
 
-The shared Board/Console detail has a **Scouts** tab (Shift+Y by default). It lists separate
+The shared Board/Console detail has a **Scouts** tab immediately left of **Diff** (Shift+Y by default). It lists separate
 reports with their titles, status, and publication time, with loading, empty, and retry states.
 Opening one uses the existing reader and retains a `session`, `producer`, and `kind=scout`
 filter in the URL. The reader’s **Source session** control applies the same filter and the

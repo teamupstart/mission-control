@@ -52,7 +52,12 @@ export function maintainScoutSessionCredentials(registry: Registry): () => void 
         const path = join(sessionScoutCredentialDirectory(), name);
         const authority = verifyScoutSubmissionCredential(readFileSync(path, "utf8").trim());
         if (authority?.sessionId) {
-          if (registry.getSession(authority.sessionId)) refresh(authority.sessionId);
+          if (registry.getSession(authority.sessionId)) {
+            refresh(authority.sessionId);
+            // Retire obsolete public-id locators and previous process locators on upgrade.
+            const current = published.get(authority.sessionId);
+            if (current && !current.paths.includes(path)) removeOwned(path, authority.sessionId);
+          }
           else removeOwned(path, authority.sessionId);
         }
       }

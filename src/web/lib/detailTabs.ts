@@ -44,17 +44,15 @@ export interface DetailTabInputs {
 /**
  * The tabs, in the order the strip draws them and the keyboard walks them.
  *
- * Workflows sits between Work queue and Diff because it answers "how is this run going",
- * which is the question you ask right after "what is it about to do" and before you go
- * read the change itself.
+ * Workflows and Scouts follow Work queue, before the checkout's Diff and Files.
  */
 export function detailTabs({ queueCount, fileReplyCount }: DetailTabInputs): DetailTab[] {
   return [
     { id: "conversation", label: "Conversation", pip: 0, action: "conversation" },
     { id: "queue", label: "Work queue", pip: queueCount, action: "queue" },
     { id: "workflows", label: "Workflows", pip: 0, action: "sessionWorkflows" },
-    { id: "diff", label: "Diff", pip: 0, action: "diff" },
     { id: "scouts", label: "Scouts", pip: 0, action: "sessionScouts" },
+    { id: "diff", label: "Diff", pip: 0, action: "diff" },
     { id: "files", label: "Files", pip: fileReplyCount, action: "files" },
   ];
 }

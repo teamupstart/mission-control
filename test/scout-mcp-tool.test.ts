@@ -36,12 +36,13 @@ test("the scout MCP tool gates older daemons, refreshes session authority, and n
     const address = daemon.address(); assert(address && typeof address !== "string");
     process.env.MISSION_PORT = String(address.port);
     process.env.MISSION_HOME = home;
-    const { provisionSessionScoutCredential } = await import("../src/server/scouts/submission-auth.ts");
+    const { provisionSessionScoutCredential, sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
     const authority = { sessionId: "sdk:scout-tool", taskId: null, episodeId: "episode-one", cwd: process.cwd(), pid: 0, agentSessionId: "native-one" };
     paths = provisionSessionScoutCredential(authority);
     await client.connect(new StdioClientTransport({ command: process.execPath,
       args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
-      env: { ...process.env, MISSION_API_TOKEN: "fixture-token", MISSION_SESSION_ID: authority.sessionId } as Record<string, string>, stderr: "pipe" }));
+      env: { ...process.env, MISSION_API_TOKEN: "fixture-token", MISSION_SESSION_ID: "another-visible-session",
+        MISSION_SCOUT_SESSION_LOCATOR: sessionScoutCredentialLocator(authority.sessionId) } as Record<string, string>, stderr: "pipe" }));
     const args = { title: "Report one", reportPath: "docs/reports/one/report.html", summary: "Finding" };
     const old = await client.callTool({ name: "submit_scout_artifacts", arguments: args });
     assert.equal(old.isError, true);

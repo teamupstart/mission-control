@@ -2147,7 +2147,7 @@ leaves whatever **Install integrations** registered machine-wide alone.
 
 ### Scout reports from a session
 
-The **Scouts** detail tab lists reports explicitly published by this session. Press Shift+Y
+The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y
 with the session selected to open it, or use the tab in either Board or Console detail.
 Each report opens in the archive reader with a source-session filter. Report publication is
 available from every task kind and from taskless sessions; it does not complete the task.

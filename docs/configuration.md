@@ -1,5 +1,11 @@
 # Configuration
 
+`MISSION_SCOUT_SESSION_LOCATOR` is an internal SDK launch secret, not an operator setting.
+The daemon supplies it only to the matching session's MCP bridge and strips inherited values
+from ordinary child launches. Terminal bridges use their OS parent process identity instead.
+Changing the public `MISSION_SESSION_ID` never selects another session's report credential.
+See [archive submission authentication](archives.md) for the live-binding checks.
+
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |

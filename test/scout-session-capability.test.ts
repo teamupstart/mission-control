@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -12,7 +12,7 @@ process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
-const { verifyScoutSubmissionCredential } = await import("../src/server/scouts/submission-auth.ts");
+const { sessionScoutCredentialLocator, verifyScoutSubmissionCredential } = await import("../src/server/scouts/submission-auth.ts");
 const { sessionScoutCredentialPath, readSessionScoutSubmissionCredential } = await import("../src/shared/harness-runtime.mjs");
 const paths = new Set<string>();
 after(() => { for (const path of paths) rmSync(path, { force: true }); rmSync(home, { recursive: true, force: true }); });
@@ -24,7 +24,7 @@ function fixture(shared?: InstanceType<typeof Registry>, agent: AgentType = "cla
   const id = `scout-session-${process.pid}-${++serial}`;
   const pid = 700000 + process.pid + serial;
   const cwd = join(home, "checkout");
-  const path = sessionScoutCredentialPath(`session:${id}`);
+  const path = sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(id)}`);
   paths.add(path); paths.add(sessionScoutCredentialPath(`pid:${pid}`));
   registry.applyDiscovery([{ syntheticId: id, agent, name: id, nameSource: "process", cwd,
     gitBranch: "feature/reports", gitRoot: cwd, repoRoot: cwd, pid, tty: null, terminals: [], startedAt: 0 }]);
@@ -68,27 +68,49 @@ test("shared checkout capabilities stay distinct and the bridge refreshes at cal
   const registry = a.registry;
   const stop = maintainScoutSessionCredentials(registry);
   const second = registry.registerSdkSession({ id: `sdk:shared-${process.pid}`, agent: "claude", name: "Second", cwd: a.cwd, agentSessionId: "native-shared" });
-  const bPath = sessionScoutCredentialPath(`session:${second.id}`);
+  const bPath = sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(second.id)}`);
   paths.add(bPath);
   const b = { id: second.id, token: () => readFileSync(bPath, "utf8").trim(), stop };
   const oldId = process.env.MISSION_SESSION_ID;
+  const oldLocator = process.env.MISSION_SCOUT_SESSION_LOCATOR;
   try {
     assert.notEqual(a.token(), b.token());
-    process.env.MISSION_SESSION_ID = a.id;
+    process.env.MISSION_SCOUT_SESSION_LOCATOR = sessionScoutCredentialLocator(a.id);
+    process.env.MISSION_SESSION_ID = b.id;
     assert.equal(readSessionScoutSubmissionCredential(home), a.token());
     const before = a.authority();
     a.registry.upsertTask(mkTask({ id: `assigned-${a.id}`, kind: "ship", status: "running", sessionId: a.id, repoRoot: home, worktreePath: null }));
     assert.equal(a.gateway.subjectForSubmission(before).ok, false);
     assert.equal(readSessionScoutSubmissionCredential(home), a.token());
     assert(a.gateway.subjectForSubmission(a.authority()).ok);
-    process.env.MISSION_SESSION_ID = b.id;
+    process.env.MISSION_SCOUT_SESSION_LOCATOR = sessionScoutCredentialLocator(b.id);
     assert.equal(readSessionScoutSubmissionCredential(home), b.token());
-    process.env.MISSION_SESSION_ID = "unregistered";
+    process.env.MISSION_SCOUT_SESSION_LOCATOR = "0".repeat(64);
     assert.equal(readSessionScoutSubmissionCredential(home), "");
   } finally {
     if (oldId === undefined) delete process.env.MISSION_SESSION_ID; else process.env.MISSION_SESSION_ID = oldId;
+    if (oldLocator === undefined) delete process.env.MISSION_SCOUT_SESSION_LOCATOR; else process.env.MISSION_SCOUT_SESSION_LOCATOR = oldLocator;
     a.stop(); b.stop();
   }
+});
+
+test("a caller-controlled Mission session id cannot select another session's report capability", () => {
+  const victim = fixture();
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, MISSION_SESSION_ID: victim.id };
+  delete childEnv.MISSION_SCOUT_SESSION_LOCATOR;
+  const moduleUrl = new URL("../src/shared/harness-runtime.mjs", import.meta.url).href;
+  try {
+    assert(victim.gateway.subjectForSubmission(victim.authority()).ok, "the victim is a live, valid session");
+    const legacyPath = sessionScoutCredentialPath(`session:${victim.id}`);
+    paths.add(legacyPath);
+    writeFileSync(legacyPath, victim.token());
+    for (const locator of [undefined, victim.id, "0".repeat(64)]) {
+      const credential = execFileSync(process.execPath, ["--input-type=module", "-e",
+        `const { readSessionScoutSubmissionCredential } = await import(${JSON.stringify(moduleUrl)}); process.stdout.write(readSessionScoutSubmissionCredential(process.cwd()));`],
+        { env: { ...childEnv, MISSION_SCOUT_SESSION_LOCATOR: locator }, cwd: home, encoding: "utf8" });
+      assert.equal(credential.length, 0, "neither a public session id nor a guessed locator grants authority");
+    }
+  } finally { victim.stop(); }
 });
 
 
@@ -98,10 +120,13 @@ test("startup registration recreates restored session capabilities and prunes ab
   const first = new Registry();
   const stopFirst = maintainScoutSessionCredentials(first);
   first.registerSdkSession(input);
-  const path = sessionScoutCredentialPath(`session:${input.id}`);
+  const path = sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(input.id)}`);
   paths.add(path);
   assert(existsSync(path));
   stopFirst();
+  const publicPath = sessionScoutCredentialPath(`session:${input.id}`);
+  paths.add(publicPath);
+  writeFileSync(publicPath, readFileSync(path));
   rmSync(path);
   const absentId = `absent-${process.pid}`;
   const absentPaths = provisionSessionScoutCredential({ sessionId: absentId, taskId: null, episodeId: "old-episode",
@@ -115,6 +140,7 @@ test("startup registration recreates restored session capabilities and prunes ab
     const authority = verifyScoutSubmissionCredential(readFileSync(path, "utf8").trim());
     assert(authority);
     assert(new RegistryArchiveTaskGateway(restored).subjectForSubmission(authority).ok);
+    assert.equal(existsSync(publicPath), false, "upgrade removes obsolete public-id locators");
     for (const absentPath of absentPaths) assert.equal(existsSync(absentPath), false);
   } finally { stopRestored(); }
 });
@@ -125,7 +151,8 @@ test("a terminal MCP child resolves its registered parent process without a chec
     cwd: home, pid: process.pid, agentSessionId: "terminal-native" };
   for (const path of provisionSessionScoutCredential(identity)) paths.add(path);
   const childEnv = { ...process.env };
-  delete childEnv.MISSION_SESSION_ID;
+  childEnv.MISSION_SESSION_ID = "a-different-visible-session";
+  delete childEnv.MISSION_SCOUT_SESSION_LOCATOR;
   const moduleUrl = new URL("../src/shared/harness-runtime.mjs", import.meta.url).href;
   const token = execFileSync(process.execPath, ["--input-type=module", "-e",
     `const { readSessionScoutSubmissionCredential } = await import(${JSON.stringify(moduleUrl)}); process.stdout.write(readSessionScoutSubmissionCredential(process.cwd()));`],

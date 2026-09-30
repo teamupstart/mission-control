@@ -25,6 +25,8 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   await dashboard.keyboard.press("Shift+Y");
   const scoutsTab = dashboard.getByRole("tab", { name: /Scouts/ });
   await expect(scoutsTab).toHaveAttribute("aria-selected", "true");
+  const tabOrder = [/Conversation/, /Work queue/, /Workflows/, /Scouts/, /Diff/, /Files/];
+  await expect(dashboard.getByRole("tab")).toHaveText(tabOrder);
   await dashboard.setViewportSize({ width: 1160, height: 900 });
   await expect(scoutsTab).toBeVisible();
   const bounds = await scoutsTab.boundingBox();
@@ -141,6 +143,7 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   await expect(dashboard.locator("main.board")).toBeVisible();
   await dashboard.locator("main.board .tile:not(.pend-tile)").first().click();
   await dashboard.getByRole("tab", { name: /Scouts/ }).click();
+  await expect(dashboard.getByRole("tab")).toHaveText(tabOrder);
   await expect(dashboard.getByRole("button", { name: "First finding", exact: true })).toBeVisible();
   await expect(dashboard.getByRole("button", { name: "Second finding renamed", exact: true })).toHaveCount(0);
 });

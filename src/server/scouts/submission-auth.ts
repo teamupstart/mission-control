@@ -103,11 +103,19 @@ export function provisionScoutSubmissionCredential(taskId: string, cwd: string):
   return token;
 }
 
+/** A private launch locator cannot be derived from the session id exposed by the API. */
+export function sessionScoutCredentialLocator(sessionId: string): string {
+  return createHmac("sha256", signingKey())
+    .update("mission-scout-session-locator\0")
+    .update(sessionId)
+    .digest("hex");
+}
+
 /** The daemon publishes only identities established by the Registry. */
 export function provisionSessionScoutCredential(
   authority: ScoutSubmissionAuthority & { sessionId: string; episodeId: string; pid: number; agentSessionId: string | null },
 ): string[] {
-  const identities = [`session:${authority.sessionId}`];
+  const identities = [`session:${sessionScoutCredentialLocator(authority.sessionId)}`];
   if (authority.pid > 0) identities.push(`pid:${authority.pid}`);
 
   const token = encode(authority);

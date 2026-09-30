@@ -104,7 +104,7 @@ Extend the existing signed capability mechanism with a versioned session authori
 
 Provision through the existing launch, assignment, restore, and discovery/adoption seams. Managed SDK launches already receive an exact Mission session ID. Terminal adapters must use their proven launch/pane/native-session association. A discovered, taskless session receives authority only once the daemon has positively associated its runtime with that Registry session. Cwd alone and the shared harness token alone must never mint authority.
 
-Replace the cwd-only credential lookup for new clients with an identity-scoped capability locator. Preserve call-time reads and isolated subprocess handling, so long-lived MCP children receive rotated capabilities without inheriting the operator's state-home settings. Two sessions in one checkout must not overwrite each other's capability. Assignment and episode changes invalidate the prior authority; `session_remove` revokes it, with a startup reconciliation twin. Temporary `state === "exited"` is not a new durable cleanup path.
+Replace the cwd-only credential lookup for new clients with an identity-scoped capability locator. Terminal bridges use their OS parent PID; SDK bridges receive a private daemon-issued locator in their launch configuration. Public session IDs never select credential files. Preserve call-time reads and isolated subprocess handling, so long-lived MCP children receive rotated capabilities without inheriting the operator's state-home settings. Two sessions in one checkout must not overwrite each other's capability. Assignment and episode changes invalidate the prior authority; `session_remove` revokes it, with a startup reconciliation twin. Temporary `state === "exited"` is not a new durable cleanup path.
 
 Retain the existing version-1 task/checkout verifier for compatible scout clients, constrained by its existing live-binding checks. New clients use the session capability. Missing/stale bridge support should explain that the client needs a refresh or restart; it must not fall back to a weaker identity claim.
 
@@ -144,7 +144,7 @@ Startup resumes durable submitted jobs for both task-owned and taskless sessions
 
 ### 5. Expose the relationship using existing UI owners
 
-Add a **Scouts** tab through `src/web/lib/detailTabs.ts` and the shared `layouts/ConsoleDetail.tsx`, which serves both Board and Console detail. The tab shows a bounded, paginated list for the selected session, including report title, submission time, and available archive state. An empty list says that reports explicitly requested from this session will appear here.
+Add a **Scouts** tab immediately left of **Diff** through `src/web/lib/detailTabs.ts` and the shared `layouts/ConsoleDetail.tsx`, which serves both Board and Console detail. The tab shows a bounded, paginated list for the selected session, including report title, submission time, and available archive state. An empty list says that reports explicitly requested from this session will appear here.
 
 Open reports in the existing Scouts reader. Extend the existing Scouts route/filter state with source-session filtering and show source-session context in the reader. Reuse current search, rename, delete, and archive-key navigation. No new top-level navigation segment is needed.
 
@@ -292,3 +292,17 @@ Mission Control evidence includes the final focused command outputs, rendered UI
 coverage for SCOUT-01 through SCOUT-10, completion-review repairs, and full-suite results.
 Evidence is gitignored. No commit, push, pull request or follow-up workflow was performed
 during this implementation handoff.
+
+### Published pull request repair
+
+Inspector's session-ID spoofing regression first reproduced the capability lookup defect.
+The bridge now ignores public session IDs for report authority, using the OS parent PID for
+terminal sessions or a private daemon-issued SDK locator. Fresh and restored SDK sessions
+receive their own locator, inherited locators are scrubbed, and startup reconciliation retires
+obsolete public-ID files. Capability rotation still takes effect without restarting the bridge.
+
+The operator also requested Scouts immediately left of Diff. The shared tab registry now
+defines that order for Board, Console, and keyboard navigation. All 85 focused capability,
+MCP, SDK, environment, archive, and tab tests pass. The built browser feature flow passes with
+the tab order asserted in both layouts and fresh screenshots captured. Typecheck, lint, build,
+and bundle smoke checks pass; lint retains existing warnings.

@@ -185,9 +185,13 @@ of missing or incomplete evidence.
 
 ![Mission Control Scouts archive](docs/images/scouts.png)
 
-Open a session’s **Scouts** tab to browse its reports, or filter the **Scouts** library by
+Open a session’s **Scouts** tab, immediately left of **Diff**, to browse its reports, or filter the **Scouts** library by
 source session. Retrying a report path returns its existing archive; publish revisions under a
 new slug. Read more in [Archives](docs/archives.md).
+
+SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
+internal launch secret, not a setting to configure. Public session IDs cannot select report
+credentials. See [Configuration](docs/configuration.md) for the launch boundary.
 
 ## Backlog and sources
 

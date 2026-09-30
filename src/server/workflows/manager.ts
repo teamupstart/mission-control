@@ -1,3 +1,4 @@
+import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
@@ -551,6 +552,7 @@ export class WorkflowManager {
   private unsubscribe: (() => void) | null = null;
   private discoveryUnsubscribe: (() => void) | null = null;
   private inspectionUnsubscribe: (() => void) | null = null;
+  private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
   /**
@@ -714,13 +716,22 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived") continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
               const run = this.store.activeRunForBinding(active.id);
               if (run) this.publishRun(run.id);
             }
+          }
+          return;
+        }
+        if (event.type === "session_transfers" && event.changed
+          && (event.changed.state === "adopted" || event.changed.state === "aborted")) {
+          const transfer = getSessionTransfer(event.changed.id);
+          if (transfer) {
+            this.recoverWaitingDeliveries(transfer.noteKey);
+            this.recoverSessionActions(transfer.noteKey);
           }
           return;
         }
@@ -774,6 +785,7 @@ export class WorkflowManager {
   }
 
   async stop(): Promise<void> {
+    for (const cancel of this.transferWaiters) cancel();
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.discoveryUnsubscribe?.();
@@ -889,6 +901,7 @@ export class WorkflowManager {
    * while this moment pins its current immutable version.
    */
   private bindDispatchedTaskWorkflow(task: Task): void {
+    if (transferForTask(task.id) || taskWorkflowTransferred(task)) return;
     if (
       !task.workflowId
       || !task.sessionId
@@ -4260,7 +4273,7 @@ export class WorkflowManager {
     if (!workflowRunPhaseRecognized(run.currentPhase)) return;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-    if (!binding || version?.completionPolicy.kind !== "inspector") return;
+    if (!binding || transferForNote(binding.noteKey) || version?.completionPolicy.kind !== "inspector") return;
     const now = Date.now();
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     const durableCandidate = observation
@@ -4804,6 +4817,7 @@ export class WorkflowManager {
     triggerMode: WorkflowBinding["triggerMode"],
     deliveryMode: WorkflowBinding["deliveryMode"],
   ): WorkflowRuntimeMutation<never> | null {
+    if (transferForNote(noteKeyFor(session))) return { ok: false, reason: "conflict", message: TRANSFER_HOLD_REASON };
     if (deliveryMode === "live") {
       const config = getWorkflowPolicy();
       if (!config.liveEnabled || !repoAllowlisted(session.cwd, session.repoRoot, config.repoAllowlist)) {
@@ -4961,9 +4975,11 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
-  private recoverWaitingDeliveries(): void {
+  private recoverWaitingDeliveries(noteKey?: string): void {
+    const inScope = (run: WorkflowRun | null): boolean => Boolean(run &&
+      (noteKey === undefined || this.store.getBinding(run.bindingId)?.noteKey === noteKey));
     for (const run of this.store.listRuns()) {
-      if (run.status !== "waiting_for_pr") continue;
+      if (run.status !== "waiting_for_pr" || !inScope(run)) continue;
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const binding = this.store.getBinding(run.bindingId);
       const submission = this.store.latestSubmission(run.id);
@@ -4979,15 +4995,18 @@ export class WorkflowManager {
       ) continue;
       this.scheduleAutomaticPr(run.id, submission.id);
     }
-    const waitingSubmissions = this.store.listSubmissionsByState("waiting_for_session");
+    const waitingSubmissions = this.store.listSubmissionsByState("waiting_for_session")
+      .filter((submission) => inScope(this.store.getRun(submission.runId)));
     const submissionRecovery = new Set(waitingSubmissions.map((submission) => submission.id));
     for (const submission of waitingSubmissions) {
       this.scheduleWaitingDelivery(submission.id);
     }
     for (const submission of this.store.listSubmissionsByState("waiting_for_evidence_readiness")) {
+      if (!inScope(this.store.getRun(submission.runId))) continue;
       this.scheduleEvidenceReadinessDelivery(submission.id);
     }
     for (const delivery of this.store.listDeliveriesByState("prepared")) {
+      if (noteKey !== undefined && delivery.noteKey !== noteKey) continue;
       if (submissionRecovery.has(delivery.submissionId)) continue;
       const run = this.store.getRun(delivery.runId);
       const binding = run ? this.store.getBinding(run.bindingId) : null;
@@ -5256,7 +5275,7 @@ export class WorkflowManager {
     const node = version?.graph.nodes.find(
       (candidate) => candidate.id === attempt.nodeId && isSessionActionNode(candidate),
     );
-    if (!binding || !version || !node || !isSessionActionNode(node)) return null;
+    if (!binding || !version || !node || !isSessionActionNode(node) || transferForNote(binding.noteKey)) return null;
     return { attempt, snapshot: attempt.sessionAction, state, submission, run, binding, version, node };
   }
 
@@ -5536,12 +5555,12 @@ export class WorkflowManager {
       state = { ...state, anchor };
     }
 
-    if (binding.state !== "active" || binding.sessionId !== anchor.sessionId) {
+    if (binding.state !== "active" || !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey)) {
       this.blockSessionAction(attempt.id, "session_lost",
         "The workflow binding no longer names the session this action was sent to.", now);
       return;
     }
-    const session = this.registry.getSession(anchor.sessionId);
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     if (!session || session.state === "exited") {
       // Deliberately NOT read as durable removal: `state === "exited"` is a linger window,
       // and `session_remove` is what the registry uses for gone. Blocking is the honest
@@ -5964,6 +5983,7 @@ export class WorkflowManager {
   }
 
   private deliveryBlock(delivery: WorkflowDelivery, expectedPane?: string | null): string | null {
+    if (transferForNote(delivery.noteKey)) return TRANSFER_HOLD_REASON;
     const run = this.store.getRun(delivery.runId);
     if (!run || runIsTerminal(run)) return "run_terminal";
     const binding = run ? this.store.getBinding(run.bindingId) : null;
@@ -6152,7 +6172,7 @@ export class WorkflowManager {
 
   private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
     const delivery = this.store.getDelivery(deliveryId);
-    if (!delivery) return;
+    if (!delivery || transferForNote(delivery.noteKey)) return;
     if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
     const initialBlock = this.deliveryBlock(delivery);
     if (initialBlock) {
@@ -6358,6 +6378,23 @@ export class WorkflowManager {
    * persisted and the graph untouched - a diagnosable waiting state rather than a run that
    * advanced on evidence its expectation had not matched.
    */
+  /** Snapshot the current capture tail before new captures begin waiting on the hold. */
+  runtimeTransferCaptureBoundary(noteKey: string): Promise<void> | undefined {
+    return this.captureLocks.get(noteKey);
+  }
+
+  private async waitForRuntimeTransfer(noteKey: string): Promise<boolean> {
+    if (!transferForNote(noteKey)) return true;
+    return await new Promise<boolean>((resolve) => {
+      const cancel = () => { unsubscribe(); this.transferWaiters.delete(cancel); resolve(false); };
+      const unsubscribe = this.registry.subscribe((event) => {
+        if (event.type !== "session_transfers" || transferForNote(noteKey)) return;
+        unsubscribe(); this.transferWaiters.delete(cancel); resolve(true);
+      });
+      this.transferWaiters.add(cancel);
+    });
+  }
+
   private async captureAndActivate(
     binding: WorkflowBinding,
     run: WorkflowRun,
@@ -6375,7 +6412,15 @@ export class WorkflowManager {
       // that has been waiting should be offered the pane at the moment this run stops owing
       // it one - not once this run has finished reading git.
       this.scheduleQueuedDeliveries(binding.noteKey);
+      // With no hold, acquire the capture lock synchronously. An unconditional await
+      // here lets a reservation snapshot the tail just before this capture joins it.
+      if (transferForNote(binding.noteKey) && !await this.waitForRuntimeTransfer(binding.noteKey)) return {
+        ok: false, reason: "conflict", message: "Evidence capture is waiting for terminal ownership after restart",
+        current: this.presentRun(this.store.getRun(run.id)),
+      };
+      binding = this.store.getBinding(binding.id) ?? binding;
       return await this.withCaptureLock(binding.noteKey, async () => {
+      binding = this.store.getBinding(binding.id) ?? binding;
       if (!this.captureIsActive(run.id, submission.id)) {
         return {
           ok: false,
@@ -7075,9 +7120,22 @@ export class WorkflowManager {
       && this.store.getSubmission(submissionId)?.status === "capturing";
   }
 
+  publishRuntimeTransfer(bindingIds: readonly string[]): void {
+    for (const id of bindingIds) {
+      this.publishBinding(id);
+      const run = this.store.activeRunForBinding(id);
+      if (run) this.publishRun(run.id);
+    }
+  }
+
+  settleRuntimeTransfer(bindingIds: readonly string[]): void {
+    for (const id of bindingIds) this.store.orphanBinding(id, "session_disappeared");
+    this.publishRuntimeTransfer(bindingIds);
+  }
+
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active") continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7104,11 +7162,12 @@ export class WorkflowManager {
    * landed, so the only safe move is to leave the run blocked for a human to resolve, which
    * `recoverSendingDeliveries` has already done by the time this runs.
    */
-  private recoverSessionActions(): void {
+  private recoverSessionActions(noteKey?: string): void {
     for (const attempt of this.store.listWaitingActionAttempts()) {
       const resolved = this.resolveSessionAction(attempt.id);
       if (!resolved) continue;
       const { state, binding } = resolved;
+      if (noteKey !== undefined && binding.noteKey !== noteKey) continue;
       const delivery = state.deliveryId ? this.store.getDelivery(state.deliveryId) : null;
       // A waiting attempt that owns NO packet at all: prepare the one it needs.
       // `prepareDelivery` is keyed on the attempt, so a packet prepared before the restart is
@@ -7313,6 +7372,8 @@ export class WorkflowManager {
     try {
       const sessions = this.registry.snapshot().sessions;
       for (const run of this.store.listRuns()) {
+        const binding = this.store.getBinding(run.bindingId);
+        if (binding && transferForNote(binding.noteKey)) continue;
         if (
           run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)

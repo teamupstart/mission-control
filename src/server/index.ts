@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -457,6 +458,11 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
+const sessionTransfers = new SessionTransferCoordinator(registry, {
+  workflows, reviews, settleTask: (id) => tasks.settleAfterFailedHandoff(id),
+  taskBlocked: (id) => tasks.taskCleanupIsReserved(id),
+});
+sessionTransfers.start(true);
 // Restore provider commissions first. A retained Engineer may rotate its native conversation
 // identity while resuming; that rotation must resolve against the exact handoff commission
 // before generic work-episode ownership decides whether the task was abandoned.
@@ -660,6 +666,7 @@ fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId))
 // this comment goes stale the next time a dependency is added, which is exactly how
 // `focusTerminals` came to be missing from it.
 const app = buildApp({
+  sessionTransfers,
   registry,
   reviews,
   tasks,
@@ -856,6 +863,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
   await sdkSessions.stopAll();

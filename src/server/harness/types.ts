@@ -812,6 +812,12 @@ export interface SdkTurn {
  * a stream-json subprocess, a JSON-RPC server or a JSONL pipe.
  */
 export interface SdkSessionHandle {
+  /**
+   * The process whose lifetime owns this driver, for read-only crash recovery. An
+   * in-process driver names the daemon; a subprocess driver names its current child.
+   * Missing/null is unknown, never absence. This is not a signal or eviction target.
+   */
+  readonly recoveryProcessId?: number | null;
   /** Structured lifecycle. The supervisor pumps this until it ends. */
   events: AsyncIterable<SdkEvent>;
   /**

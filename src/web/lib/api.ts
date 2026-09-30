@@ -1,3 +1,4 @@
+import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type {
   AgentType,
@@ -1655,11 +1656,18 @@ export const api = {
    * `payload` picks between two argvs the DAEMON composes; nothing here becomes part of a
    * command line, which is why this takes two enums and no strings.
    */
+  sessionTransfers: async (offset = 0): Promise<SessionTransferPage> => {
+    const page = await fetchJson<SessionTransferPage>(`/api/session-transfers?offset=${offset}`);
+    if (!page) throw new Error("Could not load terminal transfers");
+    return page;
+  },
+  recheckSessionTransfer: (id: string): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/recheck`, {}),
+  resolveSessionTransfer: (id: string, revision: number): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/resolve`, { revision, action: "end" }),
   launchTerminal: (
     id: string,
     backend: TerminalBackendId,
     payload: "shell" | "agent",
-  ): Promise<ActionResult & { label?: string }> =>
+  ): Promise<ActionResult & { label?: string; homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
@@ -1764,7 +1772,7 @@ export const api = {
    */
   handoff: (
     id: string,
-  ): Promise<ActionResult & { homeName?: string; sessionId?: string | null }> =>
+  ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the

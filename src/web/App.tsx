@@ -363,6 +363,8 @@ export function App(): React.JSX.Element {
     schedules,
     connected,
     hasSnapshot,
+    sessionTransfers,
+    latestSessionTransfer,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
   const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
@@ -2806,7 +2808,9 @@ export function App(): React.JSX.Element {
   // then swallow every session shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
-    if (selectedId && !sessions.some((s) => s.id === selectedId)) {
+    if (selectedId && !sessions.some((s) => s.id === selectedId)
+      && !sessionTransfers.transfers.some((transfer) => transfer.sourceSessionId === selectedId)
+      && !(latestSessionTransfer?.sourceSessionId === selectedId && latestSessionTransfer.successorSessionId)) {
       setSelectedId(null);
       // The board's drill-in goes with it. Left standing, the flag would silently
       // re-open on whatever the cursor landed on next.
@@ -2819,7 +2823,14 @@ export function App(): React.JSX.Element {
       if (!sessions.some((session) => session.id === id)) files.drop(id);
     }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+  }, [sessions, visible, selectedId, sessionBoundOverlays, renamingId, files.sessions, files.drop, sessionTransfers, latestSessionTransfer]);
+
+  useEffect(() => {
+    if (latestSessionTransfer?.state === "adopted" && selectedId === latestSessionTransfer.sourceSessionId
+      && latestSessionTransfer.successorSessionId && sessions.some((s) => s.id === latestSessionTransfer.successorSessionId)) {
+      setSelectedId(latestSessionTransfer.successorSessionId);
+    }
+  }, [latestSessionTransfer, selectedId, sessions]);
 
   // Keep the keyboard-selected session in view as selection moves.
   useEffect(() => {
@@ -4504,6 +4515,7 @@ export function App(): React.JSX.Element {
 
               {reportOpen && (
                 <ReportPanel
+                  sessionTransfers={sessionTransfers}
                   sessions={sessions}
                   tasks={tasks}
                   backlogPlan={foreman.backlogPlan}

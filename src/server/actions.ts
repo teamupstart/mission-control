@@ -1,3 +1,4 @@
+import { transferHold } from "./session-transfers/store.ts";
 import { readInventory } from "./terminal/inventory.ts";
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
@@ -384,7 +385,7 @@ export async function sendText(
   return withPaneLock<ActionResult>(
     session,
     () => ({ ok: false, error: PANE_BUSY }),
-    () => sendTextLocked(session, text, submit, deps, beforeWrite),
+    () => sendTextLocked(session, text, submit, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
     lockOwner,
   );
 }
@@ -1073,7 +1074,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps, beforeWrite),
+    () => injectPromptLocked(session, text, deps, () => transferHold(session) ?? beforeWrite?.() ?? null),
   );
 }
 
@@ -1569,6 +1570,8 @@ export async function selectPaneOption(
   target: OptionTarget,
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
+  const held = transferHold(session);
+  if (held) return { ok: false, error: held };
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
   // interleaving them would land arrows in a dialog the other opened. It has to be the
@@ -1729,6 +1732,8 @@ export async function submitPaneForm(
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<FormResult> {
   if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
+  const held = transferHold(session);
+  if (held) return { ok: false, error: held };
   if (targets.length === 0) return { ok: false, error: "no rows to submit" };
   return withPaneLock<FormResult>(
     session,
@@ -1881,6 +1886,8 @@ const NO_MENU = "no option menu is on this session's screen";
 
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
 async function injectEnter(session: Session, deps: PaneDeps): Promise<ActionResult> {
+  const held = transferHold(session);
+  if (held) return { ok: false, error: held };
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
   return sendKeys(pane, ["enter"]);

@@ -150,7 +150,8 @@ test("a live effort change is applied to the session Pi is running", async () =>
 // ---- launch, binding, and turn one -----------------------------------------------------
 
 test("a launch binds Pi's identity and transcript before it delivers turn one", async () => {
-  const { sdk, events } = await launch();
+  const { sdk, events, handle } = await launch();
+  assert.equal(handle.recoveryProcessId, process.pid);
   const bound = eventOfKind(events[0], "bound");
   assert.equal(bound.agentSessionId, "pi-session-1");
   assert.match(bound.transcriptPath ?? "", /pi-session-1\.jsonl$/);

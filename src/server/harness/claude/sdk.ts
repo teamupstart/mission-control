@@ -394,6 +394,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   constructor(private readonly cwd: string) {}
 
+  get recoveryProcessId(): number | null {
+    return this.authenticationRecovery ? null : this.query?.recoveryProcessId ?? null;
+  }
+
   get events(): AsyncIterable<SdkEvent> {
     return this.out;
   }

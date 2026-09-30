@@ -12179,6 +12179,22 @@ select:not([multiple]) option:focus-visible {
   gap: 6px;
   flex: none;
 }
+.report-transfer .report-row-main {
+  width: 100%;
+}
+.report-transfer .report-name,
+.report-transfer .report-sub {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.report-transfer .report-row-actions {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.report-transfer .btn {
+  flex-shrink: 0;
+}
 .report-mark {
   display: flex;
   align-items: center;

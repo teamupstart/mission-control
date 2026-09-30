@@ -270,7 +270,7 @@ export function SessionLaunchers({
     const result = await api.launchTerminal(session.id, backend, payload);
     setFlash(
       result.ok
-        ? { text: `Opened in ${result.label ?? backend}`, error: false }
+        ? { text: result.transfer?.reason ?? `Opened in ${result.label ?? backend}`, error: false }
         : { text: result.error ?? "could not open a terminal", error: true },
     );
   }

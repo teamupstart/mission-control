@@ -2,12 +2,20 @@
 
 `specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
 `MC_E2E_RESUME_TOOLS=1`. It executes the prepared production wrapper; the resumed fake Claude
-reads its supplied MCP config, initializes and lists tools on the built MCP server, and calls
-`report_status` through that server. It never substitutes a direct authenticated HTTP call
-for the tool. The fixture also tests preparation refusal while the original SDK still accepts
-turns, and retention of a claimed environment across daemon restart. Its initial conversation
-uses the normal Chat dispatch with no Workflow, since the dashboard has no taskless SDK
-creation route. Task and Workflow transfer assertions belong to Phase 2.
+reads its MCP configuration, starts the built MCP server, and registers command output, an
+ignored image and mapped coverage. It proves the same running task and old pinned workflow,
+then renders the registered evidence tray. The default handoff case delays the hook until
+source eviction, restarts with discovery held, exercises Sitrep recovery, and then releases
+scripted terminal observations for the daemon to adopt exactly once. Handoff, adoption and
+resumed-agent MCP evidence registration run through production daemon paths with fake agents.
+
+Some test conditions are set directly in the isolated fixture's SQLite database: a newer
+catalog workflow version, a transfer's `launchAt` moved back three minutes to reach recovery,
+101 unresolved transfers for pagination, and an advanced task dispatch timestamp for the
+End transfer ownership-conflict case. The End transfer fixture also revokes its unused
+terminal lease. The daemon evaluates recovery and resolution from those conditions; the
+pagination case exercises the production snapshot, page endpoint and browser controls over
+seeded records without launching 101 agents.
 
 `MC_E2E_RESUME_PRIVATE_MCP=1` gives refusal tests an isolated copy of the bundle. Evidence
 screenshots are written to `e2e/.artifacts/sdk-terminal-handoff/` with `MC_E2E_EVIDENCE=1`.

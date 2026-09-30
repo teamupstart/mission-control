@@ -591,10 +591,11 @@ reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>`, `codex resume <thread id>`, or `pi --session <session id>`,
 whichever harness the session detail is. All three vendors keep one session store across
 their programmatic and interactive surfaces, which is what makes this a handoff rather than
-a lost conversation. Discovery adopts the new process. Managed resume preparation now
-preserves tool access and scope; durable task and pinned-workflow continuity, including the
-early-hook race, remains the separate Phase 2 repair. Do not treat a successful terminal
-launch as proof that a task or workflow transferred.
+a lost conversation. Mission Control reserves the running task and every active pinned
+workflow before stopping the SDK. Discovery must prove the same native conversation,
+checkout and launch resource before their ownership moves together to the terminal.
+The task stays running, existing workflow versions and runs stay pinned, and staged and
+frozen evidence stay with the same review. Merely opening a terminal does not prove transfer.
 
 The permission mode crosses with it, where the harness has one - Pi does not, so nothing
 rides along on its resume. An embedded session's mode lives in the driver's own options -
@@ -612,9 +613,24 @@ verified installed extension. A missing bundle, tool, extension, executable, or 
 configuration refuses the handoff while the SDK remains available. Attached worktrees keep
 their existing write scope.
 
-After the handoff the terminal holds the conversation and the embedded detail goes away.
+After verified handoff the terminal holds the conversation and the embedded detail goes away.
+A detail still viewing the source follows its successor; navigating elsewhere keeps your focus.
 An uncertain launch retains its prepared environment and blocks another resume of the same
-conversation. An unclaimed attempt is fenced and cleaned after its two-minute start deadline;
+conversation. **Sitrep → Terminal transfers** remains available after the source disappears
+and after restart. **Check again** observes that same attempt and never launches another
+agent. After two minutes without proof, the row explains that the terminal could not be
+verified. A late, proven successor can still complete that transfer. **End transfer** appears
+only when the daemon has positive absence evidence; it retains the checkout.
+
+Queued messages and pending questions remain attached to the conversation. Delivery pauses
+during transfer. Uncertain deliveries still require their existing explicit resolution and
+are never replayed automatically. If no replacement could have started, the existing task
+settlement and workflow orphan policies apply. A surviving SDK after a failed stop keeps its
+original task. Do not downgrade Mission Control while a terminal transfer is unresolved.
+This operation only continues the same native conversation; manual workflow reattach remains
+the recovery action for a genuinely different conversation.
+
+ An unclaimed attempt is fenced and cleaned after its two-minute start deadline;
 a claimed or ambiguous owner keeps its credentials until proven completion. A bare manual
 resume command does not include these managed Mission tools. See the
 [resource lifetime and recheck contract](harnesses-and-terminals.md#managed-terminal-resumes).

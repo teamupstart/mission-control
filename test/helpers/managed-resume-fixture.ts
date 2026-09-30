@@ -17,7 +17,12 @@ export async function managedResumeFixture(home: string): Promise<void> {
   process.env.MISSION_RESUME_GUARD = guard;
   process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), MISSION_MCP_TOOLS);
   const root = managedResumeRoot();
-  afterEach(() => { for (const status of recheckManagedResumes()) revokeResumeLease(status.lease); });
+  afterEach(async () => {
+    for (const status of recheckManagedResumes()) revokeResumeLease(status.lease);
+    // Each case owns a whole synthetic launch attempt, including its durable continuity guard.
+    const { openDb } = await import("../../src/server/db.ts");
+    openDb().exec("DELETE FROM session_runtime_transfers");
+  });
   after(() => {
     if (prior.guard === undefined) delete process.env.MISSION_RESUME_GUARD;
     else process.env.MISSION_RESUME_GUARD = prior.guard;

@@ -151,7 +151,7 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     /** Let a test say the driver has already gone, which is what refuses a REPEAT. */
     killDriver: () => (live = false),
     handleFor() {
-      return live ? {} : null;
+      return live ? { recoveryProcessId: process.pid } : null;
     },
     beginHandoff(id: string) {
       if (handingOff.has(id)) return false;
@@ -434,11 +434,15 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
       assert.equal(prepared.cwd, "/wt/one");
       assert.deepEqual(launchedArgv(prepared.wrappedArgv), prepared.argv);
       order.push(`spawn:${name}`);
-      return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:captured-handoff-home" };
+      return { homeName: `${name}-abc123`, homeBackend: "ghostty", terminalResourceId: "emulator:ghostty:captured-handoff-home" };
     },
     waitForSessionAtCwd: async () => {
-      assert.equal(registry.getTask("task-h")?.terminalResourceId, "multiplexer:tmux:captured-handoff-home");
-      return { ...session, id: "proc:tty:1:2" } as Session;
+      assert.equal(registry.getTask("task-h")?.terminalResourceId, "emulator:ghostty:captured-handoff-home");
+      registry.applyDiscovery([{ syntheticId: "proc:tty:1:2", agent: session.agent, name: "continued", nameSource: "tmux",
+        cwd: session.cwd!, gitBranch: null, gitRoot: null, repoRoot: session.repoRoot, pid: 100001, tty: "ttys999",
+        startedAt: 100, agentSessionId: session.agentSessionId, transcriptPath: null,
+        terminals: [mkEmuHandle({ backend: "ghostty", paneId: "captured-handoff-home" })] }]);
+      return registry.getSession("proc:tty:1:2")!;
     },
     settleTask: () => assert.fail("a handoff that succeeded must not settle its task"),
   });
@@ -455,16 +459,15 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   assert.equal(task.status, "running");
   assert.equal(task.sessionId, "proc:tty:1:2");
   assert.equal(task.homeName, body.homeName);
-  assert.equal(task.homeBackend, "tmux");
-  assert.equal(task.terminalResourceId, "multiplexer:tmux:captured-handoff-home");
+  assert.equal(task.homeBackend, "ghostty");
+  assert.equal(task.terminalResourceId, "emulator:ghostty:captured-handoff-home");
   assert.equal(getSdkSession("sdk:hand")?.taskId, null);
   assert.deepEqual(reasonsDuringStop, ["handoff"], "handoff is recorded before stop resolves");
   assert.deepEqual(sessionEndingReasons("sdk:hand"), ["handoff"]);
 });
 
-test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async (t) => {
+test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async () => {
   const registry = new Registry();
-  const adoption = t.mock.method(registry, "adoptTerminalLaunch");
   seed(registry, null, "sdk:launch");
   const supervisor = fakeSupervisor();
   const launched: Array<{ backend: string; argv: readonly string[] }> = [];
@@ -504,13 +507,15 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.deepEqual(supervisor.stopped, ["sdk:launch"]);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "ghostty");
-  assert.equal(adoption.mock.calls.at(-1)?.arguments[1].launchStateHome, dirname(launched[0]!.argv[1]!),
+  const body = await res.json();
+  const { getSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+  assert.equal(getSessionTransfer(body.transfer.id)?.facts.home?.launchStateHome, dirname(launched[0]!.argv[1]!),
     "handoff must retain the wrapper marker source until adoption");
   // Read out of the launch wrapper: what a backend receives is `/bin/sh <wrapper>`, and the
   // agent's own command line is the wrapper's last statement. See `launchedCommand`.
   assert.match(launchedCommand(launched[0]?.argv ?? []), /--resume/);
   assert.match(launchedCommand(launched[0]?.argv ?? []), /'--permission-mode' 'auto'/);
-  assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
+  assert.equal(body.label, "Ghostty");
 });
 
 for (const status of [200, 504]) {
@@ -1284,7 +1289,8 @@ test("a handoff that stops the driver and cannot open a terminal settles its tas
   const supervisor = fakeSupervisor();
   const settled: string[] = [];
   const res = await mkApp(registry, supervisor, {
-    spawn: async () => {
+    spawn: async ({ prepared }) => {
+      prepared.dispose();
       throw new TerminalLaunchError("no terminal backend can host a dispatched agent", false);
     },
     waitForSessionAtCwd: async () => null,
@@ -1302,7 +1308,7 @@ test("a handoff that stops the driver and cannot open a terminal settles its tas
   assert.deepEqual(supervisor.stopped, ["sdk:noterm"]);
   // And the operator is told what they are holding: the conversation is intact on disk.
   assert.match(body.error, /worktree was kept/);
-  assert.match(body.error, /bare manual resume/);
+  assert.match(body.error, /no terminal backend can host/);
 });
 
 for (const failure of ["task unbind", "launch intent"] as const) {
@@ -1404,7 +1410,7 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
       throw new Error("the driver would not close");
     },
     // Still holding the handle: the driver survived its own stop.
-    handleFor: () => ({}) as never,
+    handleFor: () => ({ recoveryProcessId: process.pid }) as never,
     beginHandoff: () => true,
     endHandoff: () => {},
   } as unknown as SdkSupervisor;
@@ -1424,7 +1430,7 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
   // The ROW too: `taskLiveness` reads it, so a card restored without the row would leave a
   // live agent whose worktree a restart reclaims.
   assert.equal(getSdkSession("sdk:stopfail")?.taskId, "task-stopfail");
-  assert.match(((await res.json()) as { error: string }).error, /still bound to it/);
+  assert.match(((await res.json()) as { error: string }).error, /Source still running; nothing transferred/);
   finishEviction(t, registry, "sdk:stopfail");
   assert.deepEqual(sessionEndingReasons("sdk:stopfail"), ["unknown"], "a failed stop must undo handoff attribution");
 });
@@ -1443,16 +1449,15 @@ test("a stop that fails with the driver already gone settles instead", async () 
     }),
   );
   const settled: string[] = [];
+  let sourceLive = true;
   const supervisor = {
     async stop() {
+      sourceLive = false;
       throw new Error("the driver died mid-stop");
     },
     // No handle left once the stop has run, but one BEFORE it - otherwise the preflight
     // would refuse this as a repeat rather than exercising the stop-failure path.
-    handleFor: (() => {
-      let calls = 0;
-      return () => (calls++ === 0 ? ({} as never) : null);
-    })(),
+    handleFor: () => sourceLive ? { recoveryProcessId: process.pid } : null,
     beginHandoff: () => true,
     endHandoff: () => {},
   } as unknown as SdkSupervisor;
@@ -1465,7 +1470,7 @@ test("a stop that fails with the driver already gone settles instead", async () 
 
   assert.equal(res.status, 409);
   assert.deepEqual(settled, ["task-stopgone"]);
-  assert.match(((await res.json()) as { error: string }).error, /worktree kept/);
+  assert.match(((await res.json()) as { error: string }).error, /checkout was kept/);
 });
 
 test("a mixed answer is refused, never silently reconciled", async () => {
@@ -1607,15 +1612,14 @@ test("a repeat handoff after a successful one is refused too", async () => {
       .status,
     200,
   );
-  // The claim is released once the transfer finishes, so it is the LIVE-DRIVER check that
-  // has to refuse this one - a double click, a retry, or the card lingering out its
-  // eviction would otherwise stop nothing and spawn a second `claude --resume`.
+  // The durable reservation outlives the HTTP request and its supervisor claim.
+  // A retry must observe the existing attempt instead of spawning another agent.
   supervisor.killDriver();
   const repeat = await app.request("/api/sessions/sdk:again/handoff", {
     method: "POST",
     headers: HEADERS,
   });
   assert.equal(repeat.status, 409);
-  assert.match(((await repeat.json()) as { error: string }).error, /no live embedded driver/);
+  assert.match(((await repeat.json()) as { error: string }).error, /already being handed over/);
   assert.equal(spawned.length, 1);
 });

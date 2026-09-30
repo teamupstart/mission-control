@@ -135,7 +135,13 @@ explicit evidence. This keeps invented checkout paths off the host process table
 the same fail-closed return policy. Lifecycle and occupancy tests supply known, occupied, and
 unknown evidence through the existing dependency seam.
 
-A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
+A handoff from SDK to terminal is owned by `SessionTransferCoordinator`, backed by
+`session_runtime_transfers`. It prepares Mission tools, reserves task and all active pinned
+workflow ownership, holds writes, clears the task binding and drains the SDK before launching.
+Only exact same-conversation and launch-resource proof permits atomic adoption through the
+Registry, workflow and review owners. A cwd waiter is only a response budget. Store-backed
+guards precede TaskManager startup and SDK restore; restart never repeats an uncertain launch.
+See [session lifecycle](../session-lifecycle.md#continuing-the-same-conversation-in-terminal).
 
 Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.
 

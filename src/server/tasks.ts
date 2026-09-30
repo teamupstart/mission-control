@@ -1,3 +1,4 @@
+import { transferForTask } from "./session-transfers/store.ts";
 import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { inTransaction } from "./db.ts";
@@ -2313,6 +2314,7 @@ export class TaskManager {
     const candidates = tasks.filter(
       (task) =>
         task.sessionId === null &&
+        !transferForTask(task.id) &&
         task.worktreePath === session.cwd &&
         (!task.terminalResourceId?.startsWith("emulator:") ||
           terminalResourceIds(session).has(task.terminalResourceId)) &&
@@ -2344,6 +2346,7 @@ export class TaskManager {
    * gone, Clean up when it is not.
    */
   private agentWentAway(t: Task): void {
+    if (transferForTask(t.id)) return;
     this.autoCompleted.delete(t.id);
     if (providerOwnsTaskCompletion(t.kind)) {
       if (isActiveTask(t.status)) this.pipelineHostWentAway(t);
@@ -4831,6 +4834,7 @@ export class TaskManager {
    * the regression above.
    */
   private runCompletion(id: string, input: CompletionInput): Promise<Task | null> {
+    if (transferForTask(id)) return Promise.resolve(null);
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
@@ -5420,7 +5424,7 @@ export class TaskManager {
     conflict: T,
     fn: () => Promise<T>,
   ): Promise<T> {
-    if (this.cleanupReservations.has(id)) return conflict;
+    if (this.cleanupReservations.has(id) || transferForTask(id)) return conflict;
     this.cleanupReservations.add(id);
     try {
       return this.archives?.withCleanup ? await this.archives.withCleanup(id, fn) : await fn();
@@ -5958,6 +5962,7 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
+    if (transferForTask(t.id)) return;
     if (dispatchHasNoProvisionedResources(t)) {
       const current = this.registry.getTask(t.id);
       if (!current || !dispatchHasNoProvisionedResources(current)) return;

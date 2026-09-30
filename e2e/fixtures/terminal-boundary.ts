@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } f
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { Proc } from "../../src/server/discovery/processes.ts";
+import { listProcessesSnapshot as actualProcessSnapshot } from "../../src/server/discovery/processes.ts";
 import type { TerminalDeps } from "../../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
 import { ghosttyEmulator as nativeGhosttyEmulator } from "../../src/server/terminal/ghostty.ts";
@@ -32,14 +33,28 @@ function readState(): TerminalBoundaryState | null {
 /** Scripted OS observations, never a Session or a dispatched card name. */
 export async function listProcesses(): Promise<Proc[]> {
   const state = readState();
-  if (!state) return [];
+  if (!state || existsSync(join(process.env.MC_E2E_RECORD_DIR!, "discovery-block"))) return [];
   const base = { startRaw: String(state.startedAt), startMs: state.startedAt };
+  let wrapper = { pid: WRAPPER_PID, startMs: state.startedAt };
+  if (process.env.MC_E2E_RESUME_TOOLS === "1") {
+    try { wrapper = JSON.parse(readFileSync(join(dirname(state.argv[1]!), "terminal-launch.json"), "utf8")); } catch { /* The guard has not claimed yet. */ }
+  }
   return [
     { ...base, pid: GUI_PID, ppid: 1, tty: null, command: "ghostty", agent: null, agentNative: false },
-    { ...base, pid: WRAPPER_PID, ppid: GUI_PID, tty: "ttysfixture", command: "-" + state.argv.join(" "), agent: null, agentNative: false },
-    { ...base, pid: AGENT_PID, ppid: WRAPPER_PID, tty: "ttysfixture", command: "claude",
+    { ...base, ...wrapper, ppid: GUI_PID, tty: "ttysfixture", command: "-" + state.argv.join(" "), agent: null, agentNative: false },
+    { ...base, pid: AGENT_PID, ppid: wrapper.pid, tty: "ttysfixture", command: "claude",
       agent: "claude", agentNative: true },
   ];
+}
+
+export async function listProcessesSnapshot() {
+  // Only terminal discovery is synthetic. The SDK fake is a real subprocess, and
+  // handoff must record its actual lifetime before stop, just as the shipped daemon does.
+  const actual = await actualProcessSnapshot();
+  const terminal = await listProcesses();
+  const scripted = new Set(terminal.map((p) => p.pid));
+  return { ...actual, processes: [...actual.processes.filter((p) => !scripted.has(p.pid)), ...terminal],
+    cwdScopePids: [...actual.cwdScopePids.filter((pid) => !scripted.has(pid)), ...scripted] };
 }
 
 export async function readProcCwds(): Promise<Map<number, string>> {
@@ -64,6 +79,7 @@ export function ghosttyEmulator(exec?: TerminalExec): ReturnType<typeof nativeGh
   ghostty.spawn = {
     tab: async (spec) => {
       if (!spec.cwd) throw new Error("terminal dispatch must supply its worktree");
+      if (process.env.MC_E2E_RECORD_DIR) appendFileSync(join(process.env.MC_E2E_RECORD_DIR, "terminal-launches.log"), "launch\n");
       const state: TerminalBoundaryState = {
         cwd: spec.cwd, requestedTitle: spec.title, argv: spec.argv,
         // Ghostty ignores the requested title. A fixture that echoed it would hide the bug.

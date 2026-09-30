@@ -1,3 +1,4 @@
+import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
@@ -211,7 +212,7 @@ export class SdkSupervisor {
         );
         continue;
       }
-      if (!sdkSessionIsLive(row)) continue;
+      if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
       const closure = taskSessionClosureForSession(row.id);
       const completedTask = closure ? getDurableTask(closure.taskId) : null;
       if (completedTask?.status === "done" && completedTask.sessionId === row.id) {
@@ -606,7 +607,7 @@ export class SdkSupervisor {
    * second place to get it wrong.
    */
   beginHandoff(id: string): boolean {
-    if (this.handingOff.has(id)) return false;
+    if (this.handingOff.has(id) || this.acceptingTurns.has(id) || transferForSource(id)) return false;
     this.handingOff.add(id);
     return true;
   }
@@ -629,7 +630,7 @@ export class SdkSupervisor {
     acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
-      const blocked = beforeSend?.();
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
       const unfinished = this.unfinishedTurns.get(id) ?? 0;
       // Cross the durable boundary BEFORE the driver can accept the turn. If this write
@@ -678,7 +679,7 @@ export class SdkSupervisor {
     beforeSend?: () => string | null,
   ): Promise<"started" | null> {
     return this.serialize(id, async (handle) => {
-      const blocked = beforeSend?.();
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
       const unfinished = this.unfinishedTurns.get(id) ?? 0;
       setSdkSessionTurnInProgress(id, true);
@@ -1068,6 +1069,7 @@ export class SdkSupervisor {
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
+    if (transferForSource(id)) return Promise.reject(new Error(TRANSFER_HOLD_REASON));
     if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
@@ -1076,6 +1078,7 @@ export class SdkSupervisor {
       // Exit deletes the ownership maps but cannot cancel a chain that is already built, and
       // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
+      if (transferForSource(id)) throw new Error(TRANSFER_HOLD_REASON);
       if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });

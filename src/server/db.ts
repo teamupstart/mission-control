@@ -1686,6 +1686,28 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- Ordinary table with no REFERENCES clause (unlike the ensemble family and
     -- task_source_sync) and no index: the only reads are by primary key and the
     -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
+    -- Runtime handoff reservations outlive either session. No cascading foreign keys:
+    -- removal must not erase the guard protecting an uncertain external launch.
+    CREATE TABLE IF NOT EXISTS session_runtime_transfers (
+      id TEXT PRIMARY KEY NOT NULL,
+      revision INTEGER NOT NULL,
+      source_session_id TEXT NOT NULL,
+      note_key TEXT NOT NULL,
+      task_id TEXT,
+      state TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      successor_session_id TEXT,
+      facts_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_conversation
+      ON session_runtime_transfers(note_key) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_source
+      ON session_runtime_transfers(source_session_id) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_task
+      ON session_runtime_transfers(task_id) WHERE task_id IS NOT NULL AND state NOT IN ('adopted', 'aborted', 'failed');
+
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
       agent             TEXT NOT NULL,
@@ -4363,6 +4385,15 @@ function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
 }
 
 /** Reviews still awaiting a human decision - reloaded into the registry on start. */
+/** Move only unanswered requests; answered history retains its original attribution. */
+export function transferPendingReviews(sourceId: string, successorId: string, now = Date.now()): ReviewItem[] {
+  const db = openDb();
+  if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
+  const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+    WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)

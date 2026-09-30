@@ -1214,3 +1214,23 @@ keys the enforced contract table in `src/server/workflows/builtin-session-action
 is where a built-in's required skill and completion live rather than in its Markdown.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.
+
+## Durable terminal transfer
+
+The append-only transfer states live in `shared/session-transfer.ts`. SQL uniqueness covers
+unresolved source IDs, conversation keys and non-null task IDs; only adopted, aborted and
+failed are terminal, so newer states remain guarded. Source/session deletion must not cascade
+the reservation. Changing task attempts, episodes or any captured binding invalidates adoption.
+Owner writes join one transaction and publish only after commit.
+
+`sessionTransfers` snapshots and `session_transfers` events contain at most 100 unresolved
+public summaries, an overflow count, and an optional changed summary for successor selection.
+`GET /api/session-transfers?offset=...&limit=...` pages the remainder. Lease paths, argv,
+credentials and process inventories are private. This collection is not a Line input: task,
+review and workflow events already own its counts. Browser recheck is observational, and end
+requires current revision plus server-side positive absence proof. Unknown states cannot end.
+
+A prepared destination may move; uncertain or historical delivery attribution must not.
+The Phase 1 lease stays the only credential-lifetime owner. Do not downgrade while any
+transfer is pending, and do not turn runtime transfer into a task-worktree return or a second
+session eviction path.

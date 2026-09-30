@@ -7854,3 +7854,14 @@ export const SetupBannerDismissRequestSchema = z.object({
   acknowledged: z.array(SetupRowIdSchema),
 });
 export type SetupBannerDismissRequest = z.infer<typeof SetupBannerDismissRequestSchema>;
+
+/** A transfer recheck observes one attempt and never launches. */
+export const RecheckSessionTransferSchema = z.object({}).strict();
+export const ResolveSessionTransferSchema = z.object({
+  revision: z.number().int().positive(),
+  action: z.literal("end"),
+}).strict();
+export const SessionTransferQuerySchema = z.object({
+  offset: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+});

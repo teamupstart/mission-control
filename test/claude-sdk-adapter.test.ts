@@ -37,6 +37,7 @@ import type { SdkEvent } from "../src/server/harness/types.ts";
 
 /** A hand-driven query: frames go in when the test says so, controls are recorded. */
 class FakeQuery implements ClaudeSdkQuery {
+  recoveryProcessId: number | null = null;
   readonly control: string[] = [];
   iterationStarts = 0;
   usageCalls = 0;
@@ -209,6 +210,9 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts({ permissionMode: "auto" }));
   const { query, options, turns } = await started;
+  assert.equal(handle.recoveryProcessId, null);
+  query.recoveryProcessId = 4242;
+  assert.equal(handle.recoveryProcessId, 4242);
 
   // Pinned, never left to the SDK's own detection - which would fall back to the native CLI
   // inside the npm package, a different build from the one the operator logged in with.
@@ -594,6 +598,7 @@ test("an authentication failure reloads credentials by resuming on the next turn
     env: () => ({ PATH: "/usr/bin" }),
     query: async ({ prompt, options }) => {
       const query = new FakeQuery();
+      query.recoveryProcessId = 100 + starts.length;
       const turns: ClaudeSdkUserMessage[] = [];
       starts.push({ query, options, turns });
       void (async () => {
@@ -606,6 +611,7 @@ test("an authentication failure reloads credentials by resuming on the next turn
 
   const handle = await claudeSdkSpec(deps).launch(launchOpts());
   const first = starts[0]!;
+  assert.equal(handle.recoveryProcessId, 100);
   first.query.emit(INIT("agent-auth-recovery"));
   await collect(handle.events, (event) => event.kind === "bound");
   first.query.emit({
@@ -647,6 +653,7 @@ test("an authentication failure reloads credentials by resuming on the next turn
     "draining the stale process must not end the session",
   );
   assert.equal(starts.length, 2, "the stale SDK process is replaced exactly once");
+  assert.equal(handle.recoveryProcessId, 101, "recovery must describe the replacement, not its stale query");
   assert.equal(starts[1]!.options.resume, "agent-auth-recovery");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(starts[1]!.turns[0]?.message.content, "continue after external login");

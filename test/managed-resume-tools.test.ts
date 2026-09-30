@@ -274,11 +274,12 @@ test("interrupted provisioning, revocation and deletion reconcile idempotently",
   assert.equal(existsSync(lease.home), false);
 });
 
-for (const crash of [false, true]) test(`real wrapper ${crash ? "crash retains a surviving child" : "completion releases its home with an unambiguous inventory"}`, async () => {
-  const nativeId = `real-wrapper-${crash}`;
+for (const ending of ["normal", "crash", "SIGHUP", "SIGINT", "SIGQUIT"] as const) test(`real wrapper ${ending} ${ending === "crash" ? "retains a surviving child" : "releases its home with an unambiguous inventory"}`, async () => {
+  const crash = ending === "crash";
+  const nativeId = `real-wrapper-${ending}`;
   const p = await prepareTerminalResume(session(nativeId), context);
-  const marker = join(home, `agent-started-${crash}.json`);
-  const stop = join(home, `agent-stop-${crash}`);
+  const marker = join(home, `agent-started-${ending}.json`);
+  const stop = join(home, `agent-stop-${ending}`);
   const script = join(home, "agent.mjs");
   writeFileSync(script, `import {writeFileSync,renameSync,existsSync} from 'node:fs';
 writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME,native:process.env.MISSION_AGENT_SESSION_ID,sdk:process.env.MISSION_SESSION_ID}));
@@ -325,9 +326,12 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
       assert.ok(existsSync(configPath), "child absence alone is not a completion receipt");
       return;
     }
-    writeFileSync(stop, "stop");
-    assert.equal(await exited, 0, stderr);
-    assert.equal(existsSync(p.stateHome), false, "normal wrapper completion releases its home");
+    if (ending === "normal") writeFileSync(stop, "stop");
+    else process.kill(-child.pid!, ending);
+    assert.equal(await exited, ending === "normal" ? 0 : 1, stderr);
+    assert.equal(existsSync(p.stateHome), false, "guard completion releases its home after the agent exits");
+    const retry = await prepareTerminalResume(session(nativeId), context);
+    retry.dispose();
   } finally {
     writeFileSync(stop, "stop");
     if (child.exitCode === null) child.kill("SIGTERM");
@@ -335,10 +339,12 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
   }
 });
 
-for (const doubleFork of [false, true]) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant`, { timeout: 20_000 }, async () => {
+for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 20_000 }, async () => {
+  const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
-  const p = await prepareTerminalResume(session(`detached-${doubleFork}`), context);
-  const marker = join(home, `detached-${doubleFork}.json`);
+  const p = await prepareTerminalResume(session(nativeId), context);
+  const marker = join(home, `${nativeId}.json`);
   const check = `${marker}.check`, result = `${marker}.result`, stop = `${marker}.stop`;
   const descendantScript = join(home, `descendant-${doubleFork}.mjs`);
   writeFileSync(descendantScript, `import {writeFileSync,renameSync,existsSync,readFileSync} from 'node:fs';
@@ -361,7 +367,8 @@ spawn(process.execPath,[${JSON.stringify(descendantScript)}],{detached:true,stdi
 ${doubleFork ? `import {spawn} from 'node:child_process';
 const middle=spawn(process.execPath,[${JSON.stringify(intermediate)}],{detached:true,stdio:'ignore',env:process.env});
 await new Promise(resolve=>middle.once('exit',resolve));` : spawnDescendant}
-await new Promise(resolve=>{const t=setInterval(()=>{if(existsSync(${JSON.stringify(marker)})){clearInterval(t);resolve();}},30);});`);
+await new Promise(resolve=>{const t=setInterval(()=>{if(existsSync(${JSON.stringify(marker)})){clearInterval(t);resolve();}},30);});
+${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   const configPath = join(p.stateHome, "launch.json");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, agentScript] }));
@@ -371,7 +378,12 @@ await new Promise(resolve=>{const t=setInterval(()=>{if(existsSync(${JSON.string
   guard.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => guard.once("exit", resolve));
   try {
-    assert.equal(await exited, 0, stderr);
+    if (signal) {
+      for (let i = 0; i < 100 && !existsSync(marker) && guard.exitCode === null; i++) await delay(30);
+      assert.ok(existsSync(marker), stderr);
+      process.kill(-guard.pid!, signal);
+    }
+    assert.equal(await exited, signal ? 1 : 0, stderr);
     assert.ok(existsSync(marker), "the descendant started before its parents exited");
     const observed = JSON.parse(readFileSync(marker, "utf8"));
     process.kill(observed.pid, 0);
@@ -380,7 +392,7 @@ await new Promise(resolve=>{const t=setInterval(()=>{if(existsSync(${JSON.string
     assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
     reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
     assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
-    await assert.rejects(prepareTerminalResume(session(`detached-${doubleFork}`), context), /unresolved|already|still/i);
+    await assert.rejects(prepareTerminalResume(session(nativeId), context), /unresolved|already|still/i);
     writeFileSync(check, "check credentials after guard exit");
     for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
     assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");

@@ -31,19 +31,28 @@ async function main(): Promise<number> {
   Object.assign(env, input.env);
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
   const before = await processInventory();
-  const child = spawn(executable, input.argv.slice(1), { cwd: input.cwd, env, stdio: "inherit" });
-  // No EXIT/signal trap deletes credentials. Killing this guard leaves its child protected.
-  const code = await new Promise<number>((resolve) => {
-    child.once("error", () => resolve(127));
-    child.once("exit", (code) => resolve(code ?? 1));
-  });
-  const after = await processInventory();
-  // Detached children can leave the process group and double-forked children lose their
-  // original parent. Unavailable inventory or ambiguous ancestry cannot authorize deletion.
-  if (resumeDescendantsExited(before, after, { pid: process.pid, startMs })) {
-    completeResumeLease(lease, process.pid, startMs);
+  // The terminal signals the foreground group, including both guard and agent. Stay alive
+  // to observe child exit; the spawned agent keeps its default signal handling. A signal
+  // never authorizes cleanup by itself, and SIGKILL still leaves the environment protected.
+  const terminalSignals = ["SIGHUP", "SIGINT", "SIGQUIT"] as const;
+  const stayAlive = () => {};
+  for (const signal of terminalSignals) process.on(signal, stayAlive);
+  try {
+    const child = spawn(executable, input.argv.slice(1), { cwd: input.cwd, env, stdio: "inherit" });
+    const code = await new Promise<number>((resolve) => {
+      child.once("error", () => resolve(127));
+      child.once("exit", (code) => resolve(code ?? 1));
+    });
+    const after = await processInventory();
+    // Detached children can leave the process group and double-forked children lose their
+    // original parent. Unavailable inventory or ambiguous ancestry cannot authorize deletion.
+    if (resumeDescendantsExited(before, after, { pid: process.pid, startMs })) {
+      completeResumeLease(lease, process.pid, startMs);
+    }
+    return code;
+  } finally {
+    for (const signal of terminalSignals) process.off(signal, stayAlive);
   }
-  return code;
 }
 
 async function processInventory() {

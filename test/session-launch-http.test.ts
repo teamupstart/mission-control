@@ -11,6 +11,7 @@ import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
 import { STATE_DIR } from "../src/server/config.ts";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
+import { TerminalLaunchError } from "../src/server/terminal/launch-error.ts";
 await managedResumeFixture(STATE_DIR);
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
@@ -129,6 +130,7 @@ const app = buildApp({
   queues: {} as unknown as QueueManager,
   launchSessionTerminal: async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
+    if (spec.name === "refused-resume") throw new TerminalLaunchError("Ghostty refused the launch", false);
     if (spec.name === "verified-resume") {
       return { ok: true, label: backend, homeName: null,
         terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 };
@@ -166,6 +168,25 @@ async function launch(id: string, body: unknown): Promise<Response> {
     else process.env.MISSION_CLAUDE_BIN = previous;
   }
 }
+
+test("a definite resume refusal preserves the backend cause and attempt identity", async () => {
+  const refused = mkSession({ id: "refused-resume", name: "refused-resume", state: "exited", agentSessionId: "refused-native" });
+  SESSIONS.set(refused.id, refused);
+  try {
+    const response = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error, "Ghostty refused the launch. No terminal was started; recheck launch status before trying again.");
+    assert.equal(body.launchOutcome, "refused");
+    assert.equal(typeof body.resumeLeaseId, "string");
+    const recheck = await app.request(`/api/sessions/${refused.id}/launch`, { headers: HEADERS });
+    assert.ok((await recheck.json()).attempts.some((attempt: { id: string; state: string }) =>
+      attempt.id === body.resumeLeaseId && attempt.state === "revoked"));
+    const retry = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(retry.status, 409);
+    assert.notEqual((await retry.json()).resumeLeaseId, body.resumeLeaseId, "a definite refusal releases the resume claim");
+  } finally { SESSIONS.delete(refused.id); }
+});
 
 test("the backend is a registered id, never a command", async () => {
   // The closed enum is the whole containment story for this field. Anything that resolves

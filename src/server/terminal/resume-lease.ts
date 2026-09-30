@@ -197,9 +197,15 @@ export function createResumeLease(root: string, conversation: string, preparing:
   const lease: ResumeLease = { version: 1, id, root, conversation, sourceSessionId,
     home: join(root, "homes", id), createdAt: Date.now() };
   const dir = join(root, "leases", id);
-  mkdirSync(dir, { mode: 0o700 });
-  syncDirectory(dirname(dir));
-  writeResumeRecord(join(dir, "lease.json"), lease);
+  // Reconciliation only sees complete records. A crash during this write leaves a private,
+  // credential-free staging directory outside leases/, never a malformed published lease.
+  const staging = join(root, `.lease-${id}`);
+  mkdirSync(staging, { mode: 0o700 });
+  try {
+    writeResumeRecord(join(staging, "lease.json"), lease);
+    renameSync(staging, dir);
+    syncDirectory(dirname(dir));
+  } finally { rmSync(staging, { recursive: true, force: true }); }
   preparing.add(id);
   // The durable lease exists before any credential or launch configuration does.
   try { mkdirSync(lease.home, { mode: 0o700 }); } catch (error) {

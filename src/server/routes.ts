@@ -3759,7 +3759,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agentResumeClaims.delete(session.id);
         if (error instanceof TerminalLaunchError && !error.outcomeUnknown) {
           if (task) tasks.settleAfterFailedHandoff(task.id);
-          return c.json({ ok: false, backend, error: "Managed resume could not record its launch intent. No terminal was started; recheck launch status before trying again." }, 409);
+          return c.json({ ok: false, backend, resumeLeaseId: prepared.lease.id, launchOutcome: "refused",
+            error: `${error.message}. No terminal was started; recheck launch status before trying again.` }, 409);
         }
         return c.json({ ok: false, backend, error: `Managed resume ${prepared.lease.id} has an unknown launch outcome. Its environment is retained; recheck launch status before trying again.` }, 504);
       }

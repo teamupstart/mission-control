@@ -86,6 +86,9 @@ export interface HomeSpec {
 
 /** The complete terminal-home record returned by a successful launch. */
 export interface SpawnedHome {
+  /** Backend acknowledgement and uncertainty remain distinct for managed resumes. */
+  launchOutcome?: "launched" | "unknown";
+  resumeLeaseId?: string;
   /** Ephemeral positive process correlation; only the bound task session id is persisted. */
   launchProcess?: LaunchProcess | null;
   /** Private marker source retained until session readiness if the wrapper starts late. */
@@ -252,7 +255,7 @@ export async function heldHomeNames(
 /** What opening a home produced. `where` names the backend, for the error a human reads. */
 export type LaunchResult =
   | { ok: true; backend: HomeBackend; resourceId: string | null }
-  | { ok: false; error: string };
+  | { ok: false; error: string; outcomeUnknown?: boolean };
 
 /**
  * What a test worker is told when it reaches this with the real machine's backends.
@@ -322,6 +325,7 @@ export async function launchHome(
         : r.session ? `multiplexer:${backend.id}:${r.session}` : null,
     };
     last = r.error ?? `${backend.label} could not open a session`;
+    if (r.outcomeUnknown) return { ok: false, error: last, outcomeUnknown: true };
   }
   return { ok: false, error: last };
 }

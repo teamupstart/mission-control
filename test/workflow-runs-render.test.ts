@@ -601,6 +601,26 @@ test("a check row and its stage use deterministic status vocabulary", () => {
   assert.match(completed, /Press Enter to load this stage in the review worklist/);
 });
 
+test("every launched member and stage shows how long it ran, frozen once it settles", () => {
+  const detail = runningDetail();
+  const clocks = (html: string): string[] =>
+    [...html.matchAll(/class="wf-pipeline-elapsed (is-live|is-frozen)"/g)].map((m) => m[1]!);
+
+  // Round 2 is live: Quality is running and Security is queued, and the round launched both,
+  // so both count from their launch - a queued reviewer's wait is time the operator waited.
+  // Docs has no attempt this round and draws no clock at all.
+  const latest = render(detail);
+  assert.deepEqual(clocks(latest), ["is-live", "is-live", "is-live"], "two members and their stage");
+  assert.match(latest, /Running for <\/span><time dateTime="PT\d+S">/);
+
+  // Round 1 settled: each member froze at its finish (launched at 1ms, finished at 9000ms),
+  // and the stage froze at its last member's finish.
+  const earlier = render(detail, { roundId: "submission-1" });
+  assert.deepEqual(clocks(earlier), ["is-frozen", "is-frozen", "is-frozen"]);
+  assert.equal([...earlier.matchAll(/Took <\/span><time dateTime="PT8S">8s<\/time>/g)].length, 3);
+  assert.doesNotMatch(earlier, /Running for/);
+});
+
 test("the round scrubber defaults to the latest round and scopes what it says", () => {
   const detail = runningDetail();
   const latest = render(detail);

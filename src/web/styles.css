@@ -96,6 +96,9 @@
      beside it stay above their own minimums on a laptop rather than pushing the board
      straight into a horizontal scroll. */
   --board-col-wide: 520px;
+  /* A Board column collapsed to a strip: wide enough for the count pill and the column's name
+     set vertically, and no wider - the point of folding a column is the room it gives back. */
+  --board-col-collapsed: 40px;
 
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
@@ -5913,6 +5916,15 @@ body.is-pane-resizing {
   background: color-mix(in oklab, var(--working) 16%, var(--panel));
 }
 .file-comment-toggle:disabled { opacity: .45; cursor: default; }
+/* A comment is out with the agent. The queue no longer opens itself on send, so this says it. */
+.file-review-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--attention) 25%, transparent);
+}
 
 /* The comment index is navigation, not the review outbox. It remains available when
    comment mode is off and includes resolved threads, so closing a thread never erases the
@@ -6129,6 +6141,25 @@ body.is-pane-resizing {
 .file-comment-box:focus { border-color: var(--working); outline: none; }
 .file-comment-error { margin: 0; color: var(--danger); font-size: 10.5px; }
 .file-comment-panel-foot { display: flex; align-items: center; gap: 6px; }
+/* What Send will do, said before it is pressed: go now, wait its turn, or be held. */
+.file-comment-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.file-comment-hint::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.file-comment-hint.is-now::before { background: var(--idle); }
+.file-comment-hint.is-held::before { background: var(--attention); }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
 
@@ -9837,6 +9868,9 @@ mark.find-hit.is-current {
   white-space: nowrap;
 }
 .launch-flash.is-error {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
   background: color-mix(in oklab, var(--danger) 10%, transparent);
   color: var(--danger);
@@ -18537,6 +18571,43 @@ td.wf-command-rule-action {
 .wf-pipeline-reviewer-body { grid-column: 1; }
 .wf-pipeline-reviewer-actions { grid-column: 2; grid-row: 1; }
 .wf-pipeline-reviewer .wf-pipeline-status { grid-column: 1; justify-self: start; }
+/* The chip and its clock, as one grid item on the chip's own row. It wraps rather than
+   squeezing: beside "Changes requested" there is no room for the clock, and a clock that
+   broke one unit per line would read as three numbers. */
+.wf-pipeline-status-line {
+  grid-column: 1;
+  justify-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+/* Tabular monospace digits, so a clock ticking "1m 09s" -> "1m 10s" never changes width and
+   nudges the row beside it. Muted when frozen: the chip is the status, the time is detail. */
+.wf-pipeline-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 600 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.wf-pipeline-elapsed.is-live { color: var(--working); }
+.wf-pipeline-elapsed-mark { font-size: 10px; opacity: 0.8; }
+.wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+  opacity: 1;
+  animation: wf-pipeline-elapsed-pulse 1.4s ease-in-out infinite;
+}
+@keyframes wf-pipeline-elapsed-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark { animation: none; }
+}
 .wf-pipeline-reviewer-name {
   display: flex;
   align-items: center;
@@ -27130,7 +27201,7 @@ span.line-run-prov {
    the flex body, so they fill the new width without a rule of their own - what changes
    is how much of each one you can read.
 
-   ONE column at a time, decided in BoardView. Expressed on the same three properties the
+   ONE column at a time, decided in `lib/column-width.ts`. Expressed on the same three properties the
    drill-in animates (`flex-grow` / `flex-basis` / `min-width`), so widening rides the
    existing transition and reverses for free - and so it can never fight the morph: this
    is scoped to `[data-focus="none"]`, and opening a session collapses the board exactly
@@ -27189,45 +27260,146 @@ span.line-run-prov {
   margin-left: 0;
 }
 
-/* The head's own reveal. `opacity`, never `display` or `visibility`: this control backs
-   up a double-click, which has no keyboard equivalent at all, so it has to stay in the
-   tab order even while it is not drawn. Focus brings it back into view. */
+/* ---- a collapsed column ----
+   Folded down to a strip that still says what the column is and how much it holds (see
+   `CollapsedColumnStrip`). A fixed track, not a share: `flex: 0 0` with the width in the basis
+   AND the floor, because the Backlog and an all-clear column are sized by basis and would
+   otherwise keep theirs. Same three properties the morph animates, so folding rides the
+   existing transition, and scoped to `[data-focus="none"]` like `.is-wide` so a drill-in still
+   collapses every non-rail column to nothing, strip included. */
+.board[data-focus="none"] .board-col.is-collapsed {
+  flex-grow: 0;
+  flex-shrink: 0;
+  flex-basis: var(--board-col-collapsed);
+  min-width: var(--board-col-collapsed);
+}
+.board-col-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  min-height: 0;
+  padding: 11px 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.board-col-strip:hover {
+  background: color-mix(in oklab, var(--tone-color, var(--neutral)) 7%, transparent);
+}
+.board-col-strip:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -3px;
+}
+.board-col-strip .board-col-n {
+  margin-left: 0;
+  padding: 1px 6px;
+}
+/* The column's name, set vertically and read bottom to top, in the head's own type. */
+.board-col-strip-name {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--tone-color, var(--muted));
+}
+.board-backlog .board-col-strip-name {
+  color: color-mix(in oklab, var(--pr-merged) 65%, var(--fg));
+}
+/* A folded Needs you still reads as needing you: the count wears the attention colour. */
+.board-col.tone-attention .board-col-strip-n {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 50%, var(--border));
+  background: color-mix(in oklab, var(--attention) 14%, var(--panel));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .board-col-strip-n.is-pulsing {
+    animation: board-strip-pulse 0.9s ease-out 2;
+  }
+}
+@keyframes board-strip-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--attention) 70%, transparent);
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.18);
+  }
+  100% {
+    box-shadow: 0 0 0 10px transparent;
+    transform: scale(1);
+  }
+}
+
+/* ---- the width control: collapsed, normal, expanded ----
+   Three stops in the head (see `ColumnWidthControl`), each a bar as wide as the column it
+   makes. `opacity`, never `display` or `visibility`: this control backs up a double-click,
+   which has no keyboard equivalent at all, so it has to stay in the tab order even while it
+   is not drawn. Focus brings it back into view. */
 .board-col-width {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  /* The two chevrons are the `‹` the back button already uses, turned outward to widen
-     and inward to narrow, so the direction IS the label. They need the tracking to stay
-     apart: set solid they close into one smudge at this size and the arrow reads as a
-     glyph nobody recognises. */
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 1px;
-  text-indent: 1px;
-  color: var(--muted);
-  background: none;
+  padding: 1px;
   border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  cursor: pointer;
+  border-radius: 6px;
   opacity: 0;
 }
 .board-col-head:hover .board-col-width,
-.board-col-width:focus-visible,
-/* A wide column keeps it drawn: the way back must not be the thing you hunt for. */
-.board-col-width[aria-pressed="true"] {
+.board-col-width:focus-within,
+/* An expanded column keeps it drawn: the way back must not be the thing you hunt for. */
+.board-col-width[data-width="wide"] {
   opacity: 1;
 }
-.board-col-width:hover {
+.board-col-width-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 16px;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.board-col-width-stop:hover {
   color: var(--fg);
-  border-color: var(--border);
   background: var(--panel);
 }
-.board-col-width:focus-visible {
+.board-col-width-stop[aria-pressed="true"] {
+  color: var(--tone-color, var(--fg));
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.board-col-width-stop:focus-visible {
   outline: 2px solid var(--select);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+.bcw-bar {
+  display: block;
+  height: 8px;
+  border-radius: 1.5px;
+  background: currentColor;
+  opacity: 0.75;
+}
+.board-col-width-stop[aria-pressed="true"] .bcw-bar {
+  opacity: 1;
+}
+.bcw-collapsed {
+  width: 3px;
+}
+.bcw-normal {
+  width: 8px;
+}
+.bcw-wide {
+  width: 15px;
 }
 /* Double-click is the gesture, so the head must not also be a paragraph: without this
    the second click selects the column name and leaves it highlighted behind the move.
@@ -35102,3 +35274,18 @@ body.foreman-sidecar-open .modal-backdrop {
 .ts-sync-comparison strong { overflow-wrap: anywhere; }
 .ts-sync-actions { display: flex; gap: 8px; margin-top: 12px; }
 @media (max-width: 700px) { .ts-sync-comparison { grid-template-columns: 1fr; } }
+
+/* Reports in the shared Board/Console session detail. */
+.session-scouts { padding: 16px; }
+.session-scouts > p { color: var(--muted); }
+.session-scouts-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+.session-scouts-report {
+  width: 100%; padding: 14px; text-align: left; display: grid; gap: 6px;
+  color: inherit; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; overflow-wrap: anywhere;
+}
+.session-scouts-report:hover { border-color: var(--working); }
+.session-scouts-report span { color: var(--muted); font-size: 12px; }
+.session-scouts-archive { margin-top: 6px; }
+.scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.scouts-source-session > span { font-size: 12px; color: var(--muted); }

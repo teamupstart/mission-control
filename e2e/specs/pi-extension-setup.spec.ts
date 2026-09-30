@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, readlinkSync, chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readlinkSync, chmodSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test, expect } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -140,13 +141,23 @@ test("a healthy installed extension admits a Pi plan dispatch through the real d
   };
   await put("/api/skills/config", { enabled: true, skills: { "html-plans": true, "phased-plan": true } });
   test.skip(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0, "tmux is required for the real Pi terminal proof");
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  writeFileSync(join(daemon.home, "fake-bin", "fake-pi"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(resolve("e2e/fixtures/fake-pi-plan.mjs"))} ${quote(daemon.home)} ${quote(resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"))} "$@"\n`);
+  const binary = join(daemon.home, "fake-bin", "fake-pi");
+  // A catalog probe may already have selected Node to read this path. Keep the wrapper
+  // in JavaScript too: swapping in a shell script lets that probe parse shell code as JS.
+  writeFileSync(`${binary}.next`, `#!/usr/bin/env node
+process.argv.splice(2, 0, ${JSON.stringify(daemon.home)}, ${JSON.stringify(resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"))});
+await import(${JSON.stringify(pathToFileURL(resolve("e2e/fixtures/fake-pi-plan.mjs")).href)});
+`, { mode: 0o755 });
+  renameSync(`${binary}.next`, binary);
   const agentDir = join(daemon.home, "pi-agent"); mkdirSync(agentDir, { recursive: true });
   symlinkSync(join(daemon.home, "pi-extensions"), join(agentDir, "extensions"));
   await put("/api/harnesses/config", { sessionRuntime: { pi: "terminal" }, terminalBackend: { pi: "tmux" } });
   const installed = await fetch(`${daemon.baseURL}/api/setup/install`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "pi-integration" }) });
   expect(installed.ok, await installed.text()).toBe(true);
+  const catalog = await (await fetch(`${daemon.baseURL}/api/harnesses/models?refresh=1`)).json();
+  expect(catalog.pi, JSON.stringify(catalog.pi)).toMatchObject({ problem: null });
+  expect(catalog.pi.choices).toEqual(expect.arrayContaining([expect.objectContaining({ id: "openai/gpt-5.6-sol" })]));
+  await dashboard.reload();
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);

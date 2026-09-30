@@ -314,6 +314,14 @@ export function ScoutsPage({
             onChange={(event) => setDraftQuery(event.target.value)}
           />
           <div className="scouts-filters">
+            {activeFilters.session && (
+              <Tooltip label="Clear the source session filter">
+                <button type="button" className="btn btn-ghost" aria-label="Clear session filter"
+                  onClick={() => setFilters({ ...activeFilters, session: undefined })}>
+                  Session reports ×
+                </button>
+              </Tooltip>
+            )}
             <label className="scouts-filter">
               <span className="scouts-filter-label">State</span>
               <Tooltip label="Show only complete, partial, or unreadable archives">
@@ -371,7 +379,7 @@ export function ScoutsPage({
               <p className="empty-sub">
                 {routeQuery || filterCount > 0
                   ? "Try fewer words, or clear the filters."
-                  : "A scout task archives its report here when it completes."}
+                  : "Sessions publish requested scout reports here."}
               </p>
             </div>
           ) : (
@@ -474,6 +482,9 @@ export function ScoutsPage({
 
       <ScoutReader
         detail={detail}
+        onSourceSession={() => {
+          if (detail?.sourceSession) setFilters({ ...activeFilters, session: detail.sourceSession.id, producer: detail.producerId, kind: "scout" });
+        }}
         state={catalog.detailState}
         error={catalog.detailError}
         libraryPath={catalog.libraryPath}

@@ -591,9 +591,10 @@ reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>`, `codex resume <thread id>`, or `pi --session <session id>`,
 whichever harness the session detail is. All three vendors keep one session store across
 their programmatic and interactive surfaces, which is what makes this a handoff rather than
-a lost conversation. Discovery adopts the new
-process, and the task's binding follows it across even when discovery takes longer than the
-handoff request waits.
+a lost conversation. Discovery adopts the new process. Managed resume preparation now
+preserves tool access and scope; durable task and pinned-workflow continuity, including the
+early-hook race, remains the separate Phase 2 repair. Do not treat a successful terminal
+launch as proof that a task or workflow transferred.
 
 The permission mode crosses with it, where the harness has one - Pi does not, so nothing
 rides along on its resume. An embedded session's mode lives in the driver's own options -
@@ -605,9 +606,18 @@ approval** from **Approve for me**) for Codex. The same carry applies when an ex
 session's session detail resumes its conversation. Model and reasoning effort are deliberately not
 re-stated; the resumed conversation carries those itself.
 
-It is one way. After the handoff the terminal session is the one holding the conversation;
-the embedded session detail goes away. Nothing is lost if the terminal cannot be opened - the error
-tells you the exact resume command to run yourself.
+Before stopping the SDK, Mission Control verifies its required tools and prepares a private
+environment. Claude and Codex receive launch-scoped Mission MCP configuration; Pi uses its
+verified installed extension. A missing bundle, tool, extension, executable, or unusable
+configuration refuses the handoff while the SDK remains available. Attached worktrees keep
+their existing write scope.
+
+After the handoff the terminal holds the conversation and the embedded detail goes away.
+An uncertain launch retains its prepared environment and blocks another resume of the same
+conversation. An unclaimed attempt is fenced and cleaned after its two-minute start deadline;
+a claimed or ambiguous owner keeps its credentials until proven completion. A bare manual
+resume command does not include these managed Mission tools. See the
+[resource lifetime and recheck contract](harnesses-and-terminals.md#managed-terminal-resumes).
 
 ### Interrupt: stop the turn without ending the session
 
@@ -1970,7 +1980,7 @@ The MCP tools are:
   A reply naming an earlier delivery is still filed - it is a real answer - but advances
   nothing. `addressed` says the agent actually changed the code or document; it marks the
   thread handled and never closes it, because only a person resolves a comment. See
-  [Walk the agent through your review](ui.md#walk-the-agent-through-your-review)
+  [Comments go to the agent as you send them](ui.md#comments-go-to-the-agent-as-you-send-them)
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository
@@ -2143,3 +2153,13 @@ that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.
+
+
+### Scout reports from a session
+
+The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y
+with the session selected to open it, or use the tab in either Board or Console detail.
+Selecting a report opens its source HTML in the Files preview. **Open archive** reads the
+immutable published copy in the archive reader with a source-session filter. Report publication is
+available from every task kind and from taskless sessions; it does not complete the task.
+See [Archives](archives.md) for titles, immutable retries, and retained provenance.

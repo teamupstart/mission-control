@@ -73,17 +73,22 @@ export async function prepareCodexLaunch(
   const safe = auto ? ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"] : [];
   const descriptor = require ? await missionMcpDescriptor(cwd, stateHome) : null;
   const mcp = descriptor ? codexMissionMcpArgs(descriptor) : [];
+  const hooks = codexLaunchHooks();
+  return { args: [...safe, ...mcp, ...hooks.args], instrumented: hooks.instrumented, missionMcp: descriptor !== null };
+}
+
+/** Hooks are shared with resumes; dispatch permission flags are not. */
+export function codexLaunchHooks(): Pick<CodexLaunchPreparation, "args" | "instrumented"> {
   const bridge = codexHookPath();
   if (!existsSync(bridge)) {
-    return { args: [...safe, ...mcp], instrumented: false, missionMcp: descriptor !== null };
+    return { args: [], instrumented: false };
   }
   const overrides = CODEX_HOOK_EVENTS.flatMap((event) => [
     "-c",
     codexHookOverride(event, bridge),
   ]);
   return {
-    args: [...safe, ...mcp, ...overrides, "--dangerously-bypass-hook-trust"],
+    args: [...overrides, "--dangerously-bypass-hook-trust"],
     instrumented: true,
-    missionMcp: descriptor !== null,
   };
 }

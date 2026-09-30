@@ -212,10 +212,12 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   const composer = page.getByRole("region", { name: /New comment on line/ });
   await expect(composer).toBeVisible();
   await composer.getByRole("textbox", { name: /Comment on line/ }).fill("Please make the retry bound explicit.");
-  await composer.getByRole("button", { name: "Comment", exact: true }).click();
+  await composer.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByRole("button", { name: "Comments", exact: true }).click();
   await expect(page.getByRole("button", {
-    name: /MC-\w+ line \d+ queued Please make the retry bound explicit\./,
+    // Sent, not staged: the comment goes to the agent when it is sent, so its state is
+    // whichever of these delivery has reached by the time the rail is read.
+    name: /MC-\w+ line \d+ (?:queued|sent|no answer) Please make the retry bound explicit\./,
   })).toBeVisible();
 
   await tabs.getByRole("tab", { name: /Conversation$/ }).click();

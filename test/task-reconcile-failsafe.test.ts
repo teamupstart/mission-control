@@ -20,7 +20,7 @@ import type { Task } from "../src/shared/types.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-reconcile-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

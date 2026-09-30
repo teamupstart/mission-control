@@ -238,7 +238,11 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
+import { resumeContext } from "./resume-context.ts";
+import { TerminalLaunchError } from "./terminal/launch-error.ts";
+import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
@@ -329,7 +333,7 @@ import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { interruptSession, requestSessionStop } from "./sdk/control.ts";
-import { spawnUniquely } from "./dispatcher.ts";
+import { spawnManagedResume } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask } from "./task-sources/push.ts";
@@ -514,7 +518,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { terminalTargetViews, launchAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1889,10 +1893,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
-  const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
-    spawn: spawnUniquely,
+  const prepareResume = (session: Session) => {
+    const task = registry.listTasks().find((candidate) => candidate.sessionId === session.id) ?? null;
+    return prepareTerminalResume(session, resumeContext(session, task,
+      workflows?.resumeNeedsEvidence(session) ?? false,
+      task ? Boolean(ensembles?.store.memberForTask(task.id)) : false));
+  };
+  const defaultHandoffDeps: HandoffDeps = {
+    spawn: spawnManagedResume,
     waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
     settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
+    prepare: prepareResume,
+    ...handoffDeps,
   };
   const handoffSession = async (
     session: Session,
@@ -1909,30 +1921,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const deps = backend
       ? {
           ...defaultHandoffDeps,
-          spawn: async (
-            name: string,
-            _shortId: string,
-            cwd: string,
-            bin: string,
-            args: readonly string[] = [],
-          ) => {
-            const launched = await launchAgentTerminal(backend, {
-              name,
-              cwd,
-              argv: [bin, ...args],
-            }, terminalLauncher);
+          spawn: async (input: Parameters<typeof spawnManagedResume>[0]) => {
+            const launched = await launchManagedAgentTerminal(backend, input, terminalLauncher);
             label = launched.label;
             // A 504 means the terminal may have opened. The embedded driver is already
             // stopped, so preserve the transfer and let discovery settle what appeared.
             if (!launched.ok && launched.status !== 504) {
-              throw new Error(launched.error ?? `${launched.label} could not open a window`);
+              throw new TerminalLaunchError(launched.error ?? `${launched.label} could not open a window`, false);
             }
             return {
-              homeName: launched.homeName ?? name,
+              homeName: launched.homeName ?? input.name,
               homeBackend: backend,
               terminalResourceId: launched.terminalResourceId ?? null,
               launchProcess: launched.launchProcess,
               launchStateHome: launched.launchStateHome,
+              launchOutcome: launched.ok ? "launched" as const : "unknown" as const,
+              resumeLeaseId: input.prepared.lease.id,
             };
           },
         }
@@ -3499,6 +3503,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = ArchiveSearchQuerySchema.safeParse({
       q: c.req.query("q"),
       producer: c.req.query("producer"),
+      session: c.req.query("session"),
       repo: c.req.query("repo"),
       agent: c.req.query("agent"),
       kind: c.req.query("kind"),
@@ -3514,6 +3519,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       library.list({
         q: query.q ?? null,
         producer: query.producer ?? null,
+        session: query.session ?? null,
         repo: query.repo ?? null,
         agent: query.agent ?? null,
         kind: query.kind ?? null,
@@ -3636,6 +3642,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
   app.get("/api/terminal-targets", (c) =>
     c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
+  app.get("/api/sessions/:id/launch", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    try {
+      const attempts = recheckManagedResumes().filter((status) =>
+        status.lease.sourceSessionId === c.req.param("id") || (session && status.lease.conversation === resumeConversation(session)));
+      if (!session && attempts.length === 0) return c.json({ error: "no such session or managed resume" }, 404);
+      return c.json({ attempts: attempts.map((status) => ({ id: status.lease.id, state: status.state,
+        deadline: status.deadline, owner: status.owner, detail: resumeLeaseDiagnostic(status) })) });
+    } catch {
+      return c.json({ error: "Managed resume records need inspection; uncertain environments are retained and no terminal was started" }, 409);
+    }
+  });
   // Open a terminal on a session's checkout: a shell, or the session's own agent CLI.
   // Both payloads use the backend the operator selected; only their daemon-owned argv differs.
   app.post("/api/sessions/:id/launch", async (c) => {
@@ -3676,6 +3695,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               label: handedOff.label,
               homeName: handedOff.homeName,
               sessionId: handedOff.sessionId,
+              launchOutcome: handedOff.launchOutcome,
+              resumeLeaseId: handedOff.resumeLeaseId,
             }
           : { ok: false, backend, label: handedOff.label, error: handedOff.error };
         return handedOff.ok ? c.json(body) : c.json(body, 409);
@@ -3700,20 +3721,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // With the mode the session was last observed in, so the resumed CLI starts where
       // the operator left it - the same carry the embedded handoff makes, and null when
       // nobody measured one, which renders no flag rather than a guess.
-      let argv: string[] | null;
+      agentResumeClaims.add(session.id);
+      let prepared: PreparedResume;
       try {
-        argv = await resumeArgvFor(
-          session.agent,
-          session.agentSessionId!,
-          session.permissionMode,
-        );
+        prepared = await prepareResume({ ...session, cwd: workspaceRoot });
       } catch (error) {
+        agentResumeClaims.delete(session.id);
         const message = error instanceof Error ? error.message : String(error);
         return c.json({ ok: false, backend, error: message }, 409);
       }
-      if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
-
-      agentResumeClaims.add(session.id);
       const task =
         registry
           .listTasks()
@@ -3722,25 +3738,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               candidate.sessionId === session.id &&
               isActiveTask(candidate.status),
           ) ?? null;
-      if (task) {
-        if (session.runtime === "sdk") clearSdkSessionTask(session.id);
-        // Before launch: the old session's pending `session_remove` must not settle work
-        // that is transferring to the replacement process.
-        registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
-      }
-
       let result;
       try {
-        result = await launchAgentTerminal(backend, {
-          name: session.name,
-          cwd: workspaceRoot,
-          argv,
-        }, terminalLauncher);
+        if (task) {
+          if (session.runtime === "sdk") clearSdkSessionTask(session.id);
+          // Before launch: the old session's pending `session_remove` must not settle work
+          // that is transferring to the replacement process.
+          registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+        }
+      } catch {
+        // Still preparation-owned: no managed launcher has taken the lease yet.
+        agentResumeClaims.delete(session.id);
+        if (prepared.dispose()) {
+          if (task) tasks.settleAfterFailedHandoff(task.id);
+          return c.json({ ok: false, backend, error: "Managed resume could not record its launch intent. No terminal was started; recheck launch status before trying again." }, 409);
+        }
+        return c.json({ ok: false, backend, error: `Managed resume ${prepared.lease.id} has an unknown launch outcome. Its environment is retained; recheck launch status before trying again.` }, 504);
+      }
+      try {
+        result = await launchManagedAgentTerminal(backend, { name: session.name, prepared }, terminalLauncher);
       } catch (error) {
         agentResumeClaims.delete(session.id);
-        if (task) tasks.settleAfterFailedHandoff(task.id);
-        const message = error instanceof Error ? error.message : String(error);
-        return c.json({ ok: false, backend, error: message }, 502);
+        if (error instanceof TerminalLaunchError && !error.outcomeUnknown) {
+          if (task) tasks.settleAfterFailedHandoff(task.id);
+          return c.json({ ok: false, backend, resumeLeaseId: prepared.lease.id, launchOutcome: "refused",
+            error: `${error.message}. No terminal was started; recheck launch status before trying again.` }, 409);
+        }
+        return c.json({ ok: false, backend, error: `Managed resume ${prepared.lease.id} has an unknown launch outcome. Its environment is retained; recheck launch status before trying again.` }, 504);
       }
       if (task && (result.ok || result.status === 504)) {
         const current = registry.getTask(task.id);
@@ -3775,6 +3799,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         ok: result.ok,
         backend,
         label: result.label,
+        resumeLeaseId: prepared.lease.id,
+        launchOutcome: result.ok ? "launched" : result.status === 504 ? "unknown" : "refused",
         ...(result.error ? { error: result.error } : {}),
       };
       return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
@@ -4842,11 +4868,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER),
     );
     if (!authority) {
-      return c.json({ error: "this scout submission has no valid session credential" }, 403);
+      return c.json({ error: "this session has no valid report capability. Let Mission Control observe the live session, then use its current MCP bridge to retry." }, 403);
     }
     const result = await library.submit({
       authority,
       submission: {
+        title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
         tags: parsed.data.tags,

@@ -91,6 +91,7 @@ import {
 } from "./lib/card-shortcuts.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
+import { collapsedColumnSessionIds } from "./lib/column-width.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -615,6 +616,7 @@ export function App(): React.JSX.Element {
     },
     [openSettingsAnchor],
   );
+  const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
     nonce: number;
@@ -2300,10 +2302,19 @@ export function App(): React.JSX.Element {
   // between renders - the store hands back the same set until a fold changes it, and `fleet` is
   // itself a memo - so this recomputes exactly when a fold or the fleet moves.
   const collapsedRepoKeys = useRepoCollapsed();
-  const foldedIds = useMemo(
-    () => hiddenSessionIds(fleet.groups, collapsedRepoKeys),
-    [fleet, collapsedRepoKeys],
-  );
+  // And the sessions in a Board column collapsed to a strip, for the same reason. Only on the
+  // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
+  // focused column is drawn as the rail in full whatever the overview had folded, so its rows
+  // have to stay walkable there.
+  const collapsedColumns = useUiConfig().collapsedBoardColumns;
+  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const foldedIds = useMemo(() => {
+    const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
+    if (!hideCollapsedColumns) return folded;
+    const inStrips = collapsedColumnSessionIds(fleet.groups, new Set(collapsedColumns));
+    if (inStrips.size === 0) return folded;
+    return new Set([...folded, ...inStrips]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns]);
 
   const boardColumns = useMemo(
     () => fleet.groups.map((g) => g.sessions.filter((s) => !foldedIds.has(s.id)).map((s) => s.id)),
@@ -2735,6 +2746,9 @@ export function App(): React.JSX.Element {
     diffTabRequest,
     conversationTabRequest,
     workflowsTabRequest,
+    scoutsTabRequest,
+    archivesRevision,
+    onOpenScout: (archiveKey, sessionId, producerId) => { navigate({ page: "scouts", archiveKey, filters: { session: sessionId, producer: producerId, kind: "scout" } }); },
     files,
     fileCommentThreads,
     fileCommentReviews,
@@ -3354,6 +3368,14 @@ export function App(): React.JSX.Element {
       }
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
       // workflow ladder.
+      if (chord === bindings.sessionScouts) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel) return;
+        e.preventDefault();
+        if (layout === "board") setBoardOpen(true);
+        setScoutsTabRequest((request) => ({ sessionId: sel.id, nonce: (request?.nonce ?? 0) + 1 }));
+        return;
+      }
       if (chord === bindings.sessionWorkflows) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
         if (!sel) return;

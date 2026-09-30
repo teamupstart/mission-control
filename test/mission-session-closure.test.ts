@@ -1,4 +1,4 @@
-import { after, afterEach, test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,7 +55,7 @@ const {
   MISSION_SESSION_CLOSURE_DEADLINE_MS,
   MISSION_SESSION_CLOSURE_ESCALATE_MS,
   MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS,
-} = await import("../src/server/tasks.ts");
+} = await import("./helpers/task-manager-fixture.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 db.openDb();
@@ -187,7 +187,6 @@ function terminalMission(
 ) {
   const registry = new Registry();
   const tasks = new TaskManager(registry, kill.deps);
-  managers.push(tasks);
   const { schedule, occurrenceId, taskId } = filedRun(over);
   const sessionId = uid("sess");
   const agentSessionId = `${sessionId}-episode`;
@@ -218,18 +217,6 @@ function terminalMission(
 /** Foreman's own settled verdict that this generation had nothing to ship. */
 const EMPTY = { outcome: "empty" as const, summary: "the session changed nothing", gaps: [] };
 
-/**
- * Every TaskManager this file builds, so its sweep is stopped when its test ends.
- *
- * The ledger is one table and the sweep reads all of it, which is exactly right for the one
- * TaskManager a daemon has - and means a manager left running past its own test would act on
- * the next test's rows against a registry that never heard of them. Production has no second
- * manager; this file does, so it cleans up after each one.
- */
-const managers: Array<{ stopMissionSessionClosures(): void }> = [];
-afterEach(() => {
-  for (const m of managers.splice(0)) m.stopMissionSessionClosures();
-});
 
 /** Let every backgrounded completion and closure settle. */
 async function settle(): Promise<void> {
@@ -295,7 +282,6 @@ test("concluding a mission run stops its embedded driver and lets eviction remov
   const supervisor = new SdkSupervisor(registry);
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps, supervisor);
-  managers.push(tasks);
   const { schedule, occurrenceId, taskId } = filedRun();
   const sessionId = `${SDK_SESSION_ID_PREFIX}${uid("00000000-0000-4000-8000-00000000")}`;
 
@@ -618,7 +604,6 @@ test("a completion that lands asynchronously still gets its session closed", asy
     settleBeforeCleanup: async () => ({ ok: true as const }),
   };
   const tasks = new TaskManager(registry, kill.deps, undefined, undefined, archives);
-  managers.push(tasks);
 
   const { schedule, occurrenceId, taskId } = filedRun();
   const sessionId = uid("sess");
@@ -680,7 +665,6 @@ test("a closure a previous daemon left owed is resumed, but never before discove
   const restarted = new Registry();
   const kill = killRecorder();
   const tasks = new TaskManager(restarted, kill.deps);
-  managers.push(tasks);
   assert.equal(
     restarted.getTask(f.taskId)?.status,
     "done",
@@ -939,7 +923,6 @@ test("a conclusion asks its own session even while another closure is mid-stop",
     },
   };
   const tasks = new TaskManager(registry, deps);
-  managers.push(tasks);
 
   const second = uid("sess");
   registry.applyDiscovery([discovered(first), discovered(second)]);
@@ -995,7 +978,6 @@ test("a late prompt on the SDK path leaves no driver that could finish the turn"
   const supervisor = new SdkSupervisor(registry);
   const kill = killRecorder();
   const tasks = new TaskManager(registry, kill.deps, supervisor);
-  managers.push(tasks);
   const { schedule, occurrenceId, taskId } = filedRun();
   const sessionId = `${SDK_SESSION_ID_PREFIX}${uid("00000000-0000-4000-8000-00000000")}`;
 
@@ -1347,7 +1329,6 @@ test("every run meets its own deadline when many stops hang during restart recov
     db.openTaskSessionClosure(run.taskId, run.sessionId, T0, T0 + 240_000);
   }
   const tasks = new TaskManager(registry, kill.deps);
-  managers.push(tasks);
   const removed = new Map<string, number>();
   registry.subscribe((event) => {
     if (event.type === "session_remove") removed.set(event.id, Date.now());
@@ -1362,6 +1343,11 @@ test("every run meets its own deadline when many stops hang during restart recov
     assert.ok(removed.get(run.sessionId)! - T0 <= 240_000);
     assert.equal(registry.getTask(run.taskId)?.status, "done");
   }
+  // Stops deliberately never resolve in this case. Let the last bounded attempt expire
+  // before node:test resets the fake clock that owns its deadline, then drain the manager.
+  tasks.stopMissionSessionClosures();
+  t.mock.timers.tick(MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS);
+  await tasks.stop();
 });
 
 test("retirement survives continuous discovery and restart while failed cleanup stays visible", async (t) => {
@@ -1392,7 +1378,6 @@ test("retirement survives continuous discovery and restart while failed cleanup 
 
   const restarted = new Registry();
   const tasks = new TaskManager(restarted, kill.deps);
-  managers.push(tasks);
   restarted.applyDiscovery([discovered(f.sessionId)]);
   assert.equal(restarted.getSession(f.sessionId), undefined, "restart must not readopt the retired process");
   const before = kill.killed.length;
@@ -1519,7 +1504,6 @@ test("SDK restart closes a concluded run without launching another generation", 
   });
   const supervisor = new SdkSupervisor(registry);
   const tasks = new TaskManager(registry, killRecorder().deps, supervisor);
-  managers.push(tasks);
   const removed: string[] = [];
   registry.subscribe((event) => { if (event.type === "session_remove") removed.push(event.id); });
   await supervisor.restore();

@@ -9,6 +9,10 @@ import type { QueueManager } from "../src/server/queue.ts";
 import { mkSession, mkMuxHandle, mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
 import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
+import { STATE_DIR } from "../src/server/config.ts";
+import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
+import { TerminalLaunchError } from "../src/server/terminal/launch-error.ts";
+await managedResumeFixture(STATE_DIR);
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
 // question is what a request is allowed to influence. The answer has to be "which of two
@@ -126,6 +130,7 @@ const app = buildApp({
   queues: {} as unknown as QueueManager,
   launchSessionTerminal: async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
+    if (spec.name === "refused-resume") throw new TerminalLaunchError("Ghostty refused the launch", false);
     if (spec.name === "verified-resume") {
       return { ok: true, label: backend, homeName: null,
         terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 };
@@ -163,6 +168,25 @@ async function launch(id: string, body: unknown): Promise<Response> {
     else process.env.MISSION_CLAUDE_BIN = previous;
   }
 }
+
+test("a definite resume refusal preserves the backend cause and attempt identity", async () => {
+  const refused = mkSession({ id: "refused-resume", name: "refused-resume", state: "exited", agentSessionId: "refused-native" });
+  SESSIONS.set(refused.id, refused);
+  try {
+    const response = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error, "Ghostty refused the launch. No terminal was started; recheck launch status before trying again.");
+    assert.equal(body.launchOutcome, "refused");
+    assert.equal(typeof body.resumeLeaseId, "string");
+    const recheck = await app.request(`/api/sessions/${refused.id}/launch`, { headers: HEADERS });
+    assert.ok((await recheck.json()).attempts.some((attempt: { id: string; state: string }) =>
+      attempt.id === body.resumeLeaseId && attempt.state === "revoked"));
+    const retry = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(retry.status, 409);
+    assert.notEqual((await retry.json()).resumeLeaseId, body.resumeLeaseId, "a definite refusal releases the resume claim");
+  } finally { SESSIONS.delete(refused.id); }
+});
 
 test("the backend is a registered id, never a command", async () => {
   // The closed enum is the whole containment story for this field. Anything that resolves
@@ -258,8 +282,27 @@ test("an uncertain exited-session resume keeps the terminal resource name", asyn
   const res = await launch("exited-uncertain", { backend: "tmux", payload: "agent" });
 
   assert.equal(res.status, 504);
+  assert.ok(launchedArgv(launched.at(-1)!.argv).includes("--mcp-config"), "the managed exited route carries Mission registration too");
   assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.sessionId, null);
   assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.homeName, "Uncertain resume-abc123");
+});
+
+test("launch recheck survives source removal, starts nothing, and reclaims only expired unclaimed attempts", async () => {
+  const source = mkSession({ id: "recheck-gone", agentSessionId: "recheck-native", name: EXITED_UNCERTAIN.name, state: "exited" });
+  SESSIONS.set(source.id, source);
+  const before = launched.length;
+  assert.equal((await launch(source.id, { backend: "ghostty", payload: "agent" })).status, 504);
+  SESSIONS.delete(source.id);
+  emitSessionRemove(source.id);
+  const response = await app.request(`/api/sessions/${source.id}/launch`, { headers: HEADERS });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { attempts: Array<{ state: string; deadline: number }> };
+  assert.equal(body.attempts[0]?.state, "pending");
+  const { recheckManagedResumes, managedResumeRoot } = await import("../src/server/harness/resume.ts");
+  const { reconcileResumeLeases } = await import("../src/server/terminal/resume-lease.ts");
+  reconcileResumeLeases(managedResumeRoot(), body.attempts[0]!.deadline + 1);
+  assert.equal(recheckManagedResumes().find((s) => s.lease.sourceSessionId === source.id)?.state, "revoked");
+  assert.equal(launched.length, before + 1);
 });
 
 // The shell arm's asymmetry - a shell is not the agent's conversation, so having a pane
@@ -342,7 +385,7 @@ test("a resume claim is released when the session is actually removed", () => {
 
     // The same id, back on the same tty as a new session - the case an absence-based
     // prune gets wrong.
-    SESSIONS.set(gone.id, mkSession({ id: gone.id, state: "exited" }));
+    SESSIONS.set(gone.id, mkSession({ id: gone.id, state: "exited", agentSessionId: "new-conversation" }));
     assert.equal(
       (await launch(gone.id, { backend: "tmux", payload: "agent" })).status,
       200,
@@ -388,7 +431,7 @@ test("resuming through an emulator persists NO home, not the dead one", async ()
 test("resume retains the spawned UUID and binds only a positively observed recipient", async (t) => {
   const adoption = t.mock.method(registry, "adoptTerminalLaunch");
   for (const matches of [true, false]) {
-    const session = mkSession({ id: `ghostty-resume-${matches}`, name: "verified-resume", state: "exited" });
+    const session = mkSession({ id: `ghostty-resume-${matches}`, agentSessionId: `resume-${matches}`, name: "verified-resume", state: "exited" });
     const task = mkTask({ id: `ghostty-task-${matches}`, sessionId: session.id, status: "running" });
     adoptedSession = mkSession({ id: `adopted-${matches}`, terminals: matches
       ? [mkEmuHandle({ backend: "ghostty", paneId: "resumed-uuid" })] : [] });

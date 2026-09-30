@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Task, TaskKind } from "@shared/types.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
@@ -891,7 +891,7 @@ function writeIfChanged(path: string, content: string): void {
   // Unique per writer, so two dispatches racing cannot share a temp file and interleave.
   const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    writeFileSync(tmp, content);
+    writeFileSync(tmp, content, { mode: 0o600 });
     renameSync(tmp, path);
   } catch (err) {
     try {
@@ -910,10 +910,10 @@ function writeIfChanged(path: string, content: string): void {
  * (`askChannelArgs`) turns that into "no ask channel at all", which is the only safe
  * direction - see its own doc comment.
  */
-export function claudeMissionMcpArgs(descriptor: MissionMcpDescriptor): string[] {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeIfChanged(CONFIG_PATH, missionMcpConfigJson(descriptor));
-  return ["--mcp-config", CONFIG_PATH];
+export function claudeMissionMcpArgs(descriptor: MissionMcpDescriptor, configPath = CONFIG_PATH): string[] {
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+  writeIfChanged(configPath, missionMcpConfigJson(descriptor));
+  return ["--mcp-config", configPath];
 }
 
 // ---- Codex: launch-scoped `-c mcp_servers.*` TOML overrides ---------------------------

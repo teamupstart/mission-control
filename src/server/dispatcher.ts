@@ -1,4 +1,6 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { TerminalLaunchError } from "./terminal/launch-error.ts";
+import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -52,7 +54,7 @@ import {
 } from "./telemetry/index.ts";
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
-import { homeRecord, heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type SpawnedHome } from "./terminal/home.ts";
+import { homeRecord, heldHomeNames, homeAlive, homeNameRules, killHome, launchHome, type HomeDeps, type SpawnedHome } from "./terminal/home.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -2885,8 +2887,8 @@ export function deriveTitle(intent: string): string {
  * basis is how two dispatches end up sharing a home, which for a multiplexer means the second
  * agent's prompt is typed into the first agent's pane.
  *
- * Exported for the terminal handoff, which opens a home for a session that already exists:
- * the same race, the same rule, and no reason for a second spelling of it.
+ * Ordinary dispatch and managed terminal handoff share the name-allocation mechanics
+ * below, while keeping their command inputs and resource ownership separate.
  */
 export async function spawnUniquely(
   baseName: string,
@@ -2898,37 +2900,55 @@ export async function spawnUniquely(
   terminalBackend: string | null = null,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
-  const argv = isolatedAgentArgv(
-    [agentBin, ...agentArgs],
-    { cwd, stateHome: effectiveStateHome },
-  );
-  const held = await heldHomeNames(undefined, terminalBackend);
-  const unique = `${baseName}-${shortId}`;
-  const name = held === null || held.has(baseName) ? unique : baseName;
-
   try {
-    const first = await launchHome({ name, cwd, argv, sidePane: true }, undefined, terminalBackend);
-    if (first.ok) {
-      return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
-        launchStateHome: first.backend.axis === "emulator" ? effectiveStateHome : undefined,
-        launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
-    }
-    if (name === unique) throw new Error(first.error);
-    const retry = await launchHome(
-      { name: unique, cwd, argv, sidePane: true },
-      undefined,
-      terminalBackend,
-    );
-    if (retry.ok) {
-      return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
-        launchStateHome: retry.backend.axis === "emulator" ? effectiveStateHome : undefined,
-        launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(effectiveStateHome) : null };
-    }
-    throw new Error(retry.error);
+    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome });
+    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);
     throw error;
   }
+}
+
+/** Managed counterpart: preparation is the sole command source and owns launch cleanup. */
+export async function spawnManagedResume(
+  input: ManagedResumeLaunch & { shortId: string; terminalBackend?: string | null },
+  deps?: HomeDeps,
+): Promise<SpawnedHome> {
+  const result = await launchPreparedResume(input, async ({ name, cwd, argv, stateHome }) => ({
+    outcome: "launched",
+    value: await spawnWrappedUniquely(name, input.shortId, cwd, argv, stateHome, input.terminalBackend ?? null, deps),
+  }));
+  return { ...result.value, resumeLeaseId: input.prepared.lease.id, launchOutcome: "launched" };
+}
+
+/** Shared backend mechanics. Resource ownership stays with the ordinary or managed caller. */
+async function spawnWrappedUniquely(
+  baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
+  terminalBackend: string | null,
+  deps?: HomeDeps,
+): Promise<SpawnedHome> {
+  const held = await heldHomeNames(deps, terminalBackend);
+  const unique = `${baseName}-${shortId}`;
+  const name = held === null || held.has(baseName) ? unique : baseName;
+
+  const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
+  if (first.ok) {
+    return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
+      launchStateHome: first.backend.axis === "emulator" ? stateHome : undefined,
+      launchProcess: first.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
+  }
+  if (first.outcomeUnknown || name === unique) throw new TerminalLaunchError(first.error, first.outcomeUnknown ?? false);
+  const retry = await launchHome(
+    { name: unique, cwd, argv, sidePane: true },
+    deps,
+    terminalBackend,
+  );
+  if (retry.ok) {
+    return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,
+      launchStateHome: retry.backend.axis === "emulator" ? stateHome : undefined,
+      launchProcess: retry.backend.axis === "emulator" ? await readLaunchProcess(stateHome) : null };
+  }
+  throw new TerminalLaunchError(retry.error, retry.outcomeUnknown ?? false);
 }
 
 async function currentBranch(dir: string): Promise<string | null> {

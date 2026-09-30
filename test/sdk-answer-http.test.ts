@@ -1,6 +1,6 @@
 import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -22,6 +22,8 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-answer-"));
 process.env.HARNESS_HOME = home;
 const previousClaudeBin = process.env.MISSION_CLAUDE_BIN;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
+await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
+const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
 
 import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
@@ -427,7 +429,10 @@ test("the handoff clears the task binding and marks telemetry BEFORE stopping th
   };
 
   const app = mkApp(registry, supervisor, {
-    spawn: async (name) => {
+    spawn: async ({ name, prepared }) => {
+      assert.ok(prepared.argv.includes("--mcp-config"));
+      assert.equal(prepared.cwd, "/wt/one");
+      assert.deepEqual(launchedArgv(prepared.wrappedArgv), prepared.argv);
       order.push(`spawn:${name}`);
       return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:captured-handoff-home" };
     },
@@ -586,6 +591,7 @@ test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
     assert.equal(argv[0], process.execPath, "the daemon-resolved executable, not `codex`");
     assert.ok(!argv.includes("codex"));
     assert.match(argv.join(" "), /resume codex-session-1/);
+    assert.ok(argv.some((arg) => arg.startsWith("mcp_servers.")));
   } finally {
     if (previous === undefined) delete process.env.MISSION_CODEX_BIN;
     else process.env.MISSION_CODEX_BIN = previous;
@@ -1121,6 +1127,32 @@ test("a handoff with no identity to resume from is refused before anything is st
   assert.deepEqual(sessionEndingReasons("sdk:new"), ["unknown"], "a refusal cannot mark a later departure");
 });
 
+test("managed resume refuses a missing Mission bundle before stopping or unbinding", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:missing-mission");
+  const task = mkTask({ id: "missing-mission-task", status: "running", sessionId: "sdk:missing-mission" });
+  registry.upsertTask(task);
+  const supervisor = fakeSupervisor();
+  const before = process.env.MISSION_MCP_SERVER;
+  process.env.MISSION_MCP_SERVER = join(home, "missing-mcp.mjs");
+  let launches = 0;
+  try {
+    const res = await mkApp(registry, supervisor, {
+      spawn: async () => { launches++; throw new Error("must not launch"); },
+      waitForSessionAtCwd: async () => null,
+      settleTask: () => assert.fail("preparation must not settle work"),
+    }).request("/api/sessions/sdk:missing-mission/handoff", { method: "POST", headers: HEADERS });
+    assert.equal(res.status, 409);
+    assert.deepEqual(supervisor.stopped, []);
+    assert.equal(launches, 0);
+    assert.equal(registry.getTask(task.id)?.sessionId, task.sessionId);
+    assert.match((await res.json() as { error: string }).error, /MCP.*not built/);
+  } finally {
+    if (before === undefined) delete process.env.MISSION_MCP_SERVER;
+    else process.env.MISSION_MCP_SERVER = before;
+  }
+});
+
 test("a missing resume executable is refused before the embedded driver is stopped", async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:missing-bin");
@@ -1253,7 +1285,7 @@ test("a handoff that stops the driver and cannot open a terminal settles its tas
   const settled: string[] = [];
   const res = await mkApp(registry, supervisor, {
     spawn: async () => {
-      throw new Error("no terminal backend can host a dispatched agent");
+      throw new TerminalLaunchError("no terminal backend can host a dispatched agent", false);
     },
     waitForSessionAtCwd: async () => null,
     settleTask: (taskId) => settled.push(taskId),
@@ -1269,9 +1301,46 @@ test("a handoff that stops the driver and cannot open a terminal settles its tas
   assert.deepEqual(settled, ["task-noterm"]);
   assert.deepEqual(supervisor.stopped, ["sdk:noterm"]);
   // And the operator is told what they are holding: the conversation is intact on disk.
-  assert.match(body.error, /worktree kept/);
-  assert.match(body.error, /--resume/);
+  assert.match(body.error, /worktree was kept/);
+  assert.match(body.error, /bare manual resume/);
 });
+
+for (const failure of ["task unbind", "launch intent"] as const) {
+  test(`a failed ${failure} releases preparation without calling the terminal backend`, async (t) => {
+    const registry = new Registry();
+    const id = `sdk:failed-${failure}`;
+    seed(registry, null, id);
+    registry.upsertTask(mkTask({ id: "task-before-launch", status: "running", sessionId: id }));
+    const supervisor = fakeSupervisor();
+    const settled: string[] = [];
+    let stateHome = "";
+    if (failure === "task unbind") {
+      const upsert = registry.upsertTask.bind(registry);
+      t.mock.method(registry, "upsertTask", (task: Parameters<typeof upsert>[0]) => {
+        if (task.sessionId === null) throw new Error("fixture persistence failure");
+        return upsert(task);
+      });
+    }
+    const res = await mkApp(registry, supervisor, {
+      prepare: async (session) => {
+        const { prepareTerminalResume } = await import("../src/server/harness/resume.ts");
+        const prepared = await prepareTerminalResume(session, { managed: true, requiredTools: [], extraDirs: [] });
+        stateHome = prepared.stateHome;
+        if (failure === "launch intent") prepared.beginLaunch = () => { throw new Error("fixture intent write failure"); };
+        return prepared;
+      },
+      spawn: (await import("../src/server/dispatcher.ts")).spawnManagedResume,
+      waitForSessionAtCwd: async () => assert.fail("nothing was launched"),
+      settleTask: (taskId) => settled.push(taskId),
+    }).request(`/api/sessions/${encodeURIComponent(id)}/handoff`, { method: "POST", headers: HEADERS });
+    assert.equal(res.status, 409);
+    assert.ok(stateHome);
+    assert.equal(existsSync(stateHome), false);
+    assert.deepEqual(supervisor.stopped, failure === "task unbind" ? [] : [id]);
+    assert.deepEqual(settled, failure === "task unbind" ? [] : ["task-before-launch"]);
+    if (failure === "task unbind") assert.equal(registry.getTask("task-before-launch")?.sessionId, id);
+  });
+}
 
 test("settling after a failed handoff keeps the worktree and reads a merge as done", async () => {
   // Routed through TaskManager.agentWentAway rather than writing a status here, so this case
@@ -1493,7 +1562,7 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
   const app = mkApp(registry, supervisor, {
     // Hold the first request inside the spawn so the second one overlaps it - which is the
     // only window where two callers can both see a live driver.
-    spawn: async (name) => {
+    spawn: async ({ name }) => {
       spawned.push(name);
       await held;
       return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: null };
@@ -1525,7 +1594,7 @@ test("a repeat handoff after a successful one is refused too", async () => {
   const supervisor = fakeSupervisor();
   const spawned: string[] = [];
   const app = mkApp(registry, supervisor, {
-    spawn: async (name) => {
+    spawn: async ({ name }) => {
       spawned.push(name);
       return { homeName: `${name}-abc123`, homeBackend: "tmux", terminalResourceId: null };
     },

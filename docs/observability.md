@@ -121,7 +121,9 @@ neutral dot rather than a failure. A successful send clears the wait without a m
 `lateAfterMs` does not discard an old point. Once the destination accepts the batch, Mission
 Control increments the durable `latePointsSent` counter and records a `late_points` gap so a
 backend's age-window exposure is visible. Failed attempts do not count, and an accepted retry
-that aged past the cutoff while queued counts the batch once.
+that aged past the cutoff while queued counts the batch once. If a partial-success response does
+not identify which points were rejected, the counter records the conservative lower bound that
+must have been both late and accepted.
 The point remains subject to that backend's own historical-ingestion policy.
 
 ### The browser telemetry ingress

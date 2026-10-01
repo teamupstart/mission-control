@@ -657,6 +657,54 @@ test("late-point accounting uses the acceptance time when a send crosses the cut
   assert.equal(health.gaps.filter((gap) => gap.kind === "late_points").length, 1);
 });
 
+test("partial success counts only late points that must have been accepted", async () => {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: {
+      enabled: true,
+      endpoint: "https://otlp.example.com",
+      lateAfterMs: 100,
+    },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+  captureAndProject("boot-partial-late", 1_000);
+
+  const d = openDb();
+  d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+  d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+  const stored = d.prepare(
+    `SELECT id, payload_json FROM telemetry_batches
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { id: string; payload_json: string };
+  const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+  const template = payload.metrics[0]!;
+  payload.metrics = [
+    { ...template, name: "mission.test.late_one", endTimeMs: 1_000 },
+    { ...template, name: "mission.test.late_two", endTimeMs: 1_000 },
+    { ...template, name: "mission.test.late_three", endTimeMs: 1_000 },
+  ];
+  d.prepare(
+    `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+  ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+
+  const body = Buffer.from([0x0a, 0x04, 0x08, 0x02, 0x12, 0x00]); // partialSuccess{rejected=2}
+  await runDeliveryPass({
+    fetch: fixture([() => new Response(body, { status: 200 })]).fetch,
+    now: () => 5_000,
+  });
+
+  const health = telemetryHealth(5_100);
+  const user = health.profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.latePointsSent, 1, "the two rejected old points are not counted as sent late");
+  const lateGap = health.gaps.find((gap) => gap.kind === "late_points");
+  assert.match(lateGap?.detail ?? "", /1 point\(s\) sent outside/);
+  const delivery = d.prepare(
+    `SELECT accepted_items, rejected_items FROM telemetry_delivery WHERE batch_id = ?`,
+  ).get(stored.id) as { accepted_items: number; rejected_items: number };
+  assert.equal(delivery.accepted_items, 1);
+  assert.equal(delivery.rejected_items, 2);
+});
+
 test("a pause stops the rest of the SAME pass, not just the next one", async () => {
   // The pause was read once per profile, before the signal loop. A 401 answering the metrics
   // batch paused the destination, and then the traces loop ran anyway - up to eight more

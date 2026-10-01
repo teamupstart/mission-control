@@ -259,20 +259,24 @@ function settle(
         batch.destinationGeneration === currentDestination.generation &&
         batch.policyEpoch === currentDestination.policyEpoch;
       const latePoints = countLatePoints(batch, lateAfterMs, now);
+      // OTLP partial success reports only how many items were rejected, not which ones. Count
+      // the conservative lower bound that must have been both late and accepted, so a refused
+      // old point can never inflate the durable counter.
+      const acceptedLatePoints = Math.max(0, latePoints - outcome.rejectedItems);
       // A retry may cross the destination's age cutoff. Claim this independently from attempt
       // count, and only once an actual send is accepted, so a pre-send failure is never called
       // sent and a batch that ages while waiting is still counted exactly once.
-      if (settlementIsCurrent && claimLatePointAccounting(d, batch.id) && latePoints > 0) {
+      if (settlementIsCurrent && claimLatePointAccounting(d, batch.id) && acceptedLatePoints > 0) {
         updateDestination(
           d,
           profile,
-          { latePointsSent: currentDestination.latePointsSent + latePoints },
+          { latePointsSent: currentDestination.latePointsSent + acceptedLatePoints },
           now,
         );
         recordGap(
           d,
           "late_points",
-          `${profile}/${signal}: ${latePoints} point(s) sent outside the destination window`,
+          `${profile}/${signal}: ${acceptedLatePoints} point(s) sent outside the destination window`,
           now,
         );
       }

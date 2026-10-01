@@ -20,6 +20,7 @@ import {
 } from "@shared/telemetry.ts";
 import {
   getTelemetryConfig,
+  hasStoredTelemetryConfig,
   profileIsCapturing,
   profileIsExporting,
   peekTelemetryIdentity,
@@ -77,6 +78,9 @@ export function telemetryHealth(now = Date.now()): TelemetryHealth {
         pendingBytes: counts.pendingBytes,
         lastError: destination.lastError,
         lastAcceptedAt: destination.lastAcceptedAt,
+        waitingForNetwork: destination.waitingSince !== null,
+        waitingSince: destination.waitingSince,
+        latePointsSent: destination.latePointsSent,
       };
     });
 
@@ -111,6 +115,22 @@ export function telemetryHealth(now = Date.now()): TelemetryHealth {
       profiles,
     };
   });
+}
+
+/** Preserve the untouched installation's pre-Phase-1 health response bytes. */
+export function telemetryHealthResponse(now = Date.now()): object {
+  const health = telemetryHealth(now);
+  if (hasStoredTelemetryConfig()) return health;
+  return {
+    ...health,
+    profiles: health.profiles.map((profile) => {
+      const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
+      void waitingForNetwork;
+      void waitingSince;
+      void latePointsSent;
+      return legacy;
+    }),
+  };
 }
 
 /**
@@ -148,6 +168,9 @@ export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSum
         oldestPendingAgeMs: null,
         lastAcceptedAt: null,
         failing: false,
+        waitingForNetwork: false,
+        waitingSince: null,
+        latePointsSent: 0,
       })),
     };
   }
@@ -180,7 +203,10 @@ export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSum
         // The FACT of a failure, never its text. The sanitized message is already bounded, but
         // this frame reaches every open dashboard on every recompose and the health route is
         // where a person who wants the reason goes.
-        failing: destination.lastError !== null,
+        failing: destination.waitingSince === null && destination.lastError !== null,
+        waitingForNetwork: destination.waitingSince !== null,
+        waitingSince: destination.waitingSince,
+        latePointsSent: destination.latePointsSent,
       };
     });
     return {
@@ -193,4 +219,20 @@ export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSum
       profiles,
     };
   });
+}
+
+/** Preserve the untouched installation's pre-Phase-1 settings-status bytes. */
+export function telemetrySettingsSummaryResponse(now = Date.now()): TelemetrySettingsSummary {
+  const summary = telemetrySettingsSummary(now);
+  if (hasStoredTelemetryConfig()) return summary;
+  return {
+    ...summary,
+    profiles: summary.profiles.map((profile) => {
+      const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
+      void waitingForNetwork;
+      void waitingSince;
+      void latePointsSent;
+      return legacy;
+    }),
+  } as TelemetrySettingsSummary;
 }

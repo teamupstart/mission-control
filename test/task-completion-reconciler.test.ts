@@ -11,12 +11,23 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-completion-reconciler-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager: BaseTaskManager } = await import("../src/server/tasks.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { openDb } = await import("../src/server/db.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+const managers: InstanceType<typeof BaseTaskManager>[] = [];
+class TaskManager extends BaseTaskManager {
+  constructor(...args: ConstructorParameters<typeof BaseTaskManager>) {
+    super(...args);
+    managers.push(this);
+  }
+}
+
+after(() => {
+  for (const manager of managers.splice(0)) manager.stopMissionSessionClosures();
+  rmSync(home, { recursive: true, force: true });
+});
 
 /**
  * What is at stake: a task whose pull request MERGED, sitting in a state that says it did

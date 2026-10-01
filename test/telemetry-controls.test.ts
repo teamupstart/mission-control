@@ -38,7 +38,9 @@ const { runProjectionPass } = await import("../src/server/telemetry/projection.t
 const { registerBuiltinTelemetry, startTelemetry } = await import(
   "../src/server/telemetry/service.ts"
 );
-const { getSecret, telemetryTransaction } = await import("../src/server/telemetry/store.ts");
+const { getSecret, telemetryTransaction, updateDestination } = await import(
+  "../src/server/telemetry/store.ts"
+);
 const { DAEMON_STARTED_EVENT, TELEMETRY_CONTROL_EVENT } = await import(
   "../src/shared/telemetry-catalog.ts"
 );
@@ -147,6 +149,42 @@ test("pausing stops sending and keeps the queue; disabling stops capture and dro
   user = summary.profiles.find((p) => p.profile === "user");
   assert.equal(user?.capturing, false);
   assert.equal(queued("user"), 0, "withdrawal purges the unsent queue");
+});
+
+test("configuration transitions that stop gated export clear network-wait state", () => {
+  const transitions = [
+    ["disable", { user: { enabled: false } }],
+    ["pause", { user: { paused: true } }],
+    ["remove gate", { user: { networkGate: "none" as const } }],
+  ] as const;
+
+  for (const [name, patch] of transitions) {
+    assert.equal(
+      setTelemetryConfig({
+        enabled: true,
+        user: {
+          enabled: true,
+          endpoint: "https://otlp.example.com",
+          networkGate: "cloudflare-edge",
+        },
+      }).ok,
+      true,
+    );
+    telemetryTransaction((d) => updateDestination(d, "user", { waitingSince: 100 }, 100));
+    assert.equal(
+      telemetryHealth(101).profiles.find((profile) => profile.profile === "user")?.waitingSince,
+      100,
+      name,
+    );
+
+    assert.equal(setTelemetryConfig(patch, 200).ok, true, name);
+    const health = telemetryHealth(201).profiles.find((profile) => profile.profile === "user")!;
+    assert.equal(health.waitingForNetwork, false, name);
+    assert.equal(health.waitingSince, null, name);
+
+    for (const table of TELEMETRY_TABLES) openDb().exec(`DELETE FROM ${table}`);
+    openDb().exec("DELETE FROM app_config");
+  }
 });
 
 test("withdrawing one audience leaves the other's queue alone", () => {
@@ -748,6 +786,61 @@ function registryOf(statuses: ServerEvent[]): InstanceType<typeof Registry> {
   assert.ok(registry, "every statuses array is registered beside its registry");
   return registry;
 }
+
+test("untouched telemetry routes preserve their previous response bytes", async () => {
+  const { app } = routes();
+  const config = await (await app.request("/api/telemetry/config", { headers: HEADERS })).text();
+  assert.equal(
+    config,
+    JSON.stringify({
+      config: {
+        enabled: false,
+        user: { enabled: false, endpoint: "", headerName: "authorization", paused: false },
+        product: { enabled: false, endpoint: "", headerName: "authorization", paused: false },
+        revision: 0,
+      },
+      productEnrollment: "unavailable",
+      userCredentialConfigured: false,
+      endpoint: null,
+    }),
+  );
+
+  const health = await (await app.request("/api/telemetry/health", { headers: HEADERS })).text();
+  const profile = (name: "local" | "user" | "product") => ({
+    profile: name,
+    capturing: false,
+    exporting: false,
+    pausedReason: null,
+    destinationGeneration: 1,
+    policyEpoch: 1,
+    pending: 0,
+    retrying: 0,
+    accepted: 0,
+    rejected: 0,
+    expired: 0,
+    oldestPendingAgeMs: null,
+    pendingBytes: 0,
+    lastError: null,
+    lastAcceptedAt: null,
+  });
+  assert.equal(
+    health,
+    JSON.stringify({
+      enabled: false,
+      installationId: "",
+      identityEpoch: 0,
+      envelopeVersion: 1,
+      catalogVersion: 2,
+      audiencePolicyVersion: 1,
+      productEnrollment: "unavailable",
+      journalBacklog: 0,
+      usedBytes: 0,
+      maxBytes: 268_435_456,
+      gaps: [],
+      profiles: [profile("local"), profile("user"), profile("product")],
+    }),
+  );
+});
 
 test("PUT /api/telemetry/config pushes the telemetry tuple to every open dashboard", async () => {
   const { app, statuses } = routes();

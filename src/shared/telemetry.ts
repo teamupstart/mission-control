@@ -165,6 +165,8 @@ export const TELEMETRY_LIMITS = {
   /** Retry backoff floor and ceiling, before jitter and before any server `Retry-After`. */
   retryMinMs: 1_000,
   retryMaxMs: 60_000,
+  /** Retry ceiling while an edge-gated destination is waiting for network access. */
+  networkWaitRetryMaxMs: 5 * 60_000,
   /** How long a delivery lease is honoured before another pass may reclaim it. */
   leaseMs: 60_000,
   /** How many journal rows one projection pass consumes. Bounds the transaction, not the day. */
@@ -303,6 +305,7 @@ export type TelemetryTransportOutcome =
       throttled: boolean;
       detail: string;
     }
+  | { kind: "waiting"; detail: string; retryAfterMs: number | null }
   | { kind: "paused"; reason: TelemetryPauseReason; detail: string }
   | { kind: "rejected"; detail: string };
 
@@ -323,6 +326,12 @@ export const TelemetryDestinationSchema = z.object({
   headerName: z.string().default("authorization"),
   /** Pausing keeps capture running and drains nothing. Distinct from disabling. */
   paused: z.boolean().default(false),
+  /** Metric stream semantics. Cumulative preserves the historical default byte for byte. */
+  temporality: z.enum(["cumulative", "delta"]).default("cumulative"),
+  /** Optional recognition of a network edge refusal that should wait rather than pause. */
+  networkGate: z.enum(["none", "cloudflare-edge"]).default("none"),
+  /** Count exported points older than this destination is expected to accept. */
+  lateAfterMs: z.number().int().positive().nullable().default(null),
 });
 export type TelemetryDestination = z.infer<typeof TelemetryDestinationSchema>;
 
@@ -440,6 +449,11 @@ export interface TelemetryProfileHealth {
   /** Bounded, sanitized last failure. Never a response body or a URL carrying a credential. */
   lastError: string | null;
   lastAcceptedAt: number | null;
+  /** True while a gated network edge is refusing this network. */
+  waitingForNetwork: boolean;
+  waitingSince: number | null;
+  /** Points sent after this destination's configured acceptance window. */
+  latePointsSent: number;
 }
 
 export interface TelemetryHealth {
@@ -490,6 +504,8 @@ export const TELEMETRY_GAP_KINDS = [
   "series_overflow",
   /** A destination permanently refused a batch. */
   "permanently_rejected",
+  /** A point was sent after the destination's configured acceptance window. */
+  "late_points",
   /** Something was lost and the loss counter itself could not be written. */
   "unknown_gap",
 ] as const;
@@ -598,6 +614,9 @@ export interface TelemetryProfileSummary {
   lastAcceptedAt: number | null;
   /** True when the last attempt for this destination failed. The text stays off this channel. */
   failing: boolean;
+  waitingForNetwork: boolean;
+  waitingSince: number | null;
+  latePointsSent: number;
 }
 
 export interface TelemetrySettingsSummary {

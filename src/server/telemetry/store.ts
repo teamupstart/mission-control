@@ -405,6 +405,10 @@ export interface StoredSeries extends SeriesKey {
   lastTime: number;
   value: number;
   histogram: StoredHistogram | null;
+  exportedValue: number | null;
+  exportedHistogram: Pick<StoredHistogram, "count" | "sum" | "buckets"> | null;
+  exportedEnd: number | null;
+  exportedGeneration: number | null;
 }
 
 export interface StoredHistogram {
@@ -433,6 +437,10 @@ interface SeriesRow {
   hist_min: number | null;
   hist_max: number | null;
   hist_buckets: string | null;
+  exported_value: number | null;
+  exported_histogram_json: string | null;
+  exported_end: number | null;
+  exported_generation: number | null;
 }
 
 function toSeries(row: SeriesRow): StoredSeries {
@@ -458,6 +466,12 @@ function toSeries(row: SeriesRow): StoredSeries {
             max: row.hist_max,
             buckets: JSON.parse(row.hist_buckets) as number[],
           },
+    exportedValue: row.exported_value,
+    exportedHistogram: row.exported_histogram_json === null
+      ? null
+      : JSON.parse(row.exported_histogram_json) as Pick<StoredHistogram, "count" | "sum" | "buckets">,
+    exportedEnd: row.exported_end,
+    exportedGeneration: row.exported_generation,
   };
 }
 
@@ -479,8 +493,9 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
     `INSERT INTO telemetry_series (
        profile, policy_epoch, resource_id, instrument, dimensions_key, dimensions_json,
        catalog_version, kind, start_time, last_time, value,
-       hist_count, hist_sum, hist_min, hist_max, hist_buckets
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       hist_count, hist_sum, hist_min, hist_max, hist_buckets,
+       exported_value, exported_histogram_json, exported_end, exported_generation
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(profile, policy_epoch, resource_id, instrument, dimensions_key) DO UPDATE SET
        catalog_version = excluded.catalog_version,
        last_time    = excluded.last_time,
@@ -489,7 +504,11 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
        hist_sum     = excluded.hist_sum,
        hist_min     = excluded.hist_min,
        hist_max     = excluded.hist_max,
-       hist_buckets = excluded.hist_buckets`,
+       hist_buckets = excluded.hist_buckets,
+       exported_value = excluded.exported_value,
+       exported_histogram_json = excluded.exported_histogram_json,
+       exported_end = excluded.exported_end,
+       exported_generation = excluded.exported_generation`,
   ).run(
     series.profile,
     series.policyEpoch,
@@ -507,7 +526,79 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
     series.histogram?.min ?? null,
     series.histogram?.max ?? null,
     series.histogram ? JSON.stringify(series.histogram.buckets) : null,
+    series.exportedValue,
+    series.exportedHistogram ? JSON.stringify(series.exportedHistogram) : null,
+    series.exportedEnd,
+    series.exportedGeneration,
   );
+}
+
+export function listHeartbeatSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  exportedBefore: number,
+  observedAfter: number,
+): StoredSeries[] {
+  const rows = d.prepare(
+    `SELECT * FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ?
+        AND (exported_end IS NULL OR exported_end < ?)
+        AND last_time >= ?
+      ORDER BY resource_id, instrument, dimensions_key`,
+  ).all(profile, policyEpoch, exportedBefore, observedAfter) as unknown as SeriesRow[];
+  return rows.map(toSeries);
+}
+
+export function putSeriesExportState(
+  d: DatabaseSync,
+  series: StoredSeries,
+  generation: number,
+  end: number,
+): void {
+  d.prepare(
+    `UPDATE telemetry_series SET
+       exported_value = ?, exported_histogram_json = ?, exported_end = ?, exported_generation = ?
+     WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+       AND instrument = ? AND dimensions_key = ?`,
+  ).run(
+    series.value,
+    series.histogram
+      ? JSON.stringify({
+          count: series.histogram.count,
+          sum: series.histogram.sum,
+          buckets: series.histogram.buckets,
+        })
+      : null,
+    end,
+    generation,
+    series.profile,
+    series.policyEpoch,
+    series.resourceId,
+    series.instrument,
+    series.dimensionsKey,
+  );
+}
+
+export function baselineSeriesForDelta(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  generation: number,
+  now: number,
+): void {
+  d.prepare(
+    `UPDATE telemetry_series SET
+       exported_value = value,
+       exported_histogram_json = CASE WHEN hist_buckets IS NULL THEN NULL ELSE json_object(
+         'count', COALESCE(hist_count, 0),
+         'sum', COALESCE(hist_sum, 0),
+         'buckets', json(hist_buckets)
+       ) END,
+       exported_end = ?,
+       exported_generation = ?
+     WHERE profile = ? AND policy_epoch = ?`,
+  ).run(now, generation, profile, policyEpoch);
 }
 
 /** How many distinct streams one instrument already has, for the per-instrument ceiling. */
@@ -676,6 +767,7 @@ export function settleDelivery(
     nextAttemptAt: number;
     acceptedItems?: number;
     rejectedItems?: number;
+    waitingForNetwork?: boolean;
     lastError: string | null;
   },
   now: number,
@@ -684,7 +776,7 @@ export function settleDelivery(
     `UPDATE telemetry_delivery
         SET state = ?, attempts = ?, lease_owner = NULL, lease_expires_at = NULL,
             next_attempt_at = ?, accepted_items = ?, rejected_items = ?,
-            last_error = ?, updated_at = ?
+            waiting_for_network = ?, last_error = ?, updated_at = ?
       WHERE batch_id = ?`,
   ).run(
     next.state,
@@ -692,10 +784,50 @@ export function settleDelivery(
     next.nextAttemptAt,
     next.acceptedItems ?? 0,
     next.rejectedItems ?? 0,
+    next.waitingForNetwork ? 1 : 0,
     next.lastError,
     now,
     batchId,
   );
+}
+
+/** Whether any retained delivery for this destination is still waiting on its network gate. */
+export function hasNetworkWaitingDelivery(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+): boolean {
+  return d.prepare(
+    `SELECT 1 FROM telemetry_delivery
+      WHERE profile = ? AND waiting_for_network = 1
+        AND state IN ('pending','retry','leased')
+      LIMIT 1`,
+  ).get(profile) !== undefined;
+}
+
+/** Clear per-delivery wait facts when configuration or a terminal pause stops all sends. */
+export function clearNetworkWaitingDeliveries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+): void {
+  d.prepare(
+    `UPDATE telemetry_delivery SET waiting_for_network = 0
+      WHERE profile = ? AND waiting_for_network != 0`,
+  ).run(profile);
+}
+
+/**
+ * Claim the one durable late-point accounting slot for a batch.
+ *
+ * Kept separate from attempts because a batch can be young on its first refused send and old
+ * when a later send is accepted. The claim lives on the delivery row after its payload is
+ * released, so replaying settlement cannot increment the destination counter twice.
+ */
+export function claimLatePointAccounting(d: DatabaseSync, batchId: string): boolean {
+  const result = d.prepare(
+    `UPDATE telemetry_delivery SET late_points_accounted = 1
+      WHERE batch_id = ? AND late_points_accounted = 0`,
+  ).run(batchId);
+  return Number(result.changes) === 1;
 }
 
 /**
@@ -834,6 +966,8 @@ export interface StoredDestination {
   pausedReason: TelemetryPauseReason | null;
   lastAcceptedAt: number | null;
   lastError: string | null;
+  waitingSince: number | null;
+  latePointsSent: number;
 }
 
 export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): StoredDestination {
@@ -846,6 +980,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
         paused_reason: string | null;
         last_accepted_at: number | null;
         last_error: string | null;
+        waiting_since: number | null;
+        late_points_sent: number;
       }
     | undefined;
   if (!row) {
@@ -861,6 +997,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
       pausedReason: null,
       lastAcceptedAt: null,
       lastError: null,
+      waitingSince: null,
+      latePointsSent: 0,
     };
   }
   return {
@@ -871,6 +1009,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
     pausedReason: (row.paused_reason as TelemetryPauseReason | null) ?? null,
     lastAcceptedAt: row.last_accepted_at,
     lastError: row.last_error,
+    waitingSince: row.waiting_since,
+    latePointsSent: row.late_points_sent,
   };
 }
 
@@ -885,8 +1025,8 @@ export function updateDestination(
   d.prepare(
     `INSERT INTO telemetry_destinations
        (profile, generation, policy_epoch, endpoint_digest, paused_reason,
-        last_accepted_at, last_error, updated_at)
-     VALUES (?,?,?,?,?,?,?,?)
+        last_accepted_at, last_error, waiting_since, late_points_sent, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(profile) DO UPDATE SET
        generation       = excluded.generation,
        policy_epoch     = excluded.policy_epoch,
@@ -894,6 +1034,8 @@ export function updateDestination(
        paused_reason    = excluded.paused_reason,
        last_accepted_at = excluded.last_accepted_at,
        last_error       = excluded.last_error,
+       waiting_since    = excluded.waiting_since,
+       late_points_sent = excluded.late_points_sent,
        updated_at       = excluded.updated_at`,
   ).run(
     profile,
@@ -903,6 +1045,8 @@ export function updateDestination(
     next.pausedReason,
     next.lastAcceptedAt,
     next.lastError,
+    next.waitingSince,
+    next.latePointsSent,
     now,
   );
 }
@@ -1031,7 +1175,9 @@ export function usedBytes(d: DatabaseSync): number {
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
-         + (SELECT COALESCE(SUM(LENGTH(dimensions_json) + 64),0) FROM telemetry_series)
+         + (SELECT COALESCE(SUM(
+             LENGTH(dimensions_json) + LENGTH(COALESCE(exported_histogram_json,'')) + 96
+           ),0) FROM telemetry_series)
          -- Durable dedupe. Tiny per row and easy to forget, but it is the one table that keeps
          -- growing AFTER payloads are pruned: it is retained for 30 days against the payload
          -- window's 7, so on a busy installation it outlives everything it deduplicates. The

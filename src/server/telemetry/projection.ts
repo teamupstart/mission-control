@@ -22,6 +22,7 @@ import {
   TELEMETRY_OVERFLOW_VALUE,
   TELEMETRY_UNKNOWN_VALUE,
   type TelemetryEnvelope,
+  type TelemetryDestination,
   type TelemetryProfileId,
 } from "@shared/telemetry.ts";
 import {
@@ -31,6 +32,7 @@ import {
   type TelemetrySpanDefinition,
   type TelemetrySpanKind,
 } from "@shared/telemetry-catalog.ts";
+import { ANALYTICAL_PREFIX } from "@shared/telemetry-projections/index.ts";
 import { randomUUID } from "node:crypto";
 import {
   capturingProfiles,
@@ -53,10 +55,12 @@ import {
   getSeries,
   insertBatch,
   journalHead,
+  listHeartbeatSeries,
   listGaps,
   putProjectionState,
   putResource,
   putSeries,
+  putSeriesExportState,
   readJournalAfter,
   recordGap,
   seriesCountForInstrument,
@@ -95,6 +99,8 @@ export interface MetricPointDto {
     /** One count per boundary plus the final `+Inf` bucket. */
     buckets: number[];
   } | null;
+  /** Absent on historical and cumulative batches, preserving their durable JSON shape. */
+  temporality?: "delta";
 }
 
 export interface MetricsBatchPayload {
@@ -255,7 +261,15 @@ export function runProjectionPass(now = Date.now()): ProjectionPassResult {
 
   for (const projection of registeredProjections()) {
     for (const profile of capturingProfiles(config)) {
-      const one = runOne(projection, profile, profileProducesBatches(config, profile), now);
+      const configuredDestination: TelemetryDestination | null =
+        profile === "user" ? config.user : profile === "product" ? config.product : null;
+      const one = runOne(
+        projection,
+        profile,
+        profileProducesBatches(config, profile),
+        configuredDestination?.temporality ?? "cumulative",
+        now,
+      );
       result.consumed += one.consumed;
       result.batches += one.batches;
       result.spans += one.spans;
@@ -268,6 +282,7 @@ function runOne(
   projection: TelemetryProjection<never>,
   profile: TelemetryProfileId,
   producesBatches: boolean,
+  temporality: TelemetryDestination["temporality"],
   now: number,
 ): ProjectionPassResult {
   return telemetryTransaction((d) => {
@@ -303,7 +318,20 @@ function runOne(
     }
 
     const events = readJournalAfter(d, consumedSeq, TELEMETRY_LIMITS.projectionBatchSize);
-    if (events.length === 0 && !projection.idleSnapshots) {
+    const heartbeatSeries =
+      projection.id === CATALOG_PROJECTION.id && temporality === "delta" && producesBatches
+        ? listHeartbeatSeries(
+            d,
+            profile,
+            destination.policyEpoch,
+            now - 60 * 60_000,
+            now - TELEMETRY_LIMITS.payloadRetentionMs,
+          ).filter(
+            (series) =>
+              series.kind === "gauge" && !series.instrument.startsWith(`${ANALYTICAL_PREFIX}.`),
+          )
+        : [];
+    if (events.length === 0 && !projection.idleSnapshots && heartbeatSeries.length === 0) {
       // Still persist a first checkpoint, so the head we just chose survives a restart and a
       // later pass cannot rediscover an empty journal and reset to a newer head.
       if (!stored) {
@@ -318,7 +346,12 @@ function runOne(
       return { consumed: 0, batches: 0, spans: 0 };
     }
 
-    const collector = new Collector(profile, destination.policyEpoch, now);
+    const collector = new Collector(
+      profile,
+      destination.policyEpoch,
+      { temporality, generation: destination.generation },
+      now,
+    );
     let highest = consumedSeq;
     for (const event of events) {
       highest = event.seq;
@@ -345,7 +378,7 @@ function runOne(
       lastGapAt: listGaps(d).reduce<number | null>((latest, gap) => Math.max(latest ?? gap.lastAt, gap.lastAt), null),
     });
 
-    const applied = collector.apply(d, producesBatches);
+    const applied = collector.apply(d, producesBatches, heartbeatSeries);
 
     putProjectionState(
       d,
@@ -393,6 +426,10 @@ class Collector implements TelemetryEmitter {
   constructor(
     private readonly profile: TelemetryProfileId,
     private readonly policyEpoch: number,
+    private readonly exportDescriptor: {
+      temporality: TelemetryDestination["temporality"];
+      generation: number;
+    },
     private readonly now: number,
   ) {
     this.salt = profileSalt(profile);
@@ -481,6 +518,7 @@ class Collector implements TelemetryEmitter {
   apply(
     d: import("node:sqlite").DatabaseSync,
     producesBatches: boolean,
+    heartbeatSeries: StoredSeries[] = [],
   ): { batches: number; spans: number } {
     for (const problem of this.problems) {
       recordGap(d, "unsupported_schema", problem, this.now);
@@ -520,10 +558,27 @@ class Collector implements TelemetryEmitter {
     // One batch per resource, because an OTLP request carries exactly one resource - and
     // mixing an upgraded binary's points into the previous version's resource is the exact
     // misattribution this whole design exists to prevent.
-    const byResource = new Map<string, StoredSeries[]>();
-    for (const series of touched.values()) {
+    const candidates = new Map(touched);
+    const heartbeatKeys = new Set<string>();
+    for (const series of heartbeatSeries) {
+      const key = seriesCacheKey(series);
+      heartbeatKeys.add(key);
+      if (!candidates.has(key)) candidates.set(key, series);
+    }
+    const byResource = new Map<string, Array<{ series: StoredSeries; point: MetricPointDto }>>();
+    for (const series of candidates.values()) {
+      const point =
+        this.exportDescriptor.temporality === "delta"
+          ? toDeltaPoint(
+              series,
+              this.exportDescriptor.generation,
+              this.now,
+              heartbeatKeys.has(seriesCacheKey(series)),
+            )
+          : toPoint(series);
+      if (!point) continue;
       const list = byResource.get(series.resourceId) ?? [];
-      list.push(series);
+      list.push({ series, point });
       byResource.set(series.resourceId, list);
     }
     for (const [resourceId, list] of byResource) {
@@ -543,9 +598,28 @@ class Collector implements TelemetryEmitter {
       const payload: MetricsBatchPayload = {
         resource,
         scope: TELEMETRY_SCOPE,
-        metrics: list.map((series) => toPoint(series)),
+        metrics: list.map(({ point }) => point),
       };
-      batches += this.writeBatch(d, "metrics", payload, list.length, oldestOf(list));
+      const written = this.writeBatch(
+        d,
+        "metrics",
+        payload,
+        list.length,
+        this.exportDescriptor.temporality === "delta"
+          ? Math.min(...list.map(({ point }) => point.startTimeMs))
+          : oldestOf(list.map(({ series }) => series)),
+      );
+      batches += written;
+      if (written > 0 && this.exportDescriptor.temporality === "delta") {
+        for (const { series, point } of list) {
+          putSeriesExportState(
+            d,
+            series,
+            this.exportDescriptor.generation,
+            point.endTimeMs,
+          );
+        }
+      }
     }
 
     const spansByResource = new Map<string, EmittedSpan[]>();
@@ -739,6 +813,10 @@ class Collector implements TelemetryEmitter {
               buckets: Array.from({ length: (definition.boundaries?.length ?? 0) + 1 }, () => 0),
             }
           : null,
+      exportedValue: null,
+      exportedHistogram: null,
+      exportedEnd: null,
+      exportedGeneration: null,
     };
 
     next.lastTime = Math.max(next.lastTime, endTime);
@@ -804,6 +882,64 @@ function toPoint(series: StoredSeries): MetricPointDto {
           buckets: series.histogram.buckets,
         }
       : null,
+  };
+}
+
+function toDeltaPoint(
+  series: StoredSeries,
+  generation: number,
+  now: number,
+  heartbeat: boolean,
+): MetricPointDto | null {
+  const currentGeneration = series.exportedGeneration === generation;
+  const previousValue = currentGeneration ? series.exportedValue : null;
+  const previousHistogram = currentGeneration ? series.exportedHistogram : null;
+  const previousEnd = currentGeneration ? series.exportedEnd : null;
+  const startTimeMs = previousEnd ?? series.startTime;
+  const endTimeMs = Math.max(now, startTimeMs + 1);
+  const point = toPoint(series);
+
+  if (series.kind === "gauge") {
+    if (!heartbeat && previousValue !== null && previousValue === series.value) return null;
+    return {
+      ...point,
+      startTimeMs,
+      endTimeMs,
+      temporality: "delta",
+    };
+  }
+
+  if (series.kind === "histogram" && series.histogram) {
+    const previousBuckets = previousHistogram?.buckets ?? [];
+    const histogram = {
+      count: series.histogram.count - (previousHistogram?.count ?? 0),
+      sum: series.histogram.sum - (previousHistogram?.sum ?? 0),
+      min: null,
+      max: null,
+      boundaries: point.histogram?.boundaries ?? [],
+      buckets: series.histogram.buckets.map(
+        (count, index) => count - (previousBuckets[index] ?? 0),
+      ),
+    };
+    if (histogram.count === 0 && histogram.buckets.every((count) => count === 0)) return null;
+    return {
+      ...point,
+      startTimeMs,
+      endTimeMs,
+      value: histogram.sum,
+      histogram,
+      temporality: "delta",
+    };
+  }
+
+  const value = series.value - (previousValue ?? 0);
+  if (value === 0) return null;
+  return {
+    ...point,
+    startTimeMs,
+    endTimeMs,
+    value,
+    temporality: "delta",
   };
 }
 

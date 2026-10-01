@@ -106,6 +106,52 @@ test("the upgrade is idempotent, because it runs on every open and not only on u
   d.close();
 });
 
+test("a pre-delta telemetry schema gains nullable watermarks and destination wait accounting", () => {
+  const d = preTelemetryDatabase();
+  d.exec(`
+    CREATE TABLE telemetry_series (
+      profile TEXT NOT NULL, policy_epoch INTEGER NOT NULL, resource_id TEXT NOT NULL,
+      instrument TEXT NOT NULL, dimensions_key TEXT NOT NULL, dimensions_json TEXT NOT NULL,
+      catalog_version INTEGER NOT NULL, kind TEXT NOT NULL, start_time INTEGER NOT NULL,
+      last_time INTEGER NOT NULL, value REAL NOT NULL DEFAULT 0, hist_count INTEGER,
+      hist_sum REAL, hist_min REAL, hist_max REAL, hist_buckets TEXT,
+      PRIMARY KEY (profile, policy_epoch, resource_id, instrument, dimensions_key)
+    );
+    CREATE TABLE telemetry_destinations (
+      profile TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1,
+      policy_epoch INTEGER NOT NULL DEFAULT 1, endpoint_digest TEXT NOT NULL DEFAULT '',
+      paused_reason TEXT, last_accepted_at INTEGER, last_error TEXT, updated_at INTEGER NOT NULL
+    );
+    INSERT INTO telemetry_series VALUES
+      ('user', 1, 'r', 'mission.daemon.starts', 'k', '{}', 2, 'counter', 10, 20, 3,
+       NULL, NULL, NULL, NULL, NULL);
+    INSERT INTO telemetry_destinations VALUES ('user', 2, 1, 'digest', NULL, NULL, NULL, 20);
+  `);
+
+  upgradeDatabaseToCurrentSchema(d);
+  const series = d.prepare(
+    `SELECT value, exported_value, exported_histogram_json, exported_end, exported_generation
+       FROM telemetry_series`,
+  ).get() as Record<string, unknown>;
+  assert.equal(series.value, 3);
+  assert.equal(series.exported_value, null);
+  assert.equal(series.exported_histogram_json, null);
+  assert.equal(series.exported_end, null);
+  assert.equal(series.exported_generation, null);
+  const destination = d.prepare(
+    `SELECT generation, waiting_since, late_points_sent FROM telemetry_destinations`,
+  ).get() as Record<string, unknown>;
+  assert.equal(destination.generation, 2);
+  assert.equal(destination.waiting_since, null);
+  assert.equal(destination.late_points_sent, 0);
+  const deliveryColumns = d.prepare(`PRAGMA table_info(telemetry_delivery)`).all() as unknown as Array<{
+    name: string;
+  }>;
+  assert.ok(deliveryColumns.some((column) => column.name === "late_points_accounted"));
+  assert.ok(deliveryColumns.some((column) => column.name === "waiting_for_network"));
+  d.close();
+});
+
 test("the schema marker advances so one verified recovery point is taken before the upgrade", () => {
   // The marker is what makes `openDb` capture a pre-migration backup. Adding tables without
   // moving it would skip that recovery point for every existing installation.

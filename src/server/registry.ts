@@ -734,6 +734,9 @@ function sameTelemetrySummary(
       profile.pendingBytes === other.pendingBytes &&
       profile.lastAcceptedAt === other.lastAcceptedAt &&
       profile.failing === other.failing &&
+      profile.waitingForNetwork === other.waitingForNetwork &&
+      profile.waitingSince === other.waitingSince &&
+      profile.latePointsSent === other.latePointsSent &&
       // The oldest-pending AGE is derived from the clock, so it differs on every recompose for
       // as long as anything is queued - comparing it exactly would push a frame to every open
       // dashboard on every task-source sweep. Compared at ten-second granularity instead, which

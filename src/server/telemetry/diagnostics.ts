@@ -100,7 +100,8 @@ export async function runTelemetryProbe(
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryProbeResult> {
   const config = getTelemetryConfig();
-  const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
+  const destination = profile === "user" ? config.user : config.product;
+  const endpoint = destination.endpoint;
 
   if (profile === "local" || !profileIsExporting(config, profile) || endpoint.trim() === "") {
     return {
@@ -125,7 +126,14 @@ export async function runTelemetryProbe(
   const body = serializeMetrics({ resource: resourceAttributes(), scope: TELEMETRY_SCOPE, metrics: [] });
 
   const started = resolved.now();
-  const outcome = await send(signalUrl(endpoint, "metrics"), "metrics", body, profile, resolved);
+  const outcome = await send(
+    signalUrl(endpoint, "metrics"),
+    "metrics",
+    body,
+    profile,
+    resolved,
+    destination.networkGate,
+  );
   // AFTER the request, not before it. `occurredAt` is the moment the operation finished, and
   // the exported span is reconstructed as `[occurredAt - duration, occurredAt]`, so stamping it
   // with a clock read at the top of this function put the whole span before the probe began -
@@ -136,7 +144,11 @@ export async function runTelemetryProbe(
   const latencyMs = Math.max(0, finishedAt - started);
 
   const result: TelemetryProbeResult["outcome"] =
-    outcome.kind === "accepted" ? "accepted" : outcome.kind === "retry" ? "unreachable" : "refused";
+    outcome.kind === "accepted"
+      ? "accepted"
+      : outcome.kind === "retry" || outcome.kind === "waiting"
+        ? "unreachable"
+        : "refused";
   const detail =
     outcome.kind === "accepted"
       ? (outcome.message ?? "The endpoint accepted an OTLP/HTTP request.")

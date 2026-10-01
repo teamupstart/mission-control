@@ -107,13 +107,14 @@ import type {
   EnsembleRun,
   EnsembleSummary,
 } from "@shared/ensemble.ts";
-import type {
-  TelemetryConfigPatch,
-  TelemetryHealth,
-  TelemetryOperationRequest,
-  TelemetryOperationResult,
-  TelemetryProbeResult,
-  TelemetryStatus,
+import {
+  TelemetryConfigSchema,
+  type TelemetryConfigPatch,
+  type TelemetryHealth,
+  type TelemetryOperationRequest,
+  type TelemetryOperationResult,
+  type TelemetryProbeResult,
+  type TelemetryStatus,
 } from "@shared/telemetry.ts";
 import type {
   TelemetryIngressRecord,
@@ -2430,10 +2431,26 @@ export async function deleteFileComment(
 // whether one is stored; the value has no read path anywhere in the daemon.
 
 /** The stored intent, plus whether a credential exists and whether the endpoint is usable. */
-export const fetchTelemetryConfig = () => fetchJson<TelemetryStatus>("/api/telemetry/config");
+export const fetchTelemetryConfig = async (): Promise<TelemetryStatus | null> => {
+  const status = await fetchJson<TelemetryStatus>("/api/telemetry/config");
+  return status === null ? null : { ...status, config: TelemetryConfigSchema.parse(status.config) };
+};
 
 /** The full health view: per-profile counts, ages, gap records and the byte budget. */
-export const fetchTelemetryHealth = () => fetchJson<TelemetryHealth>("/api/telemetry/health");
+export const fetchTelemetryHealth = async (): Promise<TelemetryHealth | null> => {
+  const health = await fetchJson<TelemetryHealth>("/api/telemetry/health");
+  return health === null
+    ? null
+    : {
+        ...health,
+        profiles: health.profiles.map((profile) => ({
+          ...profile,
+          waitingForNetwork: profile.waitingForNetwork ?? false,
+          waitingSince: profile.waitingSince ?? null,
+          latePointsSent: profile.latePointsSent ?? 0,
+        })),
+      };
+};
 
 /**
  * One JSON write carrying an operation context.

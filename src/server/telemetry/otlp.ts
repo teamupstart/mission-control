@@ -73,9 +73,10 @@ function toMetricData(point: MetricPointDto): MetricData {
   if (point.kind === "histogram" && point.histogram) {
     return {
       descriptor,
-      // Cumulative because the durable series IS cumulative and survives restarts. Delta would
-      // mean the backend could not tell a restart from a reset.
-      aggregationTemporality: AggregationTemporality.CUMULATIVE,
+      aggregationTemporality:
+        point.temporality === "delta"
+          ? AggregationTemporality.DELTA
+          : AggregationTemporality.CUMULATIVE,
       dataPointType: DataPointType.HISTOGRAM,
       dataPoints: [
         {
@@ -105,7 +106,10 @@ function toMetricData(point: MetricPointDto): MetricData {
 
   return {
     descriptor,
-    aggregationTemporality: AggregationTemporality.CUMULATIVE,
+    aggregationTemporality:
+      point.temporality === "delta"
+        ? AggregationTemporality.DELTA
+        : AggregationTemporality.CUMULATIVE,
     dataPointType: DataPointType.SUM,
     isMonotonic: true,
     dataPoints: [{ startTime, endTime, attributes: point.attributes, value: point.value }],

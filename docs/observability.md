@@ -63,6 +63,12 @@ curl -X PUT localhost:7317/api/telemetry/config \
   -H 'content-type: application/json' \
   -d '{"enabled":true,"user":{"enabled":true,"endpoint":"http://127.0.0.1:14318"}}'
 
+# A Datadog-compatible delta destination. networkGate and lateAfterMs are API-only controls;
+# Metric temporality is also editable in Settings > Telemetry.
+curl -X PUT localhost:7317/api/telemetry/config \
+  -H 'content-type: application/json' \
+  -d '{"user":{"temporality":"delta","networkGate":"cloudflare-edge","lateAfterMs":3600000}}'
+
 curl localhost:7317/api/telemetry/health          # queue depth, bytes, gaps, pause reasons
 curl -X POST localhost:7317/api/telemetry/probe -d '{"profile":"user"}' \
   -H 'content-type: application/json'             # a real OTLP request, plus a captured fact
@@ -107,7 +113,16 @@ not through a poll: a destination that pauses itself has no other symptom anywhe
 a panel polling for it would be a second store of the same facts drifting by up to one interval.
 The rail's Telemetry dot turns red when a destination stopped or is not getting through, green when
 something is actually being exported, and stays dark for local-only - which is a complete state, not
-a half-finished setup.
+a half-finished setup. An edge-gated destination whose Cloudflare edge refuses the current network
+is different: it keeps its queue active, retries with a base backoff capped at five minutes plus
+up to 25 percent positive jitter, reports `waitingForNetwork` and `waitingSince`, and shows a
+neutral dot rather than a failure. A successful send clears the wait without a manual resume.
+
+`lateAfterMs` does not discard an old point. Once the destination accepts the batch, Mission
+Control increments the durable `latePointsSent` counter and records a `late_points` gap so a
+backend's age-window exposure is visible. Failed attempts do not count, and an accepted retry
+that aged past the cutoff while queued counts the batch once.
+The point remains subject to that backend's own historical-ingestion policy.
 
 ### The browser telemetry ingress
 
@@ -536,6 +551,21 @@ exactly that against a real Prometheus.
 A changed app version is a different OTLP resource and therefore a different stream with its own
 start time. A new line appearing on a chart at an upgrade is correct behaviour.
 
+Delta is an explicit per-destination alternative for backends such as Datadog. Counters and
+histograms are differenced against a durable per-series watermark; zero deltas are omitted. Gauges
+are sent when they change and at least hourly while their source remains current. Each delta window
+starts at the previous exported end and ends at the projection pass clock, so a late fact belongs
+to the pass that projected it rather than reopening an earlier time window. Changing an endpoint or
+switching to delta advances the destination generation and baselines existing series, so the new
+destination never receives the installation's cumulative history.
+
+Delta gives up cumulative replay's overwrite behavior. A delta batch lost to expiry, pressure,
+permanent rejection, partial success, or a stale-generation fence is lost data. Re-sending a delta
+batch after an ambiguous acknowledgement repeats that delta unless the backend overwrites the same
+series and timestamp. Those cases remain visible through existing retry and gap accounting; the
+exporter does not guess or reconstruct. Destinations that do not opt in remain cumulative, and
+their durable batch JSON and earlier delivery guarantees are unchanged.
+
 ### What is not proven
 
 - Only Prometheus and Tempo at the pinned versions above have been tested, on macOS on Apple
@@ -559,10 +589,15 @@ the endpoint or credential and clear the pause by saving the configuration again
 throttled ten attempts in a row, with or without a `Retry-After` to say for how long; reduce what
 is being exported or raise the backend's limit, then save the configuration again to resume. A
 plain outage or server fault never pauses, so the backlog drains by itself when the link returns.
+If `waitingForNetwork` is true, a configured Cloudflare edge recognized the current network as
+outside its allowed path. No credential pause was applied; reconnect to the required network and
+the queue will retry on its own.
 
 **A backlog drained but old samples are missing.** Prometheus refuses samples older than its
-out-of-order window. Eight days is configured here; a sample older than that is real, visible loss
-and is reported as such rather than retried forever.
+out-of-order window. Eight days is configured here. For other destinations, set `lateAfterMs` to
+their documented window and inspect `latePointsSent` plus the `late_points` gap. These points are
+still sent, and the counter makes exposure beyond the configured age window visible. Whether the
+backend accepts historical points remains the backend's decision.
 
 **`docker compose` hangs with no output at all.** Docker Desktop's CLI hints and interactive
 Compose menu make network calls before running the command, and a machine where those calls hang

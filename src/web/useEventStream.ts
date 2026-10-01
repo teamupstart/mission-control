@@ -50,6 +50,22 @@ import {
  */
 const warnedUnknownEventTypes = new Set<string>();
 
+function hydrateSettingsStatus(status: SettingsStatus): SettingsStatus {
+  if (!status.telemetry) return status;
+  return {
+    ...status,
+    telemetry: {
+      ...status.telemetry,
+      profiles: status.telemetry.profiles.map((profile) => ({
+        ...profile,
+        waitingForNetwork: profile.waitingForNetwork ?? false,
+        waitingSince: profile.waitingSince ?? null,
+        latePointsSent: profile.latePointsSent ?? 0,
+      })),
+    },
+  };
+}
+
 export interface MissionState {
   sessions: Session[];
   /** Inert startup rows only; real sessions with the same stable id always suppress them. */
@@ -345,7 +361,7 @@ export function useEventStream(): MissionState {
           setLineSummary(msg.lineSummary);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
-          setSettingsStatus(msg.settingsStatus);
+          setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
           // Seeded from the snapshot so the live indicator is truthful from the first
           // frame. The `?? null` is a runtime guard the type system cannot see: during
           // development this build can connect to an older daemon whose snapshot has no
@@ -562,7 +578,7 @@ export function useEventStream(): MissionState {
           setLineSummary(msg.line);
           break;
         case "settings_status":
-          setSettingsStatus(msg.status);
+          setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
         // Replaced whole: the status is one observation of one OS child, and every open
         // window must converge on the same one - this event is how a second dashboard

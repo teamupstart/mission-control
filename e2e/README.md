@@ -1,5 +1,17 @@
 # Browser end-to-end tests
 
+`specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
+`MC_E2E_RESUME_TOOLS=1`. It executes the prepared production wrapper; the resumed fake Claude
+reads its supplied MCP config, initializes and lists tools on the built MCP server, and calls
+`report_status` through that server. It never substitutes a direct authenticated HTTP call
+for the tool. The fixture also tests preparation refusal while the original SDK still accepts
+turns, and retention of a claimed environment across daemon restart. Its initial conversation
+uses the normal Chat dispatch with no Workflow, since the dashboard has no taskless SDK
+creation route. Task and Workflow transfer assertions belong to Phase 2.
+
+`MC_E2E_RESUME_PRIVATE_MCP=1` gives refusal tests an isolated copy of the bundle. Evidence
+screenshots are written to `e2e/.artifacts/sdk-terminal-handoff/` with `MC_E2E_EVIDENCE=1`.
+
 Playwright specs that drive the real dashboard against a real daemon. This is the only
 layer in the repository where a click reaches a route, a route reaches a subprocess, and the
 result comes back to the DOM through a server event.

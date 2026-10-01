@@ -1,6 +1,9 @@
 import type { Session } from "@shared/types.ts";
-import { resumeArgvFor, sdkFor } from "../harness/index.ts";
-import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
+import { sdkFor } from "../harness/index.ts";
+import { prepareTerminalResume, type PreparedResume } from "../harness/resume.ts";
+import { resumeContext } from "../resume-context.ts";
+import { TerminalLaunchError } from "../terminal/launch-error.ts";
+import { spawnManagedResume, sessionLabel } from "../dispatcher.ts";
 import { homeRecord, type SpawnedHome } from "../terminal/home.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
@@ -33,7 +36,9 @@ import { noteSessionHandoff } from "../telemetry/sessions.ts";
 
 /** The seam: everything here that leaves the process, so a test can drive the real flow. */
 export interface HandoffDeps {
-  spawn: typeof spawnUniquely;
+  prepare?: (session: Session) => Promise<PreparedResume>;
+  /** The managed launcher owns begin/refusal/uncertainty handling once invoked. */
+  spawn: typeof spawnManagedResume;
   waitForSessionAtCwd: (cwd: string, timeoutMs: number) => Promise<Session | null>;
   /**
    * Settle a task whose agent this handoff stopped and then could not replace.
@@ -50,7 +55,7 @@ export interface HandoffDeps {
 const ADOPT_TIMEOUT_MS = 30_000;
 
 export type HandoffResult =
-  | { ok: true; homeName: string; sessionId: string | null }
+  | { ok: true; homeName: string; sessionId: string | null; launchOutcome: "launched" | "unknown"; resumeLeaseId: string }
   | { ok: false; error: string };
 
 export async function handOffToTerminal(
@@ -120,28 +125,27 @@ async function transfer(
   // The mode rides along because an embedded session's mode lived only in the driver's
   // options - there is nothing on disk for the reopened CLI to restore it from, and
   // without it a session running in auto reopens in the CLI's own default mode.
-  let argv: string[] | null;
+  const task = registry.listTasks().find((t) => t.sessionId === session.id) ?? null;
+  let prepared: PreparedResume;
   try {
-    argv = await resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
+    prepared = await (deps.prepare ?? ((s) => prepareTerminalResume(s, resumeContext(s, task, false, false))))(session);
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return { ok: false, error: why };
   }
-  if (!argv) return { ok: false, error: `${session.agent} cannot reopen a conversation` };
-
-  // Before the stop, deliberately. See the ordering note above.
-  const task = registry.listTasks().find((t) => t.sessionId === session.id) ?? null;
-  if (task) {
-    clearSdkSessionTask(session.id);
-    registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
-  }
-
-  // Preflight succeeded. Record the cause before stop can emit session_remove, even if
-  // opening the terminal takes longer than the Registry's eviction linger.
-  const cancelHandoff = noteSessionHandoff(session.id);
+  let cancelHandoff = () => {};
   try {
+    // Before the stop, deliberately. See the ordering note above. Failure to persist the
+    // unbinding must release preparation just as a failed stop does.
+    if (task) {
+      clearSdkSessionTask(session.id);
+      registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+    }
+    // Record the cause before stop can emit session_remove.
+    cancelHandoff = noteSessionHandoff(session.id);
     await supervisor.stop(session.id);
   } catch (err) {
+    prepared.dispose();
     const why = err instanceof Error ? err.message : String(err);
     // Nothing has been replaced yet, so the unbinding above has to be taken back or the
     // task is stranded exactly as it would be if the spawn had failed - and here it is
@@ -184,8 +188,9 @@ async function transfer(
   const name = sessionLabel(task?.title?.trim() || session.name || session.agent);
   let home: SpawnedHome;
   try {
-    home = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
+    home = await deps.spawn({ name, shortId: session.id.slice(-6), prepared });
   } catch (err) {
+    if (!(err instanceof TerminalLaunchError) || err.outcomeUnknown) return { ok: false, error: `The embedded session stopped, but terminal launch outcome is unknown. Managed resume ${prepared.lease.id} retains its environment. Recheck launch status before trying again.` };
     const why = err instanceof Error ? err.message : String(err);
     // The agent is gone and nothing is going to replace it, so the task has to be SETTLED
     // here or it never will be. Its binding was cleared before the stop - deliberately, so
@@ -198,14 +203,12 @@ async function transfer(
     // Settled, not restored: restoring the binding would race the eviction's linger and
     // strand the task again whenever the spawn took longer than it to fail.
     if (task) deps.settleTask(task.id);
-    // The conversation itself is intact on disk, so tell the operator plainly what they are
-    // holding and the exact command that picks it back up.
+    // The conversation itself is intact on disk; managed continuation still needs tools.
     return {
       ok: false,
       error:
         `the embedded session was stopped but no terminal could be opened (${why}) - ` +
-        `its task was marked failed with its worktree kept; run \`${argv.join(" ")}\` in ` +
-        `${cwd} to continue the conversation yourself`,
+        `its worktree was kept. A bare manual resume does not include managed Mission tools; use Continue in terminal again after fixing the terminal`,
     };
   }
   if (task) registry.upsertTask({ ...registry.getTask(task.id)!, ...homeRecord(home), updatedAt: Date.now() });
@@ -215,5 +218,6 @@ async function transfer(
   // than failing a handoff that has already happened.
   const observed = await deps.waitForSessionAtCwd(cwd, ADOPT_TIMEOUT_MS);
   const adopted = observed && await registry.adoptTerminalLaunch(task?.id ?? null, home, observed);
-  return { ok: true, homeName: home.homeName, sessionId: adopted?.session.id ?? null };
+  return { ok: true, homeName: home.homeName, sessionId: adopted?.session.id ?? null,
+    launchOutcome: home.launchOutcome ?? "launched", resumeLeaseId: prepared.lease.id };
 }

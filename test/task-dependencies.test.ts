@@ -11,7 +11,7 @@ import type { PrMatch } from "../src/server/registry.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager: BaseTaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { PrUrlPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const {
@@ -19,18 +19,7 @@ const {
   openDb,
 } = await import("../src/server/db.ts");
 
-const managers: InstanceType<typeof BaseTaskManager>[] = [];
-class TaskManager extends BaseTaskManager {
-  constructor(...args: ConstructorParameters<typeof BaseTaskManager>) {
-    super(...args);
-    managers.push(this);
-  }
-}
-
-after(() => {
-  for (const manager of managers.splice(0)) manager.stopMissionSessionClosures();
-  rmSync(home, { recursive: true, force: true });
-});
+after(() => rmSync(home, { recursive: true, force: true }));
 
 const createInput = {
   repoRoot: "/repo",

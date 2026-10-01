@@ -29,7 +29,7 @@ count, a measurement, or a comparison, it is a report.
 
 **That one-sentence exception never applies to a Mission Control scout task.** A scout's
 report is archived: the page and the evidence beside it outlive the session, the checkout and
-the task card, and the conversation is not kept at all - so a one-sentence answer given in
+the task card. Only bounded human request context is retained, so a one-sentence answer given in
 chat is an answer nobody can find tomorrow. A scout writes the page whatever the answer's
 size, submits it with `submit_scout_artifacts`, and cannot be marked done until Mission
 Control has captured and verified it. The task's own prompt says so; this skill is how to
@@ -192,3 +192,14 @@ A flow described only in prose is a flow nobody traces.
   instead of the path itself.
 - Don't put the report anywhere but `docs/reports/<slug>/`, and never under an ignored path.
 - Don't use this for a plan. A plan is `html-plans`, and it owes the human decisions.
+
+
+## Publishing requested scout reports
+
+Any registered Mission Control session can use `submit_scout_artifacts` when the operator
+asks it to preserve a scout report. A scout task requires publication; other task kinds and
+taskless sessions publish only when requested. Give each report its own
+`docs/reports/<slug>/report.html` directory and an optional concise title. Repeating a directory
+replays the existing immutable archive. Publish revisions under a new slug. A successful
+submission archives that report and does not complete the session or task; continue the
+requested work. Scout completion verifies every explicitly submitted report in the episode.

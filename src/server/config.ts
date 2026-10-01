@@ -172,6 +172,11 @@ export function codexHookPath(): string {
   return envVar("CODEX_HOOK") ?? fileURLToPath(new URL("../../dist/satellites/codex-hook.mjs", import.meta.url));
 }
 
+/** Packaged claim-before-exec guard for managed terminal resumes. */
+export function resumeGuardPath(): string {
+  return envVar("RESUME_GUARD") ?? fileURLToPath(new URL("../../dist/satellites/resume-guard.mjs", import.meta.url));
+}
+
 /** Legacy output suffix is retained solely to recognize a dangling pre-generation link.
  * The current app ships a deployable directory, resolved by the literal URL below so
  * smokeSatellitePaths can verify its location in the collapsed daemon bundle. */

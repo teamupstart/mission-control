@@ -263,6 +263,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  if (extraEnv.MC_E2E_RESUME_PRIVATE_MCP === "1") {
+    copyFileSync(join(REPO_ROOT, "dist/mcp/server.mjs"), join(home, "resume-mcp.mjs"));
+    extraEnv = { ...extraEnv, MISSION_MCP_SERVER: join(home, "resume-mcp.mjs") };
+  }
   writeProductAuthorizationBin(home);
   const herdrEnabled = extraEnv.MC_E2E_HERDR === "1";
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";

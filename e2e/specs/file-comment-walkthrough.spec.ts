@@ -9,12 +9,12 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * The walkthrough, driven: press Start review and watch exactly one comment reach a live
+ * The walkthrough, driven: send comments and watch exactly one at a time reach a live
  * agent, with the queue still yours while it drains.
  *
  * Only a browser can say this. The state machine has its own unit file and proves every
  * branch against a fake port; the HTTP tests prove the routes answer. Neither can say that a
- * click on Start review turns into a row in `pending_turns` turns into a turn the agent
+ * click on Send turns into a row in `pending_turns` turns into a turn the agent
  * actually received turns into a queue on screen that still reorders - which is the whole
  * feature, and the only layer that closes that loop.
  *
@@ -130,13 +130,13 @@ function lineNumber(page: Page, line: number): Locator {
     .filter({ hasText: new RegExp(`^${line}$`) });
 }
 
-/** Write one comment on one line and submit it into the review. */
+/** Write one comment on one line and send it. */
 async function comment(page: Page, line: number, body: string): Promise<void> {
   await lineNumber(page, line).click();
   const box = page.getByRole("textbox", { name: `Comment on line ${line}` });
   await expect(box).toBeVisible();
   await box.fill(body);
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(box).toBeHidden();
 }
 
@@ -226,7 +226,7 @@ function outboxDepth(daemon: DaemonHandle): number {
 }
 
 test.describe("the review walkthrough", () => {
-  test("Start review sends exactly one comment, and the queue stays steerable", async ({
+  test("a sent comment goes at once, and the queue behind it stays steerable", async ({
     dashboard: page,
     daemon,
   }) => {
@@ -240,82 +240,65 @@ test.describe("the review walkthrough", () => {
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
-    // ---- three comments, in the order they were written ----
+    // ---- the first comment goes as soon as it is sent: there is no Start ----
     await comment(page, 3, FIRST);
-    await comment(page, 5, SECOND);
-    await comment(page, 7, THIRD);
     await expect
-      .poll(() => storedQueue(daemon).map((row) => row.start_line), {
-        message: "the three comments never reached the queue",
+      .poll(() => storedQueue(daemon)[0]?.delivered, {
+        message: "Send never delivered the first comment",
+        timeout: 20_000,
       })
-      .toEqual([3, 5, 7]);
+      .toBe(1);
+    // The agent really received it - the fake echoes what it was sent, so this is the bytes
+    // and not the pixels.
+    expect(outboxDepth(daemon)).toBeLessThanOrEqual(1);
+    const outstandingId = storedQueue(daemon)[0]!.short_id;
 
-    // ---- the queue, and its depth ----
+    // ---- hold everything behind it, to steer the rest before any of it goes ----
     const queueToggle = page.getByRole("button", { name: "Review queue" });
-    await expect(queueToggle).toHaveText(/Review \(3\)/);
     await queueToggle.click();
     const queue = page.getByRole("region", { name: "Review queue" });
     await expect(queue).toBeVisible();
-    await expect(queue).toContainText("3 of 3 waiting");
-    // The live region says what a sighted reader reads off the list.
-    await expect(queue.getByRole("status")).toContainText("Review not started. 3 comments waiting.");
-    await shoot(page.locator(".file-main"), page, "queue-before-start");
-
-    // ---- reorder BEFORE it starts: the third comment goes first ----
-    await queue.getByRole("button", { name: /^Move comment MC-\w+ earlier$/ }).nth(2).click();
-    await expect
-      .poll(() => storedQueue(daemon).map((row) => row.start_line), {
-        message: "the reorder never reached the daemon",
-      })
-      .toEqual([3, 7, 5]);
-
-    // ---- and the head goes, exactly once ----
-    await queue.getByRole("button", { name: "Start review" }).click();
-
-    await expect
-      .poll(() => storedQueue(daemon).filter((row) => row.status !== "queued").length, {
-        message: "Start review delivered nothing",
-        timeout: 20_000,
-      })
-      .toBe(1);
-    // The whole guarantee, in one assertion: two comments are still queued while one is out.
-    const started = storedQueue(daemon);
-    expect(started[0]!.start_line, "the first comment is the one in flight").toBe(3);
-    expect(started.slice(1).map((row) => row.status)).toEqual(["queued", "queued"]);
-    // And the outbox is never asked to hold more than the one turn. Depth one is what keeps
-    // tail-only recall, head-of-line blocking and the missing correlation id from mattering.
-    expect(outboxDepth(daemon)).toBeLessThanOrEqual(1);
-
-    // The agent really received it - the fake echoes what it was sent, so this is the bytes
-    // and not the pixels.
-    await expect
-      .poll(() => storedQueue(daemon)[0]?.delivered, {
-        message: "the comment never reached the agent",
-        timeout: 20_000,
-      })
-      .toBe(1);
-    await expect(page.getByRole("region", { name: "Review queue" }).getByRole("status"))
-      .toContainText(/is out with the agent/);
-    // The head row still shows the sentence it sent, not the line it was written about. It
-    // stopped doing that once delivery was confirmed, which is precisely when a reader is
-    // looking at it.
-    await expect(queue.locator(".file-review-item").first()).toContainText(FIRST);
-    await shoot(page.locator(".file-main"), page, "queue-running");
-
-    // ---- the one in flight offers none of the three controls, and the queued ones do ----
+    await expect(queue.getByRole("button", { name: "Start review" })).toHaveCount(0);
+    // The one in flight offers none of the three controls. Read now, while it is certainly
+    // still out: from here on the grace window may settle it at any moment, and every
+    // assertion below is written so that it may.
     const head = queue.locator(".file-review-item").first();
+    await expect(head).toContainText(FIRST);
     await expect(head.getByRole("button", { name: /^Drop comment MC-/ })).toBeDisabled();
     await expect(head.getByRole("button", { name: /^Edit comment MC-/ })).toBeDisabled();
-    await expect(head.getByRole("button", { name: /^Move comment MC-\w+ later$/ })).toBeDisabled();
-    const next = queue.locator(".file-review-item").nth(1);
-    await expect(next.getByRole("button", { name: /^Drop comment MC-/ })).toBeEnabled();
+    await queue.getByRole("button", { name: "Pause review" }).click();
+    await expect
+      .poll(() => storedReview(daemon)?.state, { message: "the pause never reached the daemon" })
+      .toBe("paused");
 
-    // ---- rewrite an unsent one, mid-review ----
-    await next.getByRole("button", { name: /^Edit comment MC-/ }).click();
-    const editor = next.getByRole("textbox");
+    await comment(page, 5, SECOND);
+    await comment(page, 7, THIRD);
+    /** The comments still waiting, in the daemon's own queue order. */
+    const waitingLines = (): number[] =>
+      storedQueue(daemon).filter((row) => row.status === "queued").map((row) => row.start_line);
+    await expect
+      .poll(waitingLines, { message: "the held comments never reached the queue" })
+      .toEqual([5, 7]);
+    // The live region says what a sighted reader reads off the list.
+    await expect(queue.getByRole("status")).toContainText(
+      "Delivery paused. 2 comments waiting. New comments join the queue.",
+    );
+    await shoot(page.locator(".file-main"), page, "queue-paused");
+
+    // ---- reorder: the third comment goes before the second ----
+    const third = queue.locator(".file-review-item").filter({ hasText: THIRD });
+    await third.getByRole("button", { name: /^Move comment MC-\w+ earlier$/ }).click();
+    await expect
+      .poll(waitingLines, { message: "the reorder never reached the daemon" })
+      .toEqual([7, 5]);
+
+    // ---- rewrite an unsent one ----
+    await expect(third.getByRole("button", { name: /^Drop comment MC-/ })).toBeEnabled();
+    await third.getByRole("button", { name: /^Edit comment MC-/ }).click();
+    const editor = queue.getByRole("textbox", { name: /^Comment MC-/ });
     await expect(editor).toHaveValue(THIRD);
     await editor.fill("Actually: say which of the two is right.");
-    await next.getByRole("button", { name: "Save" }).click();
+    await queue.getByRole("button", { name: "Save" }).click();
     await expect
       .poll(
         () =>
@@ -327,36 +310,24 @@ test.describe("the review walkthrough", () => {
                   WHERE t.start_line = 7`,
               )
               .get() as { body: string }).body),
-        { message: "the mid-review edit never landed" },
+        { message: "the edit never landed" },
       )
       .toBe("Actually: say which of the two is right.");
 
-    // ---- and drop the last one ----
-    await queue.locator(".file-review-item").nth(2).getByRole("button", { name: /^Drop comment MC-/ }).click();
-    await expect
-      .poll(() => storedQueue(daemon).length, { message: "the drop never landed" })
-      .toBe(2);
+    // ---- and drop the second ----
+    await queue
+      .locator(".file-review-item")
+      .filter({ hasText: SECOND })
+      .getByRole("button", { name: /^Drop comment MC-/ })
+      .click();
+    await expect.poll(waitingLines, { message: "the drop never landed" }).toEqual([7]);
 
-    // ---- Pause holds the queue without recalling what already went ----
-    await queue.getByRole("button", { name: "Pause review" }).click();
-    await expect
-      .poll(() => storedReview(daemon)?.state, { message: "the pause never reached the daemon" })
-      .toBe("paused");
-    const paused = storedQueue(daemon);
-    expect(paused[0]!.delivered, "a pause does not take back what the agent has read").toBe(1);
-    expect(paused[1]!.status, "and it releases nothing further").toBe("queued");
-    await expect(queue.getByRole("button", { name: "Resume review" })).toBeVisible();
-    await shoot(page.locator(".file-main"), page, "queue-paused");
-
-    // ---- and the comment already out with the agent still finishes ----
+    // ---- the comment already out with the agent still finishes while paused ----
     // Pause is a promise about that comment too, not only about the ones behind it. Frozen in
     // `awaiting`, a paused queue would go on presenting it as in flight long after the agent
     // had moved on - so this waits out the real advance window rather than mocking it.
-    const outstandingId = paused[0]!.short_id;
-    const headStatus = (): string | undefined =>
-      storedQueue(daemon).find((row) => row.short_id === outstandingId)?.status;
     await expect
-      .poll(headStatus, {
+      .poll(() => storedQueue(daemon).find((row) => row.short_id === outstandingId)?.status, {
         message: "the outstanding comment never resolved after the pause",
         timeout: 30_000,
         intervals: [1_000],
@@ -369,6 +340,17 @@ test.describe("the review walkthrough", () => {
       "a paused review still releases nothing",
     ).toBe(1);
     expect(outboxDepth(daemon)).toBe(0);
+
+    // ---- Resume sends the head of what is left, in the order it was steered to ----
+    await queue.getByRole("button", { name: "Resume review" }).click();
+    await expect
+      .poll(() => storedQueue(daemon).find((row) => row.start_line === 7)?.delivered, {
+        message: "Resume never released the steered head",
+        timeout: 20_000,
+      })
+      .toBe(1);
+    await expect(queue.getByRole("status")).toContainText(/is out with the agent/);
+    await shoot(page.locator(".file-main"), page, "queue-running");
   });
   test("the agent's answer lands in the thread, raises the Files pip, and releases the next comment", async ({
     dashboard: page,
@@ -387,12 +369,9 @@ test.describe("the review walkthrough", () => {
     await openTheFile(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
+    // Sending is delivering: the first goes at once and the second waits behind it.
     await comment(page, 3, FIRST);
     await comment(page, 5, SECOND);
-
-    await page.getByRole("button", { name: "Review queue" }).click();
-    const queue = page.getByRole("region", { name: "Review queue" });
-    await queue.getByRole("button", { name: "Start review" }).click();
 
     // The first comment reaches the agent for real - the fake echoes what it was sent.
     await expect
@@ -499,7 +478,7 @@ test.describe("the review walkthrough", () => {
     await expect(page.getByLabel(`Editor for ${OTHER}`)).toBeVisible();
     await comment(page, 3, SECOND);
 
-    // Back to the first file, which is where the reader is when the review starts.
+    // Back to the first file, where comment one - already out with the agent - is.
     await openAnotherFile(page, SOURCE);
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
 
@@ -507,12 +486,11 @@ test.describe("the review walkthrough", () => {
     await expect(queueToggle).toHaveText(/Review \(2\)/);
     await queueToggle.click();
     const queue = page.getByRole("region", { name: "Review queue" });
-    await queue.getByRole("button", { name: "Start review" }).click();
 
-    // Comment one is in the file already open, so nothing moves.
+    // Comment one went when it was sent, and the reader stays on its file.
     await expect
       .poll(() => storedQueue(daemon).filter((row) => row.status !== "queued").length, {
-        message: "Start review delivered nothing",
+        message: "Send delivered nothing",
         timeout: 20_000,
       })
       .toBe(1);

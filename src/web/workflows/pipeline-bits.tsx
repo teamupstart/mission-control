@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { WorkflowCompletionPolicy } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { duration } from "../lib/format.ts";
 
 /**
  * The presentational leaves every stage surface is drawn from - the role `session-bits.tsx`
@@ -47,6 +48,21 @@ export interface PipelineStatus {
    * stage fold can say "Passed, 2 not run" without pattern-matching on label text.
    */
   degraded?: boolean;
+}
+
+/**
+ * How long one stage member has been running, or ran. `finishedAt` is null while it is live.
+ *
+ * Counted from the moment the round LAUNCHED the member - the attempt row's creation - rather
+ * than from `startedAt`. Two reasons. A session action is written straight into `waiting` and
+ * never records a `startedAt` at all, so a start read from there would give actions no clock.
+ * And a queued Persona waiting on a provider slot is time the operator waited for that
+ * component: a clock that sat at zero through the queue would under-report exactly the stage
+ * they are trying to find. `elapsedSpansFor` in `run-model.ts` is the one place that reads it.
+ */
+export interface ElapsedSpan {
+  startedAt: number;
+  finishedAt: number | null;
 }
 
 /** Visual state of one card or row. Drag feedback and nothing semantic. */
@@ -102,6 +118,43 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
     </span>
   );
   return status.tooltip ? <Tooltip label={status.tooltip}>{chip}</Tooltip> : chip;
+}
+
+/**
+ * How long a member or stage has run, beside its chip.
+ *
+ * A live clock carries a pulsing dot in the running tone; a frozen one carries a stopwatch, so
+ * "still going" and "took this long" differ by more than colour. `now` comes from the owner,
+ * which holds ONE ticking clock for the whole strip - see `useNow`.
+ *
+ * The hidden prefix makes the row's accessible name a sentence ("Took 38s") instead of a bare
+ * number after the status. It is deliberately not a live region: a clock announced every
+ * second would drown out every other change on the page.
+ */
+export function ElapsedClock({ span, now }: { span: ElapsedSpan; now: number }): React.JSX.Element {
+  const live = span.finishedAt === null;
+  const ms = Math.max(0, (span.finishedAt ?? now) - span.startedAt);
+  return (
+    <span className={`wf-pipeline-elapsed ${live ? "is-live" : "is-frozen"}`}>
+      {/* U+FE0E asks for the text glyph: without it macOS draws the stopwatch as a colour emoji. */}
+      <span className="wf-pipeline-elapsed-mark" aria-hidden>{live ? "" : "\u23F1\uFE0E"}</span>
+      <span className="sr-only">{live ? "Running for " : "Took "}</span>
+      <time dateTime={`PT${Math.floor(ms / 1000)}S`}>{duration(ms)}</time>
+    </span>
+  );
+}
+
+/**
+ * The chip, with the clock after it on the same line when there is one.
+ *
+ * The pair travels as ONE grid item so the chip keeps its own row - the rule
+ * `workflow-pipeline-label-width.test.ts` holds every chip container to - and the clock wraps
+ * under the chip rather than into the label when a phrase as wide as "Changes requested"
+ * leaves no room beside it. Without a clock the chip is returned bare, so the editor and every
+ * other caller keep the markup they had.
+ */
+function withClock(chip: React.JSX.Element, clock: ReactNode): React.JSX.Element {
+  return clock ? <span className="wf-pipeline-status-line">{chip}{clock}</span> : chip;
 }
 
 /** Which of the ladder's five rung treatments a status earns. */
@@ -202,6 +255,7 @@ export function ReviewerRow({
   kind = "persona",
   meta = null,
   status = null,
+  elapsed = null,
   state = "idle",
   actions = null,
   notice = null,
@@ -218,6 +272,8 @@ export function ReviewerRow({
   kind?: "persona" | "check" | "session_action";
   meta?: string | null;
   status?: PipelineStatus | null;
+  /** How long this member has run, drawn after the chip. The editor never passes one. */
+  elapsed?: ReactNode;
   state?: PipelineItemState;
   actions?: ReactNode;
   notice?: ReactNode;
@@ -249,7 +305,7 @@ export function ReviewerRow({
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
         {notice}
       </span>
-      {status && <PipelineStatusChip status={status} />}
+      {status && withClock(<PipelineStatusChip status={status} />, elapsed)}
     </>
   );
   return (
@@ -289,6 +345,7 @@ export function StageCard({
   name,
   subtitle = null,
   status = null,
+  elapsed = null,
   state = "idle",
   actions = null,
   header = {},
@@ -306,6 +363,8 @@ export function StageCard({
   name: string;
   subtitle?: string | null;
   status?: PipelineStatus | null;
+  /** The stage's wall time, drawn after its chip. The editor never passes one. */
+  elapsed?: ReactNode;
   state?: PipelineItemState;
   actions?: ReactNode;
   header?: PipelineItemProps;
@@ -335,7 +394,7 @@ export function StageCard({
         </span>
         {subtitle && <span className="wf-pipeline-stage-sub">{subtitle}</span>}
       </span>
-      {status && <PipelineStatusChip status={status} />}
+      {status && withClock(<PipelineStatusChip status={status} />, elapsed)}
     </>
   );
   return (

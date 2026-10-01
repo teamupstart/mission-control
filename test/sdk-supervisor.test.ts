@@ -29,6 +29,7 @@ const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
   "../src/server/sdk/store.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { claimInjectionEcho, originOf } = await import("../src/server/injections.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
@@ -243,6 +244,11 @@ test("Codex SDK sessions carry their synthetic identity into Mission MCP", async
     });
     const firstIdentity = fake.calls[0]?.mcp?.env.MISSION_SESSION_ID;
     const secondIdentity = fake.calls[1]?.mcp?.env.MISSION_SESSION_ID;
+    const firstLocator = fake.calls[0]?.mcp?.env.MISSION_SCOUT_SESSION_LOCATOR;
+    const secondLocator = fake.calls[1]?.mcp?.env.MISSION_SCOUT_SESSION_LOCATOR;
+    assert.equal(firstLocator, sessionScoutCredentialLocator(first.id));
+    assert.equal(secondLocator, sessionScoutCredentialLocator(second.id));
+    assert.notEqual(firstLocator, secondLocator, "same-checkout launches get separate private locators");
 
     assert.deepEqual(
       {
@@ -1172,6 +1178,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
       env: {
         ...descriptor.env,
         MISSION_SESSION_ID: "sdk:restore-1",
+        MISSION_SCOUT_SESSION_LOCATOR: sessionScoutCredentialLocator("sdk:restore-1"),
       },
     });
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
@@ -1274,6 +1281,7 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
         [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]:
           fake.calls[0]!.mcp!.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV]!,
         MISSION_SESSION_ID: "sdk:restore-pipeline",
+        MISSION_SCOUT_SESSION_LOCATOR: sessionScoutCredentialLocator("sdk:restore-pipeline"),
       },
     });
     assert.equal(launchAuthorityObserved, true);

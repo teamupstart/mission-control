@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send file comments as they are written</title>
+<style>
+  :root { --bg:#0a0c0f; --panel:#14181e; --border:#232a33; --fg:#e7ebf1; --muted:#939eae; --accent:#6ea8fe; --ok:#5fcf8f; --warn:#f0b85a; --gone:#e0707a; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --panel:#ffffff; --border:#d9dee5; --fg:#16202c; --muted:#5d6877; --accent:#2f6fdc; --ok:#1f8f55; --warn:#a86b00; --gone:#b23a46; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 32px 24px 72px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+  p, li { max-width: 860px; }
+  .meta { color: var(--muted); }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+  .scroll { overflow-x: auto; margin: 10px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  figure { margin: 14px 0; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  svg text { fill: var(--fg); font: 12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  svg .muted { fill: var(--muted); }
+  svg .box { fill: var(--bg); stroke: var(--border); stroke-width: 1.2; }
+  svg .new { stroke: var(--ok); stroke-width: 1.6; }
+  svg .gone { stroke: var(--gone); stroke-dasharray: 4 3; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .arrow.new { stroke: var(--ok); }
+  svg .arrow.gone { stroke: var(--gone); }
+  .callout { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Send file comments as they are written</h1>
+<p class="meta">Status: approved 2026-09-29. Implemented in the task worktree; the pull request is pending. Source: <a href="plan.md">plan.md</a>. Mockups: <a href="mockups.html"><strong>mockups.html</strong></a>.</p>
+
+<h2>The change in one paragraph</h2>
+<p>Today a line comment is staged. Pressing <strong>Comment</strong> puts it in the session's review queue, and nothing reaches the agent until someone opens <strong>Review (N)</strong> and presses <strong>Start review</strong>. When the queue drains, the review parks as <code>paused</code> ("Every comment in this review has been sent."), so the next comment needs <strong>Resume</strong> before it goes. After this change, sending a comment IS the delivery request. If nothing is out with the agent and the session's outbox is empty, the comment goes as its own turn straight away. Otherwise it waits in the queue behind the comments already ahead of it and goes in its turn, one at a time, exactly as the walkthrough delivers today. There is no Start step and no staging.</p>
+
+<h2>What stays exactly as it is</h2>
+<p>The walkthrough in <code>src/server/file-comment-walkthrough.ts</code> is not redesigned. Everything that makes delivery safe is kept unchanged:</p>
+<ul>
+<li>One turn outstanding per session, enforced by the partial unique index and <code>deliveryBlock</code>.</li>
+<li>Delivery through the existing human outbox (<code>pending_turns</code>), never beside it.</li>
+<li>Re-anchoring the queue before each send, and holding a head whose quote has gone.</li>
+<li>The grace window, the reply tool, and the transcript fallback.</li>
+<li>Reorder, rewrite, and drop on a comment that has not gone yet.</li>
+<li>Drafts: the composer still persists from the first keystroke, so the integrated Files tab and the extracted Files window agree. A draft is the text you are still writing; it is not staged for delivery and never was.</li>
+</ul>
+<p>The change is to WHO starts the walkthrough (the act of sending, not a separate button) and to what the walkthrough does when it runs dry (goes idle, not paused).</p>
+
+<h2>Flow</h2>
+<figure>
+<svg viewBox="0 0 860 250" width="100%" role="img" aria-label="Before and after: sending a comment now starts the walkthrough directly">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#939eae"/></marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5fcf8f"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e0707a"/></marker>
+  </defs>
+  <!-- boxes -->
+  <rect class="box" x="10" y="95" width="120" height="50" rx="8"/><text x="70" y="116" text-anchor="middle">Composer</text><text x="70" y="132" text-anchor="middle" class="muted">Send</text>
+  <rect class="box" x="185" y="95" width="150" height="50" rx="8"/><text x="260" y="116" text-anchor="middle">FileCommentManager</text><text x="260" y="132" text-anchor="middle" class="muted">queue()</text>
+  <rect class="box gone" x="185" y="10" width="150" height="50" rx="8"/><text x="260" y="31" text-anchor="middle">queued, review idle</text><text x="260" y="47" text-anchor="middle" class="muted">waits for Start review</text>
+  <rect class="box" x="400" y="95" width="160" height="50" rx="8"/><text x="480" y="116" text-anchor="middle">FileCommentWalkthrough</text><text x="480" y="132" text-anchor="middle" class="muted">one outstanding</text>
+  <rect class="box" x="615" y="95" width="110" height="50" rx="8"/><text x="670" y="116" text-anchor="middle">pending_turns</text><text x="670" y="132" text-anchor="middle" class="muted">outbox</text>
+  <rect class="box" x="760" y="95" width="90" height="50" rx="8"/><text x="805" y="124" text-anchor="middle">Agent</text>
+  <rect class="box" x="400" y="190" width="160" height="44" rx="8"/><text x="480" y="210" text-anchor="middle">queue_seq order</text><text x="480" y="225" text-anchor="middle" class="muted">waits its turn</text>
+  <!-- arrows -->
+  <line class="arrow" x1="130" y1="120" x2="183" y2="120" marker-end="url(#a)"/>
+  <text x="156" y="112" text-anchor="middle" class="muted" style="font-size:10px">POST queue</text>
+  <line class="arrow gone" x1="260" y1="95" x2="260" y2="62" marker-end="url(#ar)"/>
+  <text x="345" y="80" class="muted" style="font-size:11px">before: stops here</text>
+  <line class="arrow new" x1="335" y1="120" x2="398" y2="120" marker-end="url(#ag)"/>
+  <text x="366" y="112" text-anchor="middle" style="font-size:10px;fill:#5fcf8f">onQueued</text>
+  <line class="arrow" x1="560" y1="120" x2="613" y2="120" marker-end="url(#a)"/>
+  <text x="587" y="112" text-anchor="middle" class="muted" style="font-size:10px">if free</text>
+  <line class="arrow" x1="725" y1="120" x2="758" y2="120" marker-end="url(#a)"/>
+  <line class="arrow" x1="480" y1="145" x2="480" y2="188" marker-end="url(#a)"/>
+  <text x="488" y="172" class="muted" style="font-size:10px">if one is out</text>
+  <path class="arrow" d="M805,145 C805,180 700,175 562,130" marker-end="url(#a)"/>
+  <text x="690" y="185" class="muted" style="font-size:10px">reply tool or grace window</text>
+</svg>
+<figcaption>Before, a queued comment stopped at the red box until Start review. After, the manager's <code>onQueued</code> hands it to the walkthrough, which sends it if nothing is out or leaves it waiting in queue order.</figcaption>
+</figure>
+
+<h2>Server changes</h2>
+<ol>
+<li><strong>One trigger, owned by the manager.</strong> <code>FileCommentManager</code> gains a single <code>onQueued</code> subscriber, fired from the two places a human puts a thread into the queue: <code>queue()</code> (the composer's Send) and the requeue branch of <code>appendMessage()</code> (a reply on an <code>answered</code> or <code>unanswered</code> thread). <code>src/server/index.ts</code> wires it to the walkthrough beside the existing <code>createFileCommentWalkthrough</code> wiring. The manager does not import the walkthrough, and no route has to remember to kick delivery, so a later door that queues a thread cannot forget.</li>
+<li><strong><code>FileCommentWalkthrough.onQueued(sessionId)</code>.</strong> When the review is <code>idle</code>, it calls <code>start()</code>. When it is <code>running</code>, it ticks. When it is <code>paused</code>, it does nothing: a person's Pause, or a blocker that needs a person (an outdated head, an uncertain delivery, a session with no pane), still stands, and the new comment waits behind it. The one exception is a legacy row paused with the <code>drained</code> or <code>empty</code> reason, which is read as <code>idle</code> (see Upgrade below).</li>
+<li><strong>Running dry is idle, not paused.</strong> <code>pass()</code> currently calls <code>stopWith(drained)</code> or <code>stopWith(empty)</code> when there is no queued head. Both become a return to <code>idle</code> with no reason, and <code>leave()</code>. The <code>drained</code> and <code>empty</code> sentences are removed from <code>PAUSE_REASONS</code> except as the legacy recognition in step 2.</li>
+<li><strong><code>started_at</code> resets on idle.</strong> <code>setFileCommentReviewState</code> keeps <code>started_at</code> across a pause and resume (unchanged) but clears it when the state returns to <code>idle</code>, so the next burst of comments is counted from 1 rather than continuing a count from an hour ago. No schema change: this is the <code>ON CONFLICT</code> expression only.</li>
+<li><strong>Payload wording.</strong> <code>renderFileCommentPayload</code> currently tells the agent the last comment "is the last of this review". With comments arriving as they are written that is a promise the daemon cannot keep, and the existing comment on the scope line already names why a broken promise is harmful. The position line becomes <code>Review comment N; M more queued behind it.</code>, or <code>Review comment N; nothing else is queued yet.</code> at the end of the queue, and the last-in-queue scope line becomes <code>Answer this comment only, and do not restructure beyond what it asks for: more comments may still follow.</code> The handle and answer line are unchanged.</li>
+</ol>
+<p>No new routes, tables, columns, or <code>ServerEvent</code> variants. <code>POST /api/sessions/:id/file-comment-review</code> keeps <code>start</code> (now labelled Resume), <code>pause</code>, and <code>dismiss</code>, so <code>test/fixtures/route-surface.json</code> does not move.</p>
+
+<h2>Dashboard changes</h2>
+<p>Mockups for every state below are in <a href="mockups.html">mockups.html</a>.</p>
+<ol>
+<li><strong>Composer.</strong> The primary button reads <strong>Send</strong> instead of <strong>Comment</strong>. The footer gains a one-line delivery hint computed by a new pure helper, <code>composerDeliveryHint(review, queue, session)</code> in <code>src/web/lib/fileComments.ts</code>:
+  <ul>
+  <li>nothing outstanding, nothing queued, and the session idle: "Goes to the agent now"</li>
+  <li>something ahead: "Waits behind 2 comments"</li>
+  <li>nothing ahead, but another message is still in the session's outbox (one typed into the conversation): "Waits for the message already in this session's outbox", or, when that message is unconfirmed, "Waits for an unconfirmed message in this session's outbox"</li>
+  <li>nothing ahead and an empty outbox, but the agent is busy (starting, mid-turn, stopping, or blocked on a prompt): "Goes to the agent when it is next free"</li>
+  <li>review paused: "Delivery is paused; this waits until you resume"</li>
+  <li>the session cannot take a message (<code>messageBlockReason</code> from <code>src/shared/pane.ts</code>): "This session cannot take messages; the comment will be held"</li>
+  </ul></li>
+<li><strong>Thread reply.</strong> The Reply tooltip on an <code>answered</code> or <code>unanswered</code> thread says the reply goes to the agent in its turn, because it now does without a Start.</li>
+<li><strong>Review queue panel.</strong> <strong>Start review</strong> is removed. The header shows <strong>Pause</strong> while running and <strong>Resume</strong> when paused or when queued comments are sitting idle (the legacy case); with nothing queued it shows no button. <code>reviewAnnouncement</code> and the empty-state line are rewritten for the new model:
+  <ul>
+  <li>idle, empty: "Nothing waiting. Comments go to the agent as you send them."</li>
+  <li>running, one out: unchanged ("MC-a41f on plan.md line 84 is out with the agent. 2 comments waiting.")</li>
+  <li>paused: "Delivery paused. 2 comments waiting. New comments join the queue."</li>
+  <li>idle with queued comments (legacy only): "2 comments waiting. Resume to send them."</li>
+  </ul></li>
+<li><strong>Toolbar toggle.</strong> <strong>Review (N)</strong> stays, with the same accessible name, and gains a live marker while a comment is out with the agent so the state is visible without opening the panel.</li>
+<li><strong>Panel auto-open and auto-follow.</strong> Both were built for an explicit Start, where the reader had just asked to watch the review. With sending on every comment they would fire while the reader is mid-sentence on the next line. See decisions 2 and 3.</li>
+</ol>
+
+<h2>Upgrade and existing state</h2>
+<p>An existing database can hold two states the new model never produces:</p>
+<ul>
+<li><strong>Queued threads in an <code>idle</code> review</strong> (comments staged but never started). These are sent when the daemon starts (decision 4): under the new model a queued comment is a comment its writer asked to deliver. The adoption runs once, after the first COMPLETED discovery sweep (<code>Registry.onSessionsObserved</code>), for the reason <code>FileCommentManager</code> reconciles orphans there: before that sweep a live session can still be missing from the map, and starting a review for it would pause at once with "this session has ended".</li>
+<li><strong>A review <code>paused</code> with the <code>drained</code> or <code>empty</code> reason.</strong> Read as idle ("parked") by one shared predicate in <code>src/shared/file-comments.ts</code>, used by <code>onQueued</code>, the startup adoption, and the panel, so the next comment goes without a Resume. No migration writes these rows; the read-side rule is enough and keeps <code>src/server/db.ts</code> untouched apart from step 4.</li>
+</ul>
+
+<h2>Decisions</h2>
+<p>Settled in review on 2026-09-29.</p>
+<div class="scroll"><table>
+<tr><th>#</th><th>Decision</th><th>Adopted</th></tr>
+<tr><td>1</td><td>Keep Pause/Resume as an optional hold</td><td><strong>Keep.</strong> Sending no longer requires it, but it is the only way to hold back the comments behind one already sent, and every blocker pause already uses Resume. It is offered once delivery has started, so the first comment sent always goes</td></tr>
+<tr><td>2</td><td>Auto-open the queue panel when delivery starts</td><td><strong>No.</strong> The toolbar marker shows that a comment is out; the panel opens only when a pause needs a person, which is when its controls matter</td></tr>
+<tr><td>3</td><td>Follow the outstanding comment into its file</td><td><strong>Only when no composer is open.</strong> Never pull the reader away from a comment they are writing</td></tr>
+<tr><td>4</td><td>Staged comments left over from before the upgrade</td><td><strong>Send them when the daemon starts</strong>, after the first completed discovery sweep</td></tr>
+</table></div>
+
+<h2>Tests</h2>
+<div class="scroll"><table>
+<tr><th>Layer</th><th>File</th><th>Asserts</th></tr>
+<tr><td>Unit</td><td><code>test/file-comment-walkthrough.test.ts</code></td><td><code>onQueued</code> starts an idle review and sends; ticks a running one; leaves a paused one alone; treats a legacy drained pause as idle; running dry goes <code>idle</code> with no reason; <code>adoptQueued</code> sends a staged queue and skips a paused review, an empty queue, and a missing session</td></tr>
+<tr><td>Unit</td><td><code>test/file-comments-store.test.ts</code></td><td><code>started_at</code> survives pause/resume and clears on <code>idle</code></td></tr>
+<tr><td>Unit</td><td><code>test/file-comments-lifecycle.test.ts</code></td><td><code>queue()</code> and the reply requeue fire <code>onQueued</code> once; a draft edit and a reply on an outstanding thread do not</td></tr>
+<tr><td>HTTP</td><td><code>test/file-comments-http.test.ts</code></td><td><code>POST /api/file-comments/:id/queue</code> on an idle session yields a running review and one pending turn; a reply on an <code>unanswered</code> thread is delivered as its own turn (ordinal 2) with no Start or Resume</td></tr>
+<tr><td>Unit</td><td><code>test/file-comment-startup-delivery.test.ts</code></td><td>A comment staged in an idle review is sent after the first completed discovery sweep, through <code>adoptQueuedOnFirstSweep</code> and a real <code>Registry</code>; nothing goes before the sweep, and a person-paused review stays held</td></tr>
+<tr><td>Unit</td><td><code>test/file-comment-payload.test.ts</code></td><td>New position and last-in-queue lines; the answer line is unchanged</td></tr>
+<tr><td>Unit</td><td>a <code>fileComments</code> helper test</td><td><code>composerDeliveryHint</code> and <code>reviewAnnouncement</code> for every state above, including an empty queue with another message in the outbox and an empty queue while the agent is busy</td></tr>
+<tr><td>Browser</td><td><code>e2e/specs/file-comment-auto-send.spec.ts</code> (new)</td><td>Send delivers with no Start; a second Send shows "Waits behind 1 comment" and goes after the faked reply; Pause holds a newly sent comment; Resume releases it; the queue drains to "Nothing waiting"; a comment going out does not move a reader who has a composer open; with a typed message still in the outbox the hint says the comment waits for it, and the comment goes once that message is delivered; while the agent is mid-turn the hint says it goes when the agent is next free, and it does</td></tr>
+<tr><td>Browser</td><td><code>file-comment-walkthrough.spec.ts</code>, <code>file-line-comments.spec.ts</code>, <code>file-comment-outdated.spec.ts</code></td><td>Updated for Send and for no Start review; outdated-head hold and Resume unchanged</td></tr>
+</table></div>
+<p>All browser specs keep the fake agents; no model tokens are spent.</p>
+
+<h2>Docs</h2>
+<p><code>docs/ui.md</code> "Walk the agent through your review" is rewritten for send-as-you-go: no Start review, the queue as a view of what is out and what is waiting, Pause as an optional hold. The historical <code>docs/plans/files-line-comments/</code> plan is left as the record of the original decision 4 ("one comment at a time"), which this plan keeps; only the manual start changes.</p>
+
+<h2>Risks</h2>
+<div class="scroll"><table>
+<tr><th>Risk</th><th>Impact</th><th>Mitigation</th></tr>
+<tr><td>A comment goes before the writer rereads it</td><td>The agent acts on a half-thought</td><td>The composer is still the editing surface, and a comment that is waiting can still be rewritten or dropped. After the first comment goes, Pause holds the ones written behind it until Resume; the first Send itself is never held</td></tr>
+<tr><td>Comments now reach a session that is busy</td><td>The turn waits in the outbox for an idle gap, as the first comment of a started review always did</td><td>Unchanged outbox behavior; <code>deliveryBlock</code> still refuses a second outbox row</td></tr>
+<tr><td>A session that cannot take messages pauses on the first Send</td><td>A pause banner appears right after sending</td><td>The composer hint says so before Send, using the same <code>messageBlockReason</code> the daemon uses</td></tr>
+<tr><td>"More comments may follow" makes the agent hold back</td><td>Less work per comment</td><td>The scope line already asks for this comment only; the change removes a false "last" rather than adding restraint</td></tr>
+</table></div>
+
+<h2>Effort</h2>
+<p>About 1.5 to 2.5 engineering days in one pull request: roughly 150 to 250 non-test lines across the walkthrough, manager, store expression, payload, and four web files, plus the tests above and one new Playwright spec.</p>
+</main>
+</body>
+</html>

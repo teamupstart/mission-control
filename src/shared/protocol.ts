@@ -7512,6 +7512,7 @@ export type EnsembleMemberSubmitBody = z.infer<typeof EnsembleMemberSubmitSchema
  * declares, so a filter names a kind this build understands or is refused.
  */
 export const ArchiveSearchQuerySchema = z.object({
+  session: z.string().min(1).max(256).optional(),
   q: z.string().max(ARCHIVE_SEARCH_LIMITS.queryChars).optional(),
   producer: z.string().refine(isArchiveId, "not a producer id").optional(),
   repo: z.string().max(ARCHIVE_TEXT_LIMITS.label).optional(),
@@ -7583,6 +7584,7 @@ const ScoutSupportingLocatorSchema = z.object({
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
 export const SubmitScoutArtifactsSchema = z.object({
+  title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
   reportPath: z
     .string()
     .trim()

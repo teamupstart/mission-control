@@ -43,7 +43,7 @@ export type FileCommentThreadStatus = (typeof FILE_COMMENT_THREAD_STATUSES)[numb
  *
  * **Both statuses, not just `sending`.** A comment is outstanding from the moment it is
  * handed to the outbox until the agent answers it, and `awaiting` is by far the longer
- * half of that. An index naming `sending` alone would let a second Start review, or a
+ * half of that. An index naming `sending` alone would let a second sent comment, or a
  * resume, open a new delivery while the first comment is still unanswered.
  *
  * **`unanswered` is deliberately outside this tuple, and that is what makes auto-advance
@@ -93,6 +93,37 @@ export type FileCommentAuthor = (typeof FILE_COMMENT_AUTHORS)[number];
  */
 export const FILE_COMMENT_REVIEW_STATES = ["idle", "running", "paused"] as const;
 export type FileCommentReviewState = (typeof FILE_COMMENT_REVIEW_STATES)[number];
+
+/**
+ * The two sentences a review used to PAUSE with when it had simply run out of comments.
+ *
+ * Sending a comment now starts delivery on its own, and a review that runs dry goes back to
+ * `idle` rather than parking as `paused`. Rows written before that change still carry these
+ * reasons, and they are not a person's hold or a blocker - nothing needs deciding - so they
+ * read as idle. Matched on the exact text because that is all the row recorded. Never
+ * extended: nothing writes these any more.
+ */
+export const LEGACY_PARKED_REVIEW_REASONS = [
+  "Every comment in this review has been sent.",
+  "There is nothing in this review to send.",
+] as const;
+
+const LEGACY_PARKED = new Set<string>(LEGACY_PARKED_REVIEW_REASONS);
+
+/**
+ * Whether a review is waiting for nothing but the next comment: never started, run dry, or a
+ * legacy row that parked as `paused` for running dry.
+ *
+ * The one question both halves ask. The daemon starts delivery for a sent comment only on a
+ * parked review, because a `paused` one is a person's Pause or a blocker that needs a person;
+ * the dashboard asks it to decide whether a sent comment "goes now" or "waits for Resume".
+ */
+export function isParkedReview(
+  review: { state: FileCommentReviewState; pauseReason: string | null } | null,
+): boolean {
+  if (!review || review.state === "idle") return true;
+  return review.state === "paused" && review.pauseReason !== null && LEGACY_PARKED.has(review.pauseReason);
+}
 
 const THREAD_STATUS_SET = new Set<string>(FILE_COMMENT_THREAD_STATUSES);
 const OUTSTANDING = new Set<FileCommentThreadStatus>(OUTSTANDING_THREAD_STATUSES);

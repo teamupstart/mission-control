@@ -84,7 +84,13 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return (await read())!;
 }
 
-/** Every comment the daemon holds, with the body it holds for it. */
+/**
+ * Every comment the daemon holds, with the body the PERSON wrote for it.
+ *
+ * Human messages only: a sent comment really reaches the agent now, and an answer it gives -
+ * or one the transcript fallback recovers once the grace window runs out - lands on the same
+ * thread. That is delivery, which is not what this spec is about.
+ */
 function storedComments(daemon: DaemonHandle): { start_line: number; body: string }[] {
   return withDaemonDb(daemon, (db) =>
     db
@@ -92,6 +98,7 @@ function storedComments(daemon: DaemonHandle): { start_line: number; body: strin
         `SELECT t.start_line, m.body
            FROM file_comment_threads t
            JOIN file_comment_messages m ON m.thread_id = t.id
+          WHERE m.author = 'human'
           ORDER BY t.created_at, m.created_at`,
       )
       .all() as never);
@@ -179,7 +186,7 @@ test.describe("typing a comment with real keystrokes", () => {
     await page.keyboard.type(TYPED);
     await expect(box, "the composer draws what was typed into it").toHaveValue(TYPED);
 
-    const submit = page.getByRole("button", { name: "Comment", exact: true });
+    const submit = page.getByRole("button", { name: "Send", exact: true });
     // The button reads the same state the box does, so a dropped keystroke disables it - which
     // is what a reader saw: an empty box they could not submit, over a comment being saved.
     await expect(submit, "typed text arms the submit button").toBeEnabled();

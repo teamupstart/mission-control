@@ -40,6 +40,7 @@ export const SCOUT_REPORT_PATH_SHAPE = `${SCOUT_REPORT_ROOT}/<slug>/${SCOUT_REPO
  * out which question a shared constant was answering.
  */
 export const SCOUT_SUBMISSION_LIMITS = {
+  title: ARCHIVE_TEXT_LIMITS.title,
   summary: ARCHIVE_TEXT_LIMITS.summary,
   tag: ARCHIVE_TEXT_LIMITS.tag,
   tags: ARCHIVE_TEXT_LIMITS.tags,
@@ -104,6 +105,7 @@ export interface ScoutSupportingLocator {
  * archive on somebody else's behalf or to somewhere else.
  */
 export interface ScoutSubmissionInput {
+  title?: string;
   reportPath: string;
   summary: string;
   tags: string[];

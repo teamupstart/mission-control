@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { createResumeLease, resumeLeaseRoot, resumeLeaseStatus } from "../src/server/terminal/resume-lease.ts";
 
 const root = mkdtempSync(join(tmpdir(), "mission-daemon-owner-"));
 const repo = fileURLToPath(new URL("..", import.meta.url));
@@ -209,19 +210,25 @@ test("ownership contention refuses startup before the state database is touched"
   const holder = startOwnershipHolder(home, await unusedPort());
   await waitFor(holder, (output) => output.includes("ownership-held"), "ownership holder did not start");
   assert.equal(existsSync(join(home, "harness.db")), false);
+  const leaseRoot = resumeLeaseRoot(home);
+  const lease = createResumeLease(leaseRoot, "live-preparation", new Set());
+  const credential = join(lease.home, "loopback-token");
+  writeFileSync(credential, "fixture-only", { mode: 0o600 });
 
-  const contender = startDaemon(home, await unusedPort());
-  const [code, signal] = await contender.exit;
+  try {
+    const contender = startDaemon(home, await unusedPort());
+    const [code, signal] = await contender.exit;
 
-  assert.equal(signal, null, contender.output());
-  assert.notEqual(code, 0, contender.output());
-  assert.match(contender.output(), /state home is already owned by another Mission Control daemon/i);
-  assert.equal(
-    existsSync(join(home, "harness.db")),
-    false,
-    "the refused daemon created or migrated the state database",
-  );
-  await stopDaemon(holder.child);
+    assert.equal(signal, null, contender.output());
+    assert.notEqual(code, 0, contender.output());
+    assert.match(contender.output(), /state home is already owned by another Mission Control daemon/i);
+    assert.equal(existsSync(join(home, "harness.db")), false, "the refused daemon created or migrated the state database");
+    assert.equal(resumeLeaseStatus(lease).state, "preparing", "the rejected startup must not revoke the live daemon's preparation");
+    assert.ok(existsSync(credential), "the in-flight resume keeps its credentials");
+  } finally {
+    await stopDaemon(holder.child);
+    rmSync(leaseRoot, { recursive: true, force: true });
+  }
 });
 
 test("daemons with independent state homes can run concurrently", async () => {

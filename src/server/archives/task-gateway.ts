@@ -31,9 +31,9 @@ import type { ArchiveCaptureOrigin, ArchiveRepoSlot } from "./capture-store.ts";
  * roots from the provisioned worktrees.
  */
 
-/** One task's work, as the capture path sees it. */
+/** One task or taskless session's work, as the capture path sees it. */
 export interface ArchiveSubject {
-  taskId: string;
+  taskId: string | null;
   sessionId: string | null;
   /**
    * The work episode this capture belongs to, or null when the task has no binding.
@@ -50,7 +50,7 @@ export interface ArchiveSubject {
   repos: ArchiveRepoSlot[];
 }
 
-/** Why a session's submission cannot be attributed to a scout. */
+/** Why a session's report submission cannot be attributed to live work. */
 export type ArchiveSubjectRefusal =
   | { reason: "no_session"; status: 404; detail: string }
   | { reason: "no_task"; status: 404; detail: string }
@@ -68,7 +68,7 @@ export interface ArchiveSubjectForKind {
 }
 
 export interface ArchiveTaskGateway {
-  /** The scout named by a verified checkout credential, after its live binding is confirmed. */
+  /** The owner named by a verified report capability, after its live binding is confirmed. */
   subjectForSubmission(authority: ScoutSubmissionAuthority): ArchiveSubjectLookup;
   /**
    * The subject for a task, but only when that task is captured as `kind`.
@@ -100,8 +100,8 @@ export interface ArchiveTaskGateway {
   /**
    * What this task's work would be archived as, or null when it is not archived at all.
    *
-   * Cheap; every cleanup gate asks it before it reads anything from disk. A ship task answers
-   * null, which is what keeps ship teardown byte-for-byte what it was.
+   * A ship task answers null: its explicitly submitted reports can still be settled, but its
+   * incidental report directories are never discovered automatically during cleanup.
    */
   captureKind(taskId: string): ArchiveKind | null;
   /**
@@ -128,7 +128,37 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
   ) {}
 
   subjectForSubmission(authority: ScoutSubmissionAuthority): ArchiveSubjectLookup {
-    const task = this.registry.getTask(authority.taskId);
+    if (authority.sessionId) {
+      const session = this.registry.getSession(authority.sessionId);
+      const episode = session ? this.registry.workEpisodeForSession(session.id) : null;
+      const bound = session ? this.registry.taskForSession(session.id, session.cwd) : undefined;
+      const task = bound ?? null;
+      if (!session || !episode || session.state === "exited" || session.cwd !== authority.cwd ||
+          session.pid !== authority.pid || session.agentSessionId !== authority.agentSessionId ||
+          this.registry.sessionResetInProgress(session.id) || episode.awaitingAgentRebind ||
+          episode.episodeId !== authority.episodeId || (task?.id ?? null) !== authority.taskId) {
+        return { ok: false, reason: "no_session", status: 404,
+          detail: "the report capability no longer matches this live session and work episode; retry with the current Mission Control bridge" };
+      }
+      if (task && !isActiveTask(task.status)) return { ok: false, reason: "not_running", status: 409,
+        detail: "this task is no longer running; publish from the session's next work episode" };
+      if (task) {
+        const subject = this.subject(task, session, "scout");
+        // A launch may bind its session before its task episode row is projected.
+        subject.episodeId = episode.episodeId;
+        subject.origin.session!.episodeId = episode.episodeId;
+        return { ok: true, subject };
+      }
+      const title = scoutArchiveTitle(session.name, null, null);
+      return { ok: true, subject: {
+        taskId: null, sessionId: session.id, episodeId: episode.episodeId,
+        title, question: null, prompts: null,
+        origin: { agent: session.agent, model: clip(session.meta?.modelId ?? session.meta?.model, ARCHIVE_TEXT_LIMITS.label), source: "manual",
+          session: { id: session.id, name: title, taskId: null, episodeId: episode.episodeId } },
+        repos: scoutRepoSlots({ repoRoot: session.repoRoot ?? session.cwd!, worktreePath: null, baseSha: null, extraRepos: [] }, session.cwd),
+      } };
+    }
+    const task = authority.taskId ? this.registry.getTask(authority.taskId) : undefined;
     if (!task) {
       return {
         ok: false,
@@ -191,7 +221,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
   }
 
   scoutPromptTrailFor(subject: ArchiveSubject): ArchiveManifestPromptTrail | null {
-    const task = this.registry.getTask(subject.taskId);
+    const task = subject.taskId ? this.registry.getTask(subject.taskId) : undefined;
     if (!task || !isScoutTask(task)) return null;
     const session = subject.sessionId ? this.registry.getSession(subject.sessionId) : undefined;
     return this.collectPromptTrail(task, subject.episodeId, session ?? null).trail;
@@ -234,6 +264,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
       question: clip(task.intent, ARCHIVE_TEXT_LIMITS.question),
       prompts: null,
       origin: {
+        ...(session ? { session: { id: session.id, name: scoutArchiveTitle(session.name, null, task.title), taskId: task.id, episodeId } } : {}),
         agent: task.agent,
         // The model the harness actually reported, when it did; the task's pin is what was
         // asked for and is the honest fallback rather than a guess.

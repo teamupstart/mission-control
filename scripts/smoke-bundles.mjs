@@ -496,6 +496,7 @@ async function smokeSatellitePaths() {
   const expected = [
     ["MCP server", "dist/mcp/server.mjs"],
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
+    ["Managed resume guard", "dist/satellites/resume-guard.mjs"],
     ["Pi extension", "dist/pi-integration/extension.js"],
   ];
   for (const [label, built] of expected) {

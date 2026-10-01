@@ -1252,6 +1252,39 @@ export async function fetchSessionFile(
   }
 }
 
+/** What a re-check of an open document found. */
+export type SessionFileRecheck =
+  | { ok: true; unchanged: true }
+  | { ok: true; unchanged: false; file: SessionFileDocument }
+  | { ok: false; error: string };
+
+/**
+ * Re-read a file only if it has moved past `known`, the revision the reader already holds.
+ *
+ * `unchanged` carries no text, so re-checking an open document costs a hash on the daemon
+ * rather than the document over the wire.
+ */
+export async function fetchSessionFileIfChanged(
+  id: string,
+  path: string,
+  known: string,
+): Promise<SessionFileRecheck> {
+  try {
+    const res = await actionFetch(
+      `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`
+        + `&known=${encodeURIComponent(known)}`,
+    );
+    const data = (await res.json().catch(() => ({}))) as
+      & SessionFileDocument
+      & { error?: string; unchanged?: boolean };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (data.unchanged === true) return { ok: true, unchanged: true };
+    return { ok: true, unchanged: false, file: data };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * Which "Open in" targets this build has, and whether the daemon's host can use each.
  *
@@ -1582,6 +1615,8 @@ export function archiveSearchPath(query: Partial<ArchiveSearchQuery>): string {
   const params = new URLSearchParams();
   if (query.q) params.set("q", query.q);
   if (query.producer) params.set("producer", query.producer);
+  if (query.session) params.set("session", query.session);
+  if (query.kind) params.set("kind", query.kind);
   if (query.repo) params.set("repo", query.repo);
   if (query.agent) params.set("agent", query.agent);
   if (query.status) params.set("status", query.status);
@@ -1602,6 +1637,7 @@ export interface ArchiveArtifactBody {
 export const api = {
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
+  readFileIfChanged: fetchSessionFileIfChanged,
   saveFile: (id: string, path: string, text: string, expectedRevision: string) =>
     put<SessionFileSaveResult>(`/api/sessions/${encodeURIComponent(id)}/file`, {
       path,

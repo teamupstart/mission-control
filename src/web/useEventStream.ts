@@ -132,7 +132,7 @@ export interface MissionState {
    * two comments the outstanding set is briefly empty, so a derived "running" would flicker.
    *
    * Bounded by the same thing the threads are, and more tightly: at most one row per session,
-   * removed when that session goes away. EMPTY until somebody presses Start review.
+   * removed when that session goes away. EMPTY until somebody sends a comment.
    */
   fileCommentReviews: FileCommentReview[];
   /**

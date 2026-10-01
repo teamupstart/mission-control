@@ -62,15 +62,15 @@ test("the Workflows pane names its empty state", () => {
   assert.match(html, /No workflow is bound to this session/);
 });
 
-test("Workflows sits between Work queue and Diff", () => {
+test("Scouts sits between Workflows and Diff", () => {
   const tabs = detailTabs({ queueCount: 0, fileReplyCount: 0 });
   assert.deepEqual(
     tabs.map((tab) => tab.id),
-    ["conversation", "queue", "workflows", "diff", "files"],
+    ["conversation", "queue", "workflows", "scouts", "diff", "files"],
   );
   assert.deepEqual(
     tabs.map((tab) => tab.label),
-    ["Conversation", "Work queue", "Workflows", "Diff", "Files"],
+    ["Conversation", "Work queue", "Workflows", "Scouts", "Diff", "Files"],
   );
   assert.equal(detailTabs({ queueCount: 4, fileReplyCount: 0 })[1]?.pip, 4);
   // Files takes the AGENT-REPLY count, not the review's queue depth: comments still waiting

@@ -1,5 +1,11 @@
 # Configuration
 
+`MISSION_SCOUT_SESSION_LOCATOR` is an internal SDK launch secret, not an operator setting.
+The daemon supplies it only to the matching session's MCP bridge and strips inherited values
+from ordinary child launches. Terminal bridges use their OS parent process identity instead.
+Changing the public `MISSION_SESSION_ID` never selects another session's report credential.
+See [archive submission authentication](archives.md) for the live-binding checks.
+
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
@@ -62,6 +68,7 @@
 | `ITERM_BIN` | `/Applications/iTerm.app/Contents/MacOS/iTerm2` | [iTerm2](sessions.md#iterm2-automation-and-permission-recovery) app-bundle binary override for a non-standard installation. Availability reads only this path. Mission Control never runs it for discovery or actions; it controls an already-running iTerm2 through AppleScript, and passive checks do not launch the app |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
 | `HERDR_BIN` | `herdr` | [Herdr](harnesses-and-terminals.md#herdr) CLI path override. Initial support requires stable Herdr 0.8.2 or newer on protocol 20 or newer, controls only the default local server, and is allowlisted to macOS and Linux |
+| `MISSION_RESUME_GUARD` | bundled `dist/satellites/resume-guard.mjs` | Managed terminal lease guard override for isolated fixtures. An unusable guard refuses resume before stopping the SDK |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |

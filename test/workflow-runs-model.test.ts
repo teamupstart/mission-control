@@ -48,6 +48,8 @@ import {
   inheritedPasses,
   priorAttemptPassed,
   latestAttemptsFor,
+  elapsedSpansFor,
+  stageElapsed,
   newestInheritedSource,
   nodeStatusesForSubmission,
   readCapturedContext,
@@ -468,6 +470,104 @@ test("the newest attempt answers for a node - its state AND its provider", () =>
   assert.deepEqual(nodeStatusesForSubmission(run, "s1"), { quality: "running", security: "queued" });
   assert.equal(latestAttemptsFor(run, null).size, 0);
   assert.equal(latestAttemptsFor(run, "gone").size, 0);
+});
+
+test("a member's clock runs from its launch and freezes when it settles", () => {
+  // Counted from `createdAt`, the moment the round launched the member: a session action is
+  // written straight into `waiting` with no `startedAt`, and must still get a clock.
+  const run = detail(
+    [submission("s1", 1), submission("s0", 0)],
+    [
+      attempt("typecheck", "s1", "typecheck", { createdAt: 1_000, startedAt: 4_000, finishedAt: 39_000 }),
+      attempt("test", "s1", "test", { state: "running", createdAt: 1_000, startedAt: 2_000, finishedAt: null }),
+      attempt("action", "s1", "rebase", { state: "waiting", createdAt: 5_000, startedAt: null, finishedAt: null }),
+      attempt("other-round", "s0", "lint", { createdAt: 0, finishedAt: 9_000 }),
+    ],
+  );
+  const spans = elapsedSpansFor(run, "s1");
+  assert.deepEqual(spans.get("typecheck"), { startedAt: 1_000, finishedAt: 39_000 });
+  assert.deepEqual(spans.get("test"), { startedAt: 1_000, finishedAt: null });
+  assert.deepEqual(spans.get("rebase"), { startedAt: 5_000, finishedAt: null });
+  assert.equal(spans.has("lint"), false, "another round's attempt has no clock in this one");
+  assert.equal(elapsedSpansFor(run, null).size, 0);
+});
+
+test("a retried member's clock covers every try, and a settled row without a finish still freezes", () => {
+  const run = detail(
+    [submission("s1", 1)],
+    [
+      attempt("first", "s1", "quality", { attempt: 1, state: "error", createdAt: 1_000, finishedAt: 20_000 }),
+      attempt("retry", "s1", "quality", { attempt: 2, state: "completed", createdAt: 21_000, finishedAt: 60_000 }),
+      attempt("legacy", "s1", "security", { state: "cancelled", createdAt: 1_000, updatedAt: 8_000, finishedAt: null }),
+    ],
+  );
+  const spans = elapsedSpansFor(run, "s1");
+  assert.deepEqual(spans.get("quality"), { startedAt: 1_000, finishedAt: 60_000 });
+  assert.deepEqual(spans.get("security"), { startedAt: 1_000, finishedAt: 8_000 });
+});
+
+test("a live member on a finished run freezes at the run's end instead of ticking forever", () => {
+  const live = [attempt("a", "s1", "quality", { state: "running", createdAt: 1_000, finishedAt: null })];
+  const cancelled = detail([submission("s1", 1)], live, {
+    run: { status: "cancelled", updatedAt: 50_000, completedAt: 45_000 },
+  } as Partial<WorkflowRunDetail>);
+  assert.deepEqual(elapsedSpansFor(cancelled, "s1").get("quality"), { startedAt: 1_000, finishedAt: 45_000 });
+  const blocked = detail([submission("s1", 1)], live, {
+    run: { status: "blocked", updatedAt: 50_000, completedAt: null },
+  } as Partial<WorkflowRunDetail>);
+  assert.deepEqual(
+    elapsedSpansFor(blocked, "s1").get("quality"),
+    { startedAt: 1_000, finishedAt: null },
+    "a blocked run can be revived, so its live members keep counting",
+  );
+});
+
+test("a continuation segment keeps the clock of the action that authorized it", () => {
+  // The action's attempt lives on the parent, but the child is the view a finished live action
+  // lands on: without the carry its row would read Complete with no time at all.
+  const parent = submission("parent", 1);
+  const child = submission("child", 1, {
+    segment: 1,
+    parentSubmissionId: "parent",
+    continuationNodeId: "rebase",
+    continuationNodeAttemptId: "action",
+  });
+  const run = detail([parent, child], [
+    attempt("action", "parent", "rebase", { state: "completed", createdAt: 1_000, finishedAt: 43_000 }),
+    attempt("review", "child", "quality", { state: "running", createdAt: 44_000, finishedAt: null }),
+  ]);
+  const spans = elapsedSpansFor(run, "child");
+  assert.deepEqual(spans.get("rebase"), { startedAt: 1_000, finishedAt: 43_000 });
+  assert.deepEqual(spans.get("quality"), { startedAt: 44_000, finishedAt: null });
+
+  // A row naming itself as its own parent must degrade, not recurse.
+  const looped = detail([submission("self", 1, {
+    parentSubmissionId: "self",
+    continuationNodeId: "rebase",
+    continuationNodeAttemptId: "own",
+  })], [attempt("own", "self", "rebase", { createdAt: 1_000, finishedAt: 5_000 })]);
+  assert.deepEqual(elapsedSpansFor(looped, "self").get("rebase"), { startedAt: 1_000, finishedAt: 5_000 });
+});
+
+test("a stage's clock spans its first launch to its last finish, live until every member settles", () => {
+  assert.equal(stageElapsed([]), null);
+  assert.equal(stageElapsed([null, null]), null);
+  assert.deepEqual(
+    stageElapsed([
+      { startedAt: 2_000, finishedAt: 40_000 },
+      { startedAt: 1_000, finishedAt: 13_000 },
+      null,
+    ]),
+    { startedAt: 1_000, finishedAt: 40_000 },
+    "a carried member neither starts nor holds open the stage clock",
+  );
+  assert.deepEqual(
+    stageElapsed([
+      { startedAt: 1_000, finishedAt: 40_000 },
+      { startedAt: 1_000, finishedAt: null },
+    ]),
+    { startedAt: 1_000, finishedAt: null },
+  );
 });
 
 test("a reviewer with no attempt this round has not started, which is not 'nothing to say'", () => {

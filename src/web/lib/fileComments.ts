@@ -8,14 +8,22 @@
 // `readOnly` or `lineSeparator` change, and position-mapped decorations do not survive
 // either. Derived ones do not notice.
 
-import type { FileCommentReview, FileCommentThread, SessionFileDocument } from "@shared/types.ts";
+import type {
+  FileCommentReview,
+  FileCommentThread,
+  PendingTurn,
+  SessionFileDocument,
+  SessionState,
+} from "@shared/types.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import { boundQuote, normalizeQuote } from "@shared/file-comment-anchor.ts";
 import {
   holdsQueuePosition,
   isOutstandingThreadStatus,
+  isParkedReview,
   isTerminalThreadStatus,
 } from "@shared/file-comments.ts";
+import { messageBlockReason, type Messageable } from "@shared/pane.ts";
 
 /**
  * Descendants whose text reads as a separate region even though `textContent` contributes
@@ -530,7 +538,12 @@ export function isEditableInQueue(thread: FileCommentThread): boolean {
  *
  * Announced rather than merely drawn because the whole feature is a queue draining without
  * anybody watching it: a sighted reader sees the head move, and without this a screen-reader
- * user is left guessing whether their review is running at all.
+ * user is left guessing whether their comments are going at all.
+ *
+ * Sending a comment starts delivery, so there is no "not started" to report. A parked review
+ * (idle, or a legacy row that paused for running dry) is simply waiting for the next comment;
+ * the one case where it still holds comments is a queue written before sending delivered on
+ * its own, and that is what Resume is for.
  */
 export function reviewAnnouncement(
   review: FileCommentReview | null,
@@ -539,16 +552,120 @@ export function reviewAnnouncement(
   const waiting = queue.filter((thread) => thread.status === "queued").length;
   const out = outstandingThread(queue);
   const remaining = `${waiting} comment${waiting === 1 ? "" : "s"} waiting`;
+  if (isParkedReview(review)) {
+    return waiting === 0
+      ? "Nothing waiting. Comments go to the agent as you send them."
+      : `${remaining}. Resume to send them.`;
+  }
   // Deliberately WITHOUT the pause reason. The reason is drawn beside this line in its own
   // `role="alert"`, which a screen reader announces too, so carrying it here as well read as
   // the same sentence twice - on screen, literally twice, one under the other.
-  if (review?.state === "paused") return `Review paused. ${remaining}.`;
-  if (review?.state !== "running") {
-    return waiting === 0
-      ? "No comments are queued for review."
-      : `Review not started. ${remaining}.`;
-  }
+  if (review?.state === "paused") return `Delivery paused. ${remaining}. New comments join the queue.`;
   return out
     ? `${out.shortId} on ${out.path} line ${out.startLine} is out with the agent. ${remaining}.`
     : `Review running. ${remaining}.`;
+}
+
+/**
+ * The queue panel's one run control, or null when there is nothing for it to do.
+ *
+ * There is no Start: sending a comment starts delivery. Pause is the optional hold while
+ * comments are going, and Resume lifts a pause - a person's, or a blocker's once they have
+ * dealt with it. Resume is also offered on a parked review that still holds queued comments,
+ * which only a queue written before sending delivered on its own can be.
+ */
+export function reviewControl(
+  review: FileCommentReview | null,
+  queue: readonly FileCommentThread[],
+): "pause" | "resume" | null {
+  if (review?.state === "running") return "pause";
+  if (!isParkedReview(review)) return "resume";
+  return queue.some((thread) => thread.status === "queued") ? "resume" : null;
+}
+
+/**
+ * The states in which a session is not free to read a new turn, so one sent now waits in the
+ * outbox: mid-turn, starting or stopping, or blocked on a prompt it raised. `exited` is not
+ * here - a session that cannot take a message at all is `messageBlockReason`'s to name.
+ */
+const BUSY_SESSION_STATES: ReadonlySet<SessionState> = new Set([
+  "starting",
+  "working",
+  "stopping",
+  "awaiting_input",
+  "awaiting_review",
+]);
+
+/** What will happen to a comment when its composer's Send is pressed, said before it is. */
+export interface ComposerDeliveryHint {
+  tone: "now" | "wait" | "held";
+  text: string;
+}
+
+/**
+ * The composer's delivery hint: whether Send delivers at once, waits its turn, or is held.
+ *
+ * Asked of the same state the daemon decides on, so the sentence a person reads before
+ * pressing Send is the outcome they get after it. A session that cannot take a message at
+ * all is named first, because it is the one case where Send starts nothing - the daemon
+ * pauses with that reason - and finding out only after sending is the surprise this avoids.
+ *
+ * `queue` is the session's review queue as `reviewQueue` returns it: the comment out with
+ * the agent and every comment waiting, but never the draft being written.
+ *
+ * **The session's outbox counts too, not only the review queue.** One comment outstanding is
+ * really one turn in the session's WHOLE outbox: an ordinary message typed into the
+ * conversation sits in the same `pending_turns`, and the walkthrough will not send a comment
+ * on top of it. So a queue with nothing in it does not mean "now" while that message is still
+ * waiting to be delivered. An unconfirmed one is the stronger case - it waits for a person,
+ * and the daemon pauses delivery behind it - so it is named as held rather than as a wait.
+ *
+ * **And so does the agent itself.** With nothing queued and an empty outbox, a comment still
+ * does not arrive "now" while the agent is in the middle of a turn, starting up, stopping, or
+ * blocked on a prompt: its turn waits in the outbox for the agent to be free. Only a settled
+ * session is "now".
+ */
+export function composerDeliveryHint(
+  review: FileCommentReview | null,
+  queue: readonly FileCommentThread[],
+  session:
+    | (Messageable & { pendingTurns?: readonly Pick<PendingTurn, "state">[]; state?: SessionState })
+    | null,
+): ComposerDeliveryHint {
+  if (session && messageBlockReason(session)) {
+    return { tone: "held", text: "This session cannot take messages; the comment will be held" };
+  }
+  if (!isParkedReview(review) && review?.state === "paused") {
+    return { tone: "held", text: "Delivery is paused; this waits until you resume" };
+  }
+  const outbox = session?.pendingTurns ?? [];
+  if (outbox.some((turn) => turn.state === "uncertain")) {
+    return { tone: "held", text: "Waits for an unconfirmed message in this session's outbox" };
+  }
+  const ahead = queue.length;
+  if (ahead > 0) {
+    return { tone: "wait", text: `Waits behind ${ahead} comment${ahead === 1 ? "" : "s"}` };
+  }
+  if (outbox.length > 0) {
+    return { tone: "wait", text: "Waits for the message already in this session's outbox" };
+  }
+  if (session?.state && BUSY_SESSION_STATES.has(session.state)) {
+    return { tone: "wait", text: "Goes to the agent when it is next free" };
+  }
+  return { tone: "now", text: "Goes to the agent now" };
+}
+
+/**
+ * What pressing Reply on this thread does, for its tooltip.
+ *
+ * A reply on a thread the agent has finished with re-enters the queue and goes on its own,
+ * like a new comment. A reply on a thread still waiting or out with the agent rides along
+ * after it; one on a closed thread is only a note.
+ */
+export function replyTooltip(thread: FileCommentThread): string {
+  if (thread.status === "answered" || thread.status === "unanswered") {
+    return "Send this reply to the agent in its turn";
+  }
+  if (isTerminalThreadStatus(thread.status)) return "Add this reply to the thread";
+  return "Add this reply to the thread; it goes to the agent after this comment";
 }

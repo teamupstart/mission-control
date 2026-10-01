@@ -617,6 +617,7 @@ export function App(): React.JSX.Element {
     },
     [openSettingsAnchor],
   );
+  const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
     nonce: number;
@@ -2746,6 +2747,9 @@ export function App(): React.JSX.Element {
     diffTabRequest,
     conversationTabRequest,
     workflowsTabRequest,
+    scoutsTabRequest,
+    archivesRevision,
+    onOpenScout: (archiveKey, sessionId, producerId) => { navigate({ page: "scouts", archiveKey, filters: { session: sessionId, producer: producerId, kind: "scout" } }); },
     files,
     fileCommentThreads,
     fileCommentReviews,
@@ -3365,6 +3369,14 @@ export function App(): React.JSX.Element {
       }
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
       // workflow ladder.
+      if (chord === bindings.sessionScouts) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel) return;
+        e.preventDefault();
+        if (layout === "board") setBoardOpen(true);
+        setScoutsTabRequest((request) => ({ sessionId: sel.id, nonce: (request?.nonce ?? 0) + 1 }));
+        return;
+      }
       if (chord === bindings.sessionWorkflows) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
         if (!sel) return;

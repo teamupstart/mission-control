@@ -34,6 +34,7 @@ export type ActionId =
   | "files"
   | "openDiffFile"
   | "sessionWorkflows"
+  | "sessionScouts"
   | "filePicker"
   | "send"
   | "terminal"
@@ -250,6 +251,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open session workflows",
     description: "Show the selected session's workflow ladder.",
     defaultBinding: "y",
+    group: "selection",
+  },
+  {
+    id: "sessionScouts",
+    label: "Open session scouts",
+    description: "Show scout reports published by the selected session.",
+    defaultBinding: "shift+y",
     group: "selection",
   },
   {

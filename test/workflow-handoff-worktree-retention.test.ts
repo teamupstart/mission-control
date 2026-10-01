@@ -12,7 +12,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb, getTaskSessionClosure } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");

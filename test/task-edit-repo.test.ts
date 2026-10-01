@@ -13,7 +13,7 @@ import type { Task } from "../src/shared/types.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-task-edit-repo-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 
 const repos = mkdtempSync(join(tmpdir(), "mission-task-edit-repos-"));

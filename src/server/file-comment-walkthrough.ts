@@ -18,13 +18,21 @@
 // `idle | running | paused` is a `file_comment_reviews` row, because "paused" and "never
 // started" are otherwise the same set of threads. A daemon restart therefore resumes rather
 // than re-sends.
+//
+// **Sending a comment is what starts it.** There is no separate Start step: a comment put in
+// the queue reaches `onQueued`, which starts an idle review and leaves a paused one alone, and
+// a review that runs dry returns to `idle` to wait for the next. Pause is an optional hold.
 
 import type { FileCommentMessage, FileCommentReview, FileCommentThread, PendingTurn, Session } from "@shared/types.ts";
 import { reanchor, type FileCommentAnchor } from "@shared/file-comment-anchor.ts";
-import { isOutstandingThreadStatus } from "@shared/file-comments.ts";
+import { isOutstandingThreadStatus, isParkedReview } from "@shared/file-comments.ts";
 import { messageBlockReason } from "@shared/pane.ts";
 import { settledIdle } from "@shared/session.ts";
-import { openingDeliveryHandle, renderFileCommentPayload } from "./file-comment-payload.ts";
+import {
+  openingDeliveryHandle,
+  renderFileCommentPayload,
+  type FileCommentPayloadAnchor,
+} from "./file-comment-payload.ts";
 
 /**
  * How long a session must sit settled-idle before a comment it never answered is given up on.
@@ -160,9 +168,15 @@ export interface FileCommentWalkthroughPort {
   appendAgentReply(threadId: string, body: string): FileCommentThread | null;
 }
 
-/** The reasons a review stops, in one place so the UI and the tests read the same sentences. */
+/**
+ * The reasons a review stops, in one place so the UI and the tests read the same sentences.
+ *
+ * Every one of these needs a person. Running out of comments is deliberately not here: a
+ * review that runs dry goes back to `idle`, and the next comment sent starts it again. The
+ * two sentences it used to pause with live on only as `LEGACY_PARKED_REVIEW_REASONS`, so a
+ * row written before that change still reads as idle.
+ */
 export const PAUSE_REASONS = {
-  drained: "Every comment in this review has been sent.",
   outdated: (path: string, shortId: string) =>
     `${shortId} quotes text that is no longer in ${path}, so it was held rather than sent. Editing the comment changes what it says, not the text it quotes, so the way past is to drop it and comment again on the text that is there. Resuming re-checks the file and releases it only if the quote comes back.`,
   missingFile: (path: string) =>
@@ -175,7 +189,6 @@ export const PAUSE_REASONS = {
   outboxBlocked:
     "Another message in this session's outbox could not be confirmed, and the review will not send a second turn on top of it. Retry it or mark it sent from the conversation, then resume.",
   refused: (why: string) => `The outbox refused this comment: ${why}`,
-  empty: "There is nothing in this review to send.",
 } as const;
 
 /**
@@ -197,6 +210,23 @@ export function nextMessage(thread: FileCommentThread): { message: FileCommentMe
     if (message.deliveredAt === null) return { message, ordinal };
   }
   return null;
+}
+
+/**
+ * Whether the agent has already seen this thread: one of its messages was confirmed
+ * delivered, or the agent has written in it.
+ *
+ * This is what separates the two cases an unresolvable quote can be. A comment the agent has
+ * never read, quoting text that is gone, would arrive about words it cannot find - that is
+ * the confused exchange the hold exists to prevent. A follow-up in a thread the agent already
+ * answered is the opposite: the quote is usually gone BECAUSE the agent rewrote it in answer,
+ * the agent knows what it changed, and holding the follow-up strands the conversation.
+ *
+ * Read from the WHOLE history. The capped copy carries the newest messages, and a long thread
+ * whose one delivered message fell off the front would otherwise read as never sent.
+ */
+export function threadReachedAgent(thread: FileCommentThread): boolean {
+  return thread.messages.some((m) => m.author === "agent" || m.deliveredAt !== null);
 }
 
 function anchorOf(thread: FileCommentThread): FileCommentAnchor {
@@ -318,6 +348,55 @@ export class FileCommentWalkthrough {
     const review = this.port.review(sessionId);
     if (review.state !== "paused" || review.pauseReason === null) return review;
     return this.port.setReviewState(sessionId, "paused", null);
+  }
+
+  /**
+   * A person put a comment in this session's queue: sent it from the composer, or replied on
+   * a thread the agent had finished with. Sending IS the request to deliver, so there is no
+   * Start step after it.
+   *
+   * A parked review (idle, or a legacy row that paused for running dry) starts. A running one
+   * is asked to look again now rather than within the second. A PAUSED one is left exactly as
+   * it is: that is a person's Pause or a blocker that needs a person, and a new comment arriving
+   * says nothing about either. It waits in the queue behind whatever is already there.
+   *
+   * Never releases more than one turn. `start` only asks the machine to take a pass, and the
+   * pass is what decides - against the single-flight index and the shared outbox - whether
+   * anything can go at all.
+   */
+  onQueued(sessionId: string): void {
+    const review = this.port.review(sessionId);
+    if (review.state === "running") {
+      this.running.add(sessionId);
+      this.arm();
+      void this.tick(sessionId);
+      return;
+    }
+    if (!isParkedReview(review)) return;
+    this.start(sessionId);
+  }
+
+  /**
+   * Start delivery for comments that were queued and never sent: the startup half of
+   * `onQueued`.
+   *
+   * Before sending started delivery on its own, a comment could sit `queued` in an idle review
+   * until somebody pressed Start. Under the current model a queued comment is one its writer
+   * asked to deliver, so a daemon starting over such a queue sends it. The same predicate as
+   * `onQueued`, so a person's Pause and a blocker are left alone here too.
+   *
+   * Called after the first COMPLETED discovery sweep, never before. Until then a live session
+   * can still be missing from the map, and starting its review would pause it at once with
+   * "this session has ended" - which is the reason `FileCommentManager` reconciles orphans at
+   * the same moment.
+   */
+  adoptQueued(sessionIds: Iterable<string>): void {
+    for (const sessionId of new Set(sessionIds)) {
+      if (!this.port.session(sessionId)) continue;
+      if (!isParkedReview(this.port.review(sessionId))) continue;
+      if (!this.port.threads(sessionId).some((t) => t.status === "queued")) continue;
+      this.start(sessionId);
+    }
   }
 
   // ---- the two signals that wake it ----
@@ -549,10 +628,12 @@ export class FileCommentWalkthrough {
 
     const head = threads.find((t) => t.status === "queued") ?? null;
     if (!head) {
-      return this.stopWith(
-        sessionId,
-        review.startedAt === null ? PAUSE_REASONS.empty : PAUSE_REASONS.drained,
-      );
+      // Run dry: back to `idle`, not `paused`. Nothing here needs a person - the next comment
+      // sent starts delivery again through `onQueued` - and a pause would make that comment
+      // wait for a Resume nobody knows to press. `idle` also clears `started_at`, so the next
+      // burst is numbered from 1 rather than continuing a count from an hour ago.
+      this.port.setReviewState(sessionId, "idle", null);
+      return this.leave(sessionId);
     }
 
     // Asked here as well as after the await, purely so a session that plainly cannot take a
@@ -612,9 +693,19 @@ export class FileCommentWalkthrough {
     // simply waits: the review is still running and the armed tick re-asks within the second,
     // by which time this thread is in the snapshot and gets re-anchored like any other.
     if (!reanchored.has(current.id)) return;
-    if (missing.has(current.path)) return this.stopWith(sessionId, PAUSE_REASONS.missingFile(current.path));
-    if (current.outdated) {
-      return this.stopWith(sessionId, PAUSE_REASONS.outdated(current.path, current.shortId));
+    const anchor: FileCommentPayloadAnchor = missing.has(current.path)
+      ? "missing"
+      : current.outdated ? "outdated" : "current";
+    // An anchor that no longer resolves holds only a comment the agent has never seen. A
+    // follow-up in a thread it already answered goes, and the payload says the quote is the
+    // text the thread started on - see `threadReachedAgent`.
+    if (anchor !== "current" && !threadReachedAgent(this.port.threadWithHistory(current.id) ?? current)) {
+      return this.stopWith(
+        sessionId,
+        anchor === "missing"
+          ? PAUSE_REASONS.missingFile(current.path)
+          : PAUSE_REASONS.outdated(current.path, current.shortId),
+      );
     }
 
     // The outbox and the pane, re-asked against the session as it is NOW. A conversation turn
@@ -626,7 +717,7 @@ export class FileCommentWalkthrough {
       return;
     }
 
-    this.send(sessionId, current, now.startedAt, replyTool);
+    this.send(sessionId, current, now.startedAt, replyTool, anchor);
   }
 
   /**
@@ -798,6 +889,7 @@ export class FileCommentWalkthrough {
     head: FileCommentThread,
     startedAt: number | null,
     replyTool: string | null,
+    anchor: FileCommentPayloadAnchor,
   ): void {
     const thread = this.port.threadWithHistory(head.id) ?? head;
     const next = nextMessage(thread);
@@ -821,6 +913,7 @@ export class FileCommentWalkthrough {
       position: sent + 1,
       total: sent + queued,
       replyTool,
+      anchor,
     });
 
     const result = this.port.submit(sessionId, rendered.payload);

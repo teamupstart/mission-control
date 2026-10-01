@@ -36,7 +36,9 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
   await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
 
   const posture = controls(dashboard).locator(".sc-state");
-  await expect(posture).toBeVisible();
+  // Visibility also matches the initial unknown state, which adds a warning paragraph.
+  // Measure the loaded settings after both config and status arrive, not that placeholder.
+  await expect(posture).toHaveText("Enabled, but no worker is running - nothing is being answered");
   await expect(dashboard.getByRole("heading", { name: "Right now" })).toBeVisible();
   const heights = new Map<(typeof GROUPS)[number], number>();
 
@@ -61,6 +63,11 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
       case "Launches":
         await expect(panel(dashboard, name).getByRole("combobox", { name: "Claude backlog tasks" }))
           .toBeVisible();
+        // The three catalog-loading notices add height until the shared request settles.
+        // Measure the loaded fields, retaining any actual fallback or error notices.
+        await expect(panel(dashboard, name).getByRole("status").filter({
+          hasText: /^Checking .+ for available models\./,
+        })).toHaveCount(0);
         break;
       case "Safety":
         await expect(panel(dashboard, name).getByRole("checkbox", {
@@ -79,7 +86,8 @@ test("each Foreman tab reveals one group while the posture and read-only cards s
   // Standing guidance card added by the fixed System profile puts the tallest tab near
   // 1160px locally and 1185px in CI. Printing the per-field prose again would add roughly
   // 245px, so 1300 still catches that regression while leaving room for CI font metrics.
-  expect(Math.max(...heights.values()), "a field's explanation is printing under it again")
+  expect(Math.max(...heights.values()),
+    `a field's explanation is printing under it again: ${JSON.stringify(Object.fromEntries(heights))}`)
     .toBeLessThan(1_300);
   if (process.env.MC_E2E_EVIDENCE) {
     // eslint-disable-next-line no-console

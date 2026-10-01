@@ -834,16 +834,16 @@ test("a finished scout keeps its concise title and ordered human prompt context"
   await deliverAttributed(daemon, target, SUBMIT_STAGED_REPORT);
   await expect(card).toContainText("Submitted the scout report", { timeout: 30_000 });
   await expect
-    .poll(() => archives(daemon).then((rows) => rows.find((row) => row.title === liveTitleText) ?? null), {
+    .poll(() => archives(daemon).then((rows) => rows.find((row) => row.title === `${liveTitleText} / e2e-scout`) ?? null), {
       timeout: 20_000,
     })
     .not.toBeNull();
-  const archived = (await archives(daemon)).find((row) => row.title === liveTitleText);
+  const archived = (await archives(daemon)).find((row) => row.title === `${liveTitleText} / e2e-scout`);
   expect(archived?.title, "the archive API carries a title").toBeTruthy();
   expect(archived!.title, "the card title stays shorter than the full human prompt").not.toBe(CONTEXT_SCOUT_TASK);
   expect(archived!.title.length).toBeLessThan(CONTEXT_SCOUT_TASK.length);
-  await expect(liveTitle, "the archive API keeps the live card title exactly").toHaveAccessibleName(
-    archived!.title,
+  await expect(liveTitle, "report titles do not rename the source session").toHaveAccessibleName(
+    liveTitleText,
   );
   await capturePromptEvidence(dashboard, "01-live-session-card-title");
 

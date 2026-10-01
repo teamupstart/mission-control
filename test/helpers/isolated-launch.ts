@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
 
@@ -18,6 +19,10 @@ import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
 export function launchedCommand(argv: readonly string[]): string {
   const wrapper = argv.length === 2 && argv[1]?.endsWith("launch-and-cleanup.sh") ? argv[1] : null;
   if (!wrapper) return shellCommand(argv);
+  const script = readFileSync(wrapper, "utf8");
+  if (script.includes("resume-guard.mjs")) {
+    return shellCommand((JSON.parse(readFileSync(join(dirname(wrapper), "launch.json"), "utf8")) as { argv: string[] }).argv);
+  }
   return readFileSync(wrapper, "utf8").trimEnd().split("\n").at(-1) ?? "";
 }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
+import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
+import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
@@ -92,7 +93,11 @@ function missionMcpForSession(
   return descriptor
     ? {
         ...descriptor,
-        env: { ...descriptor.env, [MISSION_SESSION_ID_ENV]: sessionId },
+        env: {
+          ...descriptor.env,
+          [MISSION_SESSION_ID_ENV]: sessionId,
+          [SCOUT_SESSION_LOCATOR_ENV]: sessionScoutCredentialLocator(sessionId),
+        },
       }
     : null;
 }

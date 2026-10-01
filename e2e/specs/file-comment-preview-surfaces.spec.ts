@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { holdOpenDocument } from "../fixtures/hold-open-document.ts";
 
 /**
  * Comment mode where a person actually reads a spec: on the RENDERED document.
@@ -309,7 +310,7 @@ async function writeComment(page: Page, lines: string, body: string): Promise<vo
   const box = page.getByRole("textbox", { name: `Comment on ${lines}` });
   await expect(box).toBeVisible();
   await box.fill(body);
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(box).toBeHidden();
 }
 
@@ -373,7 +374,7 @@ test.describe("commenting on a rendered document", () => {
     await expect(composer.getByText("The retry budget is thirty seconds.")).toBeVisible();
     await page.getByRole("textbox", { name: "Comment on line 3" }).fill(MARKDOWN_COMMENT);
     await shoot(page.locator(".file-content"), page, "markdown-composer");
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 3" })).toBeHidden();
 
     // ---- a table, which spans three lines ----
@@ -453,7 +454,7 @@ test.describe("commenting on a rendered document", () => {
     await expect(composer).not.toContainText("<strong>");
     await page.getByRole("textbox", { name: "Comment on line 4" }).fill(HTML_COMMENT);
     await shoot(page.locator(".file-content"), page, "html-composer");
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Comment on line 4" })).toBeHidden();
 
     // The same projection is used when the durable thread is reopened, not only while the
@@ -821,10 +822,19 @@ test.describe("commenting on a rendered document", () => {
     write(cwd, HTML_DIALOG, HTML_DIALOG_SOURCE);
     await useConsoleLayout(page, daemon);
     await openFiles(page);
-    await choose(page, HTML_BLOCKS);
 
-    const frame = page.frameLocator("iframe.html-preview");
+    // An OPEN dialog is a block, in its own document for the reason recorded on the fixture.
+    // Commented FIRST: a sent comment goes to the agent, and each one that goes out while no
+    // composer is open takes the reader to its file. Ending in HTML_BLOCKS keeps every later
+    // delivery in the file the reader is already on, so nothing here moves under a click.
+    await choose(page, HTML_DIALOG);
     await startCommenting(page);
+    const dialogFrame = page.frameLocator("iframe.html-preview");
+    await dialogFrame.getByText("The deploy is still running.").click();
+    await writeComment(page, "line 4", "An open dialog is a block.");
+
+    await choose(page, HTML_BLOCKS);
+    const frame = page.frameLocator("iframe.html-preview");
 
     // Three elements a tag allowlist had not thought of, and one the document styled into a
     // block, which no list can see at all.
@@ -846,28 +856,22 @@ test.describe("commenting on a rendered document", () => {
     // tree, and it is not a block anybody can see, so it is not a target.
     await expect(frame.getByText("Never shown, never commentable.")).toBeHidden();
 
-    // An OPEN dialog is a block, in its own document for the reason recorded on the fixture.
-    await choose(page, HTML_DIALOG);
-    const dialogFrame = page.frameLocator("iframe.html-preview");
-    await dialogFrame.getByText("The deploy is still running.").click();
-    await writeComment(page, "line 4", "An open dialog is a block.");
-
     await expect
       .poll(() => storedThreads(daemon).length, { message: "every block anchored" })
       .toBe(4);
     const stored = storedThreads(daemon);
     expect(stored.map((row) => [row.path, row.start_line, row.surface])).toEqual([
+      [HTML_DIALOG, 4, "html"],
       [HTML_BLOCKS, 4, "html"],
       [HTML_BLOCKS, 6, "html"],
       [HTML_BLOCKS, 8, "html"],
-      [HTML_DIALOG, 4, "html"],
     ]);
     // Each quote is the SOURCE line, which is what a later re-anchor searches for.
-    expect(stored[0]!.quote).toBe("<address>Written by the platform team.</address>");
-    expect(stored[2]!.quote).toBe(
+    expect(stored[1]!.quote).toBe("<address>Written by the platform team.</address>");
+    expect(stored[3]!.quote).toBe(
       '<span class="card">Styled into a block by the document itself.</span>',
     );
-    expect(stored[3]!.quote).toBe("<dialog open>The deploy is still running.</dialog>");
+    expect(stored[0]!.quote).toBe("<dialog open>The deploy is still running.</dialog>");
   });
 
   test("two blocks with identical text take their own lines, and an entity survives", async ({
@@ -909,6 +913,9 @@ test.describe("commenting on a rendered document", () => {
     dashboard: page,
     daemon,
   }) => {
+    // The render has to stay stale until the click, which the open document's re-check would
+    // otherwise race. Refresh is an ordinary read, so the remedy below still reaches the daemon.
+    await holdOpenDocument(page);
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
@@ -1024,7 +1031,7 @@ test.describe("commenting on a rendered document", () => {
     await expect(box).toBeVisible();
     await shoot(page.locator(".file-content"), page, "html-long-composer");
     await box.fill(LONG_COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(box).toBeHidden();
 
     await expect.poll(() => storedThreads(daemon).length).toBe(1);
@@ -1084,7 +1091,7 @@ test.describe("commenting on a rendered document", () => {
 
     // And it can still be finished, which is the whole point of it staying reachable.
     await reopened.fill(HTML_COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(reopened).toBeHidden();
     await expect
       .poll(() => storedThreads(daemon).find((row) => row.start_line === 4)?.body)

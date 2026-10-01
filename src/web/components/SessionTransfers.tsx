@@ -40,21 +40,22 @@ function TransferRow({ transfer, onChanged }: { transfer: SessionTransferSummary
   </div>;
 }
 
-/** SSE owns freshness; pagination never grows the fleet snapshot or polls the daemon. */
+/** SSE owns freshness; actions and pagination fetch a bounded page without polling. */
 export function SessionTransfers({ page }: { page: SessionTransferPage }): React.JSX.Element | null {
   const [offset, setOffset] = useState(0);
-  const [extra, setExtra] = useState<SessionTransferPage | null>(null);
+  const [extra, setExtra] = useState<{ offset: number; snapshot: SessionTransferPage; page: SessionTransferPage } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
-    if (!offset) return;
+    if (!offset && !refresh) return;
     let current = true;
-    void api.sessionTransfers(offset).then((result) => { if (current) { setExtra(result); setError(null); } })
+    void api.sessionTransfers(offset).then((result) => { if (current) { setExtra({ offset, snapshot: page, page: result }); setError(null); } })
       .catch(() => { if (current) setError("Could not load the remaining terminal transfers"); });
     return () => { current = false; };
   }, [offset, page, refresh]);
-  if (!page.transfers.length && !offset) return null;
-  const shown = offset ? extra : page;
+  // A newer SSE snapshot supersedes any action refresh, including when its fetch fails.
+  const shown = extra?.offset === offset && extra.snapshot === page ? extra.page : offset ? null : page;
+  if (!shown?.transfers.length && !offset) return null;
   return <section className="report-section" aria-label="Terminal transfers">
     <h3 className="report-section-title">Terminal transfers</h3>
     {shown?.transfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} onChanged={() => setRefresh((value) => value + 1)} />)}

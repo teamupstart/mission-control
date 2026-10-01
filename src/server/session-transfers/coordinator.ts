@@ -311,7 +311,7 @@ export class SessionTransferCoordinator {
       return current?.state === "active" && JSON.stringify(transferBinding(current)) === JSON.stringify(expected);
     });
     this.options.workflows?.settleRuntimeTransfer(bindings.map((binding) => binding.id));
-    if (sessionWorkEpisodeFor(transfer.sourceSessionId)?.episodeId === transfer.facts.sourceEpisodeId) {
+    if ((sessionWorkEpisodeFor(transfer.sourceSessionId)?.episodeId ?? null) === transfer.facts.sourceEpisodeId) {
       this.options.reviews?.settleRuntimeTransfer?.(transfer.sourceSessionId);
     }
   }

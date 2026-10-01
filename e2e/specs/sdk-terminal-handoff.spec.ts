@@ -301,7 +301,7 @@ test("default Continue keeps an uncertain transfer visible after source removal 
 test.describe("Sitrep pagination", () => {
   test.use({ daemonEnv: { MISSION_POLL_MS: "0" } });
 
-  test("paged actions refresh without an SSE update and distinguish Check from End", async ({ dashboard }) => {
+  for (const offset of [0, 100]) test(`${offset ? "paged" : "first-page"} actions refresh without an SSE update and distinguish Check from End`, async ({ dashboard }) => {
     await observeTransferStream(dashboard);
     await dashboard.reload();
     await expect.poll(() => dashboard.evaluate(() => Boolean((window as TransferTestWindow).transferTestSnapshot))).toBe(true);
@@ -310,7 +310,7 @@ test.describe("Sitrep pagination", () => {
       reason: "Waiting for process inventory", createdAt: 1, updatedAt: 1, canEnd: false };
     // A bounded HTTP/SSE fixture isolates lost notifications from daemon recovery policy.
     // The production page fetch and row controls must still converge after a successful action.
-    await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [{ ...transfer, id: "first-page", sourceName: "First page" }], overflow: 1 } });
+    await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [offset ? { ...transfer, id: "first-page", sourceName: "First page" } : transfer], overflow: offset ? 1 : 0 } });
     let current = { ...transfer };
     let pageReads = 0;
     let ended = false;
@@ -332,18 +332,18 @@ test.describe("Sitrep pagination", () => {
     await dashboard.keyboard.press("Shift+P");
     const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
     await expectContentClearsBorder(sitrep);
-    await sitrep.getByRole("button", { name: "More transfers" }).click();
+    if (offset) await sitrep.getByRole("button", { name: "More transfers" }).click();
     const row = sitrep.getByRole("group", { name: "Terminal transfer: Paged recovery" });
     await expect(row).toContainText("Waiting for process inventory");
     await row.getByRole("button", { name: "Check again" }).click();
     await expect(row.getByRole("status")).toHaveText("Transfer checked.");
     await expect(row).toContainText("Absence verified; transfer may end");
-    expect(pageReads).toBeGreaterThan(1);
+    expect(pageReads).toBeGreaterThan(offset ? 1 : 0);
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(evidence, { recursive: true });
       await sitrep.getByRole("heading", { name: "Terminal transfers", exact: true }).hover();
       await expect(dashboard.locator(".tooltip")).toHaveCount(0);
-      await dashboard.screenshot({ path: join(evidence, "paged-action-feedback.png") });
+      await dashboard.screenshot({ path: join(evidence, offset ? "paged-action-feedback.png" : "first-page-action-feedback.png") });
     }
     try {
       await row.getByRole("button", { name: "End transfer", exact: true }).click();
@@ -351,7 +351,7 @@ test.describe("Sitrep pagination", () => {
       await expect(row.getByRole("status")).toHaveText("Transfer ended.");
     } finally { releaseEndPage(); }
     await expect(row).toHaveCount(0);
-    expect(pageReads).toBeGreaterThan(2);
+    expect(pageReads).toBeGreaterThan(offset ? 2 : 1);
   });
 
   for (const boundary of ["ended event", "reconnect snapshot"] as const) test(`a ${boundary} releases selection of a missing transfer source`, async ({ dashboard, daemon }) => {

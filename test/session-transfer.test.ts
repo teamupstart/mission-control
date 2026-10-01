@@ -21,6 +21,30 @@ const { SessionTransferCoordinator } = await import("../src/server/session-trans
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
+for (const newerEpisode of [false, true]) test(`restart settles taskless reviews only for the saved absent episode: newer episode ${newerEpisode}`, async (t) => {
+  const { ReviewManager } = await import("../src/server/reviews.ts");
+  const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+  const registry = new Registry();
+  const sourceId = `sdk:taskless-no-episode-${newerEpisode}`;
+  registry.registerSdkSession({ id: sourceId, agent: "claude", name: "Taskless", cwd: "/fixture/taskless" });
+  const reviews = new ReviewManager(registry);
+  const question = reviews.create(sourceId, "input", "Pending question", "Choose an approach");
+  // Persisted taskless records permit a missing episode. Exercise startup settlement
+  // directly, including the guard against a newer episode acquiring the same source ID.
+  const transfer = reserveSessionTransfer({ sourceSessionId: sourceId, noteKey: sourceId, taskId: null,
+    facts: { agent: "claude", nativeId: sourceId, sourceName: "Taskless", sourceRuntime: "sdk", sourceEpisodeId: null,
+      cwd: "/fixture/taskless", repoRoot: null, taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: "/unused",
+      leaseId: "unused", backend: null, home: null, sourceStopped: true, stopStarted: true, sourceProcess: null,
+      launchAt: null, launchOutcome: "refused", canEnd: false } });
+  updateSessionTransfer(transfer, { state: "failed" });
+  if (newerEpisode) registry.applyDriverEvent(sourceId, { kind: "bound", agentSessionId: "newer-conversation",
+    transcriptPath: null, modelId: null, pid: null });
+  const coordinator = new SessionTransferCoordinator(registry, { reviews, settleTask: () => assert.fail("taskless") });
+  t.after(() => coordinator.stop());
+  coordinator.start();
+  assert.equal(registry.getReview(question.id)?.status, newerEpisode ? "pending" : "orphaned");
+});
+
 test("an exited SDK row without lifetime proof cannot launch a replacement", async (t) => {
   const f = transferFixture(t, { workflows: 2 });
   await f.supervisor.stop(f.source.id);

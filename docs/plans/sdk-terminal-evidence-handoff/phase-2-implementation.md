@@ -38,9 +38,13 @@ resource lease. Later phases and the separate Backlog UI feature are unchanged.
 - A pending launch returns the compatible success fields with a nullable `sessionId` and
   structured transfer summary. The 30-second HTTP wait does not settle a task or dispose a
   lease. Sitrep owns bounded recovery presentation independently of the source card.
+  Successful actions refresh their displayed page, including page zero, when notifications
+  are missed. A newer SSE snapshot supersedes an earlier action's fetched page.
 - Definite failure commits before owner settlement, and startup repeats only still-matching
   owner settlement. This closes the crash gap without another cleanup path. Source episode,
   task attempt and captured binding checks protect newer work from late resolution.
+  Missing source episodes compare as null on both sides, so failed taskless transfers can
+  settle pending questions without bypassing the guard for a newer episode.
 - The source-stop intent is persisted after task detachment, immediately before calling stop.
   An interruption before that boundary restores both task pointers and aborts the unused
   transfer in one transaction after revoking its lease and rechecking ownership. This also

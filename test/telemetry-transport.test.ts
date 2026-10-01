@@ -29,6 +29,7 @@ const { registerBuiltinTelemetry, startTelemetry, telemetryCycle } = await impor
 );
 const { setTimeout: delay } = await import("node:timers/promises");
 const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
+const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
 const { credentialSurvivesRedirect, safeEndpointLabel, signalUrl, validateEndpoint } =
   await import("../src/server/telemetry/endpoint.ts");
 const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
@@ -444,6 +445,27 @@ test("a gated Cloudflare edge refusal waits without pausing and clears after acc
     0,
     "the accepted retry drains the retained payload",
   );
+});
+
+test("expiring the last network-waiting batch clears the destination wait", async () => {
+  enableGatedUser();
+  captureAndProject("boot-expiring-wait", 1_000);
+  const refused = fixture([
+    () => status(403, { "cf-ray": "expiry-IAD", server: "cloudflare", "content-type": "text/html" }),
+    ok,
+  ]);
+  await runDeliveryPass({ fetch: refused.fetch, now: () => 2_000 });
+  assert.equal(
+    telemetryHealth(2_001).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    true,
+  );
+
+  const later = 1_001 + TELEMETRY_LIMITS.payloadRetentionMs + 1;
+  const retained = runRetentionPass(later);
+  assert.equal(retained.expiredBatches, 1);
+  const user = telemetryHealth(later).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.waitingForNetwork, false);
+  assert.equal(user.waitingSince, null);
 });
 
 test("a gated Cloudflare wait stops only the refused signal's backlog", async () => {

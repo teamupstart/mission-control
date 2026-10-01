@@ -543,7 +543,7 @@ export function listHeartbeatSeries(
   const rows = d.prepare(
     `SELECT * FROM telemetry_series
       WHERE profile = ? AND policy_epoch = ?
-        AND (exported_end IS NULL OR exported_end < ?)
+        AND (exported_end IS NULL OR exported_end <= ?)
         AND last_time >= ?
       ORDER BY resource_id, instrument, dimensions_key`,
   ).all(profile, policyEpoch, exportedBefore, observedAfter) as unknown as SeriesRow[];

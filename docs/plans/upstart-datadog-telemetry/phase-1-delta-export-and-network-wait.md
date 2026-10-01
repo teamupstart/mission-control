@@ -160,7 +160,7 @@ Inherited contracts: none.
      - **Due set.** A gauge series is due when all of these hold:
        - it is in the profile's current policy epoch;
        - its instrument is a catalog gauge;
-       - its `exported_end` is more than one hour before the pass clock;
+       - its `exported_end` is at least one hour before the pass clock;
        - its `last_time` is within `payloadRetentionMs`, so a gauge whose source stopped
          reporting days ago is not resurrected.
      - **Selection.** Find the due set with one query over a new index,

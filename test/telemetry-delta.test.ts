@@ -356,13 +356,9 @@ test("an unchanged catalog gauge heartbeats only after a full idle hour", () => 
      WHERE projection = ? AND profile = 'user'`,
   ).get(CATALOG_PROJECTION.id) as { consumed_seq: number };
 
-  const exactHour = runProjectionPass(changedExport.exported_end + 60 * 60_000);
-  assert.equal(exactHour.batches, 0, "the exact cutoff is not yet older than one hour");
-  assert.equal(metricBatches().length, 0);
-
-  const heartbeatAt = changedExport.exported_end + 60 * 60_000 + 1;
+  const heartbeatAt = changedExport.exported_end + 60 * 60_000;
   const heartbeat = runProjectionPass(heartbeatAt);
-  assert.equal(heartbeat.batches, 1);
+  assert.equal(heartbeat.batches, 1, "the gauge heartbeats at the exact hourly boundary");
   const [payload] = metricBatches();
   assert.equal(payload!.metrics.length, 1);
   assert.equal(payload!.metrics[0]!.name, "mission.telemetry.health.observed_at");

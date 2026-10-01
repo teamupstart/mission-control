@@ -244,6 +244,13 @@ function settle(
   lateAfterMs: number | null,
 ): DeliveryStep {
   const nextAttempts = attempts + 1;
+  let networkWaitStillConfigured = true;
+  if (outcome.kind === "waiting") {
+    const latestConfig = getTelemetryConfig();
+    const latestDestination = profile === "user" ? latestConfig.user : latestConfig.product;
+    networkWaitStillConfigured =
+      profileIsExporting(latestConfig, profile) && latestDestination.networkGate === "cloudflare-edge";
+  }
   return telemetryTransaction((d) => {
     if (outcome.kind === "accepted") {
       const latePoints = countLatePoints(batch, lateAfterMs, now);
@@ -317,6 +324,28 @@ function settle(
     }
 
     if (outcome.kind === "waiting") {
+      // The request crossed an await. A settings save may have removed this gate, stopped
+      // export, or moved the destination while the old endpoint was deciding its response.
+      // Keep the immutable batch for the latest configuration to judge on its next attempt,
+      // but never let a stale response restore a wait state that save just cleared.
+      if (
+        !networkWaitStillConfigured ||
+        getDestination(d, profile).generation !== batch.destinationGeneration
+      ) {
+        settleDelivery(
+          d,
+          batch.id,
+          {
+            state: "retry",
+            attempts: nextAttempts,
+            nextAttemptAt: now + backoffMs(nextAttempts),
+            waitingForNetwork: false,
+            lastError: outcome.detail,
+          },
+          now,
+        );
+        return "retry";
+      }
       const delay = outcome.retryAfterMs ?? backoffMs(nextAttempts, Math.random, TELEMETRY_LIMITS.networkWaitRetryMaxMs);
       settleDelivery(
         d,

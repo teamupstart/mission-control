@@ -446,6 +446,70 @@ test("a gated Cloudflare edge refusal waits without pausing and clears after acc
   );
 });
 
+test("removing the network gate fences an in-flight Cloudflare wait settlement", async () => {
+  enableGatedUser();
+  captureAndProject("boot-gate-fence", 1_000);
+
+  await runDeliveryPass({
+    fetch: fixture([
+      () => status(403, { "cf-ray": "first-IAD", server: "cloudflare", "content-type": "text/html" }),
+      ok,
+    ]).fetch,
+    now: () => 2_000,
+  });
+  assert.equal(
+    telemetryHealth(2_100).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    true,
+  );
+
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let releaseResponse!: () => void;
+  const responseReleased = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+  let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      markStarted();
+      await responseReleased;
+      return status(403, {
+        "cf-ray": "retry-IAD",
+        server: "cloudflare",
+        "content-type": "text/html",
+      });
+    }
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+  let now = 400_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await started;
+
+  now = 400_100;
+  assert.equal(setTelemetryConfig({ user: { networkGate: "none" } }, now).ok, true);
+  assert.equal(
+    telemetryHealth(now).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    false,
+    "the configuration transition clears the existing wait while the request is in flight",
+  );
+
+  releaseResponse();
+  await delivery;
+
+  const health = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(health.waitingForNetwork, false);
+  assert.equal(health.waitingSince, null);
+  const retained = openDb().prepare(
+    `SELECT state, waiting_for_network FROM telemetry_delivery
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { state: string; waiting_for_network: number };
+  assert.equal(retained.state, "retry", "the refused batch remains queued under the latest configuration");
+  assert.equal(retained.waiting_for_network, 0);
+});
+
 test("Cloudflare-shaped and OTLP 403s pause unless they match the configured edge gate", async () => {
   for (const [name, gated, headers] of [
     ["ungated", false, { "cf-ray": "abc-IAD", server: "cloudflare", "content-type": "text/html" }],

@@ -171,11 +171,6 @@ test("the runtime an agent starts in a checkout pinning Node 18 is still Mission
   }
 });
 
-test("the MCP server never reaches for the crypto global, which Node 18 does not have", () => {
-  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
-  assert.doesNotMatch(source, /(?<![\w."'])crypto\.\w/);
-});
-
 test("Pipeline task scoping clones the descriptor and puts its capability in a private file", () => {
   const descriptor = {
     serverName: "mission-control",

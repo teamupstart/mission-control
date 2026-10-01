@@ -407,7 +407,7 @@ test.describe("Sitrep pagination", () => {
     expect(lookups).toBeGreaterThan(0);
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(evidence, { recursive: true });
-      await dashboard.screenshot({ path: join(evidence, "reconnected-successor.png") });
+      await dashboard.screenshot({ path: join(evidence, "reconnected-successor.png"), animations: "disabled" });
     }
   });
 

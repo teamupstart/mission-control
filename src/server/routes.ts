@@ -407,8 +407,9 @@ import {
   runTelemetryOperation,
   runTelemetryProbe,
   setTelemetryConfig,
-  telemetryHealth,
+  telemetryHealthResponse,
   telemetryStatus,
+  telemetryStatusResponse,
 } from "./telemetry/index.ts";
 import {
   getInspectorConfig,
@@ -7308,7 +7309,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // NOT here: any route that returns a stored credential, a queued payload or an endpoint an
   // operator did not just send us. `telemetryStatus()` reports whether a secret exists; there
   // is no read path for its value, here or anywhere.
-  app.get("/api/telemetry/config", (c) => c.json(telemetryStatus()));
+  app.get("/api/telemetry/config", (c) => c.json(telemetryStatusResponse()));
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
@@ -7353,7 +7354,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(result);
   });
 
-  app.get("/api/telemetry/health", (c) => c.json(telemetryHealth()));
+  app.get("/api/telemetry/health", (c) => c.json(telemetryHealthResponse()));
 
   // The synthetic connection probe. Sends a real, empty OTLP request, then captures the
   // result through the ordinary durable path - so it answers "can I reach the endpoint?" now

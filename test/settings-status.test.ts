@@ -143,7 +143,24 @@ const ALL_OFF: SettingsStatus = {
       oldestPendingAgeMs: null,
       lastAcceptedAt: null,
       failing: false,
+      waitingForNetwork: false,
+      waitingSince: null,
+      latePointsSent: 0,
     })),
+  },
+};
+
+const LEGACY_ALL_OFF = {
+  ...ALL_OFF,
+  telemetry: {
+    ...ALL_OFF.telemetry!,
+    profiles: ALL_OFF.telemetry!.profiles.map((profile) => {
+      const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
+      void waitingForNetwork;
+      void waitingSince;
+      void latePointsSent;
+      return legacy;
+    }),
   },
 };
 
@@ -161,11 +178,20 @@ function telemetry(status: SettingsStatus): TelemetrySettingsSummary {
 // ---- compose ----
 
 test("the compose reads the Inspector and Shipping stores", () => {
-  assert.deepEqual(settingsStatus(), ALL_OFF);
+  assert.deepEqual(settingsStatus(), LEGACY_ALL_OFF);
   setInspectorConfig({ enabled: true, mode: "live" });
   setShippingConfig({ autoMerge: true });
   assert.deepEqual(settingsStatus().inspector, { enabled: true, mode: "live" });
   assert.equal(settingsStatus().shipping.autoMerge, true);
+});
+
+test("an untouched installation preserves the legacy settings-status bytes", () => {
+  const frame = JSON.stringify({ type: "settings_status", status: settingsStatus() });
+  const legacyFrame = JSON.stringify({ type: "settings_status", status: LEGACY_ALL_OFF });
+  assert.equal(frame, legacyFrame);
+  assert.equal(frame.includes('"waitingForNetwork"'), false);
+  assert.equal(frame.includes('"waitingSince"'), false);
+  assert.equal(frame.includes('"latePointsSent"'), false);
 });
 
 test("the compose counts a task source that failed its last sweep", async () => {
@@ -290,7 +316,7 @@ test("the suppression compares every field, so no change can be dropped in silen
   // Walked over the composed tuple rather than over a hand-written list, so a field added to
   // `SettingsStatus` is in this test the moment it exists.
   const registry = new Registry();
-  const base = settingsStatus();
+  const base = ALL_OFF;
   const moved: Record<string, SettingsStatus> = {
     "inspector.enabled": { ...base, inspector: { ...base.inspector, enabled: !base.inspector.enabled } },
     "inspector.mode": {
@@ -356,6 +382,9 @@ test("the suppression compares every field, so no change can be dropped in silen
           ["oldestPendingAgeMs", (p) => ({ ...p, oldestPendingAgeMs: (p.oldestPendingAgeMs ?? 0) + 60_000 })],
           ["lastAcceptedAt", (p) => ({ ...p, lastAcceptedAt: (p.lastAcceptedAt ?? 0) + 1 })],
           ["failing", (p) => ({ ...p, failing: !p.failing })],
+          ["waitingForNetwork", (p) => ({ ...p, waitingForNetwork: !p.waitingForNetwork })],
+          ["waitingSince", (p) => ({ ...p, waitingSince: (p.waitingSince ?? 0) + 1 })],
+          ["latePointsSent", (p) => ({ ...p, latePointsSent: p.latePointsSent + 1 })],
           ["profile", (p) => ({ ...p, profile: p.profile === "local" ? "user" : "local" })],
         ] as [string, (p: TelemetryProfileSummary) => TelemetryProfileSummary][]
       ).map(([field, move]) => [

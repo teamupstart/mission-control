@@ -148,6 +148,10 @@ export function createTelemetryTables(d: DatabaseSync): void {
       hist_min        REAL,
       hist_max        REAL,
       hist_buckets    TEXT,
+      exported_value          REAL,
+      exported_histogram_json TEXT,
+      exported_end            INTEGER,
+      exported_generation     INTEGER,
       PRIMARY KEY (profile, policy_epoch, resource_id, instrument, dimensions_key)
     );
 
@@ -182,6 +186,8 @@ export function createTelemetryTables(d: DatabaseSync): void {
       next_attempt_at  INTEGER NOT NULL,
       accepted_items   INTEGER NOT NULL DEFAULT 0,
       rejected_items   INTEGER NOT NULL DEFAULT 0,
+      late_points_accounted INTEGER NOT NULL DEFAULT 0,
+      waiting_for_network INTEGER NOT NULL DEFAULT 0,
       last_error       TEXT,
       updated_at       INTEGER NOT NULL
     );
@@ -201,6 +207,8 @@ export function createTelemetryTables(d: DatabaseSync): void {
       paused_reason    TEXT,
       last_accepted_at INTEGER,
       last_error       TEXT,
+      waiting_since    INTEGER,
+      late_points_sent INTEGER NOT NULL DEFAULT 0,
       updated_at       INTEGER NOT NULL
     );
 
@@ -285,7 +293,31 @@ export function createTelemetryTables(d: DatabaseSync): void {
  * one under time pressure. Each addition must be idempotent: this runs on every start.
  */
 export function migrateTelemetry(d: DatabaseSync): void {
-  void d;
+  addTelemetryColumn(d, "telemetry_series", "exported_value", "REAL");
+  addTelemetryColumn(d, "telemetry_series", "exported_histogram_json", "TEXT");
+  addTelemetryColumn(d, "telemetry_series", "exported_end", "INTEGER");
+  addTelemetryColumn(d, "telemetry_series", "exported_generation", "INTEGER");
+  addTelemetryColumn(d, "telemetry_destinations", "waiting_since", "INTEGER");
+  addTelemetryColumn(
+    d,
+    "telemetry_destinations",
+    "late_points_sent",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  addTelemetryColumn(
+    d,
+    "telemetry_delivery",
+    "late_points_accounted",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  addTelemetryColumn(
+    d,
+    "telemetry_delivery",
+    "waiting_for_network",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_telemetry_series_heartbeat
+    ON telemetry_series(profile, policy_epoch, exported_end)`);
 }
 
 /** The idempotent column add the migrations above use. Mirrors `db.ts`'s private helper. */

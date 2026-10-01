@@ -15,6 +15,7 @@ export {
   telemetryIdentity,
   telemetryProductEnrollment,
   telemetryStatus,
+  telemetryStatusResponse,
   userCredentialConfigured,
 } from "./config.ts";
 export {
@@ -24,7 +25,7 @@ export {
 } from "./controls.ts";
 export { observeDaemonStart, runTelemetryProbe } from "./diagnostics.ts";
 export type { DaemonLaunchMode } from "./diagnostics.ts";
-export { telemetryHealth, telemetrySettingsSummary } from "./health.ts";
+export { telemetryHealth, telemetryHealthResponse, telemetrySettingsSummary } from "./health.ts";
 export { admitBrowserTelemetry, resetIngressRateLimitForTesting } from "./ingress.ts";
 export {
   expirePrObservations,

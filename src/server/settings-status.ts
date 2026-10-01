@@ -10,7 +10,7 @@ import {
   pipelinesObserving,
   pipelinesPresent,
 } from "./pipelines/index.ts";
-import { telemetrySettingsSummary } from "./telemetry/health.ts";
+import { telemetrySettingsSummaryResponse } from "./telemetry/health.ts";
 
 // The one place the Settings status tuple is composed, and the one helper that emits it.
 //
@@ -76,7 +76,7 @@ export function settingsStatus(): SettingsStatus {
     // An installation that never opted in answers this from `app_config` alone, without
     // touching a telemetry table. That is nearly every installation, and it is what keeps this
     // read as cheap as the four above it.
-    telemetry: telemetrySettingsSummary(),
+    telemetry: telemetrySettingsSummaryResponse(),
   };
 }
 

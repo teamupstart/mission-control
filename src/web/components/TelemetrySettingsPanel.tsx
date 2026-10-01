@@ -37,7 +37,7 @@ import { Tooltip } from "./Tooltip.tsx";
 const CONFIRM_MS = 5000;
 
 export function TelemetrySettingsPanel({ state }: { state: TelemetryState }): React.JSX.Element {
-  const { summary, status, health, error, conflict, notice, probe, busy, update, operate } = state;
+  const { summary, status, health, error, conflict, notice, probe, busy, update } = state;
   const config = status?.config ?? null;
   const enabled = config?.enabled ?? false;
 
@@ -190,6 +190,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const [endpoint, setEndpoint] = useState("");
   const [headerName, setHeaderName] = useState("authorization");
   const [credential, setCredential] = useState("");
+  const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
   const [dirty, setDirty] = useState(false);
 
   // Adopt the stored values whenever the daemon's copy changes, unless the operator is midway
@@ -198,6 +199,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
     if (dirty || !config) return;
     setEndpoint(config.user.endpoint);
     setHeaderName(config.user.headerName);
+    setTemporality(config.user.temporality);
   }, [config, dirty]);
 
   const credentialAfter = credential.length > 0 || (status?.userCredentialConfigured ?? false);
@@ -213,6 +215,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
       user: {
         endpoint: endpoint.trim(),
         headerName: headerName.trim() || "authorization",
+        temporality,
       },
       ...(credential.length > 0 ? { userCredential: credential } : {}),
     });
@@ -234,6 +237,15 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
           data goes to your infrastructure. A credential may only be sent over HTTPS, or to a
           Collector on this machine.
         </span>
+
+        <MetricTemporalitySelect
+          destination="your own backend"
+          value={temporality}
+          onChange={(value) => {
+            setDirty(true);
+            setTemporality(value);
+          }}
+        />
 
         <label className="ts-field">
           <span className="ts-field-label">Endpoint</span>
@@ -400,11 +412,13 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const unavailable = (state.summary?.productEnrollment ?? "unavailable") === "unavailable";
   const product = profile(state, "product");
   const [endpoint, setEndpoint] = useState("");
+  const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (dirty || !config) return;
     setEndpoint(config.product.endpoint);
+    setTemporality(config.product.temporality);
   }, [config, dirty]);
 
   // The same shared predicate the personal destination and the daemon both use. No credential is
@@ -444,6 +458,15 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
           />
         </label>
 
+        <MetricTemporalitySelect
+          destination="product analytics"
+          value={temporality}
+          onChange={(value) => {
+            setDirty(true);
+            setTemporality(value);
+          }}
+        />
+
         {check && !check.ok && <span className="settings-error">{check.detail}</span>}
         {check?.warning && <span className="settings-warn">{check.warning}</span>}
 
@@ -454,7 +477,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               disabled={!config || busy !== null || (check !== null && !check.ok)}
               aria-label="Save the product analytics destination"
               onClick={() => {
-                void update({ product: { endpoint: endpoint.trim() } }).then((ok) => {
+                void update({ product: { endpoint: endpoint.trim(), temporality } }).then((ok) => {
                   if (ok) setDirty(false);
                 });
               }}
@@ -522,6 +545,9 @@ function ProfileHealth({
       )}
       {summary.lastAcceptedAt !== null && (
         <p>Last accepted {formatAge(Date.now() - summary.lastAcceptedAt)} ago.</p>
+      )}
+      {summary.latePointsSent > 0 && (
+        <p>{summary.latePointsSent} point(s) were sent after this destination's acceptance window.</p>
       )}
       {detail?.lastError && <p className="settings-error">{detail.lastError}</p>}
       {/*
@@ -692,11 +718,43 @@ function describeDestination(summary: TelemetryProfileSummary): string {
   if (summary.pausedReason !== null) return pauseSentence(summary.pausedReason);
   if (summary.paused) return "Paused by you. Collection continues and the queue is kept.";
   if (!summary.exporting) return "Collecting, but no endpoint is configured, so nothing is sent.";
+  if (summary.waitingForNetwork) return networkWaitSentence();
   if (summary.failing && summary.pending > 0) {
     return "The last attempt did not get through. The queue is kept and will be retried.";
   }
   if (summary.pending > 0) return "Sending. Some of the queue has not been delivered yet.";
   return "Up to date. Everything collected has been accepted.";
+}
+
+export function networkWaitSentence(destinationLabel?: string): string {
+  return `Waiting for network access to ${destinationLabel ?? "this destination"}. Queued data is kept and sent when it can get through.`;
+}
+
+function MetricTemporalitySelect({
+  destination,
+  value,
+  onChange,
+}: {
+  destination: string;
+  value: "cumulative" | "delta";
+  onChange: (value: "cumulative" | "delta") => void;
+}): React.JSX.Element {
+  return (
+    <label className="ts-field">
+      <span className="ts-field-label">Metric temporality</span>
+      <Tooltip label="Choose cumulative metrics for Prometheus-style collectors or per-window deltas for Datadog-style collectors">
+        <select
+          className="field-input"
+          value={value}
+          aria-label={`Metric temporality for ${destination}`}
+          onChange={(event) => onChange(event.target.value as "cumulative" | "delta")}
+        >
+          <option value="cumulative">Cumulative (Prometheus, Grafana)</option>
+          <option value="delta">Delta (Datadog)</option>
+        </select>
+      </Tooltip>
+    </label>
+  );
 }
 
 function pauseSentence(reason: TelemetryPauseReason): string {

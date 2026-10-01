@@ -18,9 +18,12 @@
 import { TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import type { DatabaseSync } from "node:sqlite";
 import { expirePrObservations } from "./pr-observations.ts";
 import {
   expiredBatchIds,
+  getDestination,
+  hasNetworkWaitingDelivery,
   listGaps,
   lowestConsumedSeq,
   pruneJournalPayloads,
@@ -35,6 +38,7 @@ import {
   releaseBatchPayload,
   settleDelivery,
   telemetryTransaction,
+  updateDestination,
   usedBytes,
 } from "./store.ts";
 
@@ -51,6 +55,17 @@ const BATCH_LIMIT = 500;
  * query per row.
  */
 const PRESSURE_CHUNK = 25;
+
+function reconcileNetworkWaitingDestinations(d: DatabaseSync, now: number): void {
+  for (const profile of ["user", "product"] as const) {
+    if (
+      getDestination(d, profile).waitingSince !== null &&
+      !hasNetworkWaitingDelivery(d, profile)
+    ) {
+      updateDestination(d, profile, { waitingSince: null }, now);
+    }
+  }
+}
 
 export interface RetentionPassResult {
   expiredBatches: number;
@@ -101,6 +116,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       );
       releaseBatchPayload(d, id);
     }
+    reconcileNetworkWaitingDestinations(d, now);
     if (stale.length > 0) {
       recordGap(d, "payload_expired", `${stale.length} batch(es) aged out`, now, stale.length);
       result.expiredBatches = stale.length;
@@ -313,6 +329,7 @@ export function relievePressure(
     releaseBatchPayload(d, id);
     expiredBatches += 1;
   }
+  reconcileNetworkWaitingDestinations(d, now);
   if (expiredBatches > 0) {
     recordGap(
       d,

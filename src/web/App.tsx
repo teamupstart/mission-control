@@ -240,6 +240,7 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
       return "GitHub Inspector is live";
     // Foreman's purple never reaches the gear; the gear ranks only settingsStatus facts.
     case "foreman":
+    case "neutral":
     case null:
       return null;
   }

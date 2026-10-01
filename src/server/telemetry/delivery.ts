@@ -16,6 +16,7 @@ import {
   TELEMETRY_LIMITS,
   TELEMETRY_SIGNALS,
   type TelemetryPauseReason,
+  type TelemetryDestination,
   type TelemetryProfileId,
   type TelemetrySignal,
   type TelemetryTransportOutcome,
@@ -30,9 +31,13 @@ import {
   serializeTraces,
 } from "./otlp.ts";
 import type { MetricsBatchPayload, TracesBatchPayload } from "./projection.ts";
+import type { DatabaseSync } from "node:sqlite";
 import {
+  claimLatePointAccounting,
+  clearNetworkWaitingDeliveries,
   getDestination,
   getSecret,
+  hasNetworkWaitingDelivery,
   leaseBatch,
   recordGap,
   releaseBatchPayload,
@@ -95,7 +100,6 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
     // claiming a batch it has no time left to send.
     if (d.abort?.aborted) break;
     if (!profileIsExporting(config, profile)) continue;
-    const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
 
     for (const signal of TELEMETRY_SIGNALS) {
       // Re-read for EVERY signal, not once per profile. The metrics loop can pause this
@@ -107,14 +111,22 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
 
       for (let i = 0; i < TELEMETRY_LIMITS.deliveryBatchesPerTick; i += 1) {
         if (d.abort?.aborted) break;
-        const outcome = await deliverOne(profile, signal, endpoint, d);
+        // A settings save may complete while the prior signal or batch is awaiting its
+        // response. Classify this request against the configuration that is current now, not
+        // the snapshot that began the delivery pass.
+        const currentConfig = getTelemetryConfig();
+        if (!profileIsExporting(currentConfig, profile)) break;
+        const configuredDestination =
+          profile === "user" ? currentConfig.user : currentConfig.product;
+        const outcome = await deliverOne(profile, signal, configuredDestination, d);
         if (outcome === "idle") break;
         result.sent += 1;
         if (outcome === "accepted") result.accepted += 1;
-        if (outcome === "retry") {
+        if (outcome === "retry" || outcome === "waiting") {
           result.retried += 1;
-          // A retry means this destination is unhealthy right now. Stop pulling from its queue
-          // this pass rather than burning the budget on requests that will fail the same way.
+          // A retry means this destination is unhealthy right now. A network wait is kept
+          // distinct so this loop cannot accidentally drain later batches for the same signal,
+          // while the next signal still gets its own bounded chance to send.
           break;
         }
         if (outcome === "rejected") result.rejected += 1;
@@ -128,12 +140,21 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
   return result;
 }
 
-type DeliveryStep = "idle" | "accepted" | "retry" | "rejected" | "paused";
+type DeliveryStep = "idle" | "accepted" | "retry" | "waiting" | "rejected" | "paused";
+
+function waitingSinceAfterSettlement(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  now: number,
+): number | null {
+  if (!hasNetworkWaitingDelivery(d, profile)) return null;
+  return getDestination(d, profile).waitingSince ?? now;
+}
 
 async function deliverOne(
   profile: TelemetryProfileId,
   signal: TelemetrySignal,
-  endpoint: string,
+  configuredDestination: TelemetryDestination,
   deps: DeliveryDeps,
 ): Promise<DeliveryStep> {
   const now = deps.now();
@@ -166,6 +187,12 @@ async function deliverOne(
         },
         now,
       );
+      updateDestination(
+        d,
+        profile,
+        { waitingSince: waitingSinceAfterSettlement(d, profile, now) },
+        now,
+      );
       recordGap(d, "permanently_rejected", `${profile}/${signal}: stale destination generation`, now);
     });
     return "rejected";
@@ -183,14 +210,34 @@ async function deliverOne(
     const detail = error instanceof Error ? error.message : String(error);
     telemetryTransaction((d) => {
       settleDelivery(d, batch.id, { state: "rejected", attempts, nextAttemptAt: now, lastError: detail }, now);
+      updateDestination(
+        d,
+        profile,
+        { waitingSince: waitingSinceAfterSettlement(d, profile, now) },
+        now,
+      );
       recordGap(d, "unsupported_schema", `${profile}/${signal}: ${detail}`, now);
       releaseBatchPayload(d, batch.id);
     });
     return "rejected";
   }
 
-  const outcome = await send(signalUrl(endpoint, signal), signal, body, profile, deps);
-  return settle(profile, signal, batch, attempts, outcome, deps.now());
+  const outcome = await send(
+    signalUrl(configuredDestination.endpoint, signal),
+    signal,
+    body,
+    profile,
+    deps,
+    configuredDestination.networkGate,
+  );
+  return settle(
+    profile,
+    signal,
+    batch,
+    attempts,
+    outcome,
+    deps.now(),
+  );
 }
 
 function settle(
@@ -202,8 +249,48 @@ function settle(
   now: number,
 ): DeliveryStep {
   const nextAttempts = attempts + 1;
+  let networkWaitStillConfigured = true;
+  if (outcome.kind === "waiting") {
+    const latestConfig = getTelemetryConfig();
+    const latestDestination = profile === "user" ? latestConfig.user : latestConfig.product;
+    networkWaitStillConfigured =
+      profileIsExporting(latestConfig, profile) && latestDestination.networkGate === "cloudflare-edge";
+  }
   return telemetryTransaction((d) => {
     if (outcome.kind === "accepted") {
+      const currentDestination = getDestination(d, profile);
+      // Configuration writes use this same immediate transaction boundary, so this read and
+      // the accounting below observe one settlement-time settings snapshot.
+      const currentConfig = getTelemetryConfig();
+      const currentConfiguredDestination =
+        profile === "user" ? currentConfig.user : currentConfig.product;
+      const settlementIsCurrent =
+        batch.destinationGeneration === currentDestination.generation &&
+        batch.policyEpoch === currentDestination.policyEpoch;
+      const latePoints = settlementIsCurrent
+        ? countLatePoints(batch, currentConfiguredDestination.lateAfterMs, now)
+        : 0;
+      // OTLP partial success reports only how many items were rejected, not which ones. Count
+      // the conservative lower bound that must have been both late and accepted, so a refused
+      // old point can never inflate the durable counter.
+      const acceptedLatePoints = Math.max(0, latePoints - outcome.rejectedItems);
+      // A retry may cross the destination's age cutoff. Claim this independently from attempt
+      // count, and only once an actual send is accepted, so a pre-send failure is never called
+      // sent and a batch that ages while waiting is still counted exactly once.
+      if (settlementIsCurrent && claimLatePointAccounting(d, batch.id) && acceptedLatePoints > 0) {
+        updateDestination(
+          d,
+          profile,
+          { latePointsSent: currentDestination.latePointsSent + acceptedLatePoints },
+          now,
+        );
+        recordGap(
+          d,
+          "late_points",
+          `${profile}/${signal}: ${acceptedLatePoints} point(s) sent outside the destination window`,
+          now,
+        );
+      }
       settleDelivery(
         d,
         batch.id,
@@ -220,6 +307,10 @@ function settle(
       // Release the payload: nothing local needs it once the destination has it, and holding a
       // second copy of every delivered batch is how a bounded budget stops being bounded.
       releaseBatchPayload(d, batch.id);
+      // An endpoint, temporality, or consent transition may have completed while the old
+      // request was in flight. The old endpoint still accepted its own immutable batch, but
+      // that fact belongs to the old generation and must not alter the current destination.
+      if (!settlementIsCurrent) return "accepted";
       // A FIXED template, never the backend's own words. `TelemetryProfileHealth.lastError`
       // promises a bounded, SANITIZED string - "never a response body" - and Phase 2 renders it
       // directly. Every other write on this path already uses a template (`HTTP ${status}`,
@@ -238,6 +329,7 @@ function settle(
             outcome.rejectedItems > 0
               ? `${profile}/${signal}: ${outcome.rejectedItems} item(s) refused by the backend`
               : null,
+          waitingSince: waitingSinceAfterSettlement(d, profile, now),
         },
         now,
       );
@@ -254,6 +346,56 @@ function settle(
       return "accepted";
     }
 
+    if (outcome.kind === "waiting") {
+      // The request crossed an await. A settings save may have removed this gate, stopped
+      // export, or moved the destination while the old endpoint was deciding its response.
+      // Keep the immutable batch for the latest configuration to judge on its next attempt,
+      // but never let a stale response restore a wait state that save just cleared.
+      if (
+        !networkWaitStillConfigured ||
+        getDestination(d, profile).generation !== batch.destinationGeneration
+      ) {
+        settleDelivery(
+          d,
+          batch.id,
+          {
+            state: "retry",
+            attempts: nextAttempts,
+            nextAttemptAt: now + backoffMs(nextAttempts),
+            waitingForNetwork: false,
+            lastError: outcome.detail,
+          },
+          now,
+        );
+        return "retry";
+      }
+      const delay = outcome.retryAfterMs ?? backoffMs(nextAttempts, Math.random, TELEMETRY_LIMITS.networkWaitRetryMaxMs);
+      settleDelivery(
+        d,
+        batch.id,
+        {
+          state: "retry",
+          attempts: nextAttempts,
+          nextAttemptAt: now + delay,
+          waitingForNetwork: true,
+          lastError: outcome.detail,
+        },
+        now,
+      );
+      const current = getDestination(d, profile);
+      updateDestination(
+        d,
+        profile,
+        {
+          waitingSince: current.waitingSince ?? now,
+          pausedReason: null,
+          lastError: null,
+        },
+        now,
+      );
+      return "waiting";
+    }
+
     if (outcome.kind === "retry") {
       const delay = outcome.retryAfterMs ?? backoffMs(nextAttempts);
       settleDelivery(
@@ -267,7 +409,15 @@ function settle(
         },
         now,
       );
-      updateDestination(d, profile, { lastError: outcome.detail }, now);
+      updateDestination(
+        d,
+        profile,
+        {
+          lastError: outcome.detail,
+          waitingSince: waitingSinceAfterSettlement(d, profile, now),
+        },
+        now,
+      );
       // Persistent throttling stops being a transient condition at some point. Pause visibly
       // rather than hammering an endpoint that has told us ten times to go away.
       //
@@ -280,7 +430,8 @@ function settle(
       // same branch, and an outage is not a reason to pause. Pausing would stop the backlog
       // draining by itself when the link comes back.
       if (outcome.throttled && nextAttempts >= QUOTA_PAUSE_AFTER) {
-        updateDestination(d, profile, { pausedReason: "quota" }, now);
+        clearNetworkWaitingDeliveries(d, profile);
+        updateDestination(d, profile, { pausedReason: "quota", waitingSince: null }, now);
       }
       return "retry";
     }
@@ -297,7 +448,13 @@ function settle(
         },
         now,
       );
-      updateDestination(d, profile, { pausedReason: outcome.reason, lastError: outcome.detail }, now);
+      clearNetworkWaitingDeliveries(d, profile);
+      updateDestination(
+        d,
+        profile,
+        { pausedReason: outcome.reason, lastError: outcome.detail, waitingSince: null },
+        now,
+      );
       return "paused";
     }
 
@@ -309,15 +466,27 @@ function settle(
     );
     recordGap(d, "permanently_rejected", `${profile}/${signal}: ${outcome.detail}`, now);
     releaseBatchPayload(d, batch.id);
-    updateDestination(d, profile, { lastError: outcome.detail }, now);
+    updateDestination(
+      d,
+      profile,
+      {
+        lastError: outcome.detail,
+        waitingSince: waitingSinceAfterSettlement(d, profile, now),
+      },
+      now,
+    );
     return "rejected";
   });
 }
 
 /** Jittered exponential backoff between the configured floor and ceiling. */
-export function backoffMs(attempts: number, random = Math.random): number {
+export function backoffMs(
+  attempts: number,
+  random = Math.random,
+  ceiling: number = TELEMETRY_LIMITS.retryMaxMs,
+): number {
   const base = Math.min(
-    TELEMETRY_LIMITS.retryMaxMs,
+    ceiling,
     TELEMETRY_LIMITS.retryMinMs * 2 ** Math.max(0, attempts - 1),
   );
   const jitter = base * 0.25 * (random() * 2 - 1);
@@ -337,6 +506,7 @@ export async function send(
   body: Uint8Array,
   profile: TelemetryProfileId,
   deps: DeliveryDeps,
+  networkGate: TelemetryDestination["networkGate"] = "none",
 ): Promise<TelemetryTransportOutcome> {
   const secret = telemetryTransaction((d) => getSecret(d, profile));
   let target = url;
@@ -387,7 +557,7 @@ export async function send(
       continue;
     }
 
-    return classify(response, signal, started, deps.now());
+    return classify(response, signal, started, deps.now(), networkGate);
   }
 
   return { kind: "rejected", detail: "too many redirects" };
@@ -398,6 +568,7 @@ async function classify(
   signal: TelemetrySignal,
   startedAt: number,
   finishedAt: number,
+  networkGate: TelemetryDestination["networkGate"],
 ): Promise<TelemetryTransportOutcome> {
   void startedAt;
   void finishedAt;
@@ -410,6 +581,13 @@ async function classify(
     return { kind: "accepted", rejectedItems: partial.rejectedItems, message: partial.message };
   }
 
+  if (status === 403 && networkGate === "cloudflare-edge" && isCloudflareEdgeRefusal(response)) {
+    return {
+      kind: "waiting",
+      detail: "The destination's network edge refused this network",
+      retryAfterMs: retryAfterMs(response, TELEMETRY_LIMITS.networkWaitRetryMaxMs),
+    };
+  }
   if (status === 401 || status === 403) {
     return authOrConfig(status, "auth");
   }
@@ -455,16 +633,42 @@ function authOrConfig(status: number, reason: TelemetryPauseReason): TelemetryTr
 }
 
 /** OTLP honours `Retry-After` in both its seconds and HTTP-date forms. */
-function retryAfterMs(response: Response): number | null {
+function retryAfterMs(
+  response: Response,
+  ceiling: number = TELEMETRY_LIMITS.retryMaxMs,
+): number | null {
   const header = response.headers.get("retry-after");
   if (!header) return null;
   const seconds = Number(header);
   if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(TELEMETRY_LIMITS.retryMaxMs, Math.round(seconds * 1000));
+    return Math.min(ceiling, Math.round(seconds * 1000));
   }
   const when = Date.parse(header);
   if (Number.isFinite(when)) {
-    return Math.max(0, Math.min(TELEMETRY_LIMITS.retryMaxMs, when - Date.now()));
+    return Math.max(0, Math.min(ceiling, when - Date.now()));
   }
   return null;
+}
+
+function isCloudflareEdgeRefusal(response: Response): boolean {
+  const ray = response.headers.get("cf-ray")?.trim() ?? "";
+  const server = response.headers.get("server")?.trim().toLowerCase() ?? "";
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return (
+    ray.length > 0 &&
+    server === "cloudflare" &&
+    contentType !== OTLP_PROTOBUF_CONTENT_TYPE &&
+    contentType !== "application/json"
+  );
+}
+
+function countLatePoints(batch: StoredBatch, lateAfterMs: number | null, now: number): number {
+  if (lateAfterMs === null) return 0;
+  const payload = batch.payload as Partial<MetricsBatchPayload & TracesBatchPayload>;
+  const items = batch.signal === "metrics" ? payload.metrics ?? [] : payload.spans ?? [];
+  const cutoff = now - lateAfterMs;
+  return items.reduce(
+    (count, item) => count + (typeof item.endTimeMs === "number" && item.endTimeMs < cutoff ? 1 : 0),
+    0,
+  );
 }

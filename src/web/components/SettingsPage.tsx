@@ -132,6 +132,10 @@ function dotLabel(
       const n = status?.taskSources.failing ?? 0;
       return `${n} task source${n === 1 ? "" : "s"} failed their last sweep`;
     }
+    case "neutral":
+      return category === "telemetry"
+        ? "A telemetry destination is waiting for network access"
+        : "Waiting";
     case "foreman":
       return "Foreman is on";
   }

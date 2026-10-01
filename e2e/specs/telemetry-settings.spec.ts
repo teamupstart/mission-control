@@ -135,6 +135,37 @@ test("product analytics is an independently operable export, to a collector you 
   ).toBeChecked();
 });
 
+test("metric temporality is saved independently for each destination", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const userTemporality = dashboard.getByLabel("Metric temporality for your own backend");
+  const productTemporality = dashboard.getByLabel("Metric temporality for product analytics");
+
+  await expect(userTemporality).toHaveValue("cumulative");
+  await expect(productTemporality).toHaveValue("cumulative");
+  await dashboard.getByLabel("Telemetry export endpoint").fill("http://127.0.0.1:14318");
+  await userTemporality.selectOption("delta");
+  await dashboard.getByRole("button", { name: "Save destination", exact: true }).click();
+  await dashboard.reload();
+
+  await expect(dashboard.getByLabel("Metric temporality for your own backend")).toHaveValue(
+    "delta",
+  );
+  await expect(dashboard.getByLabel("Metric temporality for product analytics")).toHaveValue(
+    "cumulative",
+  );
+  await shoot(dashboard, "07-delta-temporality", true);
+  const status = (await (
+    await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)
+  ).json()) as {
+    config: { user: { temporality: string }; product: { temporality: string } };
+  };
+  expect(status.config.user.temporality).toBe("delta");
+  expect(status.config.product.temporality).toBe("cumulative");
+});
+
 test("local capture survives a daemon restart, which is what saved locally means", async ({
   dashboard,
   daemon,

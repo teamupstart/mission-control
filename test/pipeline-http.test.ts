@@ -37,6 +37,7 @@ import {
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
 const originalPath = process.env.PATH;
+const originalExecutablePaths = process.env.MISSION_EXECUTABLE_PATHS;
 const nodeBinDir = join(home, "bin");
 process.env.HARNESS_HOME = join(home, "state");
 // Nothing on PATH, so the probe reports "not installed" deterministically - which is also
@@ -72,6 +73,7 @@ const {
 } = await import("../e2e/fixtures/conductor.ts");
 writeConductorNodeRuntime(home, "26.7.0");
 process.env.PATH = `${nodeBinDir}${delimiter}${originalPath ?? ""}`;
+process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 type Registry = InstanceType<typeof Registry>;
 
 const db = openDb();
@@ -80,6 +82,8 @@ const db = openDb();
 // so give the standard recursive remover a short bounded retry window.
 after(() => {
   process.env.PATH = originalPath;
+  if (originalExecutablePaths === undefined) delete process.env.MISSION_EXECUTABLE_PATHS;
+  else process.env.MISSION_EXECUTABLE_PATHS = originalExecutablePaths;
   rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 

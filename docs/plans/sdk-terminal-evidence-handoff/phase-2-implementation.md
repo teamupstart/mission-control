@@ -92,6 +92,8 @@ Worktree-return obligations are not created by handoff or transfer failure.
 Old databases acquire the additive table and indexes without backfilling guessed ownership.
 Unknown transfer states retain their guard. Downgrade while a transfer is pending remains
 unsupported. See [session lifecycle](../../session-lifecycle.md) for the operational model.
+Resolution rejects unrecognized states before and after asynchronous observation, even
+when a future writer persisted `canEnd` and the lease already proves terminal absence.
 
 ## Verification and publication handoff
 

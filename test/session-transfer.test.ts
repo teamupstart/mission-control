@@ -21,6 +21,54 @@ const { SessionTransferCoordinator } = await import("../src/server/session-trans
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
+for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "completed"] as const) {
+  test(`resolution refuses future transfer states despite canEnd: stop ${stopStarted}, lease ${leaseState}`, async (t) => {
+    const f = transferFixture(t, { workflows: 2 });
+    const question = f.reviews.create(f.source.id, "input", "Held question", "Keep this request");
+    const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+    assert.ok(result.ok);
+    const { claimResumeLease, completeResumeLease, revokeResumeLease } = await import("../src/server/terminal/resume-lease.ts");
+    if (leaseState === "revoked") assert.ok(revokeResumeLease(f.prepared().lease));
+    else {
+      assert.ok(claimResumeLease(f.prepared().lease, 200001, 50));
+      completeResumeLease(f.prepared().lease, 200001, 50);
+    }
+    const current = getSessionTransfer(result.transfer.id)!;
+    const future = updateSessionTransfer(current, { state: "future_phase", facts: { ...current.facts, stopStarted, canEnd: true } });
+    const task = f.registry.getTask(f.task!.id);
+    const pins = f.bindings.map((id) => f.store.getBinding(id));
+    const { buildApp } = await import("../src/server/routes.ts");
+    const { QueueManager } = await import("../src/server/queue.ts");
+    const app = buildApp({ registry: f.registry, tasks: f.tasks, reviews: f.reviews,
+      queues: new QueueManager(f.registry), workflows: f.workflows, sessionTransfers: f.transfers });
+    const response = await app.request(`/api/session-transfers/${future.id}/resolve`, { method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ action: "end", revision: future.revision }) });
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /unrecognized transfer state/);
+    assert.deepEqual(getSessionTransfer(future.id), future);
+    assert.deepEqual(f.registry.getTask(f.task!.id), task);
+    assert.deepEqual(f.bindings.map((id) => f.store.getBinding(id)), pins);
+    assert.equal(f.registry.getReview(question.id)?.status, "pending");
+    assert.deepEqual(f.counts(), { launches: 1, stops: 1, injections: 0 });
+  });
+}
+
+test("resolution revalidates the transfer vocabulary after asynchronous observation", async (t) => {
+  const f = transferFixture(t);
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  const current = getSessionTransfer(result.transfer.id)!;
+  const { revokeResumeLease } = await import("../src/server/terminal/resume-lease.ts");
+  assert.ok(revokeResumeLease(f.prepared().lease));
+  t.mock.method(f.transfers, "recheck", async () => updateSessionTransfer(current, {
+    state: "future_phase", facts: { ...current.facts, canEnd: true },
+  }));
+  await assert.rejects(f.transfers.resolve(current.id, current.revision), /unrecognized transfer state/);
+  assert.equal(getSessionTransfer(current.id)?.state, "future_phase");
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+});
+
 test("source lookup returns the durable adoption without adding resolved history to fleet pages", async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);

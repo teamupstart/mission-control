@@ -465,7 +465,13 @@ export class SessionTransferCoordinator {
     const current = getSessionTransfer(id);
     if (!current) throw new Error("No such terminal transfer");
     if (current.revision !== revision) throw new Error("Terminal transfer changed; check again");
+    if (!(SESSION_TRANSFER_STATES as readonly string[]).includes(current.state)) {
+      throw new Error("Cannot end an unrecognized transfer state; its ownership is retained");
+    }
     const checked = await this.recheck(id);
+    if (!(SESSION_TRANSFER_STATES as readonly string[]).includes(checked.state)) {
+      throw new Error("Cannot end an unrecognized transfer state; its ownership is retained");
+    }
     if (!sessionTransferUnresolved(checked.state)) return checked;
     const status = resumeLeaseStatus(this.lease(checked));
     if (checked.facts.canEnd && (status.state === "revoked" || status.state === "completed")) {

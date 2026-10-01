@@ -446,6 +446,40 @@ test("a gated Cloudflare edge refusal waits without pausing and clears after acc
   );
 });
 
+test("a gated Cloudflare wait stops only the refused signal's backlog", async () => {
+  enableGatedUser();
+  captureAndProject("boot-edge-one", 1_000);
+  captureAndProject("boot-edge-two", 1_100);
+
+  const queuedRows = openDb().prepare(
+    `SELECT signal, COUNT(*) AS count FROM telemetry_delivery
+     WHERE profile = 'user' GROUP BY signal ORDER BY signal`,
+  ).all() as unknown as Array<{ signal: string; count: number }>;
+  const queued = queuedRows.map(({ signal, count }) => ({ signal, count }));
+  assert.deepEqual(queued, [
+    { signal: "metrics", count: 2 },
+    { signal: "traces", count: 2 },
+  ]);
+
+  const refused = fixture([
+    () => status(403, { "cf-ray": "backlog-IAD", server: "cloudflare", "content-type": "text/html" }),
+    ok,
+  ]);
+  const result = await runDeliveryPass({ fetch: refused.fetch, now: () => 2_000 });
+
+  assert.equal(result.retried, 1);
+  assert.equal(
+    refused.attempts.filter((attempt) => attempt.url.endsWith("/v1/metrics")).length,
+    1,
+    "the first wait stops later metrics batches in this delivery pass",
+  );
+  assert.equal(
+    refused.attempts.filter((attempt) => attempt.url.endsWith("/v1/traces")).length,
+    2,
+    "the traces signal still gets its independent bounded drain",
+  );
+});
+
 test("removing the network gate fences an in-flight Cloudflare wait settlement", async () => {
   enableGatedUser();
   captureAndProject("boot-gate-fence", 1_000);

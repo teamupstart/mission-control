@@ -116,10 +116,11 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
         if (outcome === "idle") break;
         result.sent += 1;
         if (outcome === "accepted") result.accepted += 1;
-        if (outcome === "retry") {
+        if (outcome === "retry" || outcome === "waiting") {
           result.retried += 1;
-          // A retry means this destination is unhealthy right now. Stop pulling from its queue
-          // this pass rather than burning the budget on requests that will fail the same way.
+          // A retry means this destination is unhealthy right now. A network wait is kept
+          // distinct so this loop cannot accidentally drain later batches for the same signal,
+          // while the next signal still gets its own bounded chance to send.
           break;
         }
         if (outcome === "rejected") result.rejected += 1;
@@ -133,7 +134,7 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
   return result;
 }
 
-type DeliveryStep = "idle" | "accepted" | "retry" | "rejected" | "paused";
+type DeliveryStep = "idle" | "accepted" | "retry" | "waiting" | "rejected" | "paused";
 
 function waitingSinceAfterSettlement(
   d: DatabaseSync,
@@ -377,7 +378,7 @@ function settle(
         },
         now,
       );
-      return "retry";
+      return "waiting";
     }
 
     if (outcome.kind === "retry") {

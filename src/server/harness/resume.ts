@@ -53,7 +53,7 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
   if (!argv) throw new Error(`${session.agent} cannot reopen a conversation`);
   const guard = resumeGuardPath();
   if (!existsSync(guard)) throw new Error("Mission Control's managed resume guard is not built - run: npm run build");
-  const runtime = await resolveMissionMcpRuntime(process.execPath);
+  const runtime = resolveMissionMcpRuntime();
   const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: 5_000 });
   if (guardCheck.code !== 0 || guardCheck.stdout.trim() !== "mission-resume-guard-v1") {
     throw new Error("Mission Control's managed resume guard is unusable - run: npm run build");

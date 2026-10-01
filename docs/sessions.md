@@ -2147,8 +2147,10 @@ Sessions **you** start are untouched: they keep the built-in menu, which the das
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
 *Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
-the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
-binary in node mode when there isn't one), the name it is registered under, and - for a launch
+the built bundle's path, the runtime that executes it (always the binary the daemon itself
+runs on: the Electron binary in node mode inside the app, or the daemon's `node` under
+`npm start` - never a `node` found on PATH, because a version-manager shim there picks its
+Node from the agent's checkout), the name it is registered under, and - for a launch
 that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and

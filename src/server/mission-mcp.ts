@@ -26,7 +26,7 @@ import {
   PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
 } from "@shared/pipeline.ts";
-import { executableChildEnv, locateExecutable } from "./executables/locator.ts";
+import { executableChildEnv } from "./executables/locator.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
 //
@@ -155,10 +155,10 @@ export function kindMissionMcpRequirement(
  *
  * The daemon runs either under a real `node` (dev, `npm start`) or inside an Electron
  * `utilityProcess`, where `process.execPath` is the Electron binary and needs
- * `ELECTRON_RUN_AS_NODE=1` to behave like node. Same problem `integrations.ts` solves for
- * `claude mcp add`, solved the same way and for the same reason: the agent launches this
- * bundle as an EXTERNAL process, so it needs a concrete, absolute runtime rather than
- * whatever happens to be on the spawned shell's PATH.
+ * `ELECTRON_RUN_AS_NODE=1` to behave like node. The agent launches this bundle as an
+ * EXTERNAL process, in its own checkout, so it needs that concrete, absolute runtime rather
+ * than whatever `node` the spawned shell or the checkout would pick. See
+ * `resolveMissionMcpRuntime`.
  */
 export interface MissionMcpDescriptor {
   serverName: string;
@@ -172,24 +172,22 @@ interface MissionMcpRuntime {
   env: NodeJS.ProcessEnv;
 }
 
-type LocateNodeRuntime = () => Promise<{ path: string; env: NodeJS.ProcessEnv } | null>;
-
-export async function resolveMissionMcpRuntime(
-  execPath: string,
-  locateNode: LocateNodeRuntime = async () => await locateExecutable("node"),
-): Promise<MissionMcpRuntime> {
+/**
+ * The runtime that launches the bundled MCP server: always the binary this daemon runs on.
+ *
+ * Under `npm start` that is a real `node`; inside the app it is the Electron binary, which
+ * behaves as node with `ELECTRON_RUN_AS_NODE=1`. Either way it is one concrete file whose
+ * Node version shipped with Mission Control, and that is the version the bundle is built for.
+ *
+ * Never a `node` found on PATH. The agent starts this command in the task's checkout, and the
+ * `node` on an operator's PATH is often a version-manager shim (mise, asdf, nodenv) that picks
+ * its Node from the directory it starts in. A checkout pinning `nodejs 18.20.8` ran this
+ * bundle on Node 18, which has no `crypto` global, and every Mission Control tool call in
+ * that session failed with "ReferenceError: crypto is not defined".
+ */
+export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
   if (/^node(\.exe)?$/.test(basename(execPath))) return { command: execPath, env: {} };
-  const found = await locateNode();
-  if (found) return { command: found.path, env: found.env };
   return { command: execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
-}
-
-/** Resolved once per daemon lifetime - it cannot change while we run, and it may shell out. */
-let cachedRuntime: MissionMcpRuntime | undefined;
-
-async function resolveRuntime(): Promise<MissionMcpRuntime> {
-  if (cachedRuntime) return cachedRuntime;
-  return (cachedRuntime = await resolveMissionMcpRuntime(process.execPath));
 }
 
 /**
@@ -221,7 +219,7 @@ export async function missionMcpDescriptor(
 ): Promise<MissionMcpDescriptor | null> {
   const server = mcpServerPath();
   if (!existsSync(server)) return null;
-  const runtime = await resolveRuntime();
+  const runtime = resolveMissionMcpRuntime();
   return {
     serverName: MISSION_MCP_SERVER_NAME,
     command: runtime.command,
@@ -675,7 +673,7 @@ async function handshake(descriptor: MissionMcpDescriptor, isolated = false): Pr
 
 /** Inspect an extension's actual bridge without lending it daemon credentials or state. */
 export async function inspectMissionMcpTools(path: string): Promise<boolean> {
-  const runtime = await resolveRuntime();
+  const runtime = resolveMissionMcpRuntime();
   const env = agentSubprocessEnv({ ...process.env, ...runtime.env });
   try {
     const result = await handshake({ serverName: MISSION_MCP_SERVER_NAME, command: runtime.command, args: [path], env }, true);

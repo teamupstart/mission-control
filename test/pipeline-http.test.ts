@@ -45,6 +45,11 @@ process.env.HARNESS_HOME = join(home, "state");
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
 process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
 process.env.MISSION_WORKSPACE_DIRS = home;
+// The installer resolves `node` through the executable locator, which ranks version-manager
+// shims (mise, asdf, volta) ahead of PATH. On a machine that has one, prepending the fake
+// runtime to PATH alone loses to the operator's real Node, so name its directory as an
+// operator directory - the one group ranked ahead of every shim.
+process.env.MISSION_EXECUTABLE_PATHS = nodeBinDir;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

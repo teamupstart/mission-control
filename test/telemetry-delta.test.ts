@@ -184,7 +184,7 @@ function double(bytes: Uint8Array): number {
 
 interface DecodedOtlpMetric {
   name: string;
-  temporality: number;
+  temporality?: number;
   value?: number;
   histogram?: { count: number; sum: number; buckets: number[] };
 }
@@ -197,6 +197,16 @@ function decodeOtlpMetrics(request: Uint8Array): DecodedOtlpMetric[] {
       bytesField(decodeFields(scope), 2).map((metricBytes) => {
         const metric = decodeFields(metricBytes);
         const name = decoder.decode(bytesField(metric, 1)[0]);
+        const gaugeBytes = bytesField(metric, 5)[0];
+        if (gaugeBytes) {
+          const point = decodeFields(bytesField(decodeFields(gaugeBytes), 1)[0]!);
+          const integer = bytesField(point, 6)[0];
+          const decimal = bytesField(point, 4)[0];
+          return {
+            name,
+            value: integer ? fixed64(integer) : double(decimal!),
+          };
+        }
         const sumBytes = bytesField(metric, 7)[0];
         if (sumBytes) {
           const sum = decodeFields(sumBytes);
@@ -230,7 +240,7 @@ function decodeOtlpMetrics(request: Uint8Array): DecodedOtlpMetric[] {
   );
 }
 
-test("a delta destination sends successive counter and histogram windows to its collector", async () => {
+test("a delta destination sends successive windows while gauges keep their OTLP wire shape", async () => {
   enableDelta("https://collector.example.com");
   const requests: Uint8Array[] = [];
   const collector: typeof globalThis.fetch = async (input, init) => {
@@ -277,6 +287,16 @@ test("a delta destination sends successive counter and histogram windows to its 
     [0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
   ]);
+
+  captureHealth("collector-gauge", 3_000, 42);
+  assert.ok(runProjectionPass(3_001).batches > 0);
+  const delivered = await runDeliveryPass({ fetch: collector, now: () => 3_002 });
+  assert.ok(delivered.accepted > 0);
+  const gauge = decodeOtlpMetrics(requests[2]!).find(
+    (metric) => metric.name === "mission.telemetry.health.observed_at",
+  )!;
+  assert.equal(gauge.temporality, undefined, "an OTLP Gauge has no aggregation temporality field");
+  assert.equal(gauge.value, 42);
 });
 
 test("delta counters and histograms export only each new window across passes and restart", () => {

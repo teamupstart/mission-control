@@ -98,6 +98,7 @@ function toMetricData(point: MetricPointDto): MetricData {
   if (point.kind === "gauge") {
     return {
       descriptor,
+      // Gauges are OTLP Gauge data, not sums, so destination temporality never applies to them.
       aggregationTemporality: AggregationTemporality.CUMULATIVE,
       dataPointType: DataPointType.GAUGE,
       dataPoints: [{ startTime, endTime, attributes: point.attributes, value: point.value }],

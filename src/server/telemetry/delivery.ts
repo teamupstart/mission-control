@@ -100,7 +100,6 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
     // claiming a batch it has no time left to send.
     if (d.abort?.aborted) break;
     if (!profileIsExporting(config, profile)) continue;
-    const configuredDestination = profile === "user" ? config.user : config.product;
 
     for (const signal of TELEMETRY_SIGNALS) {
       // Re-read for EVERY signal, not once per profile. The metrics loop can pause this
@@ -112,6 +111,13 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
 
       for (let i = 0; i < TELEMETRY_LIMITS.deliveryBatchesPerTick; i += 1) {
         if (d.abort?.aborted) break;
+        // A settings save may complete while the prior signal or batch is awaiting its
+        // response. Classify this request against the configuration that is current now, not
+        // the snapshot that began the delivery pass.
+        const currentConfig = getTelemetryConfig();
+        if (!profileIsExporting(currentConfig, profile)) break;
+        const configuredDestination =
+          profile === "user" ? currentConfig.user : currentConfig.product;
         const outcome = await deliverOne(profile, signal, configuredDestination, d);
         if (outcome === "idle") break;
         result.sent += 1;

@@ -544,6 +544,55 @@ test("removing the network gate fences an in-flight Cloudflare wait settlement",
   assert.equal(retained.waiting_for_network, 0);
 });
 
+test("the next signal uses a network gate enabled while the first signal is in flight", async () => {
+  enableUser();
+  captureAndProject("boot-enable-gate", 1_000);
+
+  let markMetricsStarted!: () => void;
+  const metricsStarted = new Promise<void>((resolve) => {
+    markMetricsStarted = resolve;
+  });
+  let releaseMetrics!: () => void;
+  const metricsReleased = new Promise<void>((resolve) => {
+    releaseMetrics = resolve;
+  });
+  const attempts: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    attempts.push(url);
+    if (url.endsWith("/v1/metrics")) {
+      markMetricsStarted();
+      await metricsReleased;
+      return ok();
+    }
+    return status(403, {
+      "cf-ray": "next-signal-IAD",
+      server: "cloudflare",
+      "content-type": "text/html",
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  let now = 2_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await metricsStarted;
+  now = 2_001;
+  assert.equal(setTelemetryConfig({ user: { networkGate: "cloudflare-edge" } }, now).ok, true);
+  releaseMetrics();
+  await delivery;
+
+  assert.equal(attempts.length, 2);
+  const user = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.pausedReason, null, "the current gate keeps the traces refusal off the auth path");
+  assert.equal(user.waitingForNetwork, true);
+  assert.equal(
+    (openDb().prepare(
+      `SELECT waiting_for_network FROM telemetry_delivery
+       WHERE profile = 'user' AND signal = 'traces'`,
+    ).get() as { waiting_for_network: number }).waiting_for_network,
+    1,
+  );
+});
+
 test("Cloudflare-shaped and OTLP 403s pause unless they match the configured edge gate", async () => {
   for (const [name, gated, headers] of [
     ["ungated", false, { "cf-ray": "abc-IAD", server: "cloudflare", "content-type": "text/html" }],

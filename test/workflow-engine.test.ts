@@ -44,6 +44,7 @@ const { checkRuntimeSupport } = await import("../src/server/workflows/check-iden
 const { claudeRunner, configureClaudeRunnerTransport } = await import(
   "../src/server/llm/claude.ts"
 );
+const { ProviderFailure } = await import("../src/server/llm/provider-failure.ts");
 
 function persona(
   id: string,
@@ -632,7 +633,7 @@ test("each structured provider attempt has its own durable LLM call receipt", as
   ]);
 });
 
-test("SDK failures keep the existing persona_infrastructure vocabulary and durable retry", async () => {
+test("SDK local failures keep the existing persona_infrastructure vocabulary and durable retry", async () => {
   const retryGraph: PublishedWorkflowGraph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -656,7 +657,7 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
           subtype: "error_during_execution",
           is_error: true,
           session_id: "sdk-infrastructure-failure",
-          terminal_reason: "api_error",
+          terminal_reason: "tool_error",
           errors: ["provider unavailable"],
         } satisfies ClaudeSdkMessage;
       },
@@ -728,6 +729,121 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
     false,
   );
   store.cancelRun("run-infra", "test_cleanup", 24);
+});
+
+const providerRetryGraph: PublishedWorkflowGraph = {
+  nodes: [
+    { id: "session", kind: "session", position: { x: 0, y: 0 } },
+    { id: "p", kind: "persona", persona: persona("provider", "Provider", "claude", "review"), position: { x: 100, y: 0 } },
+    { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+  ],
+  edges: [
+    { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+    { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+    { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+  ],
+};
+
+function providerRetryRunner(run: LlmRunner["run"]): LlmRunner {
+  return {
+    id: "claude", label: "provider retry", runInThread: null,
+    structuredOutput: { guaranteesInputShape: true }, sandbox: null,
+    price: () => null, litter: null, killLiveRuns() {}, run,
+  };
+}
+
+function providerRetryEngine(store: InstanceType<typeof WorkflowStore>, runner: LlmRunner, now: () => number): InstanceType<typeof WorkflowEngine> {
+  return new WorkflowEngine(store, () => {}, {
+    runnerFor: () => runner, now,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+}
+
+test("provider refusals back off progressively, survive restart, and preserve the review budget", async () => {
+  const store = seedSubmission("provider-retry", providerRetryGraph);
+  let clock = 1_000_000;
+  let calls = 0;
+  const timeouts: number[] = [];
+  const runner = providerRetryRunner(async (_prompt, opts) => {
+    timeouts.push(opts?.timeoutMs ?? 0);
+    calls++;
+    if (calls <= 2) throw new ProviderFailure("provider unavailable", "api_error");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  let engine = providerRetryEngine(store, runner, () => clock);
+  engine.start();
+  engine.activateSubmission("submission-provider-retry");
+  await waitFor(() => store.latestAttemptForNode("submission-provider-retry", "p")?.state === "retry_wait");
+  const first = store.latestAttemptForNode("submission-provider-retry", "p")!;
+  assert.equal(first.retryAt, clock + 1_000);
+  assert.equal(store.getRun("run-provider-retry")?.status, "running");
+  await engine.stop();
+
+  clock = first.retryAt!;
+  engine = providerRetryEngine(store, runner, () => clock);
+  engine.start();
+  await waitFor(() => store.latestAttemptForNode("submission-provider-retry", "p")?.attempt === 3);
+  const second = store.latestAttemptForNode("submission-provider-retry", "p")!;
+  assert.equal(second.state, "retry_wait");
+  assert.equal(second.retryAt, clock + 2_000);
+  clock = second.retryAt!;
+  engine.wake();
+  await waitFor(() => store.getRun("run-provider-retry")?.status === "completed");
+  await engine.stop();
+
+  assert.equal(calls, 3);
+  assert.deepEqual(timeouts, [600_000, 599_000, 597_000]);
+  const errors = openDb().prepare(`SELECT error_code FROM workflow_llm_calls
+    WHERE run_id = 'run-provider-retry' ORDER BY started_at, rowid`).all()
+    .map((row) => (row as { error_code: string | null }).error_code);
+  assert.deepEqual(errors, ["persona_provider_retryable", "persona_provider_retryable", null]);
+  assert.equal(store.listReceipts("submission-provider-retry").some((receipt) => receipt.edgeId === "p-fail"), false);
+});
+
+test("provider token exhaustion blocks immediately without scheduling a retry", async () => {
+  const store = seedSubmission("provider-token", providerRetryGraph);
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new ProviderFailure("prompt exceeds model token limit", "prompt_too_long");
+  });
+  const engine = providerRetryEngine(store, runner, Date.now);
+  engine.start();
+  engine.activateSubmission("submission-provider-token");
+  await waitFor(() => store.getRun("run-provider-token")?.status === "blocked");
+  await engine.stop();
+  assert.equal(calls, 1);
+  assert.equal(store.getRun("run-provider-token")?.currentPhase, "provider_token_exhausted");
+  assert.equal(store.latestAttemptForNode("submission-provider-token", "p")?.attempt, 1);
+  assert.equal(store.listReceipts("submission-provider-token").some((receipt) => receipt.edgeId === "p-fail"), false);
+  assert.equal(store.lastPersonaCallErrorCode(store.latestAttemptForNode("submission-provider-token", "p")!.id), "persona_token_exhausted");
+});
+
+test("provider retries stop at the first refusal's ten minute deadline", async () => {
+  const store = seedSubmission("provider-deadline", providerRetryGraph);
+  let clock = 2_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new ProviderFailure("provider unavailable", "api_error");
+  });
+  const engine = providerRetryEngine(store, runner, () => clock);
+  engine.start();
+  engine.activateSubmission("submission-provider-deadline");
+  await waitFor(() => store.latestAttemptForNode("submission-provider-deadline", "p")?.state === "retry_wait");
+  clock += 10 * 60_000;
+  engine.wake();
+  await waitFor(() => store.getRun("run-provider-deadline")?.status === "blocked");
+  await engine.stop();
+  assert.equal(calls, 1);
+  assert.equal(store.getRun("run-provider-deadline")?.currentPhase, "infrastructure_error");
+  assert.match(JSON.stringify(store.getRun("run-provider-deadline")?.gateState), /Provider retry window exhausted/);
 });
 
 test("manual infrastructure retry survives restart before sibling activation", async () => {

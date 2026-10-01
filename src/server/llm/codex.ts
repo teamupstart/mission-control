@@ -10,6 +10,7 @@ import { estimateStandardApiUsage } from "../harness/codex/pricing.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
+import { ProviderFailure } from "./provider-failure.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 import {
@@ -203,6 +204,22 @@ function codexFailureDetail(stdout: string, stderr: string): string {
   return event || safeFailureText(stderr) || "no provider failure detail";
 }
 
+function codexProviderFailure(stdout: string): ProviderFailure | null {
+  for (const line of stdout.split("\n").reverse()) {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type !== "turn.failed") continue;
+      const error = event.error;
+      const message = typeof error === "string" ? error
+        : error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
+      if (typeof message === "string" && message.trim()) return new ProviderFailure(message);
+    } catch {
+      // Incomplete JSON is a local transport failure, not a provider response.
+    }
+  }
+  return null;
+}
+
 interface MaterializedSchema {
   path: string;
   cleanup(): void;
@@ -387,12 +404,12 @@ export const codexRunner: LlmRunner = {
           if (signal === null && !killed) return;
           done();
           const how = signal ?? (killed ? "on shutdown" : code);
-          reject(new Error(`codex exited ${how}: ${codexFailureDetail(out, err)}`));
+          reject(codexProviderFailure(out) ?? new Error(`codex exited ${how}: ${codexFailureDetail(out, err)}`));
         });
         child.on("close", (code) => {
           done();
           if (code !== 0) {
-            reject(new Error(`codex exited ${code}: ${codexFailureDetail(out, err)}`));
+            reject(codexProviderFailure(out) ?? new Error(`codex exited ${code}: ${codexFailureDetail(out, err)}`));
             return;
           }
           const events = readCodexEvents(out);

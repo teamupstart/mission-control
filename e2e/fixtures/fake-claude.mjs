@@ -395,6 +395,12 @@ if (process.argv.includes("--setting-sources=")) {
         process.stderr.write("Usage limit reached for this account. Check your plan and usage limits.");
         process.exit(1);
       }
+      if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
+        process.stdout.write(JSON.stringify({ type: "result", subtype: "error_during_execution",
+          is_error: true, terminal_reason: "prompt_too_long",
+          errors: ["prompt exceeds model token limit"] }));
+        process.exit(1);
+      }
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
       process.exit(0);
     };
@@ -635,6 +641,12 @@ function runHeadlessSdk() {
     if (foremanUsageFailure(prompt)) {
       emit({ type: "result", subtype: "error_during_execution", is_error: true,
         session_id: SESSION_ID, errors: ["Usage limit reached for this account. Check your plan and usage limits."] });
+      process.exit(0);
+    }
+    if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
+      emit({ type: "result", subtype: "error_during_execution", is_error: true,
+        terminal_reason: "prompt_too_long", session_id: SESSION_ID,
+        errors: ["prompt exceeds model token limit"] });
       process.exit(0);
     }
     const answer = headlessAnswer(prompt);

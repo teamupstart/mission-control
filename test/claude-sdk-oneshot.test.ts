@@ -517,7 +517,12 @@ test("stderr and result failure details remain visible to the caller", async () 
   });
   await assert.rejects(
     runClaudeSdkOneShot("fail", {}, fake.deps),
-    /api_error.*request failed.*authentication unavailable/,
+    (error: Error & { kind?: string }) => {
+      assert.equal(error.name, "ProviderFailure");
+      assert.equal(error.kind, "retryable");
+      assert.match(error.message, /api_error.*request failed.*authentication unavailable/);
+      return true;
+    },
   );
 });
 

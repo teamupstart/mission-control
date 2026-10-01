@@ -10,6 +10,7 @@ import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
 import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
+import { claudeProviderFailure, ProviderFailure } from "./provider-failure.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
@@ -48,18 +49,22 @@ function hookExitOnce(): void {
 function diagnostic(error: unknown, stderr: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   const detail = stderr.trim().slice(0, 300);
+  if (error instanceof ProviderFailure) {
+    return new ProviderFailure(detail ? `${message}: ${detail}` : message, null, error.kind);
+  }
   return new Error(detail ? `${message}: ${detail}` : message, { cause: error });
 }
 
 function resultFailure(frame: ClaudeSdkMessage): Error {
+  const provider = claudeProviderFailure(frame as Record<string, unknown>);
+  if (provider) return provider;
   const errors = Array.isArray(frame.errors)
     ? frame.errors.filter((one): one is string => typeof one === "string").join("; ")
     : "";
   const reason = typeof frame.terminal_reason === "string" ? frame.terminal_reason : "";
   const subtype = typeof frame.subtype === "string" ? frame.subtype : "error";
-  return new Error(
-    `Claude Agent SDK ${subtype}${reason ? ` (${reason})` : ""}${errors ? `: ${errors}` : ""}`,
-  );
+  const message = `Claude Agent SDK ${subtype}${reason ? ` (${reason})` : ""}${errors ? `: ${errors}` : ""}`;
+  return new Error(message);
 }
 
 /**

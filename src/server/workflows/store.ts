@@ -9045,6 +9045,34 @@ export class WorkflowStore {
       .get(operationId) as { n: number }).n;
   }
 
+  /** Provider refusals have their own elapsed retry window, not a correction execution. */
+  personaOperationCorrectionCalls(operationId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_llm_calls c
+      JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
+      WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
+        AND c.error_code IS NOT 'persona_provider_retryable'`)
+      .get(operationId) as { n: number }).n;
+  }
+
+  /** The first completed provider refusal is the durable origin of the retry deadline. */
+  personaProviderRetryState(operationId: string): { firstFailureAt: number; failures: number } | null {
+    const row = this.db.prepare(`SELECT MIN(c.finished_at) AS first_failure_at, count(*) AS failures
+      FROM workflow_llm_calls c JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
+      WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
+        AND c.error_code = 'persona_provider_retryable' AND c.finished_at IS NOT NULL`)
+      .get(operationId) as { first_failure_at: number | null; failures: number };
+    return row.first_failure_at === null
+      ? null : { firstFailureAt: row.first_failure_at, failures: row.failures };
+  }
+
+  lastPersonaCallErrorCode(attemptId: string): string | null {
+    const row = this.db.prepare(`SELECT error_code FROM workflow_llm_calls
+      WHERE node_attempt_id = ? AND purpose = 'persona_review'
+      ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(attemptId) as { error_code: string | null } | undefined;
+    return row?.error_code ?? null;
+  }
+
   personaOperationRejectionBasis(operationId: string): string | null {
     const row = this.db.prepare(`SELECT id FROM workflow_node_attempts
       WHERE json_extract(review_input_json, '$.operationId') = ? AND review_rejections_json IS NOT NULL

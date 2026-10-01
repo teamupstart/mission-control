@@ -190,6 +190,7 @@ export const WORKFLOW_RUN_PHASES = [
   "unchanged_repository",
   ...WORKFLOW_INSPECTOR_GATE_PHASES,
   "evidence_reconciliation_error",
+  "provider_token_exhausted",
 ] as const;
 
 /**
@@ -268,6 +269,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   image_evidence_capture: ["blocked"],
   evidence_reconciliation_error: ["blocked"],
   infrastructure_error: ["blocked"],
+  provider_token_exhausted: ["blocked"],
   invalid_version: ["failed"],
   missing_workflow_version: ["failed"],
   persona_feedback: ["waiting_for_session"],
@@ -337,6 +339,7 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // it means a later code change cannot silently produce "inspector round limit" prose.
   inspector_round_limit: "out of GitHub Inspector rounds",
   infrastructure_error: "review execution failed",
+  provider_token_exhausted: "provider token or quota limit reached",
   evidence_reconciliation_error: "criterion mapping unavailable",
   inspector_findings: "GitHub Inspector findings",
   inspector_disabled: "GitHub Inspector off",
@@ -548,6 +551,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   image_evidence_capture: ["error", "code", "itemName", "itemClientId"],
   evidence_reconciliation_error: ["submissionId", "error"],
   infrastructure_error: ["nodeId", "attempts", "error"],
+  provider_token_exhausted: ["nodeId", "error"],
   invalid_version: ["error"],
   missing_workflow_version: ["error"],
   // Three writers: the Persona's verdict packet, the delivery confirmation, and the

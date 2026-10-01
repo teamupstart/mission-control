@@ -71,6 +71,20 @@ test("an empty final response is an error rather than an empty answer", async ()
   );
 });
 
+test("an SDK turn.failed event retains provider origin and token exhaustion", async () => {
+  await assert.rejects(
+    () => runCodexSdkOneShot("x", "/bin/codex", {}, {
+      createClient: () => ({ startThread: () => ({
+        run: async () => { assert.fail("streamed path must be used"); },
+        runStreamed: async () => ({
+          events: (async function* () { yield { type: "turn.failed" as const, error: { message: "insufficient_quota" } }; })(),
+        }),
+      }) }),
+    }),
+    (error: Error & { kind?: string }) => error.name === "ProviderFailure" && error.kind === "token_exhausted",
+  );
+});
+
 test("a synchronous SDK construction failure still releases its disposable state home", async () => {
   let stateHome = "";
   await assert.rejects(

@@ -37,7 +37,11 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { openDb } = await import("../src/server/db.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+const taskManagers: InstanceType<typeof TaskManager>[] = [];
+after(() => {
+  for (const manager of taskManagers) manager.stopMissionSessionClosures();
+  rmSync(home, { recursive: true, force: true });
+});
 
 const PRIMARY_BASE = "a".repeat(40);
 const EXTRA_BASE = "b".repeat(40);
@@ -173,6 +177,7 @@ function discovered(id: string, cwd: string): DiscoveredSession {
 function fixture(id: string, over: Partial<Task> = {}) {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
+  taskManagers.push(tasks);
   const taskId = `task-${id}`;
   const cwd = `/wt/${id}-0`;
   const extraCwd = `/wt/${id}-1`;

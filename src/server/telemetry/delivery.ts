@@ -253,16 +253,19 @@ function settle(
   }
   return telemetryTransaction((d) => {
     if (outcome.kind === "accepted") {
+      const currentDestination = getDestination(d, profile);
+      const settlementIsCurrent =
+        batch.destinationGeneration === currentDestination.generation &&
+        batch.policyEpoch === currentDestination.policyEpoch;
       const latePoints = countLatePoints(batch, lateAfterMs, now);
       // A retry may cross the destination's age cutoff. Claim this independently from attempt
       // count, and only once an actual send is accepted, so a pre-send failure is never called
       // sent and a batch that ages while waiting is still counted exactly once.
-      if (claimLatePointAccounting(d, batch.id) && latePoints > 0) {
-        const current = getDestination(d, profile);
+      if (settlementIsCurrent && claimLatePointAccounting(d, batch.id) && latePoints > 0) {
         updateDestination(
           d,
           profile,
-          { latePointsSent: current.latePointsSent + latePoints },
+          { latePointsSent: currentDestination.latePointsSent + latePoints },
           now,
         );
         recordGap(
@@ -288,6 +291,10 @@ function settle(
       // Release the payload: nothing local needs it once the destination has it, and holding a
       // second copy of every delivered batch is how a bounded budget stops being bounded.
       releaseBatchPayload(d, batch.id);
+      // An endpoint, temporality, or consent transition may have completed while the old
+      // request was in flight. The old endpoint still accepted its own immutable batch, but
+      // that fact belongs to the old generation and must not alter the current destination.
+      if (!settlementIsCurrent) return "accepted";
       // A FIXED template, never the backend's own words. `TelemetryProfileHealth.lastError`
       // promises a bounded, SANITIZED string - "never a response body" - and Phase 2 renders it
       // directly. Every other write on this path already uses a template (`HTTP ${status}`,

@@ -953,6 +953,57 @@ test("a batch built for a previous endpoint is never redirected to the new one",
   );
 });
 
+test("an accepted old-generation request cannot update the current destination", async () => {
+  assert.equal(
+    setTelemetryConfig({
+      enabled: true,
+      user: {
+        enabled: true,
+        endpoint: "https://one.example.com",
+        lateAfterMs: 1,
+      },
+    }).ok,
+    true,
+  );
+  captureAndProject("boot-generation-fence", 1_000);
+
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let acceptResponse!: () => void;
+  const responseAccepted = new Promise<void>((resolve) => {
+    acceptResponse = resolve;
+  });
+  const urls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    urls.push(String(input));
+    markStarted();
+    await responseAccepted;
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+  let now = 2_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await started;
+
+  now = 3_000;
+  assert.equal(
+    setTelemetryConfig({ user: { endpoint: "https://two.example.com" } }, now).ok,
+    true,
+  );
+  const before = telemetryHealth(now).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(before.lastAcceptedAt, null);
+  assert.equal(before.latePointsSent, 0);
+
+  acceptResponse();
+  await delivery;
+
+  const after = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(after.lastAcceptedAt, null, "the old endpoint did not accept for the new generation");
+  assert.equal(after.latePointsSent, 0, "old-generation points do not count against the new destination");
+  assert.deepEqual(urls, ["https://one.example.com/v1/metrics"]);
+});
+
 test("the probe's exported span covers when it ran, not a window before it started", async () => {
   // The defect: `occurredAt` was read at the top of `runTelemetryProbe`, before the request.
   // The span is reconstructed as [occurredAt - duration, occurredAt], so the whole thing landed

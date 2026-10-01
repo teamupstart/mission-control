@@ -545,3 +545,31 @@ test("an image body the route refuses shows why on its own card, and nothing els
   await expect(refusedThumb).toBeFocused();
   await dashboard.unroute(refused);
 });
+
+
+for (const scenario of ["source", "report-only", "invalid-report"] as const) {
+  test(`publication distinguishes required source from a retained local report: ${scenario}`, async ({ dashboard, daemon }) => {
+    test.setTimeout(180_000);
+    const sessionId = await dispatch(dashboard, daemon);
+    const session = (await api<Array<{ id: string; cwd: string }>>(daemon, "/api/sessions"))
+      .find((entry) => entry.id === sessionId)!;
+    const report = join(session.cwd, "docs/reports/publication/report.html");
+    mkdirSync(dirname(report), { recursive: true });
+    writeFileSync(report, "<!doctype html><title>Publication proof</title><p>Retained outside Git.</p>"
+      + (scenario === "invalid-report" ? "<script>alert(1)</script>" : ""));
+    if (scenario === "source") writeFileSync(join(session.cwd, "required-source.ts"), "export const required = true;\n");
+    const runId = await seedRun(daemon, sessionId);
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    await dashboard.getByRole("tab", { name: /^Intent/ }).click();
+    await dashboard.getByText("Evidence snapshot", { exact: true }).click();
+    await expect(dashboard.getByText(scenario === "report-only"
+      ? "Required changes are committed; the PR must match this content"
+      : "Required changes still need to be committed and pushed", { exact: true })).toBeVisible();
+    await expect(dashboard.getByText(scenario === "invalid-report"
+      ? "0 local report artifacts retained outside Git"
+      : "1 local report artifact retained outside Git", { exact: true })).toBeVisible();
+    if (scenario === "source") await expect(dashboard.getByText("required-source.ts", { exact: true })).toBeVisible();
+    if (scenario === "invalid-report") await expect(dashboard.getByText("Correct these reports before resubmitting", { exact: true })).toBeVisible();
+    await shoot(dashboard, dashboard.locator("section.wf-run-record"), `publication-${scenario}`);
+  });
+}

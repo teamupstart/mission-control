@@ -55,7 +55,7 @@ import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
-import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { captureWorkflowPublication } from "./publication.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -891,12 +891,14 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   statusFingerprint: string;
   standards: ReturnType<typeof readStandards>;
   contentTreeOid: string;
+  publication: WorkflowContextSnapshot["evidence"]["publication"];
+  artifacts: NonNullable<WorkflowContextSnapshot["evidence"]["artifacts"]>;
   repositoryFingerprint: string;
 }> {
   const work = await readRepositoryWorkEvidence(cwd);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
-  const { treeOid: contentTreeOid } = await captureWorktreeTree(cwd);
+  const { contentTreeOid, publication, artifacts } = await captureWorkflowPublication(cwd);
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
@@ -911,7 +913,7 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
       truncated: doc.truncated,
     })),
   }));
-  return { ...work, standards, contentTreeOid, repositoryFingerprint };
+  return { ...work, standards, contentTreeOid, publication, artifacts, repositoryFingerprint };
 }
 
 function sourceFingerprintFields(
@@ -928,6 +930,7 @@ function sourceFingerprintFields(
     })),
     headSha: context.evidence.headSha,
     contentTreeOid: context.evidence.contentTreeOid ?? null,
+    publication: context.evidence.publication ?? null,
     diffFingerprint: context.evidence.diffFingerprint,
     transcriptAnchor,
     standards: context.evidence.standards.map((doc) => ({
@@ -1223,6 +1226,8 @@ export async function readWorkflowContextRaw(
     statusFingerprint,
     standards,
     contentTreeOid,
+    publication,
+    artifacts,
     repositoryFingerprint,
   } = await readRepositoryEvidence(checkout);
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
@@ -1262,6 +1267,8 @@ export async function readWorkflowContextRaw(
     evidence: {
       headSha: diff.headSha,
       contentTreeOid,
+      publication,
+      artifacts,
       diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),
       diff: boundedDiff,
       diffTruncated: diff.truncated || boundedDiff !== diff.patch,
@@ -1310,7 +1317,9 @@ export async function readWorkflowContext(
 
 /**
  * The repository facts that answer "has any work moved since that submission?" without
- * capturing transcript, standards, decisions, or compacted context.
+ * capturing transcript, standards, decisions, or compacted context. Full tree identity also
+ * sees untracked artifact edits, and the policy version permits one fresh capture after an
+ * upgrade without rewriting the old submission.
  *
  * `diffFingerprint` is intentionally the SAME hash a full capture stores: the bounded patch
  * plus the complete status fingerprint. HEAD and the bounded status list are useful cheap
@@ -1333,6 +1342,8 @@ export async function readWorkflowContext(
  * pre-filter into the full capture it exists to guard.
  */
 export interface WorkflowEvidenceProbe {
+  contentTreeOid?: string;
+  publicationVersion?: 1;
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
@@ -1350,7 +1361,10 @@ export async function readWorkflowEvidenceProbe(
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
   const work = await readRepositoryWorkEvidence(checkout);
+  const capture = await captureWorkflowPublication(checkout);
   return {
+    contentTreeOid: capture.contentTreeOid,
+    publicationVersion: capture.publication.version,
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
     diffFingerprint: sha(JSON.stringify({
@@ -1365,7 +1379,9 @@ export function probeMatchesEvidence(
   probe: WorkflowEvidenceProbe,
   evidence: WorkflowContextSnapshot["evidence"],
 ): boolean {
-  return probe.headSha === evidence.headSha
+  return (probe.publicationVersion === undefined || probe.publicationVersion === evidence.publication?.version)
+    && (probe.contentTreeOid === undefined || probe.contentTreeOid === evidence.contentTreeOid)
+    && probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
     && probe.diffFingerprint === evidence.diffFingerprint

@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, closeDb, inTransaction } from "../src/server/db.ts";
-import { reserveSessionTransfer, updateSessionTransfer, transferForTask, transferForNote, sessionTransferPage, getSessionTransfer, runtimeTransferPredecessors, runtimeTransferConnects, type TransferFacts } from "../src/server/session-transfers/store.ts";
+import { reserveSessionTransfer, updateSessionTransfer, transferForTask, transferForNote, sessionTransferPage, getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, runtimeTransferConnects, type TransferFacts } from "../src/server/session-transfers/store.ts";
 import { getSdkSession, getSdkSessionProcess, recordSdkSessionProcess, upsertSdkSession } from "../src/server/sdk/store.ts";
 
 const facts: TransferFacts = { agent: "claude", nativeId: "conversation", sourceName: "Continue work", sourceRuntime: "sdk",
@@ -11,6 +11,19 @@ const facts: TransferFacts = { agent: "claude", nativeId: "conversation", source
 const reserve = (sourceSessionId = "source", noteKey = "note", taskId: string | null = "task") =>
   reserveSessionTransfer({ sourceSessionId, noteKey, taskId, facts });
 afterEach(() => openDb().exec("DELETE FROM session_runtime_transfers"));
+
+test("selected-source lookup includes resolved history but never revives an older adopted attempt", () => {
+  const first = reserve();
+  updateSessionTransfer(first, { state: "adopted", successorSessionId: "successor" });
+  assert.equal(sessionTransferPage().transfers.length, 0);
+  assert.equal(latestTransferForSource("source")?.successorSessionId, "successor");
+  const newer = reserve();
+  openDb().prepare("UPDATE session_runtime_transfers SET created_at=1 WHERE source_session_id=?").run("source");
+  assert.equal(latestTransferForSource("source")?.id, newer.id, "same-clock attempts still select the latest inserted row");
+  updateSessionTransfer(newer, { state: "failed" });
+  assert.equal(latestTransferForSource("source")?.state, "failed");
+  assert.equal(latestTransferForSource("unknown"), null);
+});
 
 test("predecessor lookup follows only the latest adopted chain and terminates on cycles", () => {
   const adopt = (source: string, successor: string, time: number) => {

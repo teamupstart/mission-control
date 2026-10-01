@@ -17,6 +17,7 @@ import {
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
+import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, fetchRepos } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
@@ -2808,14 +2809,6 @@ export function App(): React.JSX.Element {
   // then swallow every session shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
-    if (selectedId && !sessions.some((s) => s.id === selectedId)
-      && !sessionTransfers.transfers.some((transfer) => transfer.sourceSessionId === selectedId)
-      && !(latestSessionTransfer?.sourceSessionId === selectedId && latestSessionTransfer.successorSessionId)) {
-      setSelectedId(null);
-      // The board's drill-in goes with it. Left standing, the flag would silently
-      // re-open on whatever the cursor landed on next.
-      setBoardOpen(false);
-    }
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
@@ -2823,14 +2816,33 @@ export function App(): React.JSX.Element {
       if (!sessions.some((session) => session.id === id)) files.drop(id);
     }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, sessionBoundOverlays, renamingId, files.sessions, files.drop, sessionTransfers, latestSessionTransfer]);
+  }, [sessions, visible, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
 
   useEffect(() => {
     if (latestSessionTransfer?.state === "adopted" && selectedId === latestSessionTransfer.sourceSessionId
       && latestSessionTransfer.successorSessionId && sessions.some((s) => s.id === latestSessionTransfer.successorSessionId)) {
       setSelectedId(latestSessionTransfer.successorSessionId);
+      return;
     }
-  }, [latestSessionTransfer, selectedId, sessions]);
+    if (!selectedId || sessions.some((s) => s.id === selectedId)
+      || sessionTransfers.transfers.some((transfer) => transfer.sourceSessionId === selectedId)
+      || (latestSessionTransfer?.sourceSessionId === selectedId && latestSessionTransfer.successorSessionId)) return;
+    // Resolved transfers deliberately leave the bounded snapshot. Resolve the selected
+    // source from durable history before clearing a drill-in after a missed adoption.
+    let current = true;
+    void api.latestSessionTransferForSource(selectedId).then((transfer) => {
+      if (!current) return;
+      if (transfer && sessionTransferUnresolved(transfer.state)) return;
+      if (transfer?.state === "adopted" && transfer.successorSessionId
+        && sessions.some((s) => s.id === transfer.successorSessionId)) {
+        setSelectedId(transfer.successorSessionId);
+      } else {
+        setSelectedId(null);
+        setBoardOpen(false);
+      }
+    }).catch(() => { /* Keep selection when its outcome cannot be read; the next snapshot retries. */ });
+    return () => { current = false; };
+  }, [latestSessionTransfer, selectedId, sessions, sessionTransfers]);
 
   // Keep the keyboard-selected session in view as selection moves.
   useEffect(() => {

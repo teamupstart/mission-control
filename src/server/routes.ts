@@ -1,5 +1,5 @@
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
-import { getSessionTransfer, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
@@ -1970,6 +1970,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/session-transfers", (c) => {
     const parsed = SessionTransferQuerySchema.safeParse(c.req.query());
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    if (parsed.data.sourceSessionId) {
+      const transfer = latestTransferForSource(parsed.data.sourceSessionId);
+      return c.json({ transfers: transfer ? [transferSummary(transfer)] : [], overflow: 0 });
+    }
     return c.json(sessionTransferPage(parsed.data.offset, parsed.data.limit));
   });
   app.get("/api/session-transfers/:id", (c) => {

@@ -1661,6 +1661,11 @@ export const api = {
     if (!page) throw new Error("Could not load terminal transfers");
     return page;
   },
+  latestSessionTransferForSource: async (sourceSessionId: string): Promise<SessionTransferSummary | null> => {
+    const page = await fetchJson<SessionTransferPage>(`/api/session-transfers?sourceSessionId=${encodeURIComponent(sourceSessionId)}`);
+    if (!page) throw new Error("Could not resolve the source's terminal transfer");
+    return page.transfers[0] ?? null;
+  },
   recheckSessionTransfer: (id: string): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/recheck`, {}),
   resolveSessionTransfer: (id: string, revision: number): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/resolve`, { revision, action: "end" }),
   launchTerminal: (

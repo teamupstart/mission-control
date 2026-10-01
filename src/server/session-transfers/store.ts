@@ -81,6 +81,11 @@ function read(row: Record<string, unknown> | undefined): SessionTransfer | null 
 export function getSessionTransfer(id: string): SessionTransfer | null {
   return read(openDb().prepare("SELECT * FROM session_runtime_transfers WHERE id = ?").get(id));
 }
+/** A selected source may have resolved while the browser was disconnected. */
+export function latestTransferForSource(sourceSessionId: string): SessionTransfer | null {
+  return read(openDb().prepare(`SELECT * FROM session_runtime_transfers
+    WHERE source_session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(sourceSessionId));
+}
 /** A transported task already made its binding decision, including an intentionally empty set. */
 export function taskWorkflowTransferred(task: Task): boolean {
   if (!task.sessionId) return false;

@@ -21,6 +21,32 @@ const { SessionTransferCoordinator } = await import("../src/server/session-trans
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
+test("source lookup returns the durable adoption without adding resolved history to fleet pages", async (t) => {
+  const f = transferFixture(t);
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  f.discover();
+  assert.equal((await f.transfers.recheck(result.transfer.id)).state, "adopted");
+  const { buildApp } = await import("../src/server/routes.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const app = buildApp({ registry: f.registry, tasks: f.tasks, reviews: f.reviews,
+    queues: new QueueManager(f.registry), workflows: f.workflows, sessionTransfers: f.transfers });
+  const { ensureToken } = await import("../src/server/auth.ts");
+  const get = (path: string) => app.request(path, { headers: { host: "127.0.0.1:7317", "x-harness-token": ensureToken() } });
+  const page = await (await get("/api/session-transfers")).json();
+  assert.ok(!page.transfers.some((transfer: { id: string }) => transfer.id === result.transfer.id));
+  const response = await get(`/api/session-transfers?sourceSessionId=${encodeURIComponent(f.source.id)}`);
+  assert.equal(response.status, 200);
+  const found = await response.json();
+  assert.equal(found.transfers.length, 1);
+  assert.equal(found.transfers[0].state, "adopted");
+  assert.equal(found.transfers[0].successorSessionId, f.candidate.syntheticId);
+  assert.equal(found.transfers[0].facts, undefined);
+  assert.equal(found.overflow, 0);
+  assert.deepEqual(await (await get("/api/session-transfers?sourceSessionId=unknown")).json(), { transfers: [], overflow: 0 });
+  assert.equal((await get("/api/session-transfers?sourceSessionId=")).status, 400);
+});
+
 for (const newerEpisode of [false, true]) test(`restart settles taskless reviews only for the saved absent episode: newer episode ${newerEpisode}`, async (t) => {
   const { ReviewManager } = await import("../src/server/reviews.ts");
   const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");

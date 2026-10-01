@@ -7862,6 +7862,7 @@ export const ResolveSessionTransferSchema = z.object({
   action: z.literal("end"),
 }).strict();
 export const SessionTransferQuerySchema = z.object({
+  sourceSessionId: z.string().min(1).max(256).optional(),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });

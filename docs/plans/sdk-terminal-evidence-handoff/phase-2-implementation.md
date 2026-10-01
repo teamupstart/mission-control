@@ -40,6 +40,10 @@ resource lease. Later phases and the separate Backlog UI feature are unchanged.
   lease. Sitrep owns bounded recovery presentation independently of the source card.
   Successful actions refresh their displayed page, including page zero, when notifications
   are missed. A newer SSE snapshot supersedes an earlier action's fetched page.
+  Before clearing a missing selected source, the browser queries its latest durable transfer
+  and follows a present adopted successor. This recovers selection after missed adoption
+  events without putting resolved history into fleet snapshots. New selection cancels the
+  prior lookup; unreadable outcomes retain selection for the next snapshot to reconcile.
 - Definite failure commits before owner settlement, and startup repeats only still-matching
   owner settlement. This closes the crash gap without another cleanup path. Source episode,
   task attempt and captured binding checks protect newer work from late resolution.

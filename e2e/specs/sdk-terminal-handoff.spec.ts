@@ -383,6 +383,34 @@ test.describe("Sitrep pagination", () => {
     await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveCount(0);
   });
 
+  test("a reconnect snapshot follows the selected source's committed successor after a missed adoption", async ({ dashboard, daemon }) => {
+    await observeTransferStream(dashboard);
+    await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }) });
+    await dashboard.reload();
+    const source = await dispatch(dashboard, daemon);
+    await dashboard.locator(".tile").filter({ hasText: source.name }).click();
+    await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toBeVisible();
+    const snapshot = await dashboard.evaluate(() => (window as TransferTestWindow).transferTestSnapshot);
+    const successor: Session = { ...source, id: "proc:reconnected-successor", runtime: "terminal", name: "Continued terminal",
+      task: source.task ? { ...source.task, title: "Continued terminal" } : null };
+    let lookups = 0;
+    await dashboard.route("**/api/session-transfers?sourceSessionId=*", async (route) => {
+      expect(new URL(route.request().url()).searchParams.get("sourceSessionId")).toBe(source.id);
+      lookups++;
+      await route.fulfill({ json: { transfers: [{ id: "missed-adoption", revision: 4, sourceSessionId: source.id,
+        sourceName: source.name, taskId: source.task?.id ?? null, successorSessionId: successor.id, state: "adopted",
+        reason: "The terminal adopted the conversation", createdAt: 1, updatedAt: 2, canEnd: false }], overflow: 0 } });
+    });
+    // Miss the entire live transfer stream, then receive only the authoritative snapshot.
+    await transferEvent(dashboard, { ...snapshot, sessions: [successor], sessionTransfers: { transfers: [], overflow: 0 } });
+    await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveText("Continued terminal");
+    expect(lookups).toBeGreaterThan(0);
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(evidence, { recursive: true });
+      await dashboard.screenshot({ path: join(evidence, "reconnected-successor.png") });
+    }
+  });
+
   test("More transfers shows transfer 101 and Previous transfers restores the first page", async ({ dashboard, daemon }) => {
     // Seed durable unresolved records without launching 101 agents. The snapshot, page
     // endpoint and browser controls below all use their production paths.

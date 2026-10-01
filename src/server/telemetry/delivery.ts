@@ -231,7 +231,6 @@ async function deliverOne(
     attempts,
     outcome,
     deps.now(),
-    configuredDestination.lateAfterMs,
   );
 }
 
@@ -242,7 +241,6 @@ function settle(
   attempts: number,
   outcome: TelemetryTransportOutcome,
   now: number,
-  lateAfterMs: number | null,
 ): DeliveryStep {
   const nextAttempts = attempts + 1;
   let networkWaitStillConfigured = true;
@@ -255,10 +253,17 @@ function settle(
   return telemetryTransaction((d) => {
     if (outcome.kind === "accepted") {
       const currentDestination = getDestination(d, profile);
+      // Configuration writes use this same immediate transaction boundary, so this read and
+      // the accounting below observe one settlement-time settings snapshot.
+      const currentConfig = getTelemetryConfig();
+      const currentConfiguredDestination =
+        profile === "user" ? currentConfig.user : currentConfig.product;
       const settlementIsCurrent =
         batch.destinationGeneration === currentDestination.generation &&
         batch.policyEpoch === currentDestination.policyEpoch;
-      const latePoints = countLatePoints(batch, lateAfterMs, now);
+      const latePoints = settlementIsCurrent
+        ? countLatePoints(batch, currentConfiguredDestination.lateAfterMs, now)
+        : 0;
       // OTLP partial success reports only how many items were rejected, not which ones. Count
       // the conservative lower bound that must have been both late and accepted, so a refused
       // old point can never inflate the durable counter.

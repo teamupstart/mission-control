@@ -705,6 +705,64 @@ test("partial success counts only late points that must have been accepted", asy
   assert.equal(delivery.rejected_items, 2);
 });
 
+test("accepted settlement uses the current late window after an in-flight settings change", async () => {
+  for (const [initialWindow, currentWindow, expected] of [
+    [null, 100, 1],
+    [100, null, 0],
+  ] as const) {
+    const applied = setTelemetryConfig({
+      enabled: true,
+      user: {
+        enabled: true,
+        endpoint: "https://otlp.example.com",
+        lateAfterMs: initialWindow,
+      },
+    });
+    assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+    captureAndProject(`boot-window-${String(initialWindow)}`, 1_000);
+
+    const d = openDb();
+    d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+    d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+    const stored = d.prepare(
+      `SELECT id, payload_json FROM telemetry_batches
+       WHERE profile = 'user' AND signal = 'metrics'`,
+    ).get() as { id: string; payload_json: string };
+    const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+    payload.metrics = [{ ...payload.metrics[0]!, endTimeMs: 1_000 }];
+    d.prepare(
+      `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+    ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseResponse!: () => void;
+    const responseReleased = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const fetchImpl = (async () => {
+      markStarted();
+      await responseReleased;
+      return ok();
+    }) as unknown as typeof globalThis.fetch;
+
+    let now = 5_000;
+    const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+    await started;
+    now = 5_001;
+    assert.equal(setTelemetryConfig({ user: { lateAfterMs: currentWindow } }, now).ok, true);
+    releaseResponse();
+    await delivery;
+
+    const user = telemetryHealth(now).profiles.find((profile) => profile.profile === "user")!;
+    assert.equal(user.latePointsSent, expected, `${String(initialWindow)} -> ${String(currentWindow)}`);
+
+    for (const table of TELEMETRY_TABLES) d.exec(`DELETE FROM ${table}`);
+    d.exec("DELETE FROM app_config");
+  }
+});
+
 test("a pause stops the rest of the SAME pass, not just the next one", async () => {
   // The pause was read once per profile, before the signal loop. A 401 answering the metrics
   // batch paused the destination, and then the traces loop ran anyway - up to eight more

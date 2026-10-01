@@ -1,5 +1,5 @@
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
-import { getSessionTransfer, sessionTransferPage, transferSummary, transferForNote, transferRetiredSource } from "./session-transfers/store.ts";
+import { getSessionTransfer, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
@@ -4857,7 +4857,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, SubmitWorkflowEvidenceSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.sessionId && transferForNote(parsed.data.sessionId)) {
+    if (parsed.data.sessionId && (transferForNote(parsed.data.sessionId) || transferForSource(parsed.data.sessionId))) {
       return c.json({ error: "Handoff awaiting discovery. Retry evidence registration after the terminal transfer is verified", code: "handoff_awaiting_discovery", retryable: true }, 409);
     }
     const session = registry.findSessionByEnv(

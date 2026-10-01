@@ -17,6 +17,11 @@ terminal lease. The daemon evaluates recovery and resolution from those conditio
 pagination case exercises the production snapshot, page endpoint and browser controls over
 seeded records without launching 101 agents.
 
+The focused paged-action and reconnect cases additionally script HTTP replies and SSE
+frames in the browser to model a missed notification and a replacement snapshot. They prove
+page refresh, action feedback and selection cleanup, not daemon adoption or absence proof.
+The handoff and safe-resolution cases above retain the production daemon boundary.
+
 `MC_E2E_RESUME_PRIVATE_MCP=1` gives refusal tests an isolated copy of the bundle. Evidence
 screenshots are written to `e2e/.artifacts/sdk-terminal-handoff/` with `MC_E2E_EVIDENCE=1`.
 

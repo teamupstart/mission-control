@@ -21,6 +21,64 @@ const { SessionTransferCoordinator } = await import("../src/server/session-trans
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
+test("detachment preserves task edits made while terminal preparation is pending", async (t) => {
+  const f = transferFixture(t);
+  const prepare = f.deps.prepare!;
+  f.deps.prepare = async (...args) => {
+    const prepared = await prepare(...args);
+    f.registry.upsertTask({ ...f.registry.getTask(f.task!.id)!, title: "Refined during preparation", labels: ["keep"] });
+    return prepared;
+  };
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  assert.equal(f.registry.getTask(f.task!.id)?.title, "Refined during preparation");
+  assert.deepEqual(f.registry.getTask(f.task!.id)?.labels, ["keep"]);
+});
+
+test("unrelated session activity does not rescan held transfers", async (t) => {
+  const f = transferFixture(t);
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  const current = getSessionTransfer(result.transfer.id)!;
+  const recheck = t.mock.method(f.transfers, "recheck", async () => current);
+  f.registry.registerSdkSession({ id: "sdk:unrelated", agent: "claude", name: "Other work", cwd: "/elsewhere" });
+  for (let index = 0; index < 20; index++) {
+    f.registry.applyDriverEvent("sdk:unrelated", { kind: "bound", agentSessionId: `unrelated-${index}`, transcriptPath: null, modelId: null, pid: null });
+  }
+  assert.equal(recheck.mock.callCount(), 0);
+  f.registry.applyDriverEvent(f.source.id, { kind: "bound", agentSessionId: f.source.agentSessionId!, transcriptPath: null, modelId: null, pid: null });
+  assert.equal(recheck.mock.callCount(), 1, "the held source still triggers observation");
+});
+
+test("completion during transfer reports a conflict without settling the task", async (t) => {
+  const f = transferFixture(t);
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  await assert.rejects(f.tasks.complete(f.task!.id, "Completed"), /being transferred to a terminal/);
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+});
+
+test("evidence intake reports the same retryable transfer hold for native and SDK source IDs", async (t) => {
+  const f = transferFixture(t, { workflows: 1 });
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.ok(result.ok);
+  const { buildApp } = await import("../src/server/routes.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const { ensureToken } = await import("../src/server/auth.ts");
+  const app = buildApp({ registry: f.registry, tasks: f.tasks, reviews: f.reviews,
+    queues: new QueueManager(f.registry), workflows: f.workflows, sessionTransfers: f.transfers });
+  for (const sessionId of [f.source.agentSessionId!, f.source.id]) {
+    const response = await app.request("/mcp/workflow-evidence", { method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() },
+      body: JSON.stringify({ sessionId, env: {}, cwd: f.source.cwd, commandOutputs: [{
+        kind: "command", clientItemId: "held-check", command: "node focused.mjs", exitCode: 0, output: "passed", caption: "proof", repositoryScope: "repo-01",
+      }] }),
+    });
+    assert.equal(response.status, 409, `${sessionId}: ${await response.clone().text()}`);
+    assert.equal((await response.json()).code, "handoff_awaiting_discovery");
+  }
+});
+
 test("an early resume hook cannot revive the retiring SDK or rebind its reserved task", async (t) => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

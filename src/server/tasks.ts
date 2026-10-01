@@ -4834,7 +4834,7 @@ export class TaskManager {
    * the regression above.
    */
   private runCompletion(id: string, input: CompletionInput): Promise<Task | null> {
-    if (transferForTask(id)) return Promise.resolve(null);
+    if (transferForTask(id)) return Promise.reject(new TaskStatusConflictError("task is being transferred to a terminal"));
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
@@ -4963,6 +4963,7 @@ export class TaskManager {
    * cancelled/failed one.
    */
   private assertCompletable(id: string, requireStopped: boolean): void {
+    if (transferForTask(id)) throw new TaskStatusConflictError("task is being transferred to a terminal");
     if (this.reschedulingTasks.has(id)) {
       throw new TaskStatusConflictError("task is being rescheduled");
     }

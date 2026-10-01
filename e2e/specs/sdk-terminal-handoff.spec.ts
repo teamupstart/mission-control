@@ -1,7 +1,8 @@
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import type { Session } from "../../src/shared/types.ts";
+import type { Session, ServerEvent } from "../../src/shared/types.ts";
+import type { SessionTransferSummary } from "../../src/shared/session-transfer.ts";
 import type { TransferFacts } from "../../src/server/session-transfers/store.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -12,6 +13,37 @@ import { test, expect } from "../fixtures/test.ts";
 
 test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_RESUME_TOOLS: "1", MISSION_POLL_MS: "100" } });
 const evidence = artifactsDir("sdk-terminal-handoff");
+
+type TransferTestWindow = Window & {
+  transferTestStream: EventSource;
+  transferTestSnapshot: Extract<ServerEvent, { type: "snapshot" }>;
+};
+
+async function observeTransferStream(page: Page) {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, config?: EventSourceInit) {
+        super(url, config);
+        if (String(url) !== "/events") return;
+        const state = window as TransferTestWindow;
+        state.transferTestStream = this;
+        this.addEventListener("message", (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === "snapshot") state.transferTestSnapshot = message;
+        });
+      }
+    };
+  });
+}
+
+async function transferEvent(page: Page, event: ServerEvent) {
+  await page.evaluate((message) => {
+    const stream = (window as TransferTestWindow).transferTestStream;
+    stream.close();
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) }));
+  }, event);
+}
 
 async function dispatch(page: Page, daemon: DaemonHandle) {
   await page.getByRole("button", { name: "Dispatch", exact: true }).click();
@@ -268,6 +300,88 @@ test("default Continue keeps an uncertain transfer visible after source removal 
 
 test.describe("Sitrep pagination", () => {
   test.use({ daemonEnv: { MISSION_POLL_MS: "0" } });
+
+  test("paged actions refresh without an SSE update and distinguish Check from End", async ({ dashboard }) => {
+    await observeTransferStream(dashboard);
+    await dashboard.reload();
+    await expect.poll(() => dashboard.evaluate(() => Boolean((window as TransferTestWindow).transferTestSnapshot))).toBe(true);
+    const transfer: SessionTransferSummary = { id: "paged-action", revision: 1, sourceSessionId: "held-source",
+      sourceName: "Paged recovery", taskId: null, successorSessionId: null, state: "recovery_required",
+      reason: "Waiting for process inventory", createdAt: 1, updatedAt: 1, canEnd: false };
+    // A bounded HTTP/SSE fixture isolates lost notifications from daemon recovery policy.
+    // The production page fetch and row controls must still converge after a successful action.
+    await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [{ ...transfer, id: "first-page", sourceName: "First page" }], overflow: 1 } });
+    let current = { ...transfer };
+    let pageReads = 0;
+    let ended = false;
+    let releaseEndPage!: () => void;
+    const endPage = new Promise<void>((resolve) => { releaseEndPage = resolve; });
+    await dashboard.route("**/api/session-transfers?*", async (route) => {
+      pageReads++;
+      if (ended) await endPage;
+      await route.fulfill({ json: { transfers: ended ? [] : [current], overflow: 0 } });
+    });
+    await dashboard.route("**/api/session-transfers/paged-action/recheck", async (route) => {
+      current = { ...current, revision: 2, reason: "Absence verified; transfer may end", canEnd: true };
+      await route.fulfill({ json: { ok: true, transfer: current } });
+    });
+    await dashboard.route("**/api/session-transfers/paged-action/resolve", async (route) => {
+      ended = true;
+      await route.fulfill({ json: { ok: true, transfer: { ...current, state: "failed" } } });
+    });
+    await dashboard.keyboard.press("Shift+P");
+    const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
+    await expectContentClearsBorder(sitrep);
+    await sitrep.getByRole("button", { name: "More transfers" }).click();
+    const row = sitrep.getByRole("group", { name: "Terminal transfer: Paged recovery" });
+    await expect(row).toContainText("Waiting for process inventory");
+    await row.getByRole("button", { name: "Check again" }).click();
+    await expect(row.getByRole("status")).toHaveText("Transfer checked.");
+    await expect(row).toContainText("Absence verified; transfer may end");
+    expect(pageReads).toBeGreaterThan(1);
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(evidence, { recursive: true });
+      await sitrep.getByRole("heading", { name: "Terminal transfers", exact: true }).hover();
+      await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+      await dashboard.screenshot({ path: join(evidence, "paged-action-feedback.png") });
+    }
+    try {
+      await row.getByRole("button", { name: "End transfer", exact: true }).click();
+      await row.getByRole("button", { name: "Confirm end transfer" }).click();
+      await expect(row.getByRole("status")).toHaveText("Transfer ended.");
+    } finally { releaseEndPage(); }
+    await expect(row).toHaveCount(0);
+    expect(pageReads).toBeGreaterThan(2);
+  });
+
+  for (const boundary of ["ended event", "reconnect snapshot"] as const) test(`a ${boundary} releases selection of a missing transfer source`, async ({ dashboard, daemon }) => {
+    await observeTransferStream(dashboard);
+    await fetch(`${daemon.baseURL}/api/ui/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }) });
+    await dashboard.reload();
+    const source = await dispatch(dashboard, daemon);
+    await dashboard.locator(".tile").filter({ hasText: source.name }).click();
+    await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toBeVisible();
+    const snapshot = await dashboard.evaluate(() => (window as TransferTestWindow).transferTestSnapshot);
+    const transfer: SessionTransferSummary = { id: "selection-transfer", revision: 1, sourceSessionId: source.id,
+      sourceName: source.name, taskId: source.task?.id ?? null, successorSessionId: null, state: "recovery_required",
+      reason: "Waiting for terminal", createdAt: 1, updatedAt: 1, canEnd: false };
+    await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [transfer], overflow: 0 }, changed: transfer });
+    await transferEvent(dashboard, { type: "session_remove", id: source.id });
+    await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveCount(0);
+    if (boundary === "ended event") {
+      await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "failed" } });
+    } else {
+      await transferEvent(dashboard, { type: "session_transfers", page: { transfers: [], overflow: 0 }, changed: { ...transfer, state: "adopted", successorSessionId: "absent-successor" } });
+      await transferEvent(dashboard, { ...snapshot, sessions: [], sessionTransfers: { transfers: [], overflow: 0 } });
+    }
+    // Flush the removal's effects before rediscovery; otherwise React can batch both
+    // frames into a session that never disappeared from the rendered collection.
+    await dashboard.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    // Rediscovery must not reopen an old drill-in whose owner disappeared while offline.
+    await transferEvent(dashboard, { type: "session_upsert", session: source });
+    await expect(dashboard.locator(".tile").filter({ hasText: source.name })).toBeVisible();
+    await expect(dashboard.locator(".board-detail .detail-title-line > h2")).toHaveCount(0);
+  });
 
   test("More transfers shows transfer 101 and Previous transfers restores the first page", async ({ dashboard, daemon }) => {
     // Seed durable unresolved records without launching 101 agents. The snapshot, page

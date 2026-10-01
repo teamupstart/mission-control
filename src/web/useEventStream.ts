@@ -304,6 +304,7 @@ export function useEventStream(): MissionState {
           break;
         case "snapshot":
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
+          setLatestSessionTransfer(null);
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
           setRestoringSessions(
             new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),

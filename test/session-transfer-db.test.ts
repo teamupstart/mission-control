@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, closeDb, inTransaction } from "../src/server/db.ts";
-import { reserveSessionTransfer, updateSessionTransfer, transferForTask, transferForNote, sessionTransferPage, getSessionTransfer, type TransferFacts } from "../src/server/session-transfers/store.ts";
+import { reserveSessionTransfer, updateSessionTransfer, transferForTask, transferForNote, sessionTransferPage, getSessionTransfer, runtimeTransferPredecessors, runtimeTransferConnects, type TransferFacts } from "../src/server/session-transfers/store.ts";
 
 const facts: TransferFacts = { agent: "claude", nativeId: "conversation", sourceName: "Continue work", sourceRuntime: "sdk",
   sourceEpisodeId: null, cwd: "/checkout", repoRoot: "/repo", taskIdentity: null, taskEpisodeId: null, bindings: [],
@@ -10,6 +10,24 @@ const facts: TransferFacts = { agent: "claude", nativeId: "conversation", source
 const reserve = (sourceSessionId = "source", noteKey = "note", taskId: string | null = "task") =>
   reserveSessionTransfer({ sourceSessionId, noteKey, taskId, facts });
 afterEach(() => openDb().exec("DELETE FROM session_runtime_transfers"));
+
+test("predecessor lookup follows only the latest adopted chain and terminates on cycles", () => {
+  const adopt = (source: string, successor: string, time: number) => {
+    const row = reserve(source, "note", null);
+    updateSessionTransfer(row, { state: "adopted", successorSessionId: successor });
+    openDb().prepare("UPDATE session_runtime_transfers SET created_at=? WHERE id=?").run(time, row.id);
+  };
+  adopt("source", "middle", 1);
+  adopt("middle", "target", 2);
+  adopt("stranger", "elsewhere", 3);
+  assert.deepEqual(new Set(runtimeTransferPredecessors("target", "note")), new Set(["source", "middle", "target"]));
+  assert.deepEqual(runtimeTransferPredecessors("target", "another-note"), ["target"]);
+  adopt("source", "elsewhere", 4);
+  assert.equal(runtimeTransferConnects("source", "target", "note"), false);
+  assert.deepEqual(new Set(runtimeTransferPredecessors("target", "note")), new Set(["middle", "target"]));
+  adopt("target", "middle", 5);
+  assert.deepEqual(new Set(runtimeTransferPredecessors("target", "note")), new Set(["middle", "target"]));
+});
 
 test("pre-feature database upgrades twice without changing existing state", () => {
   const db = openDb();

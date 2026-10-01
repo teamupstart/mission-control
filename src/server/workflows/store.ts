@@ -1,4 +1,4 @@
-import { runtimeTransferConnects, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
+import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
@@ -4749,6 +4749,11 @@ export class WorkflowStore {
     return JSON.stringify(this.activeBindingsForNote(noteKey).map(transferBinding)) === JSON.stringify(expected);
   }
 
+  /** Registry/task/review owners must share the coordinator's single commit boundary. */
+  assertRuntimeTransferConnection(db: DatabaseSync): void {
+    if (this.db !== db) throw new Error("Runtime transfer owners must share the daemon database connection");
+  }
+
   /** Synchronous owner write, composed into the coordinator's adoption transaction. */
   transferRuntimeBindings(noteKey: string, sourceId: string, successorId: string,
     expected: readonly TransferBinding[], now = Date.now()): void {
@@ -7961,7 +7966,7 @@ export class WorkflowStore {
         ORDER BY a.created_at ASC, a.id ASC`,
     ).all(sessionId) as unknown[]).map(parseWorkflowNodeAttemptRow).filter((attempt) => {
       const delivery = this.listDeliveriesForAttempt(attempt.id).find((d) => d.state === "delivered");
-      return Boolean(delivery && runtimeTransferConnects(delivery.sessionId, sessionId, delivery.noteKey));
+      return Boolean(delivery && runtimeTransferConnects(delivery.sessionId, sessionId, delivery.noteKey, this.db));
     });
   }
 
@@ -8469,6 +8474,7 @@ export class WorkflowStore {
     noteKey: string,
     limit = 200,
   ): Array<{ payload: string; transcriptAnchor: number }> {
+    const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
       `SELECT d.payload, d.session_id,
               CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
@@ -8478,17 +8484,17 @@ export class WorkflowStore {
            ON e.run_id = d.run_id
           AND e.event_kind = 'delivery_delivered'
           AND json_extract(e.payload_json, '$.deliveryId') = d.id
-        WHERE d.note_key = ?
+        WHERE d.note_key = ? AND d.session_id IN (${sessions.map(() => "?").join(",")})
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
           AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
-    ).all(noteKey, limit) as Array<{
+    ).all(noteKey, ...sessions, limit) as Array<{
       session_id: string;
       payload: string;
       transcript_anchor: number;
-    }>).filter((row) => runtimeTransferConnects(row.session_id, sessionId, noteKey)).map((row) => ({
+    }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
     }));
@@ -8564,7 +8570,7 @@ export class WorkflowStore {
       const run = this.getRun(input.runId);
       const binding = run ? this.getBinding(run.bindingId) : null;
       const sessionId = binding?.state === "active" && binding.sessionId && binding.noteKey === input.noteKey
-        && runtimeTransferConnects(input.sessionId, binding.sessionId, input.noteKey) ? binding.sessionId : input.sessionId;
+        && runtimeTransferConnects(input.sessionId, binding.sessionId, input.noteKey, this.db) ? binding.sessionId : input.sessionId;
       this.db.prepare(
         `INSERT INTO workflow_deliveries (
            id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
@@ -8595,7 +8601,7 @@ export class WorkflowStore {
   claimDeliverySend(id: string, allowRefused = false, now = Date.now()): WorkflowDelivery | null {
     return this.mutate(() => {
       const delivery = this.getDelivery(id);
-      if (!delivery || transferForNote(delivery.noteKey)) return null;
+      if (!delivery || transferForNote(delivery.noteKey, this.db)) return null;
       const run = this.getRun(delivery.runId);
       if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
       const eligible = delivery.state === "prepared" || (allowRefused && delivery.state === "refused");

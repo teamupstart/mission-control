@@ -73,3 +73,9 @@ independently of source cards, including recovery after restart. The Phase 1 res
 alone owns credential cleanup. Transfer failure uses existing task settlement, retains the
 checkout and never creates a worktree-return obligation. Do not downgrade with pending
 transfers: older daemons do not know these ownership guards.
+
+Before rollback, keep the current daemon running until Sitrep has no unresolved terminal
+transfers. Use Check again to adopt a proven successor or End transfer only when the daemon
+permits it. If process or launch proof is still unavailable, remain on this version; do not
+delete reservations or force a second launch to make rollback possible. Once all transfers
+are resolved, stop the daemon before starting an older build against the same state home.

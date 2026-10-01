@@ -3,7 +3,7 @@ import type { SessionTransferPage, SessionTransferSummary } from "@shared/sessio
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
-function TransferRow({ transfer }: { transfer: SessionTransferSummary }): React.JSX.Element {
+function TransferRow({ transfer, onChanged }: { transfer: SessionTransferSummary; onChanged: () => void }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
@@ -11,7 +11,8 @@ function TransferRow({ transfer }: { transfer: SessionTransferSummary }): React.
     setBusy(true);
     try {
       const result = end ? await api.resolveSessionTransfer(transfer.id, transfer.revision) : await api.recheckSessionTransfer(transfer.id);
-      setMessage(result.ok ? "Transfer checked." : result.error ?? "Could not check this transfer");
+      setMessage(result.ok ? end ? "Transfer ended." : "Transfer checked." : result.error ?? "Could not check this transfer");
+      if (result.ok) onChanged();
     } catch {
       setMessage("Could not reach Mission Control. Check again when it reconnects.");
     } finally { setBusy(false); setConfirmEnd(false); }
@@ -44,18 +45,19 @@ export function SessionTransfers({ page }: { page: SessionTransferPage }): React
   const [offset, setOffset] = useState(0);
   const [extra, setExtra] = useState<SessionTransferPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     if (!offset) return;
     let current = true;
     void api.sessionTransfers(offset).then((result) => { if (current) { setExtra(result); setError(null); } })
       .catch(() => { if (current) setError("Could not load the remaining terminal transfers"); });
     return () => { current = false; };
-  }, [offset, page]);
+  }, [offset, page, refresh]);
   if (!page.transfers.length && !offset) return null;
   const shown = offset ? extra : page;
   return <section className="report-section" aria-label="Terminal transfers">
     <h3 className="report-section-title">Terminal transfers</h3>
-    {shown?.transfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} />)}
+    {shown?.transfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} onChanged={() => setRefresh((value) => value + 1)} />)}
     {error && <p role="status">{error}</p>}
     <div className="report-row-actions">
       {offset > 0 && <Tooltip label="Show the previous page of unresolved terminal transfers">

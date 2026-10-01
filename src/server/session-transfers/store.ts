@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import type { Session, Task } from "@shared/types.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 import type { WorkflowBinding } from "@shared/workflow.ts";
@@ -106,8 +107,8 @@ export function unresolvedSessionTransfers(): SessionTransfer[] {
 export function transferForTask(taskId: string): SessionTransfer | null {
   return read(openDb().prepare(`SELECT * FROM session_runtime_transfers WHERE task_id = ? AND ${UNRESOLVED_TRANSFER_SQL}`).get(taskId));
 }
-export function transferForNote(noteKey: string): SessionTransfer | null {
-  return read(openDb().prepare(`SELECT * FROM session_runtime_transfers WHERE note_key = ? AND ${UNRESOLVED_TRANSFER_SQL}`).get(noteKey));
+export function transferForNote(noteKey: string, db: DatabaseSync = openDb()): SessionTransfer | null {
+  return read(db.prepare(`SELECT * FROM session_runtime_transfers WHERE note_key = ? AND ${UNRESOLVED_TRANSFER_SQL}`).get(noteKey));
 }
 export function transferForSource(sessionId: string): SessionTransfer | null {
   return read(openDb().prepare(`SELECT * FROM session_runtime_transfers WHERE source_session_id = ? AND ${UNRESOLVED_TRANSFER_SQL}`).get(sessionId));
@@ -175,19 +176,34 @@ export function transferScopeMatches(facts: TransferFacts, session: Pick<Session
 }
 
 /** Authorize observation of historical deliveries without rewriting their attribution. */
-export function runtimeTransferConnects(sourceId: string, targetId: string | null, noteKey: string): boolean {
+export function runtimeTransferConnects(sourceId: string, targetId: string | null, noteKey: string, db: DatabaseSync = openDb()): boolean {
   if (!targetId) return false;
   const seen = new Set<string>();
   let current = sourceId;
   while (!seen.has(current)) {
     if (current === targetId) return true;
     seen.add(current);
-    const row = openDb().prepare(`SELECT successor_session_id FROM session_runtime_transfers
+    const row = db.prepare(`SELECT successor_session_id FROM session_runtime_transfers
       WHERE source_session_id = ? AND note_key = ? AND state = 'adopted' ORDER BY created_at DESC LIMIT 1`).get(current, noteKey);
     if (!row?.successor_session_id) return false;
     current = String(row.successor_session_id);
   }
   return false;
+}
+
+/** Walk committed predecessors once, before applying a delivery window's limit. */
+export function runtimeTransferPredecessors(targetId: string, noteKey: string, db: DatabaseSync = openDb()): string[] {
+  return (db.prepare(`WITH RECURSIVE predecessors(session_id) AS (
+    VALUES (?)
+    UNION
+    SELECT t.source_session_id FROM session_runtime_transfers t
+      JOIN predecessors p ON t.successor_session_id = p.session_id
+      WHERE t.note_key = ? AND t.state = 'adopted'
+        AND t.id = (SELECT latest.id FROM session_runtime_transfers latest
+          WHERE latest.source_session_id = t.source_session_id AND latest.note_key = t.note_key
+            AND latest.state = 'adopted' ORDER BY latest.created_at DESC LIMIT 1)
+  ) SELECT session_id FROM predecessors`).all(targetId, noteKey) as Array<{ session_id: string }>)
+    .map((row) => row.session_id);
 }
 
 /** Follow only committed ownership, for detached request answers still attributed to source. */

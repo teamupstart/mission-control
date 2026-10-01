@@ -21,7 +21,7 @@ import type { ReviewManager } from "../reviews.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import type { HandoffDeps, HandoffResult } from "../sdk/handoff.ts";
 import { getSessionTransfer, reserveSessionTransfer, updateSessionTransfer, unresolvedSessionTransfers, failedSessionTransfers,
-  transferForNote, transferForTask, transferBinding, transferTaskIdentity, transferScopeMatches,
+  transferForNote, transferForSource, transferForTask, transferBinding, transferTaskIdentity, transferScopeMatches,
   transferSummary, type SessionTransfer } from "./store.ts";
 
 /** The only adopter. Neither restart nor recheck has access to the launch callback. */
@@ -43,6 +43,7 @@ export class SessionTransferCoordinator {
     processSnapshot?: typeof listProcessesSnapshot;
   }) {
     this.store = options.workflows?.store ?? new WorkflowStore();
+    this.store.assertRuntimeTransferConnection(openDb());
   }
 
   start(periodic = false): void {
@@ -59,7 +60,12 @@ export class SessionTransferCoordinator {
     // only still-matching source ownership; these operations are idempotent in their owners.
     for (const transfer of failedSessionTransfers()) this.settleFailedOwners(transfer);
     this.unsubscribe = this.registry.subscribe((event) => {
-      if (event.type === "session_upsert" || event.type === "session_remove") void this.recheckAll();
+      // Token/activity events elsewhere in the fleet must not start process scans for
+      // every held transfer. Discovery and the periodic sweep still cover unnamed terminals.
+      const transfer = event.type === "session_upsert"
+        ? transferForSource(event.session.id) ?? transferForNote(noteKeyFor(event.session))
+        : event.type === "session_remove" ? transferForSource(event.id) : null;
+      if (transfer) void this.recheck(transfer.id);
     });
     this.observedUnsubscribe = this.registry.onSessionsObserved(() => { void this.recheckAll(); });
     if (periodic) this.timer = setInterval(() => { void this.recheckAll(); }, 5_000).unref();
@@ -211,7 +217,7 @@ export class SessionTransferCoordinator {
       transfer = this.change(transfer, { state: "stopping", reason: "Preparing source shutdown before terminal launch" });
       if (task) {
         if (source.runtime === "sdk") clearSdkSessionTask(source.id);
-        this.registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+        this.registry.upsertTask({ ...getTask(task.id)!, sessionId: null, updatedAt: Date.now() });
       }
       unbound = true;
       cancelTelemetry = noteSessionHandoff(source.id);

@@ -500,7 +500,7 @@ const CAPTURE_RESUMABLE_PHASES = [
   "image_evidence_capture",
 ] as const;
 
-const IMAGE_CAPTURE_RESUMABLE_PHASES = ["image_evidence_capture"] as const;
+const MANUAL_CAPTURE_RESUMABLE_PHASES = ["image_evidence_capture", "capture_interrupted"] as const;
 
 /**
  * Whether this run's evidence is pinned to an external artifact.
@@ -1910,7 +1910,7 @@ export class WorkflowManager {
           const memberRun = this.store.getRun(submission.runId);
           const memberBinding = memberRun ? this.store.getBinding(memberRun.bindingId) : null;
           if (!memberRun || !memberBinding) return [];
-          const resumed = this.resumeImageEvidenceCapture(memberBinding, memberRun, submission, now);
+          const resumed = this.resumeReservedCapture(memberBinding, memberRun, submission, now);
           return resumed ? [resumed] : [];
         });
       const resumedLead = group.find((item) => item.submission.id === existing.id);
@@ -1990,7 +1990,7 @@ export class WorkflowManager {
   }
 
   /** Resume only the same failed immutable reservation, never a fresh staged set. */
-  private resumeImageEvidenceCapture(
+  private resumeReservedCapture(
     binding: WorkflowBinding,
     run: WorkflowRun,
     submission: WorkflowSubmission,
@@ -1999,7 +1999,7 @@ export class WorkflowManager {
     const resumed = this.store.resumeCapture(
       run.id,
       submission.id,
-      IMAGE_CAPTURE_RESUMABLE_PHASES,
+      MANUAL_CAPTURE_RESUMABLE_PHASES,
       now,
     );
     if (!resumed) return null;
@@ -2047,7 +2047,7 @@ export class WorkflowManager {
       const active = this.store.activeRunForBinding(binding.id);
       const submission = active ? this.store.latestSubmission(active.id) : null;
       if (active && submission) {
-        const resumed = this.resumeImageEvidenceCapture(binding, active, submission, now);
+        const resumed = this.resumeReservedCapture(binding, active, submission, now);
         if (resumed) {
           return this.captureAndActivate(
             resumed.binding,
@@ -2119,7 +2119,7 @@ export class WorkflowManager {
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
       const existingRun = this.store.getRun(existing.runId) ?? run;
-      const resumed = this.resumeImageEvidenceCapture(binding, existingRun, existing, now);
+      const resumed = this.resumeReservedCapture(binding, existingRun, existing, now);
       if (resumed) {
         return this.captureAndActivate(
           resumed.binding,
@@ -3289,7 +3289,7 @@ export class WorkflowManager {
     if (run && existing?.runId === run.id) {
       const binding = this.store.getBinding(run.bindingId);
       const resumed = binding
-        ? this.resumeImageEvidenceCapture(binding, run, existing, now)
+        ? this.resumeReservedCapture(binding, run, existing, now)
         : null;
       if (resumed) {
         return this.captureAndActivate(
@@ -3555,7 +3555,7 @@ export class WorkflowManager {
     }
     this.publishRun(run.id);
     const resumedReplacement = replaced.idempotent
-      ? this.resumeImageEvidenceCapture(binding, replaced.run, replaced.submission, now)
+      ? this.resumeReservedCapture(binding, replaced.run, replaced.submission, now)
       : null;
     const captureTarget = resumedReplacement ?? {
       binding,
@@ -3781,7 +3781,7 @@ export class WorkflowManager {
     if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
     this.publishRun(stored.run.id);
     const resumed = stored.submission
-      ? this.resumeImageEvidenceCapture(stored.binding, stored.run, stored.submission, now)
+      ? this.resumeReservedCapture(stored.binding, stored.run, stored.submission, now)
       : null;
     return {
       result: stored.result,
@@ -6386,12 +6386,21 @@ export class WorkflowManager {
   private async waitForRuntimeTransfer(noteKey: string): Promise<boolean> {
     if (!transferForNote(noteKey)) return true;
     return await new Promise<boolean>((resolve) => {
-      const cancel = () => { unsubscribe(); this.transferWaiters.delete(cancel); resolve(false); };
+      const finish = (ready: boolean) => {
+        clearTimeout(timer);
+        unsubscribe(); this.transferWaiters.delete(cancel); resolve(ready);
+      };
+      const cancel = () => finish(false);
       const unsubscribe = this.registry.subscribe((event) => {
         if (event.type !== "session_transfers" || transferForNote(noteKey)) return;
-        unsubscribe(); this.transferWaiters.delete(cancel); resolve(true);
+        finish(true);
       });
+      // An uncertain launch may stay unresolved indefinitely. Bound the request, retain
+      // the immutable reservation, and let the existing explicit capture retry resume it.
+      const timer = setTimeout(cancel, 30_000);
+      timer.unref?.();
       this.transferWaiters.add(cancel);
+      if (!transferForNote(noteKey)) finish(true);
     });
   }
 
@@ -6414,10 +6423,17 @@ export class WorkflowManager {
       this.scheduleQueuedDeliveries(binding.noteKey);
       // With no hold, acquire the capture lock synchronously. An unconditional await
       // here lets a reservation snapshot the tail just before this capture joins it.
-      if (transferForNote(binding.noteKey) && !await this.waitForRuntimeTransfer(binding.noteKey)) return {
-        ok: false, reason: "conflict", message: "Evidence capture is waiting for terminal ownership after restart",
-        current: this.presentRun(this.store.getRun(run.id)),
-      };
+      if (transferForNote(binding.noteKey) && !await this.waitForRuntimeTransfer(binding.noteKey)) {
+        const message = "Evidence capture is waiting for terminal ownership. Check the transfer in Sitrep, then retry this submission.";
+        if (this.captureIsActive(run.id, submission.id)) {
+          const now = Date.now();
+          this.store.setSubmissionState(submission.id, "failed", now);
+          this.store.setRunState(run.id, "blocked", "capture_interrupted", { error: message }, now);
+          this.store.appendEvent(run.id, "capture_interrupted", { submissionId: submission.id, error: message }, now);
+          this.publishRun(run.id);
+        }
+        return { ok: false, reason: "conflict", message, current: this.presentRun(this.store.getRun(run.id)) };
+      }
       binding = this.store.getBinding(binding.id) ?? binding;
       return await this.withCaptureLock(binding.noteKey, async () => {
       binding = this.store.getBinding(binding.id) ?? binding;

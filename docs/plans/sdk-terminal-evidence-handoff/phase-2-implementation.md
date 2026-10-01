@@ -12,6 +12,9 @@ resource lease. Later phases and the separate Backlog UI feature are unchanged.
 - Evidence reads already holding the WorkflowManager capture lock finish before source stop.
   New captures wait for ownership and reread the binding. Captures acquire their lock before
   yielding when no transfer exists, so the reservation cannot miss a read entering that lock.
+  The ownership wait is bounded to 30 seconds. Timeout or orderly shutdown retains the same
+  submission as `capture_interrupted`; an explicit retry can resume that reservation without
+  spending another round or replaying a delivery. Its subscription is released on every exit.
 - Multiplexer resource IDs contain reusable session names. Adoption therefore requires the
   Phase 1 claimed wrapper's PID/start-time ancestry as well as any observed resource match.
   Exact emulator inventory IDs remain sufficient; handleless emulator discovery requires
@@ -61,6 +64,10 @@ The new table contains ownership expectations and a Phase 1 lease locator, never
 or a second credential collector. Registry remains the sole session owner and uses its
 existing eviction path. The adoption transaction composes synchronous Registry, WorkflowStore
 and ReviewManager writes, then publishes their projections after commit.
+The coordinator verifies that WorkflowStore shares the daemon connection before any handoff.
+Independent injected workflow stores read transfer guards and history through their own
+connection, but cannot participate in a multi-owner commit on a different connection.
+Transcript anchors filter the committed predecessor chain before applying their result limit.
 
 Active sibling bindings keep repository-specific checkout fields. Prepared destinations are
 the only workflow delivery fields retargeted. Frozen submissions, evidence bytes, staged

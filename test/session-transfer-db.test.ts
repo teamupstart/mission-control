@@ -2,6 +2,7 @@ import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, closeDb, inTransaction } from "../src/server/db.ts";
 import { reserveSessionTransfer, updateSessionTransfer, transferForTask, transferForNote, sessionTransferPage, getSessionTransfer, runtimeTransferPredecessors, runtimeTransferConnects, type TransferFacts } from "../src/server/session-transfers/store.ts";
+import { getSdkSession, getSdkSessionProcess, recordSdkSessionProcess, upsertSdkSession } from "../src/server/sdk/store.ts";
 
 const facts: TransferFacts = { agent: "claude", nativeId: "conversation", sourceName: "Continue work", sourceRuntime: "sdk",
   sourceEpisodeId: null, cwd: "/checkout", repoRoot: "/repo", taskIdentity: null, taskEpisodeId: null, bindings: [],
@@ -31,15 +32,33 @@ test("predecessor lookup follows only the latest adopted chain and terminates on
 
 test("pre-feature database upgrades twice without changing existing state", () => {
   const db = openDb();
+  upsertSdkSession({ id: "sdk:upgrade", agent: "claude", agentSessionId: "native", cwd: "/checkout", taskId: null,
+    model: null, effort: null, permissionMode: null, status: "exited", turnInProgress: false });
+  const sdk = getSdkSession("sdk:upgrade");
+  db.exec("ALTER TABLE sdk_sessions DROP COLUMN recovery_process_json");
   db.exec("DROP TABLE session_runtime_transfers");
   const before = db.prepare("SELECT * FROM app_config ORDER BY key").all();
   closeDb();
   for (let pass = 0; pass < 2; pass++) {
     assert.deepEqual(openDb().prepare("SELECT * FROM app_config ORDER BY key").all(), before);
     assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM session_runtime_transfers").get()!.n, 0);
+    assert.deepEqual(getSdkSession("sdk:upgrade"), sdk);
+    assert.equal(getSdkSessionProcess("sdk:upgrade"), null, "upgrading a final row cannot invent exit proof");
     closeDb();
   }
   assert.equal(openDb().prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND tbl_name='session_runtime_transfers'").get()!.n, 4);
+});
+
+test("SDK process lifetime survives reopen and rejects malformed proof", () => {
+  upsertSdkSession({ id: "sdk:proof", agent: "claude", agentSessionId: "native", cwd: "/checkout", taskId: null,
+    model: null, effort: null, permissionMode: null, status: "exited", turnInProgress: false });
+  recordSdkSessionProcess("sdk:proof", { pid: 41001, startMs: 1234 });
+  closeDb();
+  assert.deepEqual(getSdkSessionProcess("sdk:proof"), { pid: 41001, startMs: 1234 });
+  for (const invalid of ["broken", "null", '{"pid":41001,"startMs":0}', '{"pid":-1,"startMs":1234}']) {
+    openDb().prepare("UPDATE sdk_sessions SET recovery_process_json = ? WHERE id = ?").run(invalid, "sdk:proof");
+    assert.equal(getSdkSessionProcess("sdk:proof"), null);
+  }
 });
 
 test("transactional uniqueness reserves source, conversation and non-null task independently", () => {

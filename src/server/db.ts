@@ -3089,6 +3089,9 @@ function migrate(d: DatabaseSync): void {
   // deriving until someone actually renames a card.
   addColumn(d, "sdk_sessions", "display_name", "TEXT");
 
+  // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
+  addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
   // databases can contain table shells but no executable bindings, so empty identity

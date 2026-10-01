@@ -54,6 +54,13 @@ resource lease. Later phases and the separate Backlog UI feature are unchanged.
   A rejected stop uses that same lifetime proof before settling. A missing driver handle or
   a final SDK row can describe an ended event stream with a still-live child, so neither
   overrides the saved lifetime on immediate failure, recheck or restart.
+  Failed-stop rollback also requires a positively live matching lifetime and matching handle
+  after stop was entered; an extant handle alone cannot restore ownership to a dead child.
+  The SDK supervisor now persists its observed child lifetime separately from status, clears
+  it when a handle is replaced, and retains it when the stream ends. Exited SDK resumes use
+  that durable proof before launching. The additive nullable column leaves older rows
+  explicitly unknown. Missing proof, a live child or unavailable inventory creates visible
+  recovery without launching; a later positive exit settles the unused attempt without replay.
   A live lifetime, an unavailable inventory or an older record without proof stays held;
   recovery never repeats stop or launch. This extends the proposed process proof to SDK
   drivers because Claude does not expose a subprocess PID through its bound event.

@@ -281,8 +281,12 @@ test("read-only Pipeline evidence cannot launch either an agent or a shell", asy
 });
 
 async function exitedTransfer(t: TestContext, result: { ok: boolean; label: string; homeName: string | null; status: number; error?: string; terminalResourceId?: string }, discover = false) {
-  const f = transferFixture(t);
+  const f = transferFixture(t, { processSnapshot: async () => ({ processes: [], unknownReason: null,
+    cwdScopePids: [], completedCollectorPids: [] }) });
   await f.supervisor.stop(f.source.id);
+  // The fixture stream ended with a positively absent, previously observed child lifetime.
+  const { recordSdkSessionProcess } = await import("../src/server/sdk/store.ts");
+  recordSdkSessionProcess(f.source.id, { pid: 41001, startMs: 1 });
   let argv: readonly string[] = [];
   const local = buildApp({ registry: f.registry, tasks: f.tasks, workflows: f.workflows, sessionTransfers: f.transfers,
     reviews: {} as ReviewManager, queues: {} as QueueManager,

@@ -6,7 +6,7 @@ import { getTask, inTransaction, openDb, upsertTask, sessionWorkEpisodeFor, task
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
-import { clearSdkSessionTask, restoreSdkSessionTask, getSdkSession } from "../sdk/store.ts";
+import { clearSdkSessionTask, restoreSdkSessionTask, getSdkSession, getSdkSessionProcess } from "../sdk/store.ts";
 import { prepareTerminalResume, recheckManagedResumes, type PreparedResume } from "../harness/resume.ts";
 import { resumeContext } from "../resume-context.ts";
 import { resumeLeaseStatus, readResumeLease, revokeResumeLease } from "../terminal/resume-lease.ts";
@@ -84,12 +84,6 @@ export class SessionTransferCoordinator {
     if (source.runtime === "sdk") {
       const row = getSdkSession(source.id);
       if (!row || (row.status !== "exited" && row.status !== "failed")) return { ok: false, error: "The original embedded agent's exit is not yet confirmed" };
-    } else {
-      const inventory = await listProcessesSnapshot();
-      if (inventory.unknownReason || source.startedAt === null
-        || inventory.processes.some((p) => p.pid === source.pid && p.startMs === source.startedAt)) {
-        return { ok: false, error: "The original terminal's exit is not yet confirmed" };
-      }
     }
     return this.run(source, null, deps);
   }
@@ -172,7 +166,9 @@ export class SessionTransferCoordinator {
     const expectedTask = task ? transferTaskIdentity(task) : null;
     const sourceEpisodeId = this.registry.workEpisodeForSession(source.id)?.episodeId ?? null;
     const inventory = await (this.options.processes ?? listProcesses)();
-    const sourceProcess = inventory.find((p) => p.pid === source.pid);
+    const sourceProcess = supervisor ? inventory.find((p) => p.pid === source.pid)
+      : source.runtime === "sdk" ? getSdkSessionProcess(source.id)
+        : source.startedAt !== null && source.startedAt > 0 ? { pid: source.pid, startMs: source.startedAt } : null;
     let prepared: PreparedResume;
     try {
       prepared = await (deps.prepare ?? ((session) => prepareTerminalResume(session, resumeContext(session, task, bindings.length > 0, false))))(source);
@@ -238,13 +234,16 @@ export class SessionTransferCoordinator {
       transfer = this.change(transfer, { facts: { ...transfer.facts, sourceProcess, stopStarted: true },
         reason: "Stopping the embedded conversation before terminal launch" });
       if (supervisor) await supervisor.stop(source.id);
-      // An exited resume has already proven absence at its entry point.
+      else if (!await this.sourceExitProven(transfer)) throw new Error("The original agent's process exit is not yet confirmed");
       transfer = this.change(transfer, { state: "launching", reason: "Opening the terminal; launch outcome is not yet known",
         facts: { ...transfer.facts, sourceStopped: true, launchAt: Date.now(), launchOutcome: "unknown" } });
     } catch (error) {
       const revoked = prepared.dispose();
       const surviving = Boolean(supervisor?.handleFor(source.id));
-      if (surviving && revoked && !this.ownershipChanged(transfer, unbound)) {
+      const lifetime = transfer.facts.stopStarted ? await this.sourceLifetime(transfer) : "unknown";
+      const sourceSurvives = surviving && (!transfer.facts.stopStarted || (lifetime === "live"
+        && supervisor?.handleFor(source.id)?.recoveryProcessId === transfer.facts.sourceProcess?.pid));
+      if (sourceSurvives && revoked && !this.ownershipChanged(transfer, unbound)) {
         cancelTelemetry();
         let restored: Task | null = null;
         let displaced: string[] = [];
@@ -258,7 +257,7 @@ export class SessionTransferCoordinator {
         });
         if (restored) this.registry.publishPersistedTask(restored, displaced);
         this.registry.publishSessionTransfers(transfer);
-      } else if (!surviving && revoked && await this.sourceExitProven(transfer)
+      } else if (!surviving && revoked && lifetime === "gone"
         && !supervisor?.handleFor(source.id) && !this.ownershipChanged(transfer, unbound)) {
         transfer = this.change(transfer, { facts: { ...transfer.facts, sourceStopped: true } });
         transfer = this.fail(transfer, "The embedded driver stopped without a replacement; its checkout was kept");
@@ -339,15 +338,20 @@ export class SessionTransferCoordinator {
   }
 
   private async sourceExitProven(transfer: SessionTransfer): Promise<boolean> {
+    return await this.sourceLifetime(transfer) === "gone";
+  }
+
+  private async sourceLifetime(transfer: SessionTransfer): Promise<"live" | "gone" | "unknown"> {
     const expected = transfer.facts.sourceProcess;
-    if (!expected) return false;
+    if (!expected || expected.pid <= 0 || expected.startMs <= 0) return "unknown";
     try {
       // The pump can drop its handle and persist a failed/exited row while its child
       // remains alive. Only a complete inventory can prove this saved lifetime ended.
       const observed = await (this.options.processSnapshot ?? listProcessesSnapshot)();
       const source = observed.processes.find((p) => p.pid === expected.pid);
-      return !observed.unknownReason && (!source || (source.startMs > 0 && source.startMs !== expected.startMs));
-    } catch { return false; }
+      if (observed.unknownReason || (source && source.startMs <= 0)) return "unknown";
+      return source?.startMs === expected.startMs ? "live" : "gone";
+    } catch { return "unknown"; }
   }
 
   private async observe(id: string): Promise<SessionTransfer> {

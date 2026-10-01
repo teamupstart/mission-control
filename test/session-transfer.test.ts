@@ -21,6 +21,103 @@ const { SessionTransferCoordinator } = await import("../src/server/session-trans
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
+test("an exited SDK row without lifetime proof cannot launch a replacement", async (t) => {
+  const f = transferFixture(t, { workflows: 2 });
+  await f.supervisor.stop(f.source.id);
+  const result = await f.transfers.resumeExited(f.registry.getSession(f.source.id)!, f.supervisor, f.deps);
+  assert.equal(f.counts().launches, 0);
+  assert.equal(result.transfer?.state, "recovery_required");
+  assert.equal(f.registry.getTask(f.task!.id)?.sessionId, null);
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+});
+
+for (const observation of ["live", "unavailable", "unreadable", "throws", "gone"] as const) {
+  test(`exited SDK resume requires absence of its captured child lifetime: ${observation}`, async (t) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    t.after(() => { child.kill("SIGKILL"); });
+    await once(child, "spawn");
+    const { listProcessesSnapshot } = await import("../src/server/discovery/processes.ts");
+    const { recordSdkSessionProcess } = await import("../src/server/sdk/store.ts");
+    const observedProcess = (await listProcessesSnapshot()).processes.find((p) => p.pid === child.pid)!;
+    assert.ok(observedProcess.startMs > 0);
+    let observeNormally = false;
+    const f = transferFixture(t, { workflows: 2, processSnapshot: async () => {
+      const snapshot = await listProcessesSnapshot();
+      if (observeNormally) return snapshot;
+      if (observation === "throws") throw new Error("inventory failed");
+      if (observation === "unavailable") return { ...snapshot, processes: [], unknownReason: "inventory unavailable" };
+      if (observation === "unreadable") return { ...snapshot,
+        processes: snapshot.processes.map((p) => p.pid === child.pid ? { ...p, startMs: 0 } : p) };
+      return snapshot;
+    } });
+    recordSdkSessionProcess(f.source.id, { pid: observedProcess.pid, startMs: observedProcess.startMs });
+    await f.supervisor.stop(f.source.id); // End the fixture stream without killing its actual child.
+    const pins = f.bindings.map((id) => f.store.getBinding(id));
+    if (observation === "gone") {
+      const exited = once(child, "exit"); child.kill(); await exited;
+    }
+    const result = await f.transfers.resumeExited(f.registry.getSession(f.source.id)!, f.supervisor, f.deps);
+    assert.equal(f.counts().launches, observation === "gone" ? 1 : 0);
+    assert.equal(result.transfer?.state, observation === "gone" ? "awaiting_successor" : "recovery_required");
+    assert.deepEqual(getSessionTransfer(result.transfer!.id)?.facts.sourceProcess, { pid: observedProcess.pid, startMs: observedProcess.startMs });
+    assert.equal(f.registry.getTask(f.task!.id)?.sessionId, null);
+    assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+    assert.deepEqual(f.bindings.map((id) => f.store.getBinding(id)), pins);
+    if (observation === "gone") return;
+    await f.transfers.stop();
+    const restarted = new SessionTransferCoordinator(f.registry, { workflows: f.workflows, reviews: f.reviews,
+      settleTask: (id) => f.tasks.settleAfterFailedHandoff(id), processSnapshot: async () => listProcessesSnapshot() });
+    t.after(() => restarted.stop());
+    restarted.start();
+    assert.equal((await restarted.recheck(result.transfer!.id)).state, "recovery_required");
+    const exited = once(child, "exit"); child.kill(); await exited;
+    observeNormally = true;
+    assert.equal((await restarted.recheck(result.transfer!.id)).state, "failed");
+    assert.equal(f.counts().launches, 0, "neither restart nor observation launches another agent");
+  });
+}
+
+for (const observation of ["gone", "unavailable", "unreadable"] as const) {
+  test(`a rejected stop cannot restore ownership from a stale handle: ${observation}`, async (t) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    t.after(() => { child.kill("SIGKILL"); });
+    await once(child, "spawn");
+    const { listProcessesSnapshot } = await import("../src/server/discovery/processes.ts");
+    let enteredStop = false;
+    let observeNormally = false;
+    const f = transferFixture(t, { workflows: 2, processSnapshot: async () => {
+      const snapshot = await listProcessesSnapshot();
+      if (!enteredStop || observeNormally) return snapshot;
+      if (observation === "unavailable") return { ...snapshot, processes: [], unknownReason: "inventory unavailable" };
+      if (observation === "unreadable") return { ...snapshot,
+        processes: snapshot.processes.map((p) => p.pid === child.pid ? { ...p, startMs: 0 } : p) };
+      return snapshot;
+    } });
+    t.mock.method(f.supervisor, "handleFor", () => ({ recoveryProcessId: child.pid }));
+    t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+    t.mock.method(f.supervisor, "stop", async () => {
+      enteredStop = true;
+      if (observation === "gone") {
+        const exited = once(child, "exit"); child.kill(); await exited;
+      }
+      throw new Error("stop rejected before the handle was removed");
+    });
+    const pins = f.bindings.map((id) => f.store.getBinding(id));
+    const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+    assert.equal(result.transfer?.state, "recovery_required");
+    assert.equal(f.registry.getTask(f.task!.id)?.sessionId, null, "a handle alone cannot restore ownership");
+    assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+    assert.deepEqual(f.bindings.map((id) => f.store.getBinding(id)), pins);
+    assert.equal(f.counts().launches, 0);
+    if (observation !== "gone") {
+      const exited = once(child, "exit"); child.kill(); await exited;
+    }
+    observeNormally = true;
+    assert.equal((await f.transfers.recheck(result.transfer!.id)).state, "failed");
+    assert.equal(f.counts().launches, 0, "recovery observes the existing attempt without replay");
+  });
+}
+
 test("detachment preserves task edits made while terminal preparation is pending", async (t) => {
   const f = transferFixture(t);
   const prepare = f.deps.prepare!;

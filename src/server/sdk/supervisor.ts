@@ -26,6 +26,7 @@ import {
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
   confirmReservedInjection,
   releaseInjection,
@@ -42,6 +43,7 @@ import {
   getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
+  recordSdkSessionProcess,
   sdkSessionIsLive,
   setSdkSessionEffort,
   setSdkSessionModel,
@@ -189,6 +191,7 @@ export class SdkSupervisor {
     private readonly deps: {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
+      processSnapshot?: typeof listProcessesSnapshot;
     } = {},
   ) {}
 
@@ -1387,8 +1390,27 @@ export class SdkSupervisor {
     // event path writes earlier too, because a daemon dying between that event and the
     // stream ending must not leave a row claiming the session is still resumable.
     let outcome: SdkSessionStatus = "exited";
+    let observedPid: number | null = null;
+    const captureProcess = async (pid: number | null) => {
+      // A replacement must never inherit its predecessor's absence proof. Null is unknown.
+      if (pid !== observedPid) recordSdkSessionProcess(id, null);
+      observedPid = pid;
+      if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
+      try {
+        const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
+        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+        }
+      } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+    };
     try {
+      if (handle.recoveryProcessId) await captureProcess(handle.recoveryProcessId);
       for await (const evt of handle.events) {
+        const pid = handle.recoveryProcessId ?? null;
+        // No process scan per token. Binding retries a startup observation, and a changed
+        // driver PID invalidates the saved lifetime before that driver's event is published.
+        if (pid !== observedPid || (evt.kind === "bound" && pid)) await captureProcess(pid);
         let deferIdle = false;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
@@ -1437,6 +1459,7 @@ export class SdkSupervisor {
       console.error(`[sdk] event stream for ${id} failed:`, err);
       outcome = "failed";
     } finally {
+      if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);

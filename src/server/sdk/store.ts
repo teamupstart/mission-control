@@ -5,6 +5,24 @@ import type { AgentType, PermissionMode, ThinkingLevel } from "@shared/types.ts"
 // nearest thing we do know.
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { openDb } from "../db.ts";
+import { z } from "zod";
+
+const ProcessLifetime = z.object({ pid: z.number().int().positive(), startMs: z.number().positive().finite() });
+export type SdkProcessLifetime = z.infer<typeof ProcessLifetime>;
+
+/** Captured while the owned driver is observable, never inferred from its final status. */
+export function getSdkSessionProcess(id: string): SdkProcessLifetime | null {
+  const row = openDb().prepare("SELECT recovery_process_json FROM sdk_sessions WHERE id = ?").get(id);
+  try {
+    const parsed = ProcessLifetime.safeParse(JSON.parse(String(row?.recovery_process_json)));
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+export function recordSdkSessionProcess(id: string, lifetime: SdkProcessLifetime | null): void {
+  openDb().prepare("UPDATE sdk_sessions SET recovery_process_json = ? WHERE id = ?")
+    .run(lifetime ? JSON.stringify(ProcessLifetime.parse(lifetime)) : null, id);
+}
 
 /**
  * Durable rows for embedded (SDK-runtime) sessions.
@@ -207,6 +225,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
          permission_mode = excluded.permission_mode,
          status = excluded.status,
          turn_in_progress = excluded.turn_in_progress,
+         recovery_process_json = NULL,
          updated_at = excluded.updated_at`,
     )
     .run(

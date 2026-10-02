@@ -156,6 +156,13 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   inside `foreman_queues.prompted_recovery` and used in deterministic attempt markers. Append new
   values at the end; never rename, reorder, or reuse one.
 - Schedule enum values
+- Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
+  the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
+  destination in the telemetry config blob and read back by exact value through the config
+  schema. Append a shape; never rename one. The values inside the `datadog-lean` record are the
+  approved Datadog cost optimizations, so changing them needs an audit entry in
+  `docs/plans/upstart-datadog-telemetry/phase-2-lean-export-shape.md`. Telemetry gap kinds
+  (`TELEMETRY_GAP_KINDS`) are `telemetry_gaps.kind` and are append-only for the same reason
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
   values are read back by exact value and checked by the table's `CHECK` constraint, so

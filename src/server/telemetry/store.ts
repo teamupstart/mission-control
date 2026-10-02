@@ -409,6 +409,16 @@ export interface StoredSeries extends SeriesKey {
   exportedHistogram: Pick<StoredHistogram, "count" | "sum" | "buckets"> | null;
   exportedEnd: number | null;
   exportedGeneration: number | null;
+  /**
+   * The pass clock of this series' latest contribution or export. A budgeted export shape
+   * counts a series as live while this is inside the payload window.
+   *
+   * The pass clock rather than the event time: a backlog drained today can carry week-old
+   * event times, and a series admitted for it must count from the moment it was admitted.
+   */
+  lastActivity: number;
+  /** Set while a point for this series waits for the next clock hour. Null otherwise. */
+  deferredAt: number | null;
 }
 
 export interface StoredHistogram {
@@ -441,6 +451,8 @@ interface SeriesRow {
   exported_histogram_json: string | null;
   exported_end: number | null;
   exported_generation: number | null;
+  last_activity: number | null;
+  deferred_at: number | null;
 }
 
 function toSeries(row: SeriesRow): StoredSeries {
@@ -472,6 +484,8 @@ function toSeries(row: SeriesRow): StoredSeries {
       : JSON.parse(row.exported_histogram_json) as Pick<StoredHistogram, "count" | "sum" | "buckets">,
     exportedEnd: row.exported_end,
     exportedGeneration: row.exported_generation,
+    lastActivity: row.last_activity ?? Math.max(row.last_time, row.exported_end ?? 0),
+    deferredAt: row.deferred_at,
   };
 }
 
@@ -494,8 +508,9 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
        profile, policy_epoch, resource_id, instrument, dimensions_key, dimensions_json,
        catalog_version, kind, start_time, last_time, value,
        hist_count, hist_sum, hist_min, hist_max, hist_buckets,
-       exported_value, exported_histogram_json, exported_end, exported_generation
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       exported_value, exported_histogram_json, exported_end, exported_generation,
+       last_activity, deferred_at
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(profile, policy_epoch, resource_id, instrument, dimensions_key) DO UPDATE SET
        catalog_version = excluded.catalog_version,
        last_time    = excluded.last_time,
@@ -508,7 +523,9 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
        exported_value = excluded.exported_value,
        exported_histogram_json = excluded.exported_histogram_json,
        exported_end = excluded.exported_end,
-       exported_generation = excluded.exported_generation`,
+       exported_generation = excluded.exported_generation,
+       last_activity = excluded.last_activity,
+       deferred_at = excluded.deferred_at`,
   ).run(
     series.profile,
     series.policyEpoch,
@@ -530,6 +547,8 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
     series.exportedHistogram ? JSON.stringify(series.exportedHistogram) : null,
     series.exportedEnd,
     series.exportedGeneration,
+    series.lastActivity,
+    series.deferredAt,
   );
 }
 
@@ -558,7 +577,8 @@ export function putSeriesExportState(
 ): void {
   d.prepare(
     `UPDATE telemetry_series SET
-       exported_value = ?, exported_histogram_json = ?, exported_end = ?, exported_generation = ?
+       exported_value = ?, exported_histogram_json = ?, exported_end = ?, exported_generation = ?,
+       last_activity = MAX(COALESCE(last_activity, 0), ?), deferred_at = NULL
      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
        AND instrument = ? AND dimensions_key = ?`,
   ).run(
@@ -572,12 +592,167 @@ export function putSeriesExportState(
       : null,
     end,
     generation,
+    end,
     series.profile,
     series.policyEpoch,
     series.resourceId,
     series.instrument,
     series.dimensionsKey,
   );
+}
+
+/** Mark a series whose point waits for the next clock hour. Returns whether it was new. */
+export function markSeriesDeferred(d: DatabaseSync, series: SeriesKey, now: number): boolean {
+  const result = d.prepare(
+    `UPDATE telemetry_series SET deferred_at = ?
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ? AND deferred_at IS NULL`,
+  ).run(now, series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+  return Number(result.changes) === 1;
+}
+
+/**
+ * A cumulative point for a budgeted destination was queued: the series is live from this pass,
+ * and nothing is waiting. The delta counterpart is `putSeriesExportState`, which also moves the
+ * watermark; a cumulative stream has none.
+ */
+export function markSeriesExported(d: DatabaseSync, series: SeriesKey, now: number): void {
+  d.prepare(
+    `UPDATE telemetry_series SET last_activity = MAX(COALESCE(last_activity, 0), ?), deferred_at = NULL
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ?`,
+  ).run(now, series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+}
+
+/** A deferred point that went out, or that no longer has anything to send. */
+export function clearSeriesDeferral(d: DatabaseSync, series: SeriesKey): void {
+  d.prepare(
+    `UPDATE telemetry_series SET deferred_at = NULL
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ?`,
+  ).run(series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+}
+
+/** Series whose point is waiting for the next clock hour, so a pass with no events still sends them. */
+export function listDeferredSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+): StoredSeries[] {
+  const rows = d.prepare(
+    `SELECT * FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ? AND deferred_at IS NOT NULL
+      ORDER BY resource_id, instrument, dimensions_key`,
+  ).all(profile, policyEpoch) as unknown as SeriesRow[];
+  return rows.map(toSeries);
+}
+
+/**
+ * The identity of every live series in one consent epoch, for a series budget's admission.
+ *
+ * One range read over `idx_telemetry_series_live`. Liveness is evaluated here, at the moment of
+ * the check, so a series that aged out stops counting without any sweep having to run.
+ */
+export function listLiveSeriesKeys(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  liveSince: number,
+): Array<{ resourceId: string; instrument: string; dimensionsKey: string }> {
+  const rows = d.prepare(
+    `SELECT resource_id, instrument, dimensions_key FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ? AND last_activity >= ?`,
+  ).all(profile, policyEpoch, liveSince) as unknown as Array<{
+    resource_id: string;
+    instrument: string;
+    dimensions_key: string;
+  }>;
+  return rows.map((row) => ({
+    resourceId: row.resource_id,
+    instrument: row.instrument,
+    dimensionsKey: row.dimensions_key,
+  }));
+}
+
+/** Every series of one profile, for an export-shape change that starts them again from zero. */
+export function deleteProfileSeries(d: DatabaseSync, profile: TelemetryProfileId): number {
+  return Number(d.prepare(`DELETE FROM telemetry_series WHERE profile = ?`).run(profile).changes);
+}
+
+/**
+ * Series that can no longer receive data: one profile's series from a resource this process no
+ * longer runs as, idle past the reducer window. The running resource's own series are never
+ * pruned here. Retention calls this only for a profile whose export shape has a series budget,
+ * because pruning restarts a retired version's cumulative stream if that version runs again.
+ */
+export function pruneRetiredSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  currentResourceId: string,
+  idleBefore: number,
+  limit: number,
+): number {
+  return Number(
+    d.prepare(
+      `DELETE FROM telemetry_series WHERE rowid IN (
+         SELECT rowid FROM telemetry_series
+          WHERE profile = ? AND resource_id != ? AND COALESCE(last_activity, last_time) < ?
+          LIMIT ?
+       )`,
+    ).run(profile, currentResourceId, idleBefore, limit).changes,
+  );
+}
+
+/** Whether a profile has any series a prune could take, so retention resolves no resource when none can. */
+export function hasIdleSeries(d: DatabaseSync, profile: TelemetryProfileId, idleBefore: number): boolean {
+  return d.prepare(
+    `SELECT 1 FROM telemetry_series WHERE profile = ? AND COALESCE(last_activity, last_time) < ? LIMIT 1`,
+  ).get(profile, idleBefore) !== undefined;
+}
+
+// ---- the hourly export ledger ----
+
+/** The distinct series already exported in one clock hour, with their weights. */
+export function exportHourLedger(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  hourStart: number,
+): Map<string, number> {
+  const rows = d.prepare(
+    `SELECT series_digest, weight FROM telemetry_export_hours WHERE profile = ? AND hour_start = ?`,
+  ).all(profile, hourStart) as unknown as Array<{ series_digest: string; weight: number }>;
+  return new Map(rows.map((row) => [row.series_digest, row.weight]));
+}
+
+export function recordExportHour(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  hourStart: number,
+  seriesDigest: string,
+  weight: number,
+): void {
+  d.prepare(
+    `INSERT INTO telemetry_export_hours (profile, hour_start, series_digest, weight)
+     VALUES (?,?,?,?) ON CONFLICT(profile, hour_start, series_digest) DO NOTHING`,
+  ).run(profile, hourStart, seriesDigest, weight);
+  noteBytesAdded(profile.length + seriesDigest.length + 16);
+}
+
+const LEDGER_HOUR_MS = 60 * 60_000;
+
+/**
+ * The start of the oldest hour the export ledger still tracks at `now`. Retention drops hours
+ * that started before it, and the projection never charges a point to one of them.
+ */
+export function exportLedgerHorizon(now: number): number {
+  return (
+    Math.floor((now - TELEMETRY_LIMITS.exportLedgerRetentionMs) / LEDGER_HOUR_MS) * LEDGER_HOUR_MS
+  );
+}
+
+/** Drop ledger hours that started before `before`. */
+export function pruneExportHours(d: DatabaseSync, before: number): number {
+  return Number(d.prepare(`DELETE FROM telemetry_export_hours WHERE hour_start < ?`).run(before).changes);
 }
 
 export function baselineSeriesForDelta(
@@ -1187,6 +1362,7 @@ export function usedBytes(d: DatabaseSync): number {
            ),0) FROM telemetry_source_identities)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_contexts)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_resources)
+         + (SELECT COALESCE(SUM(LENGTH(profile) + LENGTH(series_digest) + 16),0) FROM telemetry_export_hours)
          AS total`,
     )
     .get() as { total: number } | undefined;

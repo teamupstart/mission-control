@@ -69,6 +69,11 @@ curl -X PUT localhost:7317/api/telemetry/config \
   -H 'content-type: application/json' \
   -d '{"user":{"temporality":"delta","networkGate":"cloudflare-edge","lateAfterMs":3600000}}'
 
+# The cost-bounded Datadog export shape. Also editable in Settings > Telemetry; see
+# "Export shapes" below for what it leaves out and what changing it resets.
+curl -X PUT localhost:7317/api/telemetry/config \
+  -H 'content-type: application/json' -d '{"user":{"exportShape":"datadog-lean"}}'
+
 curl localhost:7317/api/telemetry/health          # queue depth, bytes, gaps, pause reasons
 curl -X POST localhost:7317/api/telemetry/probe -d '{"profile":"user"}' \
   -H 'content-type: application/json'             # a real OTLP request, plus a captured fact
@@ -469,7 +474,8 @@ retained for 30 days against the payload window's 7.
 | Payload retention | 7 days | Bounds the bytes: journal facts and undelivered batches are the large objects. Settled delivery bookkeeping is swept on the same window, so the per-batch `accepted`, `rejected` and `expired` counts in the health view describe the retention window rather than the installation's whole history. |
 | Reducer/dedupe state retention | 30 days | Bounds the identities. The rolling cohorts later phases need a 30-day lookback for, and an expired source must not be importable again as fresh activity. |
 | Total logical budget | 256 MiB | Charged across contexts, journal, aggregates and both destination queues. |
-| Series per instrument / per profile | 2,000 / 10,000 | Beyond it, dimension values fold into an explicit overflow bucket. The total stays correct; only the breakdown degrades, and a gap counter says so. |
+| Series per instrument / per profile | 2,000 / 10,000 | Beyond it, dimension values fold into an explicit overflow bucket. The total stays correct; only the breakdown degrades, and a gap counter says so. On a budgeted destination, a retired app version's idle series are pruned after 30 days, so they stop counting. |
+| Weighted series per budgeted destination | 1,500 under `datadog-lean` | Live at once, and exported in any clock hour. See [Export shapes](#export-shapes). |
 | Event payload | 16 KiB | |
 | Request payload | 1 MiB | Prevented at build time rather than split afterwards. |
 | Collection and export cadence | 30 s | |
@@ -567,6 +573,117 @@ batch after an ambiguous acknowledgement repeats that delta unless the backend o
 series and timestamp. Those cases remain visible through existing retry and gap accounting; the
 exporter does not guess or reconstruct. Destinations that do not opt in remain cumulative, and
 their durable batch JSON and earlier delivery guarantees are unchanged.
+
+### Export shapes
+
+Each remote destination names an **export shape** (`exportShape`), which changes what that
+destination receives without changing what the local store, the other destination, or any span
+receives. Settings > Telemetry has an Export shape select beside Metric temporality for both
+destinations. The registry is `src/shared/telemetry-export-shapes.ts`, and
+`exportedInstruments(shapeId)` is the only statement of what a shape exports. Anything that needs
+the list, such as a dashboard validator, reads it from there rather than restating it.
+
+- **`full`** is the default and the identity. A destination that never names a shape exports
+  exactly what it exported before shapes existed, byte for byte, and
+  `test/telemetry-export-shape-projection.test.ts` pins that against a fixture taken from the
+  earlier build.
+- **`datadog-lean`** bounds what a Datadog destination is billed for. Datadog bills each distinct
+  metric name and tag combination in every hour it reports, so this shape cuts the combinations
+  rather than the facts:
+  - **No cohort gauges.** `mission.analytics.v1.*` is left out. Those gauges serve the Grafana
+    dashboards' PromQL coherence checks. They report every hour by design, and they dominated the
+    estimated bill.
+  - **Labels trimmed on the largest activity metrics.** Removed from `mission.dispatches`:
+    `resolution_source` and `resolved_effort`. Removed from `mission.action.count` and
+    `mission.automation.actions`: `actor`. Removed from `mission.sessions.ended`:
+    `ended_while_work_open`. Removed from `mission.session.segments`: `quality` and `reason`.
+    Removed from `mission.sessions.started`: `start_observation`. Removed from
+    `mission.session.operations`: `actor_basis`. Removed from `mission.session.turns`: `quality`.
+    Removed from `mission.session.effort.selections`: `applies`. Contributions that differ only
+    in a dropped label aggregate into one series. Every dropped label is still on the matching
+    span, either as a span attribute or, for `actor`, as `mission.actor.kind`, which every span
+    carries. A test refuses a shape that drops a label no span carries.
+  - **Distributions only where percentiles matter.** `mission.session.turn.duration`,
+    `mission.dispatch.duration`, `mission.workflow.duration` and `mission.workflow.node.duration`
+    stay histograms. Every other histogram is exported as a `<name>.sum` counter, in the
+    histogram's unit, and a `<name>.count` counter, in `1`. Those still give averages, at 2
+    custom metrics per combination instead of a distribution's 9. For the product audience, that
+    is seven histograms. `mission.connection.downtime` is operator-only, so it is split only for a
+    lean destination of your own.
+  - **One constant host.** Every metrics batch, and the connection probe, carries the resource
+    attribute `datadog.host.name = mission-control`. Without it, Datadog tags each point with
+    whichever gateway pod received it, and one installation's series split across pods.
+    Installations stay distinct through `service.instance.id`. Spans are not changed.
+  - **A series budget of 1,500 weighted series.** A distribution weighs 9, a sum-and-count pair
+    2, and a counter or gauge 1. The distribution weight is 9 while the gateway keeps
+    `send_aggregation_metrics: true`, and 5 if it is turned off; it is one number in the shape
+    record.
+
+**The live-series budget.** A series is live while its last contribution or export, measured on
+the projection pass clock, is within the 7-day payload window. Every series that is not live
+right now must be admitted, whether it is new or a stored series that aged out and reports again.
+Each `(resource, instrument)` pair has at most one overflow series, with every kept label set to
+`__overflow__`. A pair with a live series reserves that overflow series' weight until the
+overflow series is live itself. A series is admitted only if live weight, plus reservations, plus
+its own weight, plus its pair's reservation if the pair has none yet, stays within the budget.
+What does not fit folds into its pair's overflow series, which is already paid for, and records
+`series_overflow`. If the pair has neither a live series nor a live overflow series, the
+contribution is dropped and counted as `budget_exhausted`. A refused resume leaves its stored row
+untouched, so once it is admitted again, its next delta excludes everything that went to overflow
+meanwhile. Committed weight is read from `idx_telemetry_series_live` at a pass's first admission,
+never kept as a running counter, so a series that ages out frees its room without a sweep. A
+stored series that is carried into a pass without a contribution, because it is waiting or due a
+heartbeat, is admitted the same way before it is exported, since exporting it makes it live again.
+If there is no room it keeps waiting, with its watermark untouched. The 2,000 and 10,000
+ceilings above still apply to every shape.
+
+**The hourly export ledger.** The live budget bounds one shape and one consent epoch. Datadog
+counts an hour, and a shape change or a consent change part-way through it does not start the hour
+again. So a budgeted destination also records, in `telemetry_export_hours`, each distinct series
+it exported in each UTC clock hour of point time, and its weight. The ledger is keyed by profile
+and hour, never by shape or epoch, and it survives restarts. A point for a series already in the
+hour's ledger always goes out. A point for a new series goes out only if the hour stays within the
+budget. Otherwise it waits: its watermark does not move, so a counter's delta arrives whole in a
+later hour, and a waiting gauge sends its then-current value. Each wait is counted once as
+`hourly_cap_deferred`. Waiting series are carried by later passes even when nothing new happens.
+A waiting cumulative point is sent stamped with the pass clock rather than its latest event time.
+Otherwise every retry would ask the same full hour for room. Its value is unchanged, because the
+total at that moment is the total at its latest event. A series takes room in an hour's ledger only
+when its batch is actually queued, and a cumulative export keeps a budgeted series live just as a
+delta export does.
+A cumulative point carries its latest event's time, so a fact projected hours late still lands in
+the hour it happened in. The ledger therefore keeps each hour for
+`TELEMETRY_LIMITS.exportLedgerRetentionMs`, the 7-day payload window plus one hour. That is as long
+as a captured fact can still be projected into it, so a delayed fact is charged against what its
+hour already used. A cumulative point whose hour is older than that is stamped with the pass clock
+and charged to the current hour, whose allowance is on record, with its value unchanged. Retention
+sweeps older rows, and every row is charged to the byte budget: at most one row per distinct series
+exported in each hour. The one case the ledger cannot control is how Datadog attributes a backlog
+delivered late, for example after a day offline with Historical Metrics Ingestion enabled.
+
+**Changing a shape** starts that destination's metric series again from zero, and Settings says so
+under the select before you save. In the same transaction as the config write, the destination
+generation advances, which fences queued batches of the old shape exactly as an endpoint change
+does. The profile's `telemetry_series` rows are also deleted, and a `shape_changed` gap is
+recorded. That is a complete reset because every counter and histogram total, and every delta
+watermark, lives in those rows. The catalog projection holds no reducer state, and a projection
+may not keep cumulative totals in its own state; the rule is on `registerTelemetryProjection`.
+Projection checkpoints are kept, so facts already projected are not counted again, and facts
+captured but not yet projected count once, under the new shape. The analytical projection's
+gauges are recomputed from its retained facts, so they return with their current values when a
+destination switches back to `full`. The consent epoch does not move, and the hourly ledger is
+kept.
+
+**Pruning.** For a destination whose shape has a series budget, retention deletes series whose
+resource is not the running process's resource and whose last activity is older than the 30-day
+reducer window. A resource is an app version, so these are series a running build can no longer
+contribute to, and otherwise they would count against that destination's ceilings forever. The
+running resource's series are never pruned, at any age. Each pass reports the count as
+`prunedSeries`. A `full` destination and local-only collection are never pruned. A pruned series
+whose version runs again, for example after a rollback, restarts its cumulative stream from zero,
+and only a budgeted destination accepts that, because it needs the room. For any other destination
+a retired version's series still count toward the 10,000-series profile ceiling, as they always
+have.
 
 ### What is not proven
 

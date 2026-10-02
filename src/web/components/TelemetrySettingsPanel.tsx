@@ -5,6 +5,11 @@ import type {
   TelemetryPauseReason,
 } from "@shared/telemetry.ts";
 import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
+import {
+  TELEMETRY_EXPORT_SHAPE_IDS,
+  TELEMETRY_EXPORT_SHAPES,
+  type TelemetryExportShapeId,
+} from "@shared/telemetry-export-shapes.ts";
 import type { TelemetryState } from "../useTelemetry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -191,6 +196,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const [headerName, setHeaderName] = useState("authorization");
   const [credential, setCredential] = useState("");
   const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
+  const [shape, setShape] = useState<TelemetryExportShapeId>("full");
   const [dirty, setDirty] = useState(false);
 
   // Adopt the stored values whenever the daemon's copy changes, unless the operator is midway
@@ -200,6 +206,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
     setEndpoint(config.user.endpoint);
     setHeaderName(config.user.headerName);
     setTemporality(config.user.temporality);
+    setShape(config.user.exportShape);
   }, [config, dirty]);
 
   const credentialAfter = credential.length > 0 || (status?.userCredentialConfigured ?? false);
@@ -216,6 +223,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
         endpoint: endpoint.trim(),
         headerName: headerName.trim() || "authorization",
         temporality,
+        exportShape: shape,
       },
       ...(credential.length > 0 ? { userCredential: credential } : {}),
     });
@@ -244,6 +252,16 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
           onChange={(value) => {
             setDirty(true);
             setTemporality(value);
+          }}
+        />
+
+        <ExportShapeSelect
+          destination="your own backend"
+          value={shape}
+          stored={config?.user.exportShape ?? null}
+          onChange={(value) => {
+            setDirty(true);
+            setShape(value);
           }}
         />
 
@@ -413,12 +431,14 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const product = profile(state, "product");
   const [endpoint, setEndpoint] = useState("");
   const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
+  const [shape, setShape] = useState<TelemetryExportShapeId>("full");
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (dirty || !config) return;
     setEndpoint(config.product.endpoint);
     setTemporality(config.product.temporality);
+    setShape(config.product.exportShape);
   }, [config, dirty]);
 
   // The same shared predicate the personal destination and the daemon both use. No credential is
@@ -467,6 +487,16 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
           }}
         />
 
+        <ExportShapeSelect
+          destination="product analytics"
+          value={shape}
+          stored={config?.product.exportShape ?? null}
+          onChange={(value) => {
+            setDirty(true);
+            setShape(value);
+          }}
+        />
+
         {check && !check.ok && <span className="settings-error">{check.detail}</span>}
         {check?.warning && <span className="settings-warn">{check.warning}</span>}
 
@@ -477,7 +507,9 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               disabled={!config || busy !== null || (check !== null && !check.ok)}
               aria-label="Save the product analytics destination"
               onClick={() => {
-                void update({ product: { endpoint: endpoint.trim(), temporality } }).then((ok) => {
+                void update({
+                  product: { endpoint: endpoint.trim(), temporality, exportShape: shape },
+                }).then((ok) => {
                   if (ok) setDirty(false);
                 });
               }}
@@ -754,6 +786,55 @@ function MetricTemporalitySelect({
         </select>
       </Tooltip>
     </label>
+  );
+}
+
+/**
+ * Which export shape a destination receives, with the shape's own sentence about what it
+ * leaves out. Every option and sentence comes from the shape registry, so this never restates
+ * what a shape does.
+ *
+ * A shape change starts the destination's metric series again from zero, so the panel says so
+ * BEFORE the save rather than leaving a person to find a reset in their backend afterwards.
+ */
+function ExportShapeSelect({
+  destination,
+  value,
+  stored,
+  onChange,
+}: {
+  destination: string;
+  value: TelemetryExportShapeId;
+  stored: TelemetryExportShapeId | null;
+  onChange: (value: TelemetryExportShapeId) => void;
+}): React.JSX.Element {
+  return (
+    <>
+      <label className="ts-field">
+        <span className="ts-field-label">Export shape</span>
+        <Tooltip label="Choose what this destination receives. Datadog lean bounds what a Datadog destination is billed for">
+          <select
+            className="field-input"
+            value={value}
+            aria-label={`Export shape for ${destination}`}
+            onChange={(event) => onChange(event.target.value as TelemetryExportShapeId)}
+          >
+            {TELEMETRY_EXPORT_SHAPE_IDS.map((id) => (
+              <option key={id} value={id}>
+                {TELEMETRY_EXPORT_SHAPES[id].label}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+      </label>
+      <span className="kb-row-desc">{TELEMETRY_EXPORT_SHAPES[value].summary}</span>
+      {stored !== null && stored !== value && (
+        <span className="settings-warn">
+          Saving starts this destination's metric series again from zero under the new shape.
+          Anything already sent stays as it is.
+        </span>
+      )}
+    </>
   );
 }
 

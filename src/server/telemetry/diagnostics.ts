@@ -14,6 +14,7 @@ import {
   type TelemetryProfileId,
 } from "@shared/telemetry.ts";
 import { DAEMON_STARTED_EVENT, TELEMETRY_PROBE_EVENT } from "@shared/telemetry-catalog.ts";
+import { exportShape } from "@shared/telemetry-export-shapes.ts";
 import { TELEMETRY_SCOPE } from "./projection.ts";
 import { captureTelemetry, resourceAttributes } from "./capture.ts";
 import { getTelemetryConfig, profileIsExporting, profileSalt, telemetryIdentity } from "./config.ts";
@@ -123,7 +124,10 @@ export async function runTelemetryProbe(
     // does not reach it. Its own request timeout is the bound.
     abort: deps.abort ?? null,
   };
-  const body = serializeMetrics({ resource: resourceAttributes(), scope: TELEMETRY_SCOPE, metrics: [] });
+  // Under the destination's export shape, so the probe arrives with the same constant host
+  // attribute its batches do and never mints a host of its own.
+  const resource = { ...resourceAttributes(), ...exportShape(destination.exportShape).resourceAttributes };
+  const body = serializeMetrics({ resource, scope: TELEMETRY_SCOPE, metrics: [] });
 
   const started = resolved.now();
   const outcome = await send(

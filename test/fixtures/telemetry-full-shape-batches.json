@@ -1,0 +1,894 @@
+{
+  "cumulative": [
+    {
+      "resource": {
+        "deployment.environment.name": "local",
+        "mission.identity.epoch": "1",
+        "service.instance.id": "fixture-installation",
+        "service.name": "mission-control",
+        "service.version": "<release>"
+      },
+      "scope": {
+        "name": "mission-control",
+        "version": "2"
+      },
+      "metrics": [
+        {
+          "name": "mission.daemon.starts",
+          "description": "Daemon starts observed by this installation.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 1000,
+          "endTimeMs": 1000,
+          "attributes": {
+            "launch_mode": "daemon",
+            "schema_upgraded": "false"
+          },
+          "value": 1,
+          "histogram": null
+        },
+        {
+          "name": "mission.daemon.startup.duration",
+          "description": "Wall time from daemon process start to the API answering.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 1000,
+          "endTimeMs": 1000,
+          "attributes": {
+            "launch_mode": "daemon"
+          },
+          "value": 250,
+          "histogram": {
+            "count": 1,
+            "sum": 250,
+            "min": 250,
+            "max": 250,
+            "boundaries": [
+              50,
+              100,
+              250,
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "mission.dispatch.duration",
+          "description": "Wall time from dispatch admission to a running agent, or to the refusal that stopped it.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 2000,
+          "endTimeMs": 2100,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal"
+          },
+          "value": 5500,
+          "histogram": {
+            "count": 2,
+            "sum": 5500,
+            "min": 1500,
+            "max": 4000,
+            "boundaries": [
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000,
+              60000,
+              120000,
+              300000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 2000,
+          "endTimeMs": 2000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "task",
+            "resolved_effort": "high"
+          },
+          "value": 1,
+          "histogram": null
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 2100,
+          "endTimeMs": 2100,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "kind",
+            "resolved_effort": "low"
+          },
+          "value": 1,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.accepted",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.expired",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.last_accepted_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.observed_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 2200,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.oldest_pending_age",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.pending",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 3,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.pending_bytes",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "By",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.rejected",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.retrying",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 2200,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        }
+      ]
+    },
+    {
+      "resource": {
+        "deployment.environment.name": "local",
+        "mission.identity.epoch": "1",
+        "service.instance.id": "fixture-installation",
+        "service.name": "mission-control",
+        "service.version": "<release>"
+      },
+      "scope": {
+        "name": "mission-control",
+        "version": "2"
+      },
+      "metrics": [
+        {
+          "name": "mission.dispatch.duration",
+          "description": "Wall time from dispatch admission to a running agent, or to the refusal that stopped it.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 2000,
+          "endTimeMs": 20000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal"
+          },
+          "value": 7000,
+          "histogram": {
+            "count": 3,
+            "sum": 7000,
+            "min": 1500,
+            "max": 4000,
+            "boundaries": [
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000,
+              60000,
+              120000,
+              300000
+            ],
+            "buckets": [
+              0,
+              0,
+              2,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 20000,
+          "endTimeMs": 20000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "automation",
+            "resolved_effort": "high"
+          },
+          "value": 1,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.accepted",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.expired",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.last_accepted_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.observed_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 20100,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.oldest_pending_age",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.pending",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 1,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.pending_bytes",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "By",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.rejected",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        },
+        {
+          "name": "mission.telemetry.health.retrying",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 20100,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null
+        }
+      ]
+    }
+  ],
+  "delta": [
+    {
+      "resource": {
+        "deployment.environment.name": "local",
+        "mission.identity.epoch": "1",
+        "service.instance.id": "fixture-installation",
+        "service.name": "mission-control",
+        "service.version": "<release>"
+      },
+      "scope": {
+        "name": "mission-control",
+        "version": "2"
+      },
+      "metrics": [
+        {
+          "name": "mission.daemon.starts",
+          "description": "Daemon starts observed by this installation.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 1000,
+          "endTimeMs": 10000,
+          "attributes": {
+            "launch_mode": "daemon",
+            "schema_upgraded": "false"
+          },
+          "value": 1,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.daemon.startup.duration",
+          "description": "Wall time from daemon process start to the API answering.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 1000,
+          "endTimeMs": 10000,
+          "attributes": {
+            "launch_mode": "daemon"
+          },
+          "value": 250,
+          "histogram": {
+            "count": 1,
+            "sum": 250,
+            "min": null,
+            "max": null,
+            "boundaries": [
+              50,
+              100,
+              250,
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.dispatch.duration",
+          "description": "Wall time from dispatch admission to a running agent, or to the refusal that stopped it.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 2000,
+          "endTimeMs": 10000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal"
+          },
+          "value": 5500,
+          "histogram": {
+            "count": 2,
+            "sum": 5500,
+            "min": null,
+            "max": null,
+            "boundaries": [
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000,
+              60000,
+              120000,
+              300000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 2000,
+          "endTimeMs": 10000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "task",
+            "resolved_effort": "high"
+          },
+          "value": 1,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 2100,
+          "endTimeMs": 10000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "kind",
+            "resolved_effort": "low"
+          },
+          "value": 1,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.accepted",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.expired",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.last_accepted_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.observed_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 2200,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.oldest_pending_age",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.pending",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 3,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.pending_bytes",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "By",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.rejected",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.retrying",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 2200,
+          "endTimeMs": 10000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 0,
+          "histogram": null,
+          "temporality": "delta"
+        }
+      ]
+    },
+    {
+      "resource": {
+        "deployment.environment.name": "local",
+        "mission.identity.epoch": "1",
+        "service.instance.id": "fixture-installation",
+        "service.name": "mission-control",
+        "service.version": "<release>"
+      },
+      "scope": {
+        "name": "mission-control",
+        "version": "2"
+      },
+      "metrics": [
+        {
+          "name": "mission.dispatch.duration",
+          "description": "Wall time from dispatch admission to a running agent, or to the refusal that stopped it.",
+          "unit": "ms",
+          "kind": "histogram",
+          "valueType": "double",
+          "startTimeMs": 10000,
+          "endTimeMs": 30000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal"
+          },
+          "value": 1500,
+          "histogram": {
+            "count": 1,
+            "sum": 1500,
+            "min": null,
+            "max": null,
+            "boundaries": [
+              500,
+              1000,
+              2500,
+              5000,
+              10000,
+              30000,
+              60000,
+              120000,
+              300000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.dispatches",
+          "description": "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+          "unit": "1",
+          "kind": "counter",
+          "valueType": "int",
+          "startTimeMs": 20000,
+          "endTimeMs": 30000,
+          "attributes": {
+            "outcome": "launched",
+            "agent": "claude",
+            "runtime": "terminal",
+            "task_kind": "ship",
+            "resolution_source": "automation",
+            "resolved_effort": "high"
+          },
+          "value": 1,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.observed_at",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "s",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 10000,
+          "endTimeMs": 30000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 20100,
+          "histogram": null,
+          "temporality": "delta"
+        },
+        {
+          "name": "mission.telemetry.health.pending",
+          "description": "Is this destination draining its durable queue?",
+          "unit": "{item}",
+          "kind": "gauge",
+          "valueType": "double",
+          "startTimeMs": 10000,
+          "endTimeMs": 30000,
+          "attributes": {
+            "profile": "user"
+          },
+          "value": 1,
+          "histogram": null,
+          "temporality": "delta"
+        }
+      ]
+    }
+  ]
+}

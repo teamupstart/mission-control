@@ -24,7 +24,15 @@ const { registerTelemetryProjection, resetTelemetryRegistrations } = await impor
   "../src/server/telemetry/registration.ts"
 );
 const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
-const { getDestination, getProjectionState, getSeries, listGaps, listSeries, resetUsedBytesCache } =
+const {
+  exportLedgerHorizon,
+  getDestination,
+  getProjectionState,
+  getSeries,
+  listGaps,
+  listSeries,
+  resetUsedBytesCache,
+} =
   await import("../src/server/telemetry/store.ts");
 const { SESSION_KILL_REQUESTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
 const { ANALYTICAL_METRICS } = await import("../src/shared/telemetry-projections/index.ts");
@@ -661,6 +669,27 @@ test("ledger: a point from an hour the ledger no longer tracks is charged to the
   assert.ok(sent.every((p) => p.endTimeMs === late && p.value === 2), "stamped now, total unchanged");
   assert.equal(ledgerWeight(hourOf(late)), 3);
   assert.equal(ledgerWeight(hourOf(T0)), 0);
+});
+
+test("ledger: the horizon is exact: a point at it keeps its event hour, one a millisecond older is restamped", () => {
+  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0 - HOUR);
+  captureOnly(T0 - 1, [{ emissions: [counter("before-horizon", 2)] }]);
+  captureOnly(T0, [{ emissions: [counter("at-horizon", 2)] }]);
+
+  // Thirty minutes into the hour that puts the ledger's oldest tracked hour at exactly T0.
+  const late = T0 + TELEMETRY_LIMITS.exportLedgerRetentionMs + 30 * MINUTE;
+  assert.equal(exportLedgerHorizon(late), T0);
+  // Retention at the same clock keeps that hour, so the two agree on what is tracked.
+  runRetentionPass(late);
+  runProjectionPass(late);
+
+  const sent = (action: string) => points().filter((p) => p.attributes.action === action);
+  assert.deepEqual(sent("at-horizon").map((p) => [p.endTimeMs, p.value]), [[T0, 2]]);
+  assert.deepEqual(sent("before-horizon").map((p) => [p.endTimeMs, p.value]), [[late, 2]]);
+  assert.equal(ledgerWeight(T0), 1, "the point at the horizon is charged to its own, tracked hour");
+  assert.equal(ledgerWeight(hourOf(late)), 1, "the older one is charged to the current hour");
+  assert.equal(ledgerWeight(T0 - HOUR), 0, "and nothing is charged to the untracked hour");
 });
 
 test("a full destination's late cumulative point keeps its event time", () => {

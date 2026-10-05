@@ -166,6 +166,39 @@ test("metric temporality is saved independently for each destination", async ({
   expect(status.config.product.temporality).toBe("cumulative");
 });
 
+test("an edit made while a destination save is pending remains in the draft", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const endpoint = dashboard.getByLabel("Telemetry export endpoint");
+  await endpoint.fill("http://127.0.0.1:14318");
+
+  let releaseSave!: () => void;
+  let requestStarted!: () => void;
+  const held = new Promise<void>((resolve) => { releaseSave = resolve; });
+  const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+  await dashboard.route("**/api/telemetry/config", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    requestStarted();
+    await held;
+    await route.continue();
+  });
+
+  const save = dashboard.getByRole("button", { name: "Save destination", exact: true });
+  await save.click();
+  await started;
+  await endpoint.fill("http://127.0.0.1:24318");
+  const credential = dashboard.getByLabel("Telemetry export credential");
+  await credential.fill("later-token");
+  releaseSave();
+  await expect(save).toBeEnabled();
+  await expect(endpoint).toHaveValue("http://127.0.0.1:24318");
+  await expect(credential).toHaveValue("later-token");
+
+  const stored = (await (await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)).json()) as {
+    config: { user: { endpoint: string } };
+  };
+  expect(stored.config.user.endpoint).toBe("http://127.0.0.1:14318");
+});
+
 test("local capture survives a daemon restart, which is what saved locally means", async ({
   dashboard,
   daemon,

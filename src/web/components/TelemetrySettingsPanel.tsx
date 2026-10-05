@@ -193,6 +193,13 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
+  const editVersionRef = useRef(0);
+
+  const markDirty = (): void => {
+    editVersionRef.current += 1;
+    dirtyRef.current = true;
+    setDirty(true);
+  };
 
   // Adopt the stored values whenever the daemon's copy changes, unless the operator is midway
   // through an edit - in which case their typing wins until they save or the panel remounts.
@@ -212,6 +219,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
       : null;
 
   const save = async (): Promise<void> => {
+    const submittedVersion = editVersionRef.current;
     const ok = await update({
       user: {
         endpoint: endpoint.trim(),
@@ -220,7 +228,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
       },
       ...(credential.length > 0 ? { userCredential: credential } : {}),
     });
-    if (ok) {
+    if (ok && editVersionRef.current === submittedVersion) {
       dirtyRef.current = false;
       setDirty(false);
       // Never retained after a successful save. The daemon holds it in its own secret table and
@@ -244,8 +252,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
           destination="your own backend"
           value={temporality}
           onChange={(value) => {
-            dirtyRef.current = true;
-            setDirty(true);
+            markDirty();
             setTemporality(value);
           }}
         />
@@ -260,8 +267,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry export endpoint"
             onChange={(e) => {
-              dirtyRef.current = true;
-              setDirty(true);
+              markDirty();
               setEndpoint(e.target.value);
             }}
           />
@@ -276,8 +282,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry credential header name"
             onChange={(e) => {
-              dirtyRef.current = true;
-              setDirty(true);
+              markDirty();
               setHeaderName(e.target.value);
             }}
           />
@@ -298,8 +303,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry export credential"
             onChange={(e) => {
-              dirtyRef.current = true;
-              setDirty(true);
+              markDirty();
               setCredential(e.target.value);
             }}
           />

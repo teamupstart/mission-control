@@ -185,6 +185,15 @@ test("an unreadable profiles answer is indeterminate, while a clean non-match is
   for (const answer of indeterminate) {
     assert.deepEqual(await detectOrganizationState(harness(answer).deps), { kind: "indeterminate" });
   }
+  // An enrollment value that is neither Yes nor No is unread, not "not enrolled".
+  for (const value of ["", "   ", "Unknown", "Pending", "N/A", "Yesterday", "Nope"]) {
+    const lines = [`MDM enrollment: ${value}`, "MDM server: https://upstart.jamfcloud.com/mdm/ServerURL"];
+    assert.deepEqual(
+      await detectOrganizationState(harness(ok(profilesOutput(lines))).deps),
+      { kind: "indeterminate" },
+      JSON.stringify(value),
+    );
+  }
   for (const lines of [
     ["MDM enrollment: No"],
     ["MDM enrollment: Yes (User Approved)"],

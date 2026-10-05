@@ -40,8 +40,9 @@ const READ_TIMEOUT_MS = 2000;
  *   MDM enrollment: Yes (User Approved)
  *   MDM server: https://example.jamfcloud.com/mdm/ServerURL
  *
- * An output with no `MDM enrollment:` line at all is unrecognized and answers null, rather
- * than being read as "not enrolled": the reader does not know what it was shown.
+ * An output with no `MDM enrollment:` line at all, or one whose value is neither Yes nor No, is
+ * unrecognized and answers null, rather than being read as "not enrolled": the reader does not
+ * know what it was shown.
  */
 export async function readMdmEnrollment(deps: MacosReaderDeps): Promise<MdmEnrollment | null> {
   let result;
@@ -56,9 +57,14 @@ export async function readMdmEnrollment(deps: MacosReaderDeps): Promise<MdmEnrol
   if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
   const enrollment = lineValue(result.stdout, "MDM enrollment");
   if (enrollment === null) return null;
+  // Only an explicit Yes or No is an answer. An empty or unfamiliar value - a new macOS
+  // wording, a truncated line - is unread, not "not enrolled": reading it as No would withdraw
+  // a managed Mac's settings on a fact nobody established.
+  const enrolled = /^yes\b/i.test(enrollment) ? true : /^no\b/i.test(enrollment) ? false : null;
+  if (enrolled === null) return null;
   const server = lineValue(result.stdout, "MDM server");
   return {
-    enrolled: /^yes\b/i.test(enrollment),
+    enrolled,
     serverUrl: server === null || server.length === 0 ? null : server,
   };
 }

@@ -228,8 +228,9 @@ request runs a subprocess. `MISSION_ORGANIZATION=none` turns detection off.
 a loopback URL, which then replaces the preset endpoint. Otherwise the force is ignored and
 logged. Both are diagnostic overrides, not Settings controls.
 
-An answer from `profiles` that cannot be read (a timeout, a failed exit, an overflow, or output it
-does not recognize) is not an unenrollment, so nothing is applied or withdrawn. A Mac that is
+An answer from `profiles` that cannot be read (a timeout, a failed exit, an overflow, output it
+does not recognize, or an `MDM enrollment` value other than an explicit Yes or No) is not an
+unenrollment, so nothing is applied or withdrawn. A Mac that is
 already managed keeps its stored settings and its lock: the lock this daemon holds, or at start
 the one the stored record names. A machine that was never managed stays unmanaged. **Re-check**
 answers 503 ("nothing changed"), and the next start or Re-check reads again. Only a clean answer

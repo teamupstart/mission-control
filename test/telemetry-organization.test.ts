@@ -614,6 +614,9 @@ const UNREADABLE_ANSWERS = [
   { stdout: "", code: 1 },
   { stdout: ENROLLED_IN_UPSTART, code: null, outcomeUnknown: true },
   { stdout: "profiles: something else entirely\n", code: 0 },
+  // Well-formed lines, but an enrollment value that is neither Yes nor No.
+  { stdout: "MDM enrollment:\nMDM server: https://upstart.jamfcloud.com/mdm/ServerURL\n", code: 0 },
+  { stdout: "MDM enrollment: Unknown\nMDM server: https://upstart.jamfcloud.com/mdm/ServerURL\n", code: 0 },
 ];
 
 test("an unreadable enrollment on Re-check keeps a managed Mac exactly as it is", async () => {

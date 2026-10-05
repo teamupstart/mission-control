@@ -7476,6 +7476,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: `Could not update telemetry settings: ${detail}` }, 500);
     }
     if (outcome.kind === "refused") return c.json({ error: outcome.error }, 409);
+    if (outcome.kind === "indeterminate") {
+      return c.json(
+        {
+          error:
+            "Could not read this Mac's device management enrollment just now, so nothing changed. Re-check again in a moment.",
+        },
+        503,
+      );
+    }
     publishSettingsStatus(registry);
     return c.json(telemetryStatus());
   });

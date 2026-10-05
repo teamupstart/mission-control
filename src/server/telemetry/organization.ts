@@ -29,7 +29,8 @@ import { ORGANIZATION_IDS } from "@shared/organizations.ts";
 import {
   currentOrganization,
   defaultOrganizationDetectionDeps,
-  detectOrganization,
+  detectOrganizationState,
+  heldOrganization,
   publishOrganization,
   withdrawingOrganization,
   type DetectedOrganization,
@@ -46,7 +47,9 @@ export type OrganizationApplyOutcome =
   | { kind: "unmanaged" }
   | { kind: "applied"; first: boolean; changed: boolean }
   | { kind: "withdrawn"; restored: "previous" | "cleared" }
-  | { kind: "refused"; error: string };
+  | { kind: "refused"; error: string }
+  /** The enrollment could not be read, so nothing was applied or withdrawn. */
+  | { kind: "indeterminate" };
 
 /** The stored record, or null when there is none or it cannot be read by this build. */
 export function telemetryOrganizationRecord(): TelemetryOrganizationRecord | null {
@@ -317,8 +320,15 @@ export function recheckOrganization(
   deps?: OrganizationDetectionDeps,
   now = Date.now(),
 ): Promise<OrganizationApplyOutcome> {
-  const run = settling.catch(() => {}).then(async () => {
-    const detected = await detectOrganization(deps ?? defaultOrganizationDetectionDeps());
+  const run = settling.catch(() => {}).then(async (): Promise<OrganizationApplyOutcome> => {
+    const state = await detectOrganizationState(deps ?? defaultOrganizationDetectionDeps());
+    if (state.kind === "indeterminate") {
+      // An unreadable answer is not an unenrollment. Change nothing, and keep the lock over
+      // whatever is stored; the next start or Re-check reads again.
+      publishOrganization(heldLock());
+      return { kind: "indeterminate" };
+    }
+    const detected = state.kind === "matched" ? state.organization : null;
     let outcome: OrganizationApplyOutcome;
     try {
       outcome = applyOrganization(detected, now);
@@ -353,6 +363,27 @@ function settledLock(detected: DetectedOrganization | null): DetectedOrganizatio
   }
   if (!recordRemains) return null;
   return withdrawingOrganization(recordOrganization() ?? fallbackEntry());
+}
+
+/**
+ * The lock to keep when the enrollment could not be read.
+ *
+ * The lock this daemon already holds, unchanged - forced endpoint, withdrawal state and all. A
+ * daemon that holds none yet (an unreadable read at start) is locked if a managed record is
+ * stored, named after its organization, and left unmanaged if none is: a Mac nothing was ever
+ * applied to stays exactly as it was. If the store cannot be asked, the lock holds.
+ */
+function heldLock(): DetectedOrganization | null {
+  const held = currentOrganization();
+  if (held !== null) return held;
+  let recordRemains: boolean;
+  try {
+    recordRemains = hasAppConfigRow(RECORD_ENTRY);
+  } catch {
+    recordRemains = true;
+  }
+  if (!recordRemains) return null;
+  return heldOrganization(recordOrganization() ?? fallbackEntry());
 }
 
 /** The organization a stored record names, readable or not, when it names a known one. */
@@ -397,6 +428,10 @@ export function describeOrganizationOutcome(outcome: OrganizationApplyOutcome): 
   switch (outcome.kind) {
     case "unmanaged":
       return null;
+    case "indeterminate":
+      return organization === null
+        ? null
+        : `[organization] could not read this Mac's device management enrollment; the telemetry settings ${organization.entry.label} manages are unchanged`;
     case "applied":
       return outcome.first
         ? `[organization] ${organization?.entry.label ?? "an organization"} manages telemetry on this Mac; its product destination is configured and off until pilot enrollment`

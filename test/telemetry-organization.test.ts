@@ -584,6 +584,85 @@ test("a failed first application never sends to a previous destination that is a
   assert.ok(after.to(`${GATEWAY}/v1/metrics`).length > 0, "a stored enrollment lets it send");
 });
 
+// ---- an enrollment that cannot be read ----
+
+const ENROLLED_IN_UPSTART =
+  "MDM enrollment: Yes (User Approved)\nMDM server: https://upstart.jamfcloud.com/mdm/ServerURL\n";
+
+/** Production-shaped detection whose single `profiles` call answers `answer`. */
+function profilesAnswers(answer: { stdout: string; code: number | null; outcomeUnknown?: boolean }): DetectionDeps {
+  return {
+    ...defaultOrganizationDetectionDeps(),
+    platform: "darwin",
+    env: {},
+    launchMode: "desktop",
+    stateHome: "/Users/someone/.mission-control",
+    tmpdir: "/private/var/folders/xy/T",
+    realpath: async (path) => path,
+    warn: () => {},
+    run: (async () => ({
+      stdout: answer.stdout,
+      stderr: "",
+      code: answer.code,
+      outcomeUnknown: answer.outcomeUnknown ?? false,
+      overflowed: false,
+    })) as DetectionDeps["run"],
+  };
+}
+
+const UNREADABLE_ANSWERS = [
+  { stdout: "", code: 1 },
+  { stdout: ENROLLED_IN_UPSTART, code: null, outcomeUnknown: true },
+  { stdout: "profiles: something else entirely\n", code: 0 },
+];
+
+test("an unreadable enrollment on Re-check keeps a managed Mac exactly as it is", async () => {
+  assert.equal((await recheckOrganization(profilesAnswers({ stdout: ENROLLED_IN_UPSTART, code: 0 }), 1_000)).kind, "applied");
+  assert.ok(setPilotEnrollment(true, 2_000).ok);
+  const config = getTelemetryConfig();
+  const record = telemetryOrganizationRecord();
+  for (const answer of UNREADABLE_ANSWERS) {
+    assert.deepEqual(await recheckOrganization(profilesAnswers(answer), 3_000), { kind: "indeterminate" });
+    assert.equal(currentOrganization()?.entry.id, "upstart", JSON.stringify(answer));
+    assert.deepEqual(getTelemetryConfig(), config, "nothing was withdrawn");
+    assert.deepEqual(telemetryOrganizationRecord(), record, "the record is kept");
+    assert.equal((await send("/api/telemetry/config", "PUT", { enabled: false })).status, 403);
+  }
+  // A definite answer still withdraws.
+  const left = await recheckOrganization(profilesAnswers({ stdout: "MDM enrollment: No\n", code: 0 }), 4_000);
+  assert.equal(left.kind, "withdrawn");
+  assert.equal(currentOrganization(), null);
+});
+
+test("an unreadable enrollment at startup keeps the stored managed settings locked", async () => {
+  assert.equal((await recheckOrganization(profilesAnswers({ stdout: ENROLLED_IN_UPSTART, code: 0 }), 1_000)).kind, "applied");
+  assert.ok(setPilotEnrollment(true, 2_000).ok);
+  const config = getTelemetryConfig();
+  // A fresh daemon whose first `profiles` call fails.
+  publishOrganization(null);
+  assert.deepEqual(await recheckOrganization(profilesAnswers({ stdout: "", code: 1 }), 3_000), { kind: "indeterminate" });
+  const held = currentOrganization();
+  assert.equal(held?.entry.id, "upstart");
+  assert.match(held?.evidence ?? "", /could not read this Mac's device management enrollment/);
+  assert.deepEqual(getTelemetryConfig(), config, "nothing was withdrawn");
+  assert.ok(telemetryOrganizationRecord());
+  assert.equal((await send("/api/telemetry/config", "PUT", { enabled: false })).status, 403);
+  // The next readable answer brings it back to ordinary keeping in step.
+  assert.equal((await recheckOrganization(profilesAnswers({ stdout: ENROLLED_IN_UPSTART, code: 0 }), 4_000)).kind, "applied");
+  assert.equal(currentOrganization()?.forced, false);
+  assert.deepEqual(getTelemetryConfig(), config);
+});
+
+test("an unreadable enrollment on a machine never managed leaves it unmanaged and editable", async () => {
+  assert.ok(setTelemetryConfig({ enabled: true, product: { endpoint: ORIGINAL } }).ok);
+  const before = getTelemetryConfig();
+  assert.deepEqual(await recheckOrganization(profilesAnswers({ stdout: "", code: 1 }), 3_000), { kind: "indeterminate" });
+  assert.equal(currentOrganization(), null);
+  assert.deepEqual(getTelemetryConfig(), before);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
+  assert.equal((await send("/api/telemetry/config", "PUT", { enabled: false })).status, 200);
+});
+
 test("an undetected machine with no record is left exactly as it was", async () => {
   assert.ok(setTelemetryConfig({ enabled: true, product: { endpoint: ORIGINAL } }).ok);
   const before = getTelemetryConfig();

@@ -137,24 +137,70 @@ export function organizationForMdmServer(
 export async function detectOrganization(
   deps: OrganizationDetectionDeps,
 ): Promise<DetectedOrganization | null> {
+  const state = await detectOrganizationState(deps);
+  return state.kind === "matched" ? state.organization : null;
+}
+
+/**
+ * What detection learned, keeping "this Mac is not managed" apart from "this Mac's enrollment
+ * could not be read".
+ *
+ * `detectOrganization` folds both into null, which is right for a first decision - an
+ * unreadable answer must never manage a Mac. It is wrong for a Mac that is already managed: a
+ * `profiles` timeout or failed exit there says nothing about the enrollment, and treating it as
+ * unenrollment would withdraw the managed settings and unlock them on a Mac still enrolled.
+ *
+ * - `matched`: the exact-tenant rule matched, or a valid force applies.
+ * - `unmatched`: a definite answer - the `none` override, another platform, a refused guard, or
+ *   a well-formed `profiles` answer that does not match.
+ * - `indeterminate`: `profiles` could not be read. Nothing should change.
+ */
+export type OrganizationDetectionState =
+  | { kind: "matched"; organization: DetectedOrganization }
+  | { kind: "unmatched" }
+  | { kind: "indeterminate" };
+
+export async function detectOrganizationState(
+  deps: OrganizationDetectionDeps,
+): Promise<OrganizationDetectionState> {
   const override = envValue(deps.env, "ORGANIZATION")?.trim().toLowerCase();
-  if (override === "none") return null;
+  if (override === "none") return { kind: "unmatched" };
   if (override !== undefined && override.length > 0) {
     const forced = forcedOrganization(override, deps);
-    if (forced) return forced;
+    if (forced) return { kind: "matched", organization: forced };
   }
 
-  if (deps.platform !== "darwin") return null;
-  if (!(await detectionPermitted(deps))) return null;
+  if (deps.platform !== "darwin") return { kind: "unmatched" };
+  if (!(await detectionPermitted(deps))) return { kind: "unmatched" };
 
   const enrollment = await readMdmEnrollment({ run: deps.run });
-  if (enrollment === null || !enrollment.enrolled || enrollment.serverUrl === null) return null;
+  if (enrollment === null) return { kind: "indeterminate" };
+  if (!enrollment.enrolled || enrollment.serverUrl === null) return { kind: "unmatched" };
   const match = organizationForMdmServer(enrollment.serverUrl);
-  if (match === null) return null;
+  if (match === null) return { kind: "unmatched" };
   return {
-    entry: match.entry,
-    evidence: match.entry.evidence(match.host),
-    endpoint: match.entry.preset.endpoint,
+    kind: "matched",
+    organization: {
+      entry: match.entry,
+      evidence: match.entry.evidence(match.host),
+      endpoint: match.entry.preset.endpoint,
+      forced: false,
+    },
+  };
+}
+
+/**
+ * The lock a managed Mac keeps when its enrollment could not be read at start.
+ *
+ * Nothing is applied or withdrawn on an unreadable answer, so the stored managed settings stay
+ * exactly as they are - and so does the lock over them, named after the organization the stored
+ * record belongs to. A later start or Re-check reads again.
+ */
+export function heldOrganization(entry: OrganizationEntry): DetectedOrganization {
+  return {
+    entry,
+    evidence: `Mission Control could not read this Mac's device management enrollment just now, so the telemetry settings ${entry.label} manages stay as they are. Re-check tries again.`,
+    endpoint: entry.preset.endpoint,
     forced: false,
   };
 }

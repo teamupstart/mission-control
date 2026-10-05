@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   detectOrganization,
+  detectOrganizationState,
   detectionPermitted,
   type OrganizationDetectionDeps,
 } from "../src/server/environment/organization.ts";
@@ -169,6 +170,45 @@ test("malformed output, a failed exit, a timeout and an overflow all answer null
     const h = harness(answer);
     assert.equal(await detectOrganization(h.deps), null);
   }
+});
+
+test("an unreadable profiles answer is indeterminate, while a clean non-match is definite", async () => {
+  const indeterminate: Array<RunResult | (() => Promise<RunResult>)> = [
+    ok("profiles: unrecognized option\n"),
+    stubRun({ stdout: UPSTART_ENROLLED, stderr: "denied", code: 1 }),
+    { ...stubRun({ stdout: UPSTART_ENROLLED, stderr: "", code: null }), outcomeUnknown: true },
+    { ...stubRun({ stdout: UPSTART_ENROLLED, stderr: "", code: 1 }), overflowed: true },
+    async () => {
+      throw new Error("spawn exploded");
+    },
+  ];
+  for (const answer of indeterminate) {
+    assert.deepEqual(await detectOrganizationState(harness(answer).deps), { kind: "indeterminate" });
+  }
+  for (const lines of [
+    ["MDM enrollment: No"],
+    ["MDM enrollment: Yes (User Approved)"],
+    ["MDM enrollment: Yes (User Approved)", "MDM server: https://acme.jamfcloud.com/mdm/ServerURL"],
+  ]) {
+    assert.deepEqual(
+      await detectOrganizationState(harness(ok(profilesOutput(lines))).deps),
+      { kind: "unmatched" },
+      lines.join(" | "),
+    );
+  }
+  // Refusals before `profiles` is asked are definite too.
+  assert.deepEqual(
+    await detectOrganizationState(harness(ok(""), { platform: "linux" }).deps),
+    { kind: "unmatched" },
+  );
+  assert.deepEqual(
+    await detectOrganizationState(harness(ok(""), { launchMode: "dev" }).deps),
+    { kind: "unmatched" },
+  );
+  assert.equal(
+    (await detectOrganizationState(harness(ok(UPSTART_ENROLLED)).deps)).kind,
+    "matched",
+  );
 });
 
 test("detection runs nothing on any platform but macOS", async () => {

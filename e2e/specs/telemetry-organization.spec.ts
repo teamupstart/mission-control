@@ -312,6 +312,35 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
 });
 
+test("an enrolled managed lane does not claim to be sending before its live status arrives", async ({
+  dashboard,
+  daemon,
+}) => {
+  const joined = await dashboard.request.post(
+    `${daemon.baseURL}/api/telemetry/organization/pilot`,
+    { data: { enrolled: true } },
+  );
+  expect(joined.ok()).toBe(true);
+  // The stored configuration loads over HTTP; the live queue summary rides the event stream.
+  // Holding the stream back leaves exactly the window where the panel knows the Mac is
+  // enrolled but not whether anything is being sent.
+  await dashboard.route("**/events", (route) => route.abort());
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  await dashboard.reload();
+  const panel = dashboard
+    .locator("section.settings-section")
+    .filter({ hasText: "Managed by Upstart" });
+  await expect(
+    panel.getByText("Checking whether this Mac is sending to Upstart's Datadog", { exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByText("Sending to Upstart's Datadog", { exact: true })).toHaveCount(0);
+
+  // Once the stream is back the summary arrives, and the line reports what it shows.
+  await dashboard.unroute("**/events");
+  await dashboard.reload();
+  await expect(panel.getByText("Sending to Upstart's Datadog", { exact: true })).toBeVisible();
+});
+
 test("a managed lane the daemon paused says it stopped sending, and offers Try again", async ({
   dashboard,
   daemon,

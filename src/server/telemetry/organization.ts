@@ -25,12 +25,17 @@ import {
   type TelemetryOrganizationRecord,
 } from "@shared/organizations.ts";
 import { deleteAppConfig, getAppConfig, hasAppConfigRow, setAppConfig } from "../db.ts";
+import { ORGANIZATION_IDS } from "@shared/organizations.ts";
 import {
   currentOrganization,
-  refreshOrganization,
+  defaultOrganizationDetectionDeps,
+  detectOrganization,
+  publishOrganization,
+  withdrawingOrganization,
   type DetectedOrganization,
   type OrganizationDetectionDeps,
 } from "../environment/organization.ts";
+import { ORGANIZATIONS, type OrganizationEntry } from "../environment/organizations.ts";
 import { getTelemetryConfig, setTelemetryConfig } from "./config.ts";
 import { telemetryTransaction } from "./store.ts";
 
@@ -262,6 +267,13 @@ export function setPilotEnrollment(enrolled: boolean, now = Date.now()): PilotEn
       error: "No organization manages telemetry on this Mac, so there is no pilot to join.",
     };
   }
+  if (organization.withdrawing) {
+    return {
+      ok: false,
+      status: 409,
+      error: `${organization.entry.label} no longer manages this Mac, and removing its telemetry settings has not finished. Re-check to complete it.`,
+    };
+  }
   if (organization.entry.rollout !== "pilot") {
     return {
       ok: false,
@@ -305,11 +317,61 @@ export function recheckOrganization(
   deps?: OrganizationDetectionDeps,
   now = Date.now(),
 ): Promise<OrganizationApplyOutcome> {
-  const run = settling
-    .catch(() => {})
-    .then(async () => applyOrganization(await refreshOrganization(deps), now));
+  const run = settling.catch(() => {}).then(async () => {
+    const detected = await detectOrganization(deps ?? defaultOrganizationDetectionDeps());
+    let outcome: OrganizationApplyOutcome;
+    try {
+      outcome = applyOrganization(detected, now);
+    } catch (error) {
+      // A write that threw - a full disk, a locked database. Whatever is stored is still
+      // stored, so the lock follows the store, not detection.
+      publishOrganization(settledLock(detected));
+      throw error;
+    }
+    publishOrganization(settledLock(detected));
+    return outcome;
+  });
   settling = run;
   return run;
+}
+
+/**
+ * The lock to publish once an apply has run, succeeded or not.
+ *
+ * Detected: that organization. Not detected: unmanaged only once the record is gone. While
+ * it remains - the withdrawal was refused or threw - the Mac stays locked as withdrawing,
+ * named after the organization the record belongs to. If even the store cannot be asked, the
+ * lock holds too: failing closed keeps a managed destination from becoming editable.
+ */
+function settledLock(detected: DetectedOrganization | null): DetectedOrganization | null {
+  if (detected !== null) return detected;
+  let recordRemains: boolean;
+  try {
+    recordRemains = hasAppConfigRow(RECORD_ENTRY);
+  } catch {
+    recordRemains = true;
+  }
+  if (!recordRemains) return null;
+  return withdrawingOrganization(recordOrganization() ?? fallbackEntry());
+}
+
+/** The organization a stored record names, readable or not, when it names a known one. */
+function recordOrganization(): OrganizationEntry | null {
+  try {
+    const raw = getAppConfig(RECORD_ENTRY) as { organization?: unknown } | undefined;
+    const id = ORGANIZATION_IDS.find((candidate) => candidate === raw?.organization);
+    return id === undefined ? null : ORGANIZATIONS[id];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Who a record that names nobody belongs to: the organization this daemon last held the lock
+ * for, else the first registered one - the only kind of organization that ever writes one.
+ */
+function fallbackEntry(): OrganizationEntry {
+  return currentOrganization()?.entry ?? ORGANIZATIONS[ORGANIZATION_IDS[0]];
 }
 
 /**

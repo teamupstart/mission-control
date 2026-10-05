@@ -51,6 +51,31 @@ export interface DetectedOrganization {
   endpoint: string;
   /** True when `MISSION_ORGANIZATION` forced this rather than the machine matching. */
   forced: boolean;
+  /**
+   * True when the Mac is no longer recognized but its managed record has not been withdrawn
+   * yet - the write failed. The lock stays on and Product analytics export is suspended until
+   * a later start or Re-check completes the withdrawal. See `withdrawingOrganization`.
+   */
+  withdrawing?: boolean;
+}
+
+/**
+ * The lock a Mac keeps while its withdrawal has not been written.
+ *
+ * Detection answering "not managed" is not the same as this Mac being unmanaged: until the
+ * stored organization record is gone, the Product analytics destination may still point at
+ * the organization's gateway. Publishing "unmanaged" in that state would unlock settings
+ * over a destination nobody can see is managed, so the lock holds instead, naming the
+ * organization the record belongs to.
+ */
+export function withdrawingOrganization(entry: OrganizationEntry): DetectedOrganization {
+  return {
+    entry,
+    evidence: `This Mac is no longer recognized as managed by ${entry.label}, but removing ${entry.label}'s telemetry settings has not finished. They stay managed, and nothing is sent to ${entry.destinationLabel}, until Re-check or the next start completes it.`,
+    endpoint: entry.preset.endpoint,
+    forced: false,
+    withdrawing: true,
+  };
 }
 
 /**
@@ -221,4 +246,15 @@ export async function refreshOrganization(
 ): Promise<DetectedOrganization | null> {
   current = await detectOrganization(deps);
   return current;
+}
+
+/**
+ * Replace the cached answer with one the caller has already settled.
+ *
+ * The recheck path's way in: it detects, applies, and only then publishes, so the lock never
+ * drops while a withdrawal is still unwritten. `refreshOrganization` remains for callers that
+ * only want to know what the machine says.
+ */
+export function publishOrganization(organization: DetectedOrganization | null): void {
+  current = organization;
 }

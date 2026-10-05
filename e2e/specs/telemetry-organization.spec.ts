@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { Page } from "@playwright/test";
 import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Settings > Telemetry on a Mac an organization manages, driven end to end.
@@ -279,7 +280,12 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   await shoot(dashboard, "02-enrolled-sending");
 
   // A Cloudflare-shaped refusal reads as waiting for the Upstart network, not as a failure.
+  // The restart queues a fresh `mission.daemon.starts` fact, so the next drain is certain to
+  // have something to send into the refusal rather than depending on a health change.
   collector.refuse(true);
+  await daemon.crash();
+  await daemon.restart();
+  await dashboard.reload();
   await expect
     .poll(
       async () => {
@@ -338,4 +344,68 @@ test("a managed lane the daemon paused says it stopped sending, and offers Try a
   await expect(panel.getByRole("button", { name: "Try sending to Upstart's Datadog again" })).toBeEnabled();
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
   await shoot(dashboard, "04-paused");
+});
+
+test("a Mac that left Upstart stays locked until its withdrawal is written, then becomes editable", async ({
+  dashboard,
+  daemon,
+}) => {
+  const joined = await dashboard.request.post(
+    `${daemon.baseURL}/api/telemetry/organization/pilot`,
+    { data: { enrolled: true } },
+  );
+  expect(joined.ok()).toBe(true);
+
+  // The Mac leaves Upstart's management while its database refuses the telemetry write a
+  // withdrawal needs - a full or locked disk.
+  await daemon.crash();
+  withDaemonDb(daemon, (db) =>
+    db.exec(`CREATE TRIGGER fail_telemetry_write BEFORE UPDATE ON app_config
+      WHEN NEW.key = 'telemetry' BEGIN SELECT RAISE(ABORT, 'disk I/O error (simulated)'); END`),
+  );
+  await daemon.restart({ MISSION_ORGANIZATION: "none", MISSION_ORGANIZATION_ENDPOINT: undefined });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const panel = dashboard
+    .locator("section.settings-section")
+    .filter({ hasText: "Managed by Upstart" });
+
+  // Still locked: the gateway is still stored, so the panel stays view-only and nothing sends.
+  await expect(
+    panel.getByText("Removing Upstart's telemetry settings", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    panel.getByText(/removing Upstart's telemetry settings has not finished/),
+  ).toBeVisible();
+  await expect(panel.getByText("Sending to Upstart's Datadog", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("checkbox")).toHaveCount(0);
+  const refused = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
+    data: { enabled: false },
+  });
+  expect(refused.status()).toBe(403);
+  await expect(
+    panel.getByText("These settings stay view-only until removing them finishes.", { exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByText(/sets telemetry on this Mac/)).toHaveCount(0);
+  await expect(
+    panel.getByText("Nothing is sent to Upstart's Datadog until removing these settings finishes."),
+  ).toBeVisible();
+  await expect(panel.getByText(/no endpoint is configured/)).toHaveCount(0);
+  // The successor daemon's event stream is up, so the capture shows a live dashboard.
+  await expect(dashboard.getByText("live", { exact: true })).toBeVisible();
+  await shoot(dashboard, "05-withdrawal-pending");
+
+  // Once the store accepts the write again, Re-check completes the withdrawal and unlocks.
+  withDaemonDb(daemon, (db) => db.exec("DROP TRIGGER IF EXISTS fail_telemetry_write"));
+  await panel
+    .getByRole("button", { name: "Check again whether Upstart manages this Mac" })
+    .click();
+  await expect(dashboard.getByText("Managed by Upstart", { exact: true })).toHaveCount(0);
+  await expect(
+    dashboard.getByLabel("Collect Mission Control telemetry on this machine"),
+  ).toBeEnabled();
+  await expect(dashboard.getByLabel("Product analytics endpoint")).toHaveValue("");
+  const saved = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
+    data: { enabled: true },
+  });
+  expect(saved.status()).toBe(200);
 });

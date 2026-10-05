@@ -816,6 +816,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // before the server reads its first request. The telemetry settings routes wait on it, so an
   // Upstart Mac never answers an editable panel or accepts a settings write while its startup
   // recognition is still running.
+  //
+  // Telemetry starts even when that step fails. A failed withdrawal leaves the Mac locked as
+  // withdrawing, and Product analytics export is suspended in that state, so local collection
+  // and the person's own backend keep working while nothing reaches the organization's gateway.
   const launchMode = process.env.MISSION_WEB_DIR ? "desktop" : hasDist ? "daemon" : "dev";
   // The first fact this installation captures, if it has opted in, is that the daemon started
   // and how long it took to answer. Measured to HERE, which is what an operator would call

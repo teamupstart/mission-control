@@ -7465,7 +7465,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Detect the managing organization again and apply what it finds - managed, unchanged, or
   // withdrawn - then answer the status the panel renders.
   app.post("/api/telemetry/organization/recheck", async (c) => {
-    const outcome = await recheckOrganization();
+    let outcome;
+    try {
+      outcome = await recheckOrganization();
+    } catch (error) {
+      // The store refused the write. The lock still holds - see `settledLock` - so this is
+      // reported, and Re-check can simply be pressed again.
+      publishSettingsStatus(registry);
+      const detail = error instanceof Error ? error.message : String(error);
+      return c.json({ error: `Could not update telemetry settings: ${detail}` }, 500);
+    }
     if (outcome.kind === "refused") return c.json({ error: outcome.error }, 409);
     publishSettingsStatus(registry);
     return c.json(telemetryStatus());

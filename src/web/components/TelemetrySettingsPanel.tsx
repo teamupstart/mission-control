@@ -181,8 +181,9 @@ function ManagedTelemetryPanel({
           <span className="kb-row-label">Managed by {organization.label}</span>
           <span className="kb-row-desc">{organization.evidence}</span>
           <span className="kb-row-desc">
-            {organization.label} sets telemetry on this Mac, so these settings can be viewed here
-            but not changed.
+            {organization.withdrawing
+              ? "These settings stay view-only until removing them finishes."
+              : `${organization.label} sets telemetry on this Mac, so these settings can be viewed here but not changed.`}
           </span>
           <p className="tele-managed-state">{managedStateLine(organization, product)}</p>
 
@@ -244,7 +245,11 @@ function ManagedTelemetryPanel({
 
           {product && product.capturing && (
             <div className="kb-row-desc tele-queue" data-anchor="telemetry/queue-product">
-              <p>{describeDestination(product, organization.destinationLabel)}</p>
+              <p>
+                {organization.withdrawing
+                  ? `Nothing is sent to ${organization.destinationLabel} until removing these settings finishes.`
+                  : describeDestination(product, organization.destinationLabel)}
+              </p>
               {product.pending > 0 && (
                 <p>
                   {product.pending} queued ({formatBytes(product.pendingBytes)})
@@ -294,6 +299,8 @@ function managedStateLine(
   organization: TelemetryOrganizationStatus,
   product: TelemetryProfileSummary | null,
 ): string {
+  // First: while a withdrawal is unwritten nothing is sent, whatever the pilot record says.
+  if (organization.withdrawing) return `Removing ${organization.label}'s telemetry settings`;
   if (!organization.pilotEnrolled) return "Not enrolled in the pilot on this Mac";
   // Before "sending": a destination the daemon paused is sending nothing, and the reason and
   // Try again are right below.

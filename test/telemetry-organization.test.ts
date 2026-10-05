@@ -28,8 +28,12 @@ const {
   setPilotEnrollment,
   telemetryOrganizationRecord,
 } = await import("../src/server/telemetry/organization.ts");
-const { currentOrganization, defaultOrganizationDetectionDeps, refreshOrganization } =
-  await import("../src/server/environment/organization.ts");
+const {
+  currentOrganization,
+  defaultOrganizationDetectionDeps,
+  publishOrganization,
+  refreshOrganization,
+} = await import("../src/server/environment/organization.ts");
 const { ORGANIZATIONS } = await import("../src/server/environment/organizations.ts");
 const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
@@ -440,6 +444,78 @@ test("settings requests during startup recognition wait for it, then see the loc
   assert.equal(status.organization.id, "upstart");
   assert.equal(status.organization.managed, true);
   assert.equal(getTelemetryConfig().enabled, false, "the refused write stored nothing");
+});
+
+// ---- a withdrawal whose write fails ----
+
+/** Make every write of the telemetry config row abort, as a full or locked disk would. */
+function failTelemetryWrites(): () => void {
+  openDb().exec(`CREATE TRIGGER fail_telemetry_write BEFORE UPDATE ON app_config
+    WHEN NEW.key = 'telemetry' BEGIN SELECT RAISE(ABORT, 'disk I/O error (simulated)'); END`);
+  return () => openDb().exec("DROP TRIGGER IF EXISTS fail_telemetry_write");
+}
+
+async function assertStillLockedWithdrawing(): Promise<void> {
+  const organization = currentOrganization();
+  assert.equal(organization?.entry.id, "upstart", "the lock holds while the record remains");
+  assert.equal(organization?.withdrawing, true);
+  assert.ok(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), "the record is still stored");
+  assert.equal(getTelemetryConfig().product.endpoint, GATEWAY, "the gateway is still stored");
+  const put = await send("/api/telemetry/config", "PUT", { enabled: false });
+  assert.equal(put.status, 403);
+  const status = telemetryStatus().organization;
+  assert.equal(status?.withdrawing, true);
+  assert.match(status?.evidence ?? "", /removing Upstart's telemetry settings has not finished/);
+  assert.equal(setPilotEnrollment(true).ok, false, "the pilot cannot be joined while withdrawing");
+  // Nothing reaches the gateway in the meantime, though collection itself keeps running.
+  const net = collectors();
+  captureStart(9_100);
+  runProjectionPass(9_101);
+  await runDeliveryPass({ fetch: net.fetch, now: () => 9_102 });
+  assert.deepEqual(net.to(GATEWAY), [], "nothing is sent to the gateway while withdrawing");
+}
+
+test("a withdrawal that fails at startup keeps the lock and sends nothing to the gateway", async () => {
+  assert.ok(setTelemetryConfig({ enabled: true }).ok);
+  await manage();
+  assert.ok(setPilotEnrollment(true, 3_000).ok);
+  // A fresh daemon: nothing is cached yet, and the managed record is on disk.
+  publishOrganization(null);
+  const restore = failTelemetryWrites();
+  try {
+    await assert.rejects(recheckOrganization(deps(false), 9_000), /disk I\/O error/);
+    await assertStillLockedWithdrawing();
+  } finally {
+    restore();
+  }
+  // The next start completes it, and only then does the lock come off.
+  assert.deepEqual(await recheckOrganization(deps(false), 10_000), {
+    kind: "withdrawn",
+    restored: "previous",
+  });
+  assert.equal(currentOrganization(), null);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
+  assert.equal((await send("/api/telemetry/config", "PUT", { enabled: true })).status, 200);
+});
+
+test("a withdrawal that fails on Re-check keeps the lock and reports the failure", async () => {
+  assert.ok(setTelemetryConfig({ enabled: true }).ok);
+  await manage();
+  assert.ok(setPilotEnrollment(true, 3_000).ok);
+  const restore = failTelemetryWrites();
+  try {
+    // The route re-detects with this process's own environment, which forces nothing.
+    const rechecked = await send("/api/telemetry/organization/recheck", "POST", {});
+    assert.equal(rechecked.status, 500);
+    assert.match(String(rechecked.body.error), /Could not update telemetry settings/);
+    await assertStillLockedWithdrawing();
+  } finally {
+    restore();
+  }
+  const retried = await send("/api/telemetry/organization/recheck", "POST", {});
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.organization, null);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
 });
 
 test("an undetected machine with no record is left exactly as it was", async () => {

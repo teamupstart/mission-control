@@ -174,7 +174,9 @@ The state is one of:
 - "Sending to Upstart's Datadog";
 - "Waiting for the Upstart network", when the gateway's network edge refuses this network;
 - "Stopped sending to Upstart's Datadog", when the daemon paused the destination after a
-  refusal, with the reason and **Try again** below it.
+  refusal, with the reason and **Try again** below it;
+- "Removing Upstart's telemetry settings", when the Mac has left Upstart's management but the
+  write that removes the managed settings failed. Nothing is sent, and **Re-check** retries.
 
 The panel has no switches, fields or Save buttons. The daemon refuses
 `PUT /api/telemetry/config`, queue purges and identity resets with a 403 while Upstart manages

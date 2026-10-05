@@ -236,6 +236,11 @@ export function profileProducesBatches(config: TelemetryConfig, profile: Telemet
 /** Whether this profile may have a request sent for it right now. */
 export function profileIsExporting(config: TelemetryConfig, profile: TelemetryProfileId): boolean {
   if (!profileProducesBatches(config, profile)) return false;
+  // A Mac whose organization withdrawal has not been written may still hold that
+  // organization's gateway here, on a machine the organization no longer manages. Nothing is
+  // sent to it until the withdrawal completes; batches queue as they would while paused, and
+  // the endpoint change withdrawal makes fences them.
+  if (profile === "product" && currentOrganization()?.withdrawing === true) return false;
   return destinationFor(config, profile)?.paused !== true;
 }
 
@@ -576,6 +581,7 @@ function organizationStatus(config: TelemetryConfig): TelemetryOrganizationStatu
     rollout: entry.rollout,
     managed: true,
     pilotEnrolled: record.success && record.data.pilotEnrolledAt !== null,
+    withdrawing: organization.withdrawing === true,
     effective: {
       destination: "product",
       endpoint: config.product.endpoint,

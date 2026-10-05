@@ -255,6 +255,13 @@ the Product analytics destination before deleting it. On a Mac that is still man
 record is rebuilt with a cleared, switched-off destination as what withdrawal will restore,
 never the gateway configured at that moment.
 
+If the withdrawal write itself fails (a full or locked disk, say), the Mac stays locked until a
+later start or **Re-check** succeeds. The daemon publishes "unmanaged" only once the record is
+gone, so settings stay view-only over a destination that may still name the gateway. Settings
+shows "Removing <organization>'s telemetry settings", the pilot route answers 409, and Product
+analytics export is suspended so nothing reaches the gateway in the meantime. Local collection
+and the person's own backend keep running.
+
 **The lock.** While an organization is active, `PUT /api/telemetry/config` and the `purge` and
 `reset_identity` operations answer 403 with
 `{"error": "Telemetry settings on this Mac are managed by <organization>", "managedBy": "<id>"}`,

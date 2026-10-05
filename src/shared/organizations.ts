@@ -90,6 +90,11 @@ export interface TelemetryOrganizationStatus {
   /** Always true: a recognized organization's telemetry settings are view-only. */
   managed: true;
   pilotEnrolled: boolean;
+  /**
+   * True when this Mac is no longer recognized but removing the managed settings has not been
+   * written yet. Settings stay locked and nothing is sent until Re-check or a start completes it.
+   */
+  withdrawing: boolean;
   /** What the product destination is configured with right now, read back from the store. */
   effective: {
     destination: "product";

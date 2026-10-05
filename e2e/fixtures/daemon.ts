@@ -546,6 +546,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
     // instead of quietly spending.
     ANTHROPIC_API_KEY: "",
+    // No organization manages a fixture daemon, whatever Mac runs the suite. The temp-dir
+    // state home already refuses detection; this says so outright. A spec that drives the
+    // managed panel opts in through `daemonEnv` with `MISSION_ORGANIZATION=upstart` and a
+    // loopback `MISSION_ORGANIZATION_ENDPOINT`.
+    MISSION_ORGANIZATION: "none",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through

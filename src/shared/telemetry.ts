@@ -15,6 +15,7 @@
  * projections through the registration seams without changing what is written here.
  */
 import { z } from "zod";
+import type { TelemetryOrganizationStatus } from "./organizations.ts";
 
 /**
  * The domain envelope's schema revision.
@@ -553,6 +554,11 @@ export interface TelemetryStatus {
   userCredentialConfigured: boolean;
   /** Null when no endpoint is configured. */
   endpoint: { ok: boolean; detail: string; warning: string | null } | null;
+  /**
+   * The organization managing this Mac's telemetry, or null. While it is set, every
+   * person-facing settings write is refused and the panel is view-only.
+   */
+  organization: TelemetryOrganizationStatus | null;
 }
 
 /** Which destination a probe should exercise. `local` has no endpoint and is refused. */

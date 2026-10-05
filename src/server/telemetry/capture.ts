@@ -28,9 +28,9 @@ import {
 import type { TelemetryEventDefinition } from "@shared/telemetry-catalog.ts";
 import { TELEMETRY_EVENTS } from "@shared/telemetry-catalog.ts";
 import { SERVICE_VERSION } from "../version.ts";
-import { envVar } from "../config.ts";
 import {
   capturingProfiles,
+  environmentName,
   getTelemetryConfig,
   telemetryIdentity,
 } from "./config.ts";
@@ -110,12 +110,6 @@ export function resourceAttributes(): Record<string, string> {
     // read rather than being a visible wrong value.
     "deployment.environment.name": boundString(environmentName()),
   };
-}
-
-/** The configured environment marker, or the default an ordinary install has. */
-function environmentName(): string {
-  const configured = envVar("TELEMETRY_ENVIRONMENT")?.trim();
-  return configured !== undefined && configured.length > 0 ? configured : "local";
 }
 
 /**

@@ -36,6 +36,7 @@ import type { SettingsBackupDomainId } from "./settings-backup-domains.ts";
 import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
+import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -353,6 +354,20 @@ export const APP_CONFIG_ENTRIES = {
   telemetryRuntime: wholeEntry(
     "telemetry.runtime",
     z.object({ cleanShutdown: z.boolean() }),
+    "operational",
+    null,
+  ),
+  /**
+   * What recognizing an organization did to this machine's telemetry: the product destination
+   * and master switch it replaced, and whether this Mac joined the pilot.
+   *
+   * `operational` with no backup domain, for `telemetry`'s reason and one more: it is a fact
+   * about this Mac's device management enrollment. Restored onto another installation, it
+   * would hand withdrawal a product destination that machine never had.
+   */
+  telemetryOrganization: wholeEntry(
+    "telemetry.organization",
+    TelemetryOrganizationRecordSchema,
     "operational",
     null,
   ),

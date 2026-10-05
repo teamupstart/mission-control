@@ -13051,6 +13051,19 @@ export function setAppConfig<Entry extends AppConfigEntry>(
     .run(entry.key, JSON.stringify(value));
 }
 
+/**
+ * Whether a row exists for this entry, readable or not. `getAppConfig` answers undefined for
+ * both "never set" and "set to something that is not JSON"; this tells them apart.
+ */
+export function hasAppConfigRow(entry: AppConfigEntry): boolean {
+  return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
+}
+
+/** Remove a registered config blob, so a later read answers undefined as if never set. */
+export function deleteAppConfig(entry: AppConfigEntry): void {
+  openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+}
+
 // ---- Inspector: the adoption + provenance ledgers ----
 //
 // Everything below is read and written ONLY by the Inspector (daemon-side). The two

@@ -183,8 +183,10 @@ per-destination identifiers derived with a profile salt, so the same session rea
 under two unrelated ids and neither can be turned back into the thing it came from.
 
 Every record carries a `deployment.environment.name` resource attribute, `local` by default and
-overridable with `MISSION_TELEMETRY_ENVIRONMENT`. It exists so demo, development and test signals
-can be kept out of adoption analysis rather than filtered out afterwards by guesswork.
+overridable with `MISSION_TELEMETRY_ENVIRONMENT`. On a Mac an organization manages, the
+organization's preset environment (`corp` for Upstart) replaces `local`, and the variable still
+wins over it. It exists so demo, development and test signals can be kept out of adoption analysis
+rather than filtered out afterwards by guesswork.
 
 The installation pseudonym is a local random seed. It supports repeat-use and within-installation
 comparison, and nothing else - there is no account lookup, no cross-device join and no
@@ -209,6 +211,61 @@ only one of those places is a rule an operator can save past:
 - A redirect that changes origin, or downgrades to remote plaintext, drops the credential.
 - `OTEL_*` environment variables are never mutated, so no agent subprocess inherits an exporter
   endpoint or credential.
+
+## Organization defaults
+
+On a machine an organization's device management identifies, Mission Control manages the
+**Product analytics** destination for that organization. Off by default still holds everywhere
+else. Today the only organization is Upstart, and [Running Mission Control at
+Upstart](upstart.md#telemetry-to-upstarts-datadog) covers what is detected and how pilot
+volunteers enroll. Everything an organization contributes - its device management hosts, its
+preset, its rollout - is one entry in `src/server/environment/organizations.ts`.
+
+**Detection** runs once at daemon start, before the telemetry cycle starts, and again on
+**Re-check** (`POST /api/telemetry/organization/recheck`). The result is cached in memory, so no
+request runs a subprocess. `MISSION_ORGANIZATION=none` turns detection off.
+`MISSION_ORGANIZATION=<id>` forces an organization only when `MISSION_ORGANIZATION_ENDPOINT` is
+a loopback URL, which then replaces the preset endpoint. Otherwise the force is ignored and
+logged. Both are diagnostic overrides, not Settings controls.
+
+**Apply.** The first time an organization is recognized, the whole previous Product analytics
+destination and the master switch are kept in the `telemetry.organization` record. In the same
+transaction, the destination is replaced by the preset (endpoint, temporality, network gate,
+acceptance window and export shape) and switched **off**, whatever it was. The endpoint change
+bumps the destination generation, which fences batches queued for the old endpoint, and the
+switch-off drops them, so nothing queued for the previous collector can reach the
+organization's gateway. The master switch does not move. Every write goes through the same
+`setTelemetryConfig` path as a person's edit, attributed to the daemon.
+
+**Keep in step.** Every later start and Re-check writes every preset field again, so a newer
+preset version replaces the old one. An identical configuration stores nothing. While the
+rollout is `pilot`, the destination is on exactly when the Mac has joined the pilot
+(`POST /api/telemetry/organization/pilot` with `{"enrolled": true}`). Joining also turns the
+master switch on. Leaving turns the destination off and puts the master switch back to its
+value before first application.
+
+**Withdraw.** When a Mac that has a record is no longer recognized, the previous destination,
+including its own switch, and the previous master switch are restored in one write, and the
+record is deleted. A destination that was on before is on again, under a new consent epoch.
+Data a backend already accepted is not recalled. In the rare case that the old destination no
+longer passes the transport rules, it is cleared and left off rather than leaving the
+organization's preset in place. A record this build cannot read (corrupted, or written by a
+newer build) still proves the destination was managed, so withdrawal clears and switches off
+the Product analytics destination before deleting it. On a Mac that is still managed, such a
+record is rebuilt with a cleared, switched-off destination as what withdrawal will restore,
+never the gateway configured at that moment.
+
+**The lock.** While an organization is active, `PUT /api/telemetry/config` and the `purge` and
+`reset_identity` operations answer 403 with
+`{"error": "Telemetry settings on this Mac are managed by <organization>", "managedBy": "<id>"}`,
+and Settings > Telemetry renders view-only. The `retry` operation, the connection probe, the
+pilot route and Re-check still work, because none of them is a settings edit. The daemon's own
+apply path is not a request, so the lock never blocks it. Nothing outside Settings > Telemetry
+is locked. `GET /api/telemetry/config` reports the active organization as `organization`, or
+`null`. These routes, and the pilot route, wait for any detection still in flight, including
+the startup detection. A managed Mac therefore never shows an editable panel or accepts a
+write in the moment between the daemon listening and its recognition finishing. Detection is
+bounded at two seconds, so this delays an answer and never withholds one.
 
 ## The durable path
 

@@ -262,6 +262,11 @@ shows "Removing <organization>'s telemetry settings", the pilot route answers 40
 analytics export is suspended so nothing reaches the gateway in the meantime. Local collection
 and the person's own backend keep running.
 
+More generally, while an organization holds the lock, Product analytics sends only when its stored
+endpoint is the organization's managed endpoint. If the first application's write fails, the
+person's previous destination stays stored, but nothing is sent to it while the panel says the
+Mac is managed. The next successful start or **Re-check** writes the preset.
+
 **The lock.** While an organization is active, `PUT /api/telemetry/config` and the `purge` and
 `reset_identity` operations answer 403 with
 `{"error": "Telemetry settings on this Mac are managed by <organization>", "managedBy": "<id>"}`,

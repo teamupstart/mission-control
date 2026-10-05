@@ -518,6 +518,37 @@ test("a withdrawal that fails on Re-check keeps the lock and reports the failure
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
 });
 
+test("a first application that fails sends nothing to the previous destination or the gateway", async () => {
+  // A person's own Product analytics destination, on and with batches queued.
+  assert.ok(setTelemetryConfig({ enabled: true, product: { enabled: true, endpoint: ORIGINAL } }).ok);
+  const restore = failTelemetryWrites();
+  try {
+    await assert.rejects(recheckOrganization(deps(true), 9_000), /disk I\/O error/);
+    // The write rolled back - the previous destination is still stored, and on - but the Mac
+    // is recognized, so the lock holds and the panel is view-only.
+    assert.equal(currentOrganization()?.entry.id, "upstart");
+    assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
+    const product = getTelemetryConfig().product;
+    assert.equal(product.endpoint, ORIGINAL);
+    assert.equal(product.enabled, true);
+    assert.equal((await send("/api/telemetry/config", "PUT", { enabled: false })).status, 403);
+    // Nothing leaves while the managed configuration is not what is stored.
+    const net = collectors();
+    captureStart(9_100);
+    runProjectionPass(9_101);
+    await runDeliveryPass({ fetch: net.fetch, now: () => 9_102 });
+    assert.deepEqual(net.to(ORIGINAL), [], "nothing reaches the previous destination");
+    assert.deepEqual(net.to(GATEWAY), [], "nor the gateway");
+  } finally {
+    restore();
+  }
+  // Once the store accepts the write, the first application completes: preset written, off.
+  const applied = await recheckOrganization(deps(true), 10_000);
+  assert.deepEqual(applied, { kind: "applied", first: true, changed: true });
+  assertPreset(false);
+  assert.deepEqual(telemetryOrganizationRecord()?.previous.product.endpoint, ORIGINAL);
+});
+
 test("an undetected machine with no record is left exactly as it was", async () => {
   assert.ok(setTelemetryConfig({ enabled: true, product: { endpoint: ORIGINAL } }).ok);
   const before = getTelemetryConfig();

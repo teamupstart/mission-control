@@ -236,11 +236,24 @@ export function profileProducesBatches(config: TelemetryConfig, profile: Telemet
 /** Whether this profile may have a request sent for it right now. */
 export function profileIsExporting(config: TelemetryConfig, profile: TelemetryProfileId): boolean {
   if (!profileProducesBatches(config, profile)) return false;
-  // A Mac whose organization withdrawal has not been written may still hold that
-  // organization's gateway here, on a machine the organization no longer manages. Nothing is
-  // sent to it until the withdrawal completes; batches queue as they would while paused, and
-  // the endpoint change withdrawal makes fences them.
-  if (profile === "product" && currentOrganization()?.withdrawing === true) return false;
+  // While an organization holds the lock, Product analytics sends only when the managed
+  // configuration is what is actually stored. Two failed writes would otherwise send where
+  // nobody chose:
+  //   - a first application that failed leaves the person's previous destination in place
+  //     on a Mac whose panel says it is managed and cannot be edited;
+  //   - a withdrawal that failed leaves the organization's gateway on a Mac it no longer
+  //     manages.
+  // Batches queue as they would while paused, and the endpoint change the next successful
+  // apply or withdrawal makes fences them.
+  if (profile === "product") {
+    const organization = currentOrganization();
+    if (
+      organization !== null &&
+      (organization.withdrawing === true || config.product.endpoint.trim() !== organization.endpoint)
+    ) {
+      return false;
+    }
+  }
   return destinationFor(config, profile)?.paused !== true;
 }
 

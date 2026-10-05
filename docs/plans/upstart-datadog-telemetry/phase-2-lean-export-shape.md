@@ -448,6 +448,46 @@ approved optimizations.
 
 ## 10. Cross-phase audit record
 
+- 2026-10-02, implementation. The lean shape's values are exactly as approved. Where the
+  repository disagreed with this file:
+  - `TELEMETRY_EXPORT_SHAPE_IDS` lives in `src/shared/telemetry.ts`, and the registry re-exports
+    it. The config schema needs the tuple, and `telemetry-catalog.ts` imports `telemetry.ts`, so
+    importing the registry into `telemetry.ts` would create a module cycle.
+  - `last_activity` is the pass clock of a series' latest contribution or real export. It is not
+    `max(last_time, exported_end)`. `last_time` is an event time, so a series admitted for a
+    drained backlog would read as not live right away and escape the count. A delta baseline
+    does not refresh it, because nothing was sent. The prune reads `last_activity` too.
+  - `exportedInstruments` takes an optional `profile`. The catalog now has twelve histograms.
+    `mission.connection.downtime` is operator-only, so "seven sum-and-count pairs" is the product
+    audience's count. A lean destination of your own splits eight.
+  - The collision check asserts that no derived `.sum` or `.count` name is a catalog instrument.
+    The proposed "no instrument ends in `.sum` or `.count`" is false today, because of
+    `mission.action.count`, a counter that never collides.
+  - `test/fixtures/route-surface.json` needed no change. `GET /api/telemetry/config` keeps the
+    legacy wire shape until telemetry intent is stored.
+  - Phase 1's temporality select has no `editable` flag. The Export shape select is a sibling
+    component, and Phase 3 owns hiding both.
+  - The ledger records one row per exported series. A sum-and-count pair is one row of weight 2,
+    and the pair is exported or deferred together, because both points share one watermark.
+  - Review round 2 found three things this file did not specify. A deferred cumulative point is
+    retried stamped with the pass clock, because its event-time end would otherwise keep asking
+    the same full hour for room. Ledger rows are written only once their batch is queued. On a
+    budgeted shape, a cumulative export refreshes `last_activity` as a delta export already does.
+    None of these touches Phase 1's delta contracts or a default destination.
+  - Review round 3 narrowed step 7. The prune runs only for destinations whose shape has a series
+    budget. Pruning a `full` destination would restart a retired version's cumulative stream
+    from zero after a rollback, and a default installation must not change. So the unpruned-series
+    defect is fixed for budgeted destinations only, and a `full` destination keeps today's
+    behaviour. The same round added admission for carried series. A waiting or heartbeat series
+    that is no longer live is admitted to the live budget before it is exported, and waits if
+    there is no room.
+  - Review round 4 replaced step 5's two-hour ledger retention. Facts can be projected into an
+    hour long after it, and a cumulative point keeps its event hour, so sweeping an hour after two
+    hours let a delayed projection spend that billed hour's allowance a second time. The ledger
+    now keeps each hour for the 7-day payload window plus one hour
+    (`TELEMETRY_LIMITS.exportLedgerRetentionMs`). A budgeted cumulative point whose hour is older
+    than that is stamped with the pass clock. One function, `exportLedgerHorizon`, serves
+    retention and the projection, so they agree on which hours are tracked.
 - 2026-09-28, written after Phase 1:
   - reuses Phase 1's descriptor, watermark and baseline;
   - extends the baseline rule to shape changes by resetting series instead of baselining

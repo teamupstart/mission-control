@@ -29,6 +29,7 @@ import {
   baselineSeriesForDelta,
   clearNetworkWaitingDeliveries,
   clearSecret,
+  deleteProfileSeries,
   getDestination,
   getSecret,
   hasSecret,
@@ -36,6 +37,7 @@ import {
   purgeProfileQueue,
   putProjectionState,
   putSecret,
+  recordGap,
   retirePrObservationWindows,
   telemetryTransaction,
   updateDestination,
@@ -382,6 +384,10 @@ export function setTelemetryConfig(
         previousDestination !== null &&
         nextDestination !== null &&
         previousDestination.temporality !== nextDestination.temporality;
+      const shapeChanged =
+        previousDestination !== null &&
+        nextDestination !== null &&
+        previousDestination.exportShape !== nextDestination.exportShape;
       const waitingIsNoLongerPossible =
         destination.waitingSince !== null &&
         (nextDestination === null ||
@@ -438,7 +444,27 @@ export function setTelemetryConfig(
         continue;
       }
 
-      if (endpointDigest !== destination.endpointDigest || temporalityChanged) {
+      if (shapeChanged) {
+        // A new shape starts this destination's series again from zero. Every counter and
+        // histogram total lives in these rows - the catalog projection holds no reducer state -
+        // and so do the delta watermarks, so deleting them is the whole reset: no merged delta
+        // can span two label sets. Projection checkpoints stay where they are, so facts already
+        // projected are never counted again and facts not yet projected count once, under the
+        // new shape. The policy epoch is deliberately NOT bumped: that would skip those facts.
+        // Queued batches of the old shape are fenced by the generation bump below. The hourly
+        // export ledger is kept, because the hour the backend bills has not started again.
+        deleteProfileSeries(d, profile);
+        if (isCapturing) {
+          recordGap(
+            d,
+            "shape_changed",
+            `${profile} now receives the ${nextDestination?.exportShape ?? "full"} export shape`,
+            now,
+          );
+        }
+      }
+
+      if (endpointDigest !== destination.endpointDigest || temporalityChanged || shapeChanged) {
         // A new destination generation. Batches built for the previous endpoint keep their own
         // generation and are refused by the sender rather than redirected.
         const generation = destination.generation + 1;

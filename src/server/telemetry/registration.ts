@@ -129,6 +129,12 @@ const projections = new Map<string, TelemetryProjection<never>>();
  * the persisted-state namespace: `telemetry_projection_state` rows are keyed by them, so a
  * silent replacement would hand one projection another's checkpoint and reducer state, and
  * which implementation won would depend on import order.
+ *
+ * A projection may NOT hold a cumulative counter or histogram total in its own state. Those
+ * totals belong in `telemetry_series`, which is what an export-shape change resets: a total
+ * kept here would survive that reset and be added again under the new shape. A projection
+ * that needs accumulated state publishes it as gauges recomputed from that state, which is
+ * what the analytical projection does.
  */
 export function registerTelemetryProjection<State>(projection: TelemetryProjection<State>): void {
   claim(projections, projection.id, projection as unknown as TelemetryProjection<never>, "projection");

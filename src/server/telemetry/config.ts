@@ -236,25 +236,33 @@ export function profileProducesBatches(config: TelemetryConfig, profile: Telemet
 /** Whether this profile may have a request sent for it right now. */
 export function profileIsExporting(config: TelemetryConfig, profile: TelemetryProfileId): boolean {
   if (!profileProducesBatches(config, profile)) return false;
-  // While an organization holds the lock, Product analytics sends only when the managed
-  // configuration is what is actually stored. Two failed writes would otherwise send where
-  // nobody chose:
-  //   - a first application that failed leaves the person's previous destination in place
-  //     on a Mac whose panel says it is managed and cannot be edited;
-  //   - a withdrawal that failed leaves the organization's gateway on a Mac it no longer
-  //     manages.
-  // Batches queue as they would while paused, and the endpoint change the next successful
-  // apply or withdrawal makes fences them.
-  if (profile === "product") {
-    const organization = currentOrganization();
-    if (
-      organization !== null &&
-      (organization.withdrawing === true || config.product.endpoint.trim() !== organization.endpoint)
-    ) {
-      return false;
-    }
-  }
+  if (profile === "product" && !managedProductMaySend(config)) return false;
   return destinationFor(config, profile)?.paused !== true;
+}
+
+/**
+ * While an organization holds the lock, whether its Product analytics lane may send.
+ *
+ * Only what is durably stored counts, never what the lock implies. Each failed write would
+ * otherwise send where nobody chose:
+ *   - a first application that failed leaves the person's previous destination in place, on
+ *     a Mac whose panel says it is managed - even one that already pointed at the gateway;
+ *   - a withdrawal that failed leaves the gateway on a Mac the organization no longer manages.
+ * So sending needs a readable record for this organization, the rollout's own permission -
+ * during `pilot`, a stored enrollment - and the managed endpoint actually stored. Batches
+ * queue as they would while paused, and the endpoint change the next successful apply or
+ * withdrawal makes fences them.
+ */
+function managedProductMaySend(config: TelemetryConfig): boolean {
+  const organization = currentOrganization();
+  if (organization === null) return true;
+  if (organization.withdrawing === true) return false;
+  const record = TelemetryOrganizationRecordSchema.safeParse(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization),
+  );
+  if (!record.success || record.data.organization !== organization.entry.id) return false;
+  if (organization.entry.rollout === "pilot" && record.data.pilotEnrolledAt === null) return false;
+  return config.product.endpoint.trim() === organization.endpoint;
 }
 
 /** Every profile eligible for capture, in stable order. */

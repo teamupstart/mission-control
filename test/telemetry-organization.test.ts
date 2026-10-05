@@ -549,6 +549,41 @@ test("a first application that fails sends nothing to the previous destination o
   assert.deepEqual(telemetryOrganizationRecord()?.previous.product.endpoint, ORIGINAL);
 });
 
+test("a failed first application never sends to a previous destination that is already the gateway", async () => {
+  // The person had already pointed Product analytics at the managed endpoint themselves, and
+  // switched it on. First recognition's write fails, so that destination stays stored and on,
+  // there is no record, and nobody has joined the pilot.
+  assert.ok(setTelemetryConfig({ enabled: true, product: { enabled: true, endpoint: GATEWAY } }).ok);
+  const restore = failTelemetryWrites();
+  try {
+    await assert.rejects(recheckOrganization(deps(true), 9_000), /disk I\/O error/);
+    assert.equal(currentOrganization()?.entry.id, "upstart");
+    assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
+    assert.equal(getTelemetryConfig().product.endpoint, GATEWAY);
+    assert.equal(getTelemetryConfig().product.enabled, true);
+    const net = collectors();
+    captureStart(9_100);
+    runProjectionPass(9_101);
+    await runDeliveryPass({ fetch: net.fetch, now: () => 9_102 });
+    assert.deepEqual(net.to(GATEWAY), [], "nothing is sent before a durable pilot enrollment");
+  } finally {
+    restore();
+  }
+  // Applied, still not enrolled: still nothing. Enrolled: it sends.
+  assert.equal((await recheckOrganization(deps(true), 10_000)).kind, "applied");
+  const before = collectors();
+  captureStart(10_100);
+  runProjectionPass(10_101);
+  await runDeliveryPass({ fetch: before.fetch, now: () => 10_102 });
+  assert.deepEqual(before.to(GATEWAY), []);
+  assert.ok(setPilotEnrollment(true, 11_000).ok);
+  const after = collectors();
+  captureStart(11_100);
+  runProjectionPass(11_101);
+  await runDeliveryPass({ fetch: after.fetch, now: () => 11_102 });
+  assert.ok(after.to(`${GATEWAY}/v1/metrics`).length > 0, "a stored enrollment lets it send");
+});
+
 test("an undetected machine with no record is left exactly as it was", async () => {
   assert.ok(setTelemetryConfig({ enabled: true, product: { endpoint: ORIGINAL } }).ok);
   const before = getTelemetryConfig();

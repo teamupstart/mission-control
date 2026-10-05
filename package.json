@@ -127,7 +127,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "electron": "^43.1.0",
+    "electron": "^43.5.0",
     "electron-builder": "^26.15.3",
     "electronmon": "^2.0.4",
     "node-gyp": "^12.4.0",

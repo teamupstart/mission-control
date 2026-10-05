@@ -4542,6 +4542,10 @@ export class Registry extends EventEmitter {
     return session ? this.ensureWorkEpisode(session) : sessionWorkEpisodeFor(sessionId);
   }
 
+  recordedWorkEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
+    return sessionWorkEpisodeFor(sessionId);
+  }
+
   workEpisodeForTask(taskId: string): TaskWorkEpisodeBinding | null {
     return taskWorkEpisodeForTask(taskId);
   }

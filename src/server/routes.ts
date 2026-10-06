@@ -407,13 +407,22 @@ import {
   observeKillRequested,
   observeSessionOperation,
   recordTelemetryControl,
+  organizationSettled,
+  recheckOrganization,
   runTelemetryOperation,
+  whileOrganizationSettled,
   runTelemetryProbe,
+  setPilotEnrollment,
   setTelemetryConfig,
   telemetryHealthResponse,
   telemetryStatus,
   telemetryStatusResponse,
 } from "./telemetry/index.ts";
+import { currentOrganization } from "./environment/organization.ts";
+import {
+  TelemetryOrganizationPilotRequestSchema,
+  managedTelemetryRefusal,
+} from "@shared/organizations.ts";
 import {
   getInspectorConfig,
   inspectorModel,
@@ -7368,15 +7377,40 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // NOT here: any route that returns a stored credential, a queued payload or an endpoint an
   // operator did not just send us. `telemetryStatus()` reports whether a secret exists; there
   // is no read path for its value, here or anywhere.
-  app.get("/api/telemetry/config", (c) => c.json(telemetryStatusResponse()));
+  //
+  // The managed lock. While an organization manages this Mac, a person's settings writes and
+  // the two destructive operations are refused here, at the route: the daemon's own apply
+  // path calls `setTelemetryConfig` directly and is not a request. Test connection, Try again
+  // and Re-check change no setting and stay available. Nothing outside these routes locks.
+  //
+  // Each of these routes first waits out any organization recheck in flight - the startup one
+  // above all. Until it settles nobody knows whether this Mac is managed, and answering in
+  // that window would render the panel editable and accept a write the lock exists to refuse.
+  // The lock check and the write it guards run together inside `whileOrganizationSettled`,
+  // in one synchronous step, so no recheck can begin between them.
+  const managedRefusal = (): { error: string; managedBy: string } | null => {
+    const organization = currentOrganization();
+    return organization === null
+      ? null
+      : managedTelemetryRefusal(organization.entry.id, organization.entry.label);
+  };
+  app.get("/api/telemetry/config", async (c) => {
+    await organizationSettled();
+    return c.json(telemetryStatusResponse());
+  });
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = managedRefusal();
+      return managed ? { managed } : { applied: setTelemetryConfig(parsed.data) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     // Attribution, never authorization. Nothing below branches on it, and nothing anywhere in
     // the daemon reads it to decide whether this request is allowed: the headers say who the
     // app THINKS asked, and `basis` says how much that is worth.
     const context = resolveOperationContext(c.req.raw.headers);
-    const applied = setTelemetryConfig(parsed.data);
+    const applied = outcome.applied;
     // 409 rather than 500: every refusal here is a configuration the operator can see and
     // fix - an unencrypted remote endpoint carrying a credential, our own address, the
     // product audience that has no service behind it, or a revision that moved underneath.
@@ -7399,8 +7433,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/telemetry/operation", async (c) => {
     const parsed = await parseBody(c, TelemetryOperationRequestSchema);
     if (!parsed.ok) return parsed.res;
+    // `retry` changes no setting - it clears a pause the daemon applied - so it stays open.
+    const { action, profile } = parsed.data;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = action === "retry" ? null : managedRefusal();
+      return managed ? { managed } : { result: runTelemetryOperation(action, profile) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     const context = resolveOperationContext(c.req.raw.headers);
-    const result = runTelemetryOperation(parsed.data.action, parsed.data.profile);
+    const result = outcome.result;
     recordTelemetryControl({
       action: parsed.data.action,
       profile: result.profile ?? "all",
@@ -7411,6 +7452,45 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // republished rather than left for the next thirty-second cycle to notice.
     publishSettingsStatus(registry);
     return c.json(result);
+  });
+
+  // Join or leave the managing organization's pilot on this Mac. The one telemetry write a
+  // person on a managed Mac can make, because Settings there has no switches: 409 unless an
+  // organization is active and its rollout is still `pilot`.
+  app.post("/api/telemetry/organization/pilot", async (c) => {
+    const parsed = await parseBody(c, TelemetryOrganizationPilotRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => setPilotEnrollment(parsed.data.enrolled));
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
+  });
+
+  // Detect the managing organization again and apply what it finds - managed, unchanged, or
+  // withdrawn - then answer the status the panel renders.
+  app.post("/api/telemetry/organization/recheck", async (c) => {
+    let outcome;
+    try {
+      outcome = await recheckOrganization();
+    } catch (error) {
+      // The store refused the write. The lock still holds - see `settledLock` - so this is
+      // reported, and Re-check can simply be pressed again.
+      publishSettingsStatus(registry);
+      const detail = error instanceof Error ? error.message : String(error);
+      return c.json({ error: `Could not update telemetry settings: ${detail}` }, 500);
+    }
+    if (outcome.kind === "refused") return c.json({ error: outcome.error }, 409);
+    if (outcome.kind === "indeterminate") {
+      return c.json(
+        {
+          error:
+            "Could not read this Mac's device management enrollment just now, so nothing changed. Re-check again in a moment.",
+        },
+        503,
+      );
+    }
+    publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
   });
 
   app.get("/api/telemetry/health", (c) => c.json(telemetryHealthResponse()));

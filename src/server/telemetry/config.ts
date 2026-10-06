@@ -18,8 +18,13 @@ import {
   type TelemetryStatus,
 } from "@shared/telemetry.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import {
+  TelemetryOrganizationRecordSchema,
+  type TelemetryOrganizationStatus,
+} from "@shared/organizations.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
-import { PORT } from "../config.ts";
+import { PORT, envVar } from "../config.ts";
+import { currentOrganization } from "../environment/organization.ts";
 import { digest } from "./identity.ts";
 import { isLoopbackHost, validateEndpoint } from "./endpoint.ts";
 import { registeredProjections } from "./registration.ts";
@@ -231,7 +236,33 @@ export function profileProducesBatches(config: TelemetryConfig, profile: Telemet
 /** Whether this profile may have a request sent for it right now. */
 export function profileIsExporting(config: TelemetryConfig, profile: TelemetryProfileId): boolean {
   if (!profileProducesBatches(config, profile)) return false;
+  if (profile === "product" && !managedProductMaySend(config)) return false;
   return destinationFor(config, profile)?.paused !== true;
+}
+
+/**
+ * While an organization holds the lock, whether its Product analytics lane may send.
+ *
+ * Only what is durably stored counts, never what the lock implies. Each failed write would
+ * otherwise send where nobody chose:
+ *   - a first application that failed leaves the person's previous destination in place, on
+ *     a Mac whose panel says it is managed - even one that already pointed at the gateway;
+ *   - a withdrawal that failed leaves the gateway on a Mac the organization no longer manages.
+ * So sending needs a readable record for this organization, the rollout's own permission -
+ * during `pilot`, a stored enrollment - and the managed endpoint actually stored. Batches
+ * queue as they would while paused, and the endpoint change the next successful apply or
+ * withdrawal makes fences them.
+ */
+function managedProductMaySend(config: TelemetryConfig): boolean {
+  const organization = currentOrganization();
+  if (organization === null) return true;
+  if (organization.withdrawing === true) return false;
+  const record = TelemetryOrganizationRecordSchema.safeParse(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization),
+  );
+  if (!record.success || record.data.organization !== organization.entry.id) return false;
+  if (organization.entry.rollout === "pilot" && record.data.pilotEnrolledAt === null) return false;
+  return config.product.endpoint.trim() === organization.endpoint;
 }
 
 /** Every profile eligible for capture, in stable order. */
@@ -526,6 +557,61 @@ export function telemetryStatus(): TelemetryStatus {
     endpoint: endpoint
       ? { ok: endpoint.ok, detail: endpoint.detail, warning: endpoint.warning }
       : null,
+    organization: organizationStatus(config),
+  };
+}
+
+/**
+ * The `deployment.environment.name` every resource carries: the operator's
+ * `MISSION_TELEMETRY_ENVIRONMENT`, then the managing organization's preset environment, then
+ * the default an ordinary install has.
+ *
+ * The organization's value sits below the operator's on purpose. It exists so a managed fleet
+ * reports one environment rather than its own plus `local`, and an operator who sets the
+ * variable - a test run, a demo - has said something more specific about this process.
+ *
+ * Trimmed and checked for emptiness rather than `??`, which only catches unset: an
+ * exported-but-empty variable is ordinary shell, and would otherwise label every record with
+ * no environment at all.
+ */
+export function environmentName(): string {
+  const configured = envVar("TELEMETRY_ENVIRONMENT")?.trim();
+  if (configured !== undefined && configured.length > 0) return configured;
+  return currentOrganization()?.entry.preset.environment ?? "local";
+}
+
+/**
+ * The managing organization as Settings renders it, or null on an unmanaged machine.
+ *
+ * `effective` is read back from the stored product destination rather than from the preset,
+ * so the panel shows what this Mac is actually configured with.
+ */
+function organizationStatus(config: TelemetryConfig): TelemetryOrganizationStatus | null {
+  const organization = currentOrganization();
+  if (organization === null) return null;
+  const record = TelemetryOrganizationRecordSchema.safeParse(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization),
+  );
+  const { entry } = organization;
+  return {
+    id: entry.id,
+    label: entry.label,
+    evidence: organization.evidence,
+    destinationLabel: entry.destinationLabel,
+    networkLabel: entry.networkLabel,
+    rollout: entry.rollout,
+    managed: true,
+    pilotEnrolled: record.success && record.data.pilotEnrolledAt !== null,
+    withdrawing: organization.withdrawing === true,
+    effective: {
+      destination: "product",
+      endpoint: config.product.endpoint,
+      temporality: config.product.temporality,
+      exportShape: config.product.exportShape,
+      networkGate: config.product.networkGate,
+      lateAfterMs: config.product.lateAfterMs,
+      environment: environmentName(),
+    },
   };
 }
 
@@ -533,6 +619,9 @@ export function telemetryStatus(): TelemetryStatus {
  * The HTTP representation preserves the exact pre-Phase-1 bytes until telemetry intent exists.
  * Internal readers always use the fully defaulted schema above; the browser rehydrates this
  * legacy wire shape at its boundary.
+ *
+ * `organization` is left off that legacy shape while it is null, which it always is there: a
+ * recognized organization stores its configuration as it is applied.
  */
 export function telemetryStatusResponse(): object {
   const status = telemetryStatus();
@@ -543,8 +632,10 @@ export function telemetryStatusResponse(): object {
     headerName,
     paused,
   }: TelemetryDestination): object => ({ enabled, endpoint, headerName, paused });
+  const { organization, ...rest } = status;
   return {
-    ...status,
+    ...rest,
+    ...(organization === null ? {} : { organization }),
     config: {
       enabled: status.config.enabled,
       user: legacyDestination(status.config.user),

@@ -128,6 +128,11 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
     candidates: ({ platform }) => platform === "darwin" ? ["/usr/bin/du"] : ["/usr/bin/du"],
   }),
   treehouse: spec("treehouse", "Treehouse compatibility CLI", "treehouse", "TREEHOUSE_BIN"),
+  // macOS's configuration-profile tool. Read-only here: `profiles status -type enrollment`
+  // answers which device management server this Mac is enrolled in, without admin rights.
+  profiles: spec("profiles", "macOS configuration profiles", "profiles", "PROFILES_BIN", {
+    candidates: () => ["/usr/bin/profiles"],
+  }),
 };
 
 /** Truly fixed OS utilities. They are never searched and must be invoked by this path. */

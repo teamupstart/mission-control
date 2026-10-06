@@ -163,6 +163,12 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   approved Datadog cost optimizations, so changing them needs an audit entry in
   `docs/plans/upstart-datadog-telemetry/phase-2-lean-export-shape.md`. Telemetry gap kinds
   (`TELEMETRY_GAP_KINDS`) are `telemetry_gaps.kind` and are append-only for the same reason
+- Organization ids (`ORGANIZATION_IDS` in `src/shared/organizations.ts`) - persisted as
+  `organization` in the `telemetry.organization` record and read back by exact value. Append an
+  organization; never rename one. The detection rule and the managed lock are the approved
+  contract in `docs/plans/upstart-datadog-telemetry/phase-3-recognize-upstart.md`, and changing
+  either needs an audit entry there. Organization rollouts (`ORGANIZATION_ROLLOUTS`) are
+  append-only for the same reason
 - Foreman invite sources (`FOREMAN_INVITES` in `src/shared/types.ts`, plus the persisted
   `foreman_invites.source` domain, which additionally contains `'withdrawn'`) - the stored
   values are read back by exact value and checked by the table's `CHECK` constraint, so

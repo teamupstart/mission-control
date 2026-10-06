@@ -110,14 +110,17 @@ import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
+  describeOrganizationOutcome,
   noteDaemonShuttingDown,
   observeDaemonStart,
   observeSessionOperation,
+  recheckOrganization,
   registerBuiltinTelemetry,
   retainPrObservation,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
+import { configureOrganizationLaunchMode } from "./environment/organization.ts";
 
 // Every launch mode owns the same executable snapshot before any subsystem can detect or
 // start a child. An adopted daemon ran this in its own process when it originally launched.
@@ -803,20 +806,47 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // `publishSettingsStatus` is handed in rather than imported by the telemetry module, so the
   // registry's graph stays on this side of the boundary. It fires only on a cycle that moved
   // something, which on an installation with collection off is never.
-  telemetry = startTelemetry({}, { onHealthChanged: () => publishSettingsStatus(registry) });
-  // And the first fact this installation captures, if it has opted in: that the daemon
-  // started, and how long it took to answer. Measured to HERE, which is what an operator
-  // would call startup, and captured after it rather than before - the observation cannot be
-  // allowed to become part of what it measures.
   //
-  // Inert when collection is off, which is the shipped default: `captureTelemetry` returns
-  // `disabled` without touching a table.
+  // A managing organization is recognized and applied FIRST, so the cycle's first pass already
+  // exports to the right place - and never to a product destination the organization is about
+  // to replace. After the port is won, because applying writes durable rows. Detection is one
+  // bounded `profiles` call on macOS and nothing at all elsewhere.
+  //
+  // `recheckOrganization` registers itself synchronously, here in the listening callback,
+  // before the server reads its first request. The telemetry settings routes wait on it, so an
+  // Upstart Mac never answers an editable panel or accepts a settings write while its startup
+  // recognition is still running.
+  //
+  // Telemetry starts even when that step fails. A failed withdrawal leaves the Mac locked as
+  // withdrawing, and Product analytics export is suspended in that state, so local collection
+  // and the person's own backend keep working while nothing reaches the organization's gateway.
   const launchMode = process.env.MISSION_WEB_DIR ? "desktop" : hasDist ? "daemon" : "dev";
-  observeDaemonStart({
-    startupMs: Math.round(process.uptime() * 1000),
-    schemaUpgraded: databaseMigratedOnOpen(),
-    launchMode,
-  });
+  // The first fact this installation captures, if it has opted in, is that the daemon started
+  // and how long it took to answer. Measured to HERE, which is what an operator would call
+  // startup; captured once the organization step below has settled, so it carries the
+  // environment and destination that step decides.
+  const startupMs = Math.round(process.uptime() * 1000);
+  configureOrganizationLaunchMode(launchMode);
+  void recheckOrganization()
+    .then((outcome) => {
+      const line = describeOrganizationOutcome(outcome);
+      if (line) console.log(line);
+    })
+    .catch((error: unknown) => {
+      console.error("[organization] could not check for a managing organization:", error);
+    })
+    .finally(() => {
+      if (shutdownStarted) return;
+      telemetry = startTelemetry({}, { onHealthChanged: () => publishSettingsStatus(registry) });
+      publishSettingsStatus(registry);
+      // Inert when collection is off, which is the shipped default: `captureTelemetry`
+      // returns `disabled` without touching a table.
+      observeDaemonStart({
+        startupMs,
+        schemaUpgraded: databaseMigratedOnOpen(),
+        launchMode,
+      });
+    });
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;

@@ -2482,8 +2482,20 @@ export async function deleteFileComment(
 /** The stored intent, plus whether a credential exists and whether the endpoint is usable. */
 export const fetchTelemetryConfig = async (): Promise<TelemetryStatus | null> => {
   const status = await fetchJson<TelemetryStatus>("/api/telemetry/config");
-  return status === null ? null : { ...status, config: TelemetryConfigSchema.parse(status.config) };
+  return status === null ? null : rehydrateTelemetryStatus(status);
 };
+
+/**
+ * The status with every defaulted field restored. The legacy wire shape a daemon with no
+ * stored intent sends leaves out the newer destination fields and `organization`.
+ */
+function rehydrateTelemetryStatus(status: TelemetryStatus): TelemetryStatus {
+  return {
+    ...status,
+    config: TelemetryConfigSchema.parse(status.config),
+    organization: status.organization ?? null,
+  };
+}
 
 /** The full health view: per-profile counts, ages, gap records and the byte budget. */
 export const fetchTelemetryHealth = async (): Promise<TelemetryHealth | null> => {
@@ -2546,6 +2558,17 @@ export const runTelemetryOperation = (
   body: TelemetryOperationRequest,
   operation: AppOperation,
 ) => telemetryWrite<TelemetryOperationResult>("/api/telemetry/operation", "POST", body, operation);
+
+/** Detect the managing organization again and answer the status it leaves behind. */
+export const recheckTelemetryOrganization = async (operation: AppOperation) => {
+  const res = await telemetryWrite<TelemetryStatus>(
+    "/api/telemetry/organization/recheck",
+    "POST",
+    {},
+    operation,
+  );
+  return res.ok ? { ...res, data: rehydrateTelemetryStatus(res.data) } : res;
+};
 
 export const probeTelemetryEndpoint = (
   profile: "user" | "product",

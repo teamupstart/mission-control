@@ -215,6 +215,20 @@ export function managedMetricsPolicy(now = Date.now()): ManagedMetricsPolicy | n
 }
 
 /**
+ * Drop the cached answer, so nothing read earlier outlives Cost being switched off.
+ *
+ * The policy is only read while Cost is on. Clearing here means switching it back on starts
+ * from a fresh read instead of showing whatever the last one found, however long ago. A
+ * refresh already in flight may still land afterwards; it is a read that was asked for while
+ * Cost was on, and the next poll's key check decides whether it stands.
+ */
+export function forgetManagedMetricsPolicy(): void {
+  cached = null;
+  cachedKey = null;
+  readAt = null;
+}
+
+/**
  * Start a refresh now, or join the one already running.
  *
  * Called once at daemon start so the first poll's window without an answer is short. Tests

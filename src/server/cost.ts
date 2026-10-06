@@ -17,7 +17,7 @@ import {
 } from "@shared/claude-settings.ts";
 import { PORT } from "./config.ts";
 import { ensureToken } from "./auth.ts";
-import { managedMetricsPolicy } from "./environment/claude-managed.ts";
+import { forgetManagedMetricsPolicy, managedMetricsPolicy } from "./environment/claude-managed.ts";
 import { currentOrganization } from "./environment/organization.ts";
 
 // The "Cost" settings section, mirroring foreman/config.ts, skills/config.ts and
@@ -183,8 +183,10 @@ function exporterSilentWhileActive(now: number, enabledAt: number | null): boole
  * own thread.
  *
  * `managedRedirect` is read from a cache and never waited on, so this stays synchronous: the
- * managed policy can take a `plutil` call to read, and the poll must not. The organization's
- * label is read per call, because Re-check can change it between two polls.
+ * managed policy can take a `plutil` call to read, and the poll must not. It is read only while
+ * Cost is on - the only time the panel names it - so an installation that never switched Cost on
+ * never touches its organization's policy at all. The organization's label is read per call,
+ * because Re-check can change it between two polls.
  *
  * `now` is a parameter so the staleness judgement can be tested without waiting a week for it.
  */
@@ -197,19 +199,27 @@ export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
     backfillEnabledAt(now);
     enabledAt = now;
   }
+  const config = getCostConfig();
   return {
-    config: getCostConfig(),
+    config,
     installed: flags.installed,
     receiving: reportedUsageLedgerHasRows(),
     exporterSilent: exporterSilentWhileActive(now, enabledAt),
-    managedRedirect: managedRedirect(now),
+    managedRedirect: managedRedirect(config.enabled, now),
     sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };
 }
 
-/** The managed policy's effect on metrics, labelled with the organization managing this Mac. */
-function managedRedirect(now: number): CostTelemetryStatus["managedRedirect"] {
+/**
+ * The managed policy's effect on metrics, labelled with the organization managing this Mac.
+ * Null, with nothing read and the cache dropped, while Cost is off.
+ */
+function managedRedirect(enabled: boolean, now: number): CostTelemetryStatus["managedRedirect"] {
+  if (!enabled) {
+    forgetManagedMetricsPolicy();
+    return null;
+  }
   const policy = managedMetricsPolicy(now);
   if (policy === null) return null;
   return { ...policy, organizationLabel: currentOrganization()?.entry.label ?? null };

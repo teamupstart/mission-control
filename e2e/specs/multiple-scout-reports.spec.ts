@@ -89,7 +89,15 @@ test("a ship session publishes separate reports and its Scouts tab refreshes liv
   const firstReport = dashboard.getByRole("button", { name: "First finding", exact: true });
   // A pending archive event can replace the list after paging. Hover the current
   // button again if that replacement retired the tooltip's original anchor.
+  //
+  // Park the pointer first on every attempt. Clicking Load more leaves it where that button
+  // was, and paging lays First finding out under that exact spot, so the button arrives under
+  // a pointer that never entered it. `Tooltip` opens on `mouseenter`, and hovering the centre
+  // of an element the pointer is already inside fires none - so without leaving first, every
+  // retry hovers in place and the bubble never opens. That is how this failed on CI, where
+  // the layout puts the two in the same place.
   await expect(async () => {
+    await dashboard.mouse.move(0, 0);
     await firstReport.hover();
     await expect(dashboard.locator(".tooltip")).toHaveText("Open First finding in Files", { timeout: 1000 });
   }).toPass();

@@ -147,8 +147,15 @@ test("a restarted server reusing pane and session ids cannot inherit a stale Kil
     const pane = f.start("work"); f.pin();
     const session = await f.session("work", pane);
     f.cmd("kill-server");
-    await delay(30);
-    f.start("work");
+    let restarted = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const result = f.raw(["new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "work",
+        "-c", f.dir, "--", f.fakeAgent, "600"]);
+      if (result.status === 0) { restarted = true; break; }
+      assert.match(result.stderr, /server exited unexpectedly/);
+      await delay(10);
+    }
+    assert.ok(restarted, "replacement tmux server starts");
     await kill(session);
     assert.equal(f.has("work"), true);
   } finally { f.cleanup(); }

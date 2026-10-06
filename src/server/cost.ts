@@ -17,6 +17,8 @@ import {
 } from "@shared/claude-settings.ts";
 import { PORT } from "./config.ts";
 import { ensureToken } from "./auth.ts";
+import { managedMetricsPolicy } from "./environment/claude-managed.ts";
+import { currentOrganization } from "./environment/organization.ts";
 
 // The "Cost" settings section, mirroring foreman/config.ts, skills/config.ts and
 // harnesses.ts: a schema-validated blob over the `app_config` KV, so a new key needs no
@@ -180,6 +182,10 @@ function exporterSilentWhileActive(now: number, enabledAt: number | null): boole
  * it is open, and the settings file is read and JSONC-parsed synchronously on the daemon's
  * own thread.
  *
+ * `managedRedirect` is read from a cache and never waited on, so this stays synchronous: the
+ * managed policy can take a `plutil` call to read, and the poll must not. The organization's
+ * label is read per call, because Re-check can change it between two polls.
+ *
  * `now` is a parameter so the staleness judgement can be tested without waiting a week for it.
  */
 export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
@@ -196,9 +202,17 @@ export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
     installed: flags.installed,
     receiving: reportedUsageLedgerHasRows(),
     exporterSilent: exporterSilentWhileActive(now, enabledAt),
+    managedRedirect: managedRedirect(now),
     sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };
+}
+
+/** The managed policy's effect on metrics, labelled with the organization managing this Mac. */
+function managedRedirect(now: number): CostTelemetryStatus["managedRedirect"] {
+  const policy = managedMetricsPolicy(now);
+  if (policy === null) return null;
+  return { ...policy, organizationLabel: currentOrganization()?.entry.label ?? null };
 }
 
 /**

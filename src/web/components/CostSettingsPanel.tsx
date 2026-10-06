@@ -1,4 +1,5 @@
 import { COST_EXPORT_INTERVAL_MAX_MS, COST_EXPORT_INTERVAL_MIN_MS } from "@shared/protocol.ts";
+import type { CostManagedRedirect } from "@shared/protocol.ts";
 import type { CostState } from "../useCost.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -16,6 +17,39 @@ import { Tooltip } from "./Tooltip.tsx";
 const INTERVALS = [5_000, 10_000, 15_000, 30_000, 60_000].filter(
   (ms) => ms >= COST_EXPORT_INTERVAL_MIN_MS && ms <= COST_EXPORT_INTERVAL_MAX_MS,
 );
+
+/**
+ * Name what an organization's managed Claude Code policy does with metrics.
+ *
+ * Only the host is shown: the daemon never sends a scheme, port, path or credential.
+ */
+function ManagedPolicyWarning({
+  redirect,
+}: {
+  redirect: CostManagedRedirect;
+}): React.JSX.Element {
+  const owner =
+    redirect.organizationLabel === null
+      ? "Your organization's"
+      : `${redirect.organizationLabel}'s`;
+  switch (redirect.kind) {
+    case "redirect":
+      return (
+        <p className="settings-error">
+          {owner} managed Claude Code policy sends metrics to <code>{redirect.host}</code>, so
+          the estimate covers only sessions Mission Control runs. Sessions you started yourself
+          in a terminal are not counted.
+        </p>
+      );
+    case "disabled":
+      return (
+        <p className="settings-error">
+          {owner} managed Claude Code policy turns Claude Code's metrics off, so the estimate
+          covers only sessions Mission Control runs.
+        </p>
+      );
+  }
+}
 
 export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.Element {
   const { status, update, error } = state;
@@ -38,7 +72,18 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
 
       {error && <p className="settings-error">{error}</p>}
 
-      {status?.config.enabled && status.installed && !status.receiving && (
+      {status?.config.enabled && status.managedRedirect && (
+        // A managed policy outranks the `env` block, so its cause is known the moment the
+        // policy is read - there is no week of silence to wait for. The hint below would
+        // contradict it, promising that new sessions will report, so this replaces it, and
+        // replaces the generic silence warning, which can only guess at the cause.
+        <ManagedPolicyWarning redirect={status.managedRedirect} />
+      )}
+
+      {status?.config.enabled &&
+        !status.managedRedirect &&
+        status.installed &&
+        !status.receiving && (
         // The ordinary first-run state, and the one a switch alone cannot explain: the env
         // block only reaches sessions started AFTER it was written, so everything is
         // correctly configured and the dashboard still has no numbers on it. Saying so
@@ -49,7 +94,10 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </p>
       )}
 
-      {status?.config.enabled && status.installed && status.exporterSilent && (
+      {status?.config.enabled &&
+        !status.managedRedirect &&
+        status.installed &&
+        status.exporterSilent && (
         // The state that has no other symptom. Session spend is landing, so every signal a
         // person would think to check reads healthy - the switch is on, the env block is in
         // the file, the dashboard has numbers - and yet the exporter has said nothing all

@@ -3740,6 +3740,33 @@ export type LlmConfigPatch = z.infer<typeof LlmConfigPatchSchema>;
  * install from a different checkout, a `CLAUDE_CODE_ENABLE_TELEMETRY` the user set
  * themselves - and a panel that showed only the intent would be confidently wrong.
  */
+/**
+ * Which managed Claude Code settings location supplied the policy, highest precedence first:
+ * the per-user MDM profile, the machine MDM profile, then `managed-settings.json`.
+ */
+export type ManagedClaudeSettingsSource = "mdm-user" | "mdm" | "managed-settings";
+
+/**
+ * What a managed Claude Code policy does with Claude Code's metrics.
+ *
+ * Discriminated on `kind`, so each outcome carries only the host shape valid for it: a redirect
+ * always names its host, and a policy that turns metrics off never does.
+ */
+export type CostManagedRedirect =
+  | {
+      kind: "redirect";
+      /** The hostname alone - never a scheme, port, path, query or credential. */
+      host: string;
+      source: ManagedClaudeSettingsSource;
+      organizationLabel: string | null;
+    }
+  | {
+      kind: "disabled";
+      host: null;
+      source: ManagedClaudeSettingsSource;
+      organizationLabel: string | null;
+    };
+
 export interface CostTelemetryStatus {
   config: CostConfig;
   /** True when our `env` keys are present in `~/.claude/settings.json`. */
@@ -3776,6 +3803,24 @@ export interface CostTelemetryStatus {
    * `exporterSilentWhileActive`.
    */
   exporterSilent: boolean;
+  /**
+   * Set when an organization's managed Claude Code policy sends Claude Code's metrics
+   * somewhere other than this daemon, or turns them off.
+   *
+   * A managed policy outranks `~/.claude/settings.json`, and the OTel SDK prefers a
+   * signal-specific endpoint to the generic one the Cost switch writes, so a policy that
+   * names its own metrics endpoint wins even while the `env` block is in place. Every session
+   * the daemon merely discovered then reports to that host, never here. The cause is known
+   * the moment the policy is read, so the panel names it at once instead of waiting for a
+   * week of `exporterSilent`.
+   *
+   * `host` is the hostname alone - never a scheme, port, path, query or credential - and is
+   * null for `disabled`. `organizationLabel` is the organization that manages this machine,
+   * when Mission Control recognizes one. Computed from a cache the poll never waits on, so
+   * the first poll after start may read null until the first read completes. See
+   * `src/server/environment/claude-managed.ts`.
+   */
+  managedRedirect: CostManagedRedirect | null;
   /**
    * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
    * value silently destroys per-session attribution - every datapoint arrives

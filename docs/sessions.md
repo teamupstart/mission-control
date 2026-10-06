@@ -1757,6 +1757,50 @@ exporter fell silent - the very regression the warning is for. It also has to se
 spend before it fires, because silence on a machine nobody is using reports nothing missing, and a
 panel that warns about a quiet weekend is one you learn to scroll past.
 
+#### When a managed policy decides where metrics go
+
+An organization can manage Claude Code through a device management profile or a
+`managed-settings.json` file, and **a managed policy always wins**. It outranks
+`~/.claude/settings.json`, so the Cost switch's `env` block can be in place and still lose. The
+usual case is a policy that sets `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to the organization's own
+collector. The OpenTelemetry SDK prefers that signal-specific variable to the generic
+`OTEL_EXPORTER_OTLP_ENDPOINT` the switch writes, so every discovered session reports there and
+never here. Mission Control never overrides, edits or writes a managed setting.
+
+What it does is name the cause. While Cost is on, the daemon reads Claude Code's macOS managed
+settings, highest precedence first:
+
+1. `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`, the per-user profile;
+2. `/Library/Managed Preferences/com.anthropic.claudecode.plist`, the machine profile;
+3. `/Library/Application Support/ClaudeCode/managed-settings.json`.
+
+The highest-priority location that is present decides. **Settings → Cost** then shows, in
+place of the generic warnings and without waiting for a week of silence:
+
+| The policy | The panel says |
+|---|---|
+| sends metrics to a host other than this daemon | "Your organization's managed Claude Code policy sends metrics to `otel.example.com`, so the estimate covers only sessions Mission Control runs. Sessions you started yourself in a terminal are not counted." |
+| sets `CLAUDE_CODE_ENABLE_TELEMETRY` to `0` or `false`, or `OTEL_METRICS_EXPORTER` to `none` | "Your organization's managed Claude Code policy turns Claude Code's metrics off, so the estimate covers only sessions Mission Control runs." |
+
+On a Mac Mission Control recognizes as [managed by an organization](observability.md#organization-defaults),
+that organization's name replaces "Your organization's". Sessions Mission Control runs are still
+counted either way, because their cost comes off the driver's own stream.
+
+The read is narrow. Only four `env` keys are kept - the two endpoints, `OTEL_METRICS_EXPORTER`
+and `CLAUDE_CODE_ENABLE_TELEMETRY` - and only the endpoint's hostname ever leaves the reader:
+never its scheme, port, path, query or credentials, and never any other key in the block.
+Nothing is logged. Profiles are read with `plutil -extract env`, and the JSON file up to
+64 KiB. A location that is not there gives way to the next, and so does a JSON file that parses
+with no `env` key. A location that is present but cannot be read stops the read, because a
+lower-priority file cannot speak for one Claude Code obeys first. That covers a failure, a
+timeout, an oversized file, unparseable content, a file that cannot be stat'ed, and a profile
+with no `env` key, which `plutil` reports the same way as a failure. Mission Control then claims
+nothing, and the panel reads exactly as it does on an unmanaged machine. The answer is cached
+and refreshed in the background - when a file's modification time or size changes, and
+otherwise every minute - so the dashboard's poll never waits on it. `MISSION_MANAGED_SETTINGS_ROOT` moves the
+root of all three paths, which is how the tests use fixtures instead of the real policy.
+Claude Code's Linux managed path is not read.
+
 #### What the app spends on itself
 
 The Foreman and the GitHub Inspector call models on their own schedule, with nobody asking them

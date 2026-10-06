@@ -57,10 +57,15 @@ export async function readMdmEnrollment(deps: MacosReaderDeps): Promise<MdmEnrol
   if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
   const enrollment = lineValue(result.stdout, "MDM enrollment");
   if (enrollment === null) return null;
-  // Only an explicit Yes or No is an answer. An empty or unfamiliar value - a new macOS
-  // wording, a truncated line - is unread, not "not enrolled": reading it as No would withdraw
-  // a managed Mac's settings on a fact nobody established.
-  const enrolled = /^yes\b/i.test(enrollment) ? true : /^no\b/i.test(enrollment) ? false : null;
+  // Only an explicit Yes or No is an answer: the bare word, optionally followed by one
+  // parenthesised qualifier, which is how macOS prints `Yes (User Approved)`. Anything else -
+  // empty, a new wording, `Yes-but-...`, a truncated line - is unread. Reading it as Yes could
+  // manage a Mac nobody enrolled, and reading it as No could withdraw one that is.
+  const enrolled = explicitAnswer(enrollment, "yes")
+    ? true
+    : explicitAnswer(enrollment, "no")
+      ? false
+      : null;
   if (enrolled === null) return null;
   const server = lineValue(result.stdout, "MDM server");
   return {
@@ -96,6 +101,11 @@ export async function readPlistValue(
   } catch {
     return null;
   }
+}
+
+/** `word` alone, or `word (qualifier)`, case-insensitively, and nothing else. */
+function explicitAnswer(value: string, word: "yes" | "no"): boolean {
+  return new RegExp(`^${word}(?:\\s+\\([^()]*\\))?$`, "i").test(value);
 }
 
 /** The trimmed value after `<label>:` on its own line, or null when no such line exists. */

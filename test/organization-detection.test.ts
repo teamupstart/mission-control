@@ -186,7 +186,21 @@ test("an unreadable profiles answer is indeterminate, while a clean non-match is
     assert.deepEqual(await detectOrganizationState(harness(answer).deps), { kind: "indeterminate" });
   }
   // An enrollment value that is neither Yes nor No is unread, not "not enrolled".
-  for (const value of ["", "   ", "Unknown", "Pending", "N/A", "Yesterday", "Nope"]) {
+  for (const value of [
+    "",
+    "   ",
+    "Unknown",
+    "Pending",
+    "N/A",
+    "Yesterday",
+    "Nope",
+    "Yes-but-not-enrolled",
+    "Yes, pending",
+    "Yes (User Approved) but removed",
+    "Yes ()) (",
+    "No-ish",
+    "No.",
+  ]) {
     const lines = [`MDM enrollment: ${value}`, "MDM server: https://upstart.jamfcloud.com/mdm/ServerURL"];
     assert.deepEqual(
       await detectOrganizationState(harness(ok(profilesOutput(lines))).deps),
@@ -203,6 +217,23 @@ test("an unreadable profiles answer is indeterminate, while a clean non-match is
       await detectOrganizationState(harness(ok(profilesOutput(lines))).deps),
       { kind: "unmatched" },
       lines.join(" | "),
+    );
+  }
+  // The accepted forms: the bare word, or the word with one parenthesised qualifier.
+  for (const value of ["Yes", "yes", "Yes (User Approved)", "YES (Device Enrollment)"]) {
+    const lines = [`MDM enrollment: ${value}`, "MDM server: https://upstart.jamfcloud.com/mdm/ServerURL"];
+    assert.equal(
+      (await detectOrganizationState(harness(ok(profilesOutput(lines))).deps)).kind,
+      "matched",
+      value,
+    );
+  }
+  for (const value of ["No", "no", "No (Removed)"]) {
+    const lines = [`MDM enrollment: ${value}`, "MDM server: https://upstart.jamfcloud.com/mdm/ServerURL"];
+    assert.deepEqual(
+      await detectOrganizationState(harness(ok(profilesOutput(lines))).deps),
+      { kind: "unmatched" },
+      value,
     );
   }
   // Refusals before `profiles` is asked are definite too.

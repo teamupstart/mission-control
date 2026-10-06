@@ -307,6 +307,8 @@ export function setPilotEnrollment(enrolled: boolean, now = Date.now()): PilotEn
  * one before it, so two can never interleave a detection with the other's apply.
  */
 let settling: Promise<unknown> = Promise.resolve();
+/** Rechecks started and not yet finished. Incremented synchronously when one starts. */
+let rechecksInFlight = 0;
 
 /**
  * Detect again, then apply. What daemon start and Re-check both run.
@@ -342,6 +344,15 @@ export function recheckOrganization(
     return outcome;
   });
   settling = run;
+  rechecksInFlight += 1;
+  run.then(
+    () => {
+      rechecksInFlight -= 1;
+    },
+    () => {
+      rechecksInFlight -= 1;
+    },
+  );
   return run;
 }
 
@@ -419,6 +430,23 @@ export async function organizationSettled(): Promise<void> {
     await current.catch(() => {});
     // A recheck started while we waited is a newer answer; wait for that one too.
     if (current === settling) return;
+  }
+}
+
+/**
+ * Run `act` at a moment no organization recheck is in flight, with nothing in between.
+ *
+ * `organizationSettled` alone is not enough for a check-then-write. The caller resumes a
+ * microtask after it resolves, and another request can start a recheck in that gap: the write
+ * would then land while recognition is running, and a recognized Mac would save it as the
+ * person's pre-managed configuration. So this waits, then confirms - synchronously, in the
+ * same turn that runs `act` - that nothing has started since. `act` must be synchronous, which
+ * is what keeps a recheck from beginning between the lock check it makes and the write it does.
+ */
+export async function whileOrganizationSettled<T>(act: () => T): Promise<T> {
+  for (;;) {
+    await organizationSettled();
+    if (rechecksInFlight === 0) return act();
   }
 }
 

@@ -410,6 +410,7 @@ import {
   organizationSettled,
   recheckOrganization,
   runTelemetryOperation,
+  whileOrganizationSettled,
   runTelemetryProbe,
   setPilotEnrollment,
   setTelemetryConfig,
@@ -7385,10 +7386,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Each of these routes first waits out any organization recheck in flight - the startup one
   // above all. Until it settles nobody knows whether this Mac is managed, and answering in
   // that window would render the panel editable and accept a write the lock exists to refuse.
-  // Everything after the wait is synchronous, so no recheck can begin between the check and
-  // the write it guards.
-  const managedRefusal = async (): Promise<{ error: string; managedBy: string } | null> => {
-    await organizationSettled();
+  // The lock check and the write it guards run together inside `whileOrganizationSettled`,
+  // in one synchronous step, so no recheck can begin between them.
+  const managedRefusal = (): { error: string; managedBy: string } | null => {
     const organization = currentOrganization();
     return organization === null
       ? null
@@ -7401,13 +7401,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const managed = await managedRefusal();
-    if (managed) return c.json(managed, 403);
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = managedRefusal();
+      return managed ? { managed } : { applied: setTelemetryConfig(parsed.data) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     // Attribution, never authorization. Nothing below branches on it, and nothing anywhere in
     // the daemon reads it to decide whether this request is allowed: the headers say who the
     // app THINKS asked, and `basis` says how much that is worth.
     const context = resolveOperationContext(c.req.raw.headers);
-    const applied = setTelemetryConfig(parsed.data);
+    const applied = outcome.applied;
     // 409 rather than 500: every refusal here is a configuration the operator can see and
     // fix - an unencrypted remote endpoint carrying a credential, our own address, the
     // product audience that has no service behind it, or a revision that moved underneath.
@@ -7431,12 +7434,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, TelemetryOperationRequestSchema);
     if (!parsed.ok) return parsed.res;
     // `retry` changes no setting - it clears a pause the daemon applied - so it stays open.
-    if (parsed.data.action !== "retry") {
-      const managed = await managedRefusal();
-      if (managed) return c.json(managed, 403);
-    }
+    const { action, profile } = parsed.data;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = action === "retry" ? null : managedRefusal();
+      return managed ? { managed } : { result: runTelemetryOperation(action, profile) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     const context = resolveOperationContext(c.req.raw.headers);
-    const result = runTelemetryOperation(parsed.data.action, parsed.data.profile);
+    const result = outcome.result;
     recordTelemetryControl({
       action: parsed.data.action,
       profile: result.profile ?? "all",
@@ -7455,8 +7460,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/telemetry/organization/pilot", async (c) => {
     const parsed = await parseBody(c, TelemetryOrganizationPilotRequestSchema);
     if (!parsed.ok) return parsed.res;
-    await organizationSettled();
-    const result = setPilotEnrollment(parsed.data.enrolled);
+    const result = await whileOrganizationSettled(() => setPilotEnrollment(parsed.data.enrolled));
     if (!result.ok) return c.json({ error: result.error }, result.status);
     if (result.changed) publishSettingsStatus(registry);
     return c.json(telemetryStatus());

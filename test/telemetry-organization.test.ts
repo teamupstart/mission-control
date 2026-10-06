@@ -27,6 +27,7 @@ const {
   recheckOrganization,
   setPilotEnrollment,
   telemetryOrganizationRecord,
+  whileOrganizationSettled,
 } = await import("../src/server/telemetry/organization.ts");
 const {
   currentOrganization,
@@ -664,6 +665,49 @@ test("an unreadable enrollment on a machine never managed leaves it unmanaged an
   assert.deepEqual(getTelemetryConfig(), before);
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization), undefined);
   assert.equal((await send("/api/telemetry/config", "PUT", { enabled: false })).status, 200);
+});
+
+test("a guarded settings write never runs while a recheck that started after it is in flight", async () => {
+  // The window this closes is a few microtasks wide: after the wait for rechecks resolves and
+  // before the guarded write runs. Start a held recheck at every offset across that window and
+  // check that the write never runs while it is unfinished.
+  for (let offset = 0; offset < 10; offset += 1) {
+    await refreshOrganization(deps(false));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let recheckStarted = false;
+    let recheckDone = false;
+    let violation = false;
+    const held: DetectionDeps = {
+      ...deps(false),
+      // Forced detection never spawns, so hold the recheck on its realpath call instead,
+      // through a production-shaped launch that reaches the guards.
+      env: {},
+      platform: "darwin",
+      launchMode: "desktop",
+      stateHome: "/Users/someone/.mission-control",
+      tmpdir: "/private/var/folders/xy/T",
+      realpath: async (path) => {
+        await gate;
+        return path;
+      },
+    };
+    const write = whileOrganizationSettled(() => {
+      if (recheckStarted && !recheckDone) violation = true;
+      return "ran";
+    });
+    for (let i = 0; i < offset; i += 1) await Promise.resolve();
+    recheckStarted = true;
+    const recheck = recheckOrganization(held, 5_000).finally(() => {
+      recheckDone = true;
+    });
+    release();
+    assert.equal(await write, "ran");
+    await recheck;
+    assert.equal(violation, false, `the write ran during a recheck at offset ${offset}`);
+  }
 });
 
 test("an undetected machine with no record is left exactly as it was", async () => {

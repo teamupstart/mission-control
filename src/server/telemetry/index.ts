@@ -23,6 +23,7 @@ export {
   describeOrganizationOutcome,
   organizationSettled,
   recheckOrganization,
+  whileOrganizationSettled,
   setPilotEnrollment,
   telemetryOrganizationRecord,
 } from "./organization.ts";

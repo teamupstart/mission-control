@@ -100,8 +100,8 @@ export interface PiPromptOptions {
    *
    * `prompt()` resolves when the TURN finishes, which is far too late for a caller that
    * has to know whether the harness took the message. Pi calls this the moment it has -
-   * `true` once the turn is queued or started, `false` on a preflight refusal, which is
-   * then followed by the rejection itself.
+   * `true` once the turn is handled, queued, or started. A preflight refusal skips
+   * this callback and rejects instead.
    */
   preflightResult(accepted: boolean): void;
 }

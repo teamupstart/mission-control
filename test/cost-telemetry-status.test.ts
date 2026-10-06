@@ -399,3 +399,54 @@ test("an edit that keeps the file's size and modification time is reread after a
   rmSync(policy);
   await refreshAt(t + 60_001);
 });
+
+test("a read in flight when Cost is switched off does not put its answer back", async () => {
+  const t = T0 + 500 * DAY;
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://stale.example.com" } }),
+  );
+  setCostConfig({ enabled: true }, t);
+  // A poll starts the read. Cost goes off before it lands.
+  costTelemetryStatus(t);
+  const inFlight = refreshManagedMetricsPolicy(t);
+  setCostConfig({ enabled: false }, t + 1);
+  await inFlight;
+
+  // Back on: the abandoned read wrote nothing, so the first poll has no answer yet rather than
+  // the one read before Cost went off.
+  setCostConfig({ enabled: true }, t + 2);
+  assert.equal(costTelemetryStatus(t + 2).managedRedirect, null, "the abandoned read wrote nothing");
+  await refreshManagedMetricsPolicy(t + 2);
+  assert.equal(costTelemetryStatus(t + 3).managedRedirect?.host, "stale.example.com");
+
+  setCostConfig({ enabled: false }, t + 4);
+  rmSync(policy);
+});
+
+test("switching Cost off and on between two polls does not bring back the old answer", async () => {
+  const t = T0 + 600 * DAY;
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://before.example.com" } }),
+  );
+  setCostConfig({ enabled: true }, t);
+  costTelemetryStatus(t);
+  await refreshManagedMetricsPolicy(t);
+  assert.equal(costTelemetryStatus(t + 1).managedRedirect?.host, "before.example.com");
+  await refreshManagedMetricsPolicy(t + 1);
+
+  // Off and on again with no status read in between - the toggle clicked twice.
+  setCostConfig({ enabled: false }, t + 2);
+  setCostConfig({ enabled: true }, t + 3);
+  assert.equal(costTelemetryStatus(t + 3).managedRedirect, null, "switching off dropped the answer");
+
+  setCostConfig({ enabled: false }, t + 4);
+  rmSync(policy);
+});

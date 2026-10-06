@@ -207,10 +207,16 @@ let cached: ManagedMetricsPolicy | null = null;
 let cachedKey: string | null = null;
 let readAt: number | null = null;
 let inflight: Promise<void> | null = null;
+/**
+ * Bumped by `forgetManagedMetricsPolicy`. A refresh records the generation it started in and
+ * writes nothing if it has moved on, so a read that was in flight when Cost was switched off
+ * cannot put its answer back once that answer has been dropped.
+ */
+let generation = 0;
 
 /** What the managing policy does with metrics, as last read. Never waits and never throws. */
 export function managedMetricsPolicy(now = Date.now()): ManagedMetricsPolicy | null {
-  if (inflight === null) inflight = refresh(now);
+  if (inflight === null) startRefresh(now);
   return cached;
 }
 
@@ -218,14 +224,16 @@ export function managedMetricsPolicy(now = Date.now()): ManagedMetricsPolicy | n
  * Drop the cached answer, so nothing read earlier outlives Cost being switched off.
  *
  * The policy is only read while Cost is on. Clearing here means switching it back on starts
- * from a fresh read instead of showing whatever the last one found, however long ago. A
- * refresh already in flight may still land afterwards; it is a read that was asked for while
- * Cost was on, and the next poll's key check decides whether it stands.
+ * from a fresh read instead of showing whatever the last one found, however long ago. A read
+ * still in flight is abandoned rather than awaited: its generation is now stale, so it writes
+ * nothing when it lands, and the next poll is free to start a fresh one at once.
  */
 export function forgetManagedMetricsPolicy(): void {
+  generation += 1;
   cached = null;
   cachedKey = null;
   readAt = null;
+  inflight = null;
 }
 
 /**
@@ -235,30 +243,43 @@ export function forgetManagedMetricsPolicy(): void {
  * await it to see what the next poll will.
  */
 export function refreshManagedMetricsPolicy(now = Date.now()): Promise<void> {
-  if (inflight === null) inflight = refresh(now);
-  return inflight;
+  return inflight ?? startRefresh(now);
 }
 
-async function refresh(now: number): Promise<void> {
+/**
+ * Start one refresh and own its in-flight slot.
+ *
+ * The slot is released from the promise's own `finally`, which runs only after this
+ * assignment - releasing it inside `refresh` could run before the assignment when `refresh`
+ * returns without awaiting, leaving a settled promise in the slot for good. It is released
+ * only if it still holds this refresh, so an abandoned one cannot clear its successor's.
+ */
+function startRefresh(now: number): Promise<void> {
+  const started: Promise<void> = refresh(now, generation).finally(() => {
+    if (inflight === started) inflight = null;
+  });
+  inflight = started;
+  return started;
+}
+
+async function refresh(now: number, startedIn: number): Promise<void> {
+  const settle = (policy: ManagedMetricsPolicy | null, key: string | null): void => {
+    if (startedIn !== generation) return;
+    cached = policy;
+    cachedKey = key;
+    readAt = now;
+  };
   try {
     const deps = defaultClaudeManagedDeps();
     if (deps === null) {
-      cached = null;
-      cachedKey = null;
-      readAt = now;
+      settle(null, null);
       return;
     }
     const key = await locationsKey(deps);
     if (key === cachedKey && readAt !== null && now - readAt < REFRESH_AFTER_MS) return;
-    cached = classifyManagedMetrics(await readManagedClaudeEnv(deps));
-    cachedKey = key;
-    readAt = now;
+    settle(classifyManagedMetrics(await readManagedClaudeEnv(deps)), key);
   } catch {
-    cached = null;
-    cachedKey = null;
-    readAt = now;
-  } finally {
-    inflight = null;
+    settle(null, null);
   }
 }
 

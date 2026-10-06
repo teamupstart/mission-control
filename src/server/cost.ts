@@ -88,6 +88,9 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
   // off, because a stamp for a feature that is not running would silently shorten the next one.
   if (next.enabled && !previous.enabled) setAppConfig(ENABLED_AT_ENTRY, now);
   if (!next.enabled) setAppConfig(ENABLED_AT_ENTRY, null);
+  // Drop the managed-policy answer the moment Cost goes off, not at the next status poll: a
+  // switch turned off and on again between two polls must not bring back what was read before.
+  if (!next.enabled) forgetManagedMetricsPolicy();
   return next;
 }
 

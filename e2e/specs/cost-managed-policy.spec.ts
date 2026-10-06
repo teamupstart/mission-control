@@ -109,3 +109,68 @@ test("Cost settings names the host a managed policy sends metrics to", async ({
   await toggle.uncheck();
   await expect(warning).toHaveCount(0);
 });
+
+// A policy that turns Claude Code's metrics off rather than sending them elsewhere. Its own
+// fixture root, because `daemonEnv` is read once, when each test's daemon starts.
+const disabledRoot = mkdtempSync(join(tmpdir(), "mission-e2e-managed-policy-off-"));
+const disabledDir = join(disabledRoot, "Library", "Application Support", "ClaudeCode");
+mkdirSync(disabledDir, { recursive: true });
+writeFileSync(
+  join(disabledDir, "managed-settings.json"),
+  JSON.stringify({
+    env: {
+      CLAUDE_CODE_ENABLE_TELEMETRY: "0",
+      // Named, but turned off: a disabled policy names no host, whatever endpoint it carries.
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://otel.example.com",
+    },
+  }),
+);
+test.afterAll(() => rmSync(disabledRoot, { recursive: true, force: true }));
+
+test.describe("a managed policy that turns metrics off", () => {
+  test.use({ daemonEnv: { MISSION_MANAGED_SETTINGS_ROOT: disabledRoot } });
+
+  test("Cost settings says the policy turns metrics off, and names no host", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/cost`);
+    const toggle = dashboard.getByLabel("Export Claude Code usage telemetry to Mission Control", {
+      exact: true,
+    });
+    await expect(toggle).toBeEnabled();
+    await expect(dashboard.getByText(/managed Claude Code policy/)).toHaveCount(0);
+
+    await toggle.check();
+    await expect(toggle).toBeChecked();
+
+    const warning = dashboard.getByText(
+      /Your organization's managed Claude Code policy turns Claude Code's metrics off/,
+    );
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveText(
+      "Your organization's managed Claude Code policy turns Claude Code's metrics off, so the " +
+        "estimate covers only sessions Mission Control runs.",
+      { useInnerText: true },
+    );
+    // Not the redirect sentence, and no host anywhere on the panel.
+    await expect(dashboard.getByText(/sends metrics to/)).toHaveCount(0);
+    await expect(dashboard.getByText(/otel\.example\.com/)).toHaveCount(0);
+    await expect(dashboard.getByText(/disables telemetry/)).toHaveCount(0);
+
+    const status = (await (
+      await dashboard.request.get(`${daemon.baseURL}/api/cost/config`)
+    ).json()) as { managedRedirect: unknown };
+    expect(status.managedRedirect).toEqual({
+      kind: "disabled",
+      host: null,
+      source: "managed-settings",
+      organizationLabel: null,
+    });
+
+    await shoot(dashboard, "cost-managed-disabled");
+
+    await toggle.uncheck();
+    await expect(warning).toHaveCount(0);
+  });
+});

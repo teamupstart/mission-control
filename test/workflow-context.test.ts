@@ -594,6 +594,20 @@ test("repository capture fails closed and detects worktree evidence changes", as
     "the probe must include reports in full content identity");
   writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>Other proof.</p>");
   assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), reportCapture.context.evidence), false);
+  for (const extension of ["txt", "log", "csv", "json"]) {
+    const companion = `docs/reports/probe/empty.${extension}`;
+    writeFileSync(join(repo, companion), "");
+    const emptyCompanion = await readWorkflowContextRaw(registry, binding);
+    // Empty text is rejected before selecting the report group for retention. The entire
+    // group stays required, and the real snapshot still parses rather than failing capture.
+    const parsed = WorkflowContextSnapshotSchema.parse(emptyCompanion.context);
+    assert.equal(parsed.evidence.publication?.localArtifacts.length, 0);
+    assert.equal(parsed.evidence.artifacts?.length, 0);
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes(companion));
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes("docs/reports/probe/report.html"));
+    assert.match(parsed.evidence.publication?.artifactProblems.join("\n") ?? "", /between 1 and/);
+    rmSync(join(repo, companion));
+  }
   rmSync(join(repo, "docs"), { recursive: true });
 
   writeFileSync(join(repo, "file.txt"), "one\n");

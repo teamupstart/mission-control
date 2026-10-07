@@ -216,3 +216,12 @@ cannot be read, Product analytics is cleared and switched off, and the collectio
 left as it is. Data already
 accepted by the gateway cannot be recalled. How the managed lane is applied, kept in step and
 withdrawn is in [Organization defaults](observability.md#organization-defaults).
+
+**Settings > Cost on an Upstart Mac.** Upstart's managed Claude Code policy sends Claude Code's
+own metrics to Upstart's telemetry gateway. A managed policy outranks `~/.claude/settings.json`,
+so sessions you start yourself in a terminal never report their cost to Mission Control, even
+with the Cost switch on. Mission Control does not override the policy. Instead, **Settings >
+Cost** says "Upstart's managed Claude Code policy sends metrics to
+`corp-otel-staging-1.upstart.com`, so the estimate covers only sessions Mission Control runs."
+Sessions Mission Control runs are still counted. Only the host is read out of the policy. See
+[When a managed policy decides where metrics go](sessions.md#when-a-managed-policy-decides-where-metrics-go).

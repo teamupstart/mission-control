@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,12 +37,16 @@ import { join } from "node:path";
 // `CLAUDE_SETTINGS_PATH` is redirected at a temp file for the same reason `MISSION_HOME` is:
 // `costTelemetryStatus` READS the operator's real settings file to report what is actually
 // installed, and a test must never read or write the one in their home directory.
+// `MISSION_MANAGED_SETTINGS_ROOT` is redirected for the same reason: the status also reports
+// what this Mac's managed Claude Code policy does with metrics, and that is the developer's.
 
 const home = mkdtempSync(join(tmpdir(), "mission-cost-status-"));
 process.env.MISSION_HOME = home;
 const settingsPath = join(home, "claude-settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;
 writeFileSync(settingsPath, "{}\n");
+const managedRoot = join(home, "managed-root");
+process.env.MISSION_MANAGED_SETTINGS_ROOT = managedRoot;
 
 const {
   commitUsageRead,
@@ -53,6 +57,7 @@ const {
   upsertUsageCell,
 } = await import("../src/server/db.ts");
 const { costTelemetryStatus, setCostConfig } = await import("../src/server/cost.ts");
+const { refreshManagedMetricsPolicy } = await import("../src/server/environment/claude-managed.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -271,4 +276,177 @@ test("switching the toggle off uninstalls the block without rewriting history", 
   const status = costTelemetryStatus(t);
   assert.equal(status.installed, false, "the env block is gone from the file");
   assert.equal(status.receiving, true, "the rows it already wrote are still there");
+});
+
+test("with Cost off, the managed policy is never read and nothing is reported", async () => {
+  const t = T0 + 250 * DAY;
+  // The previous test switched Cost off. A policy is in place, and the polls below - the only
+  // production path that starts a read - have every chance to read it.
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://otel.example.com" } }),
+  );
+  assert.equal(costTelemetryStatus(t).config.enabled, false);
+  assert.equal(costTelemetryStatus(t).managedRedirect, null);
+  // Long enough for any read a poll had started to land in the cache.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(costTelemetryStatus(t + 1).managedRedirect, null);
+
+  // Switching Cost on proves nothing was read while it was off: the cache is empty, so the
+  // first poll has no answer yet and only starts the read. The one after it has the host.
+  setCostConfig({ enabled: true }, t + 2);
+  assert.equal(costTelemetryStatus(t + 2).managedRedirect, null, "nothing was cached while off");
+  await refreshManagedMetricsPolicy(t + 2);
+  assert.equal(costTelemetryStatus(t + 3).managedRedirect?.host, "otel.example.com");
+
+  // And switching it off again drops the answer rather than reporting it.
+  setCostConfig({ enabled: false }, t + 4);
+  assert.equal(costTelemetryStatus(t + 4).managedRedirect, null);
+
+  // Leave nothing in flight for the next test: the enabled poll above started a read.
+  rmSync(policy);
+  await refreshManagedMetricsPolicy(t + 5);
+  await refreshManagedMetricsPolicy(t + 5);
+});
+
+test("a managed policy that redirects metrics is reported from the cache, without waiting", async () => {
+  const t = T0 + 300 * DAY;
+  // The policy is read only while Cost is on.
+  setCostConfig({ enabled: true }, t);
+  // Nothing at the managed root yet: no policy, and the read says so.
+  await refreshManagedMetricsPolicy(t);
+  assert.equal(costTelemetryStatus(t).managedRedirect, null);
+
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({
+      env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://otel.example.com:4318/v1/metrics" },
+    }),
+  );
+
+  // Synchronous: the poll returns what the cache held, and only starts a read for next time.
+  const first = costTelemetryStatus(t + 1);
+  assert.equal(first instanceof Promise, false);
+  assert.equal(first.managedRedirect, null, "the poll never waits on the read it started");
+  await refreshManagedMetricsPolicy(t + 1);
+  assert.deepEqual(costTelemetryStatus(t + 2).managedRedirect, {
+    kind: "redirect",
+    host: "otel.example.com",
+    source: "managed-settings",
+    // No organization manages a test process.
+    organizationLabel: null,
+  });
+
+  // An edit changes the file's size, so the very next read notices it - no minute to wait.
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_ENDPOINT: "https://gateway.example.org" } }),
+  );
+  costTelemetryStatus(t + 3);
+  await refreshManagedMetricsPolicy(t + 3);
+  assert.equal(costTelemetryStatus(t + 4).managedRedirect?.host, "gateway.example.org");
+
+  // And removing the policy clears it.
+  rmSync(policy);
+  costTelemetryStatus(t + 5);
+  await refreshManagedMetricsPolicy(t + 5);
+  assert.equal(costTelemetryStatus(t + 6).managedRedirect, null);
+});
+
+test("an edit that keeps the file's size and modification time is reread after a minute", async () => {
+  const t = T0 + 400 * DAY;
+  setCostConfig({ enabled: true }, t);
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  // Two hosts of the same length, and one fixed modification time, so the metadata key the
+  // cache watches is identical before and after the edit. Only the minute can notice it.
+  const write = (host: string) => {
+    writeFileSync(policy, JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: `https://${host}` } }));
+    utimesSync(policy, 1_700_000_000, 1_700_000_000);
+  };
+  // A refresh joins one already running, which carries the clock it started with, and every
+  // status read starts one. So each step first drains whatever is in flight, then refreshes
+  // at exactly the time it names.
+  const refreshAt = async (now: number) => {
+    await refreshManagedMetricsPolicy(now);
+    await refreshManagedMetricsPolicy(now);
+  };
+  write("aaa.example.com");
+  await refreshAt(t);
+  assert.equal(costTelemetryStatus(t).managedRedirect?.host, "aaa.example.com");
+  const before = statSync(policy);
+
+  write("bbb.example.com");
+  const after = statSync(policy);
+  assert.equal(after.size, before.size, "the edit keeps the size");
+  assert.equal(after.mtimeMs, before.mtimeMs, "the edit keeps the modification time");
+
+  // One millisecond short of the minute: the key is unchanged, so the cached host stands.
+  await refreshAt(t + 59_999);
+  assert.equal(costTelemetryStatus(t + 59_999).managedRedirect?.host, "aaa.example.com");
+
+  // At the minute, the policy is read again whatever its metadata says.
+  await refreshAt(t + 60_000);
+  assert.equal(costTelemetryStatus(t + 60_000).managedRedirect?.host, "bbb.example.com");
+
+  rmSync(policy);
+  await refreshAt(t + 60_001);
+});
+
+test("a read in flight when Cost is switched off does not put its answer back", async () => {
+  const t = T0 + 500 * DAY;
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://stale.example.com" } }),
+  );
+  setCostConfig({ enabled: true }, t);
+  // A poll starts the read. Cost goes off before it lands.
+  costTelemetryStatus(t);
+  const inFlight = refreshManagedMetricsPolicy(t);
+  setCostConfig({ enabled: false }, t + 1);
+  await inFlight;
+
+  // Back on: the abandoned read wrote nothing, so the first poll has no answer yet rather than
+  // the one read before Cost went off.
+  setCostConfig({ enabled: true }, t + 2);
+  assert.equal(costTelemetryStatus(t + 2).managedRedirect, null, "the abandoned read wrote nothing");
+  await refreshManagedMetricsPolicy(t + 2);
+  assert.equal(costTelemetryStatus(t + 3).managedRedirect?.host, "stale.example.com");
+
+  setCostConfig({ enabled: false }, t + 4);
+  rmSync(policy);
+});
+
+test("switching Cost off and on between two polls does not bring back the old answer", async () => {
+  const t = T0 + 600 * DAY;
+  const dir = join(managedRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(dir, { recursive: true });
+  const policy = join(dir, "managed-settings.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({ env: { OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://before.example.com" } }),
+  );
+  setCostConfig({ enabled: true }, t);
+  costTelemetryStatus(t);
+  await refreshManagedMetricsPolicy(t);
+  assert.equal(costTelemetryStatus(t + 1).managedRedirect?.host, "before.example.com");
+  await refreshManagedMetricsPolicy(t + 1);
+
+  // Off and on again with no status read in between - the toggle clicked twice.
+  setCostConfig({ enabled: false }, t + 2);
+  setCostConfig({ enabled: true }, t + 3);
+  assert.equal(costTelemetryStatus(t + 3).managedRedirect, null, "switching off dropped the answer");
+
+  setCostConfig({ enabled: false }, t + 4);
+  rmSync(policy);
 });

@@ -557,6 +557,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // managed panel opts in through `daemonEnv` with `MISSION_ORGANIZATION=upstart` and a
     // loopback `MISSION_ORGANIZATION_ENDPOINT`.
     MISSION_ORGANIZATION: "none",
+    // No spec reads the real managed Claude Code policy on the Mac that runs the suite. This
+    // root holds no policy, so Settings > Cost reads as it does on an unmanaged machine. A
+    // spec that drives the managed-policy warning points it at a fixture through `daemonEnv`.
+    MISSION_MANAGED_SETTINGS_ROOT: join(home, "managed-settings-root"),
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through

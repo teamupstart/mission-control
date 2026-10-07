@@ -23,7 +23,7 @@
   "GET /api/away/digest": "204 empty",
   "GET /api/away/stalls": "200 []",
   "GET /api/backlog/plan": "200 null",
-  "GET /api/cost/config": "200 {\"config\":{\"enabled\":false,\"exportIntervalMs\":15000,\"view\":\"usd\"},\"exporterSilent\":false,\"installed\":\"<installed>\",\"receiving\":false,\"sessionIdDisabled\":false,\"settingsPath\":\"<path>\"}",
+  "GET /api/cost/config": "200 {\"config\":{\"enabled\":false,\"exportIntervalMs\":15000,\"view\":\"usd\"},\"exporterSilent\":false,\"installed\":\"<installed>\",\"managedRedirect\":null,\"receiving\":false,\"sessionIdDisabled\":false,\"settingsPath\":\"<path>\"}",
   "GET /api/ensembles": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "GET /api/ensembles/:id": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "GET /api/ensembles/:id/artifacts/:artifactId": "503 {\"error\":\"Ensemble manager unavailable\"}",

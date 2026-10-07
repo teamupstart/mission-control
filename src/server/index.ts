@@ -66,7 +66,8 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
-import { reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
+import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
+import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
@@ -174,6 +175,11 @@ try {
 // session id at all, and the ingest can only drop them. The feature would look installed
 // and record nothing.
 warnIfSessionAttributionDisabled();
+// Read the managed Claude Code policy now, in the background, so Settings > Cost can name a
+// policy that redirects metrics from its first poll rather than from its second. Only when Cost
+// is on: that is the only time the panel names it, and an installation that never switched Cost
+// on has no reason to read its organization's policy.
+if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
 const reconcileManagedResumeResources = () => {

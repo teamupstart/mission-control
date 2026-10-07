@@ -60,6 +60,8 @@ function sessionIdForCwd() {
 }
 const RESUME_ID = argvValue("--resume");
 const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? RESUME_ID ?? sessionIdForCwd();
+// Put the hard-limit diagnostic beyond the provider error text retained by the daemon.
+const TOKEN_REFUSAL_DIAGNOSTIC = `${"provider detail ".repeat(24)}prompt exceeds model token limit`;
 
 /**
  * A process-scoped snapshot of the operator's Claude authentication.
@@ -397,8 +399,8 @@ if (process.argv.includes("--setting-sources=")) {
       }
       if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
         process.stdout.write(JSON.stringify({ type: "result", subtype: "error_during_execution",
-          is_error: true, terminal_reason: "prompt_too_long",
-          errors: ["prompt exceeds model token limit"] }));
+          is_error: true, terminal_reason: "api_error",
+          errors: [TOKEN_REFUSAL_DIAGNOSTIC] }));
         process.exit(1);
       }
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
@@ -645,8 +647,8 @@ function runHeadlessSdk() {
     }
     if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
       emit({ type: "result", subtype: "error_during_execution", is_error: true,
-        terminal_reason: "prompt_too_long", session_id: SESSION_ID,
-        errors: ["prompt exceeds model token limit"] });
+        terminal_reason: "api_error", session_id: SESSION_ID,
+        errors: [TOKEN_REFUSAL_DIAGNOSTIC] });
       process.exit(0);
     }
     const answer = headlessAnswer(prompt);

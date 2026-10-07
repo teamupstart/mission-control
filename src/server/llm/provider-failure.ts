@@ -27,10 +27,11 @@ export class ProviderFailure extends Error {
   readonly kind: ProviderFailureKind;
 
   constructor(message: string, code?: string | null, kind?: ProviderFailureKind) {
-    const bounded = message.replace(/\s+/g, " ").trim().slice(0, 300) || "Provider returned an error";
+    const normalized = message.replace(/\s+/g, " ").trim();
+    const bounded = normalized.slice(0, 300) || "Provider returned an error";
     super(bounded);
     this.name = "ProviderFailure";
-    this.kind = kind ?? (isTokenExhaustion(bounded, code) ? "token_exhausted" : "retryable");
+    this.kind = kind ?? (isTokenExhaustion(normalized, code) ? "token_exhausted" : "retryable");
   }
 }
 
@@ -41,8 +42,7 @@ export function claudeProviderFailure(frame: Record<string, unknown>): ProviderF
   const errors = Array.isArray(frame.errors)
     ? frame.errors.filter((value): value is string => typeof value === "string").join("; ")
     : "";
-  if (!["api_error", "model_error", "blocking_limit", "rapid_refill_breaker", "prompt_too_long", "budget_exhausted"].includes(reason)
-    && !isTokenExhaustion(errors)) return null;
+  if (!["api_error", "model_error", "blocking_limit", "rapid_refill_breaker", "prompt_too_long", "budget_exhausted"].includes(reason)) return null;
   const subtype = typeof frame.subtype === "string" ? frame.subtype : "error";
   return new ProviderFailure(`Claude ${subtype} (${reason})${errors ? `: ${errors}` : ""}`, reason);
 }

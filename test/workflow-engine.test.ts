@@ -658,7 +658,7 @@ test("SDK local failures keep the existing persona_infrastructure vocabulary and
           is_error: true,
           session_id: "sdk-infrastructure-failure",
           terminal_reason: "tool_error",
-          errors: ["provider unavailable"],
+          errors: ["prompt exceeds model token limit"],
         } satisfies ClaudeSdkMessage;
       },
     }),

@@ -94,14 +94,19 @@ async function runWithProviderEvents(
   const { events } = await thread.runStreamed(prompt, options);
   let finalResponse = "";
   let usage: Record<string, unknown> | null = null;
+  let completed = false;
   for await (const event of events) {
     if (event.type === "turn.failed" && "error" in event) throw new ProviderFailure(event.error.message);
     if (event.type === "error" && "message" in event) throw new Error(event.message);
     if (event.type === "item.completed" && "item" in event && event.item.type === "agent_message") {
       finalResponse = event.item.text ?? "";
     }
-    if (event.type === "turn.completed" && "usage" in event) usage = event.usage;
+    if (event.type === "turn.completed") {
+      completed = true;
+      if ("usage" in event) usage = event.usage;
+    }
   }
+  if (!completed) throw new Error("codex sdk stream ended before turn.completed");
   return { finalResponse, usage };
 }
 

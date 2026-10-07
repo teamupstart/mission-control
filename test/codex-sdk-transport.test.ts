@@ -72,12 +72,13 @@ test("an empty final response is an error rather than an empty answer", async ()
 });
 
 test("an SDK turn.failed event retains provider origin and token exhaustion", async () => {
+  const diagnostic = `${"provider detail ".repeat(24)}insufficient_quota`;
   await assert.rejects(
     () => runCodexSdkOneShot("x", "/bin/codex", {}, {
       createClient: () => ({ startThread: () => ({
         run: async () => { assert.fail("streamed path must be used"); },
         runStreamed: async () => ({
-          events: (async function* () { yield { type: "turn.failed" as const, error: { message: "insufficient_quota" } }; })(),
+          events: (async function* () { yield { type: "turn.failed" as const, error: { message: diagnostic } }; })(),
         }),
       }) }),
     }),
@@ -106,6 +107,22 @@ test("a successful SDK stream returns its final agent message and usage", async 
     usage,
     threadId: "th_stream_success",
   });
+});
+
+test("an SDK stream ending before turn.completed cannot supply a review", async () => {
+  await assert.rejects(
+    () => runCodexSdkOneShot("x", "/bin/codex", {}, {
+      createClient: () => ({ startThread: () => ({
+        run: async () => { assert.fail("streamed path must be used"); },
+        runStreamed: async () => ({
+          events: (async function* () {
+            yield { type: "item.completed" as const, item: { type: "agent_message", text: '{"verdict":"pass"}' } };
+          })(),
+        }),
+      }) }),
+    }),
+    /stream ended before turn\.completed/i,
+  );
 });
 
 test("a synchronous SDK construction failure still releases its disposable state home", async () => {

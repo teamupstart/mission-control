@@ -87,6 +87,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/git/worktree-activity.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git stream reader" },
   ],
+  "src/server/harness/claude/sdk-deps.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Claude SDK local-spawn callback uses the harness-resolved CLI path and reports its exact child identity for transfer recovery" },
+  ],
   "src/server/harness/codex/sdk-deps.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the harness before transport creation" },
   ],
@@ -101,6 +104,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
+  ],
+  "src/server/terminal/resume-guard.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
   ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },

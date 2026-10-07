@@ -61,7 +61,10 @@ export interface FileCommentPayloadInput {
    * thread. Derived from the message list, so it needs no column.
    */
   ordinal: number;
-  /** 1-based position of this comment in the review, and how many the review holds. */
+  /**
+   * 1-based position of this comment in the review, and how many the review holds RIGHT NOW.
+   * Comments are sent as they are written, so `total` can grow after this turn goes.
+   */
   position: number;
   total: number;
   /**
@@ -75,7 +78,24 @@ export interface FileCommentPayloadInput {
    * answerable at all.
    */
   replyTool?: string | null;
+  /**
+   * Whether the quote still resolves in the file. Anything but `current` is a follow-up in a
+   * thread the agent has already seen - a comment it has not is held instead - so the quote is
+   * printed as the text the thread started on, and the agent is told so rather than left to
+   * search the file for a sentence it has usually already rewritten.
+   */
+  anchor?: FileCommentPayloadAnchor;
 }
+
+/** `current`, or why the quote no longer resolves: the text changed, or the file is gone. */
+export type FileCommentPayloadAnchor = "current" | "outdated" | "missing";
+
+const ANCHOR_NOTES: Record<Exclude<FileCommentPayloadAnchor, "current">, string> = {
+  outdated:
+    "The quoted text is no longer in the file: it is what this thread started on, and the file has changed since. Read the file as it is now.",
+  missing:
+    "This file is no longer in this checkout. The quoted text is what this thread started on.",
+};
 
 export interface RenderedFileComment {
   payload: string;
@@ -186,18 +206,26 @@ export function renderFileCommentPayload(input: FileCommentPayloadInput): Render
     : `Answer in your next turn, quoting id ${handle}.`;
   // "the remaining 9 follow one at a time" reads as a promise, so the last comment must not
   // make it - a review that said nine more were coming and then stopped would teach the agent
-  // to hold back work on every future review.
+  // to hold back work on every future review. Nor may it promise the opposite: comments are
+  // sent as they are written, so one queued behind nothing is not known to be the last. Both
+  // lines say only what the queue holds right now.
   const scopeLine =
     remaining === 0
-      ? "Answer this comment only - it is the last of this review, so do not restructure beyond what it asks for."
+      ? "Answer this comment only, and do not restructure beyond what it asks for: more comments may still follow."
       : `Answer this comment only - the remaining ${remaining} follow${remaining === 1 ? "s" : ""} one at a time, so do not restructure beyond what this one asks for.`;
+  const positionLine =
+    remaining === 0
+      ? `Review comment ${input.position}; nothing else is queued yet.`
+      : `Review comment ${input.position}; ${remaining} more queued behind it.`;
 
   const quotedLines = quote.value.split("\n").map((line) => (line ? `> ${line}` : ">"));
   const bodyText = body.value.replace(/\s+$/u, "");
+  const anchorNote = input.anchor && input.anchor !== "current" ? ANCHOR_NOTES[input.anchor] : null;
   const head = [
-    `Comment ${input.position} of ${input.total} on this review.`,
+    positionLine,
     "",
     `${sanitizeWorkflowFeedback(input.path)}, ${lineRangeLabel(input.startLine, input.endLine)}:`,
+    ...(anchorNote ? [anchorNote] : []),
     "",
     ...quotedLines,
     "",

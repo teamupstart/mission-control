@@ -1,6 +1,8 @@
+import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
+import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
+import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
@@ -24,6 +26,7 @@ import {
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
   confirmReservedInjection,
   releaseInjection,
@@ -40,6 +43,7 @@ import {
   getSdkSession,
   listSdkSessions,
   recordSdkSessionBinding,
+  recordSdkSessionProcess,
   sdkSessionIsLive,
   setSdkSessionEffort,
   setSdkSessionModel,
@@ -92,7 +96,11 @@ function missionMcpForSession(
   return descriptor
     ? {
         ...descriptor,
-        env: { ...descriptor.env, [MISSION_SESSION_ID_ENV]: sessionId },
+        env: {
+          ...descriptor.env,
+          [MISSION_SESSION_ID_ENV]: sessionId,
+          [SCOUT_SESSION_LOCATOR_ENV]: sessionScoutCredentialLocator(sessionId),
+        },
       }
     : null;
 }
@@ -183,6 +191,7 @@ export class SdkSupervisor {
     private readonly deps: {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
+      processSnapshot?: typeof listProcessesSnapshot;
     } = {},
   ) {}
 
@@ -206,7 +215,7 @@ export class SdkSupervisor {
         );
         continue;
       }
-      if (!sdkSessionIsLive(row)) continue;
+      if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
       const closure = taskSessionClosureForSession(row.id);
       const completedTask = closure ? getDurableTask(closure.taskId) : null;
       if (completedTask?.status === "done" && completedTask.sessionId === row.id) {
@@ -601,7 +610,7 @@ export class SdkSupervisor {
    * second place to get it wrong.
    */
   beginHandoff(id: string): boolean {
-    if (this.handingOff.has(id)) return false;
+    if (this.handingOff.has(id) || this.acceptingTurns.has(id) || transferForSource(id)) return false;
     this.handingOff.add(id);
     return true;
   }
@@ -624,7 +633,7 @@ export class SdkSupervisor {
     acceptedGoal?: AcceptedGoalPrompt,
   ): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
-      const blocked = beforeSend?.();
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
       const unfinished = this.unfinishedTurns.get(id) ?? 0;
       // Cross the durable boundary BEFORE the driver can accept the turn. If this write
@@ -673,7 +682,7 @@ export class SdkSupervisor {
     beforeSend?: () => string | null,
   ): Promise<"started" | null> {
     return this.serialize(id, async (handle) => {
-      const blocked = beforeSend?.();
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
       if (blocked) throw new Error(blocked);
       const unfinished = this.unfinishedTurns.get(id) ?? 0;
       setSdkSessionTurnInProgress(id, true);
@@ -1063,6 +1072,7 @@ export class SdkSupervisor {
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
+    if (transferForSource(id)) return Promise.reject(new Error(TRANSFER_HOLD_REASON));
     if (!handle || this.stopping.has(id) || taskSessionClosureForSession(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
@@ -1071,6 +1081,7 @@ export class SdkSupervisor {
       // Exit deletes the ownership maps but cannot cancel a chain that is already built, and
       // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
       // alone would let a queued turn land on the half of a terminal handoff being torn down.
+      if (transferForSource(id)) throw new Error(TRANSFER_HOLD_REASON);
       if (this.handles.get(id) !== handle || this.stopping.has(id) || taskSessionClosureForSession(id)) throw noLiveDriver();
       return op(handle);
     });
@@ -1379,8 +1390,27 @@ export class SdkSupervisor {
     // event path writes earlier too, because a daemon dying between that event and the
     // stream ending must not leave a row claiming the session is still resumable.
     let outcome: SdkSessionStatus = "exited";
+    let observedPid: number | null = null;
+    const captureProcess = async (pid: number | null) => {
+      // A replacement must never inherit its predecessor's absence proof. Null is unknown.
+      if (pid !== observedPid) recordSdkSessionProcess(id, null);
+      observedPid = pid;
+      if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
+      try {
+        const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
+        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+        }
+      } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+    };
     try {
+      if (handle.recoveryProcessId) await captureProcess(handle.recoveryProcessId);
       for await (const evt of handle.events) {
+        const pid = handle.recoveryProcessId ?? null;
+        // No process scan per token. Binding retries a startup observation, and a changed
+        // driver PID invalidates the saved lifetime before that driver's event is published.
+        if (pid !== observedPid || (evt.kind === "bound" && pid)) await captureProcess(pid);
         let deferIdle = false;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
@@ -1429,6 +1459,7 @@ export class SdkSupervisor {
       console.error(`[sdk] event stream for ${id} failed:`, err);
       outcome = "failed";
     } finally {
+      if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);

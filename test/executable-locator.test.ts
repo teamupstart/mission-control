@@ -533,3 +533,68 @@ test("concurrent forced refreshes coalesce into one bounded shell probe", async 
     f.clean();
   }
 });
+
+test("profiles resolves at macOS's own location and honours MISSION_PROFILES_BIN", async () => {
+  const f = fixture();
+  try {
+    // Only `/usr/bin/profiles` answers, so a hit proves the supported candidate rather than
+    // a PATH walk that happened to reach the same directory.
+    const system = new ExecutableLocator({
+      env: f.env,
+      executable: (path) => path === "/usr/bin/profiles",
+      platform: "darwin",
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    });
+    const resolved = await system.resolve(executableSpec("profiles"));
+    assert.equal(resolved?.path, "/usr/bin/profiles");
+    assert.equal(resolved?.source, "supported-location");
+
+    const fake = executable(join(f.root, "fake", "profiles"));
+    f.env.MISSION_PROFILES_BIN = fake;
+    const overridden = new ExecutableLocator({
+      env: f.env,
+      executable: (path) => path === "/usr/bin/profiles" || f.executable(path),
+      platform: "darwin",
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    });
+    const override = await overridden.resolve(executableSpec("profiles"));
+    assert.equal(override?.path, fake);
+    assert.equal(override?.source, "operator-override");
+    assert.equal(override?.sourceDetail, "MISSION_PROFILES_BIN");
+  } finally {
+    f.clean();
+  }
+});
+
+test("the bare `profiles` command detection runs resolves through the catalog entry", async () => {
+  // Detection calls `run("profiles", ...)`, and `run` resolves a bare command name with
+  // `resolveCommand`. This pins that the name reaches the catalog spec - its override and
+  // its supported location - rather than an anonymous PATH lookup.
+  const f = fixture();
+  try {
+    const systemOnly = new ExecutableLocator({
+      env: f.env,
+      executable: (path) => path === "/usr/bin/profiles",
+      platform: "darwin",
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    });
+    const system = await systemOnly.resolveCommand("profiles");
+    assert.equal(system?.id, "profiles");
+    assert.equal(system?.path, "/usr/bin/profiles");
+    assert.equal(system?.source, "supported-location");
+
+    const fake = executable(join(f.root, "fake", "profiles"));
+    f.env.MISSION_PROFILES_BIN = fake;
+    const overridden = new ExecutableLocator({
+      env: f.env,
+      executable: (path) => path === "/usr/bin/profiles" || f.executable(path),
+      platform: "darwin",
+      probeLoginShell: async () => ({ path: null, problem: null }),
+    });
+    const override = await overridden.resolveCommand("profiles");
+    assert.equal(override?.path, fake);
+    assert.equal(override?.sourceDetail, "MISSION_PROFILES_BIN");
+  } finally {
+    f.clean();
+  }
+});

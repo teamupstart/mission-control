@@ -119,3 +119,18 @@ test("a refresh restores the depth the operator paged to, not page one", () => {
   for (const start of [0, 30]) shrunk = appendArchives(shrunk, page(start));
   assert.equal(shrunk.length, 60);
 });
+
+
+test("session and kind filters survive the browser route and reach the archive API", async () => {
+  const { parseMissionRoute, missionRouteHash } = await import("../src/web/workflows/useWorkflowRoute.ts");
+  const { archiveSearchPath } = await import("../src/web/lib/api.ts");
+  const route = parseMissionRoute("#/scouts?session=sdk%3Aone&producer=producer-one&kind=scout");
+  assert.equal(route.page, "scouts");
+  if (route.page !== "scouts") return;
+  assert.deepEqual(route.filters, { session: "sdk:one", producer: "producer-one", kind: "scout" });
+  assert.deepEqual(parseMissionRoute(missionRouteHash(route)), route);
+  const query = new URL(archiveSearchPath(route.filters!), "http://localhost").searchParams;
+  assert.equal(query.get("session"), "sdk:one");
+  assert.equal(query.get("kind"), "scout");
+  assert.equal(query.get("producer"), "producer-one");
+});

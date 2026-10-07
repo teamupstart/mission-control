@@ -22,15 +22,27 @@ import {
   TELEMETRY_OVERFLOW_VALUE,
   TELEMETRY_UNKNOWN_VALUE,
   type TelemetryEnvelope,
+  type TelemetryDestination,
   type TelemetryProfileId,
 } from "@shared/telemetry.ts";
 import {
   TELEMETRY_EVENTS,
   TELEMETRY_METRICS,
   metricsForEvent,
+  type TelemetryMetricDefinition,
   type TelemetrySpanDefinition,
   type TelemetrySpanKind,
 } from "@shared/telemetry-catalog.ts";
+import { ANALYTICAL_PREFIX } from "@shared/telemetry-projections/index.ts";
+import {
+  SUM_COUNT_SUFFIXES,
+  exportShape,
+  seriesWeight,
+  shapeDimensions,
+  shapeExcludes,
+  shapeSplitsHistogram,
+  type TelemetryExportShape,
+} from "@shared/telemetry-export-shapes.ts";
 import { randomUUID } from "node:crypto";
 import {
   capturingProfiles,
@@ -47,17 +59,27 @@ import {
   type TelemetryProjection,
 } from "./registration.ts";
 import {
+  clearSeriesDeferral,
+  exportHourLedger,
+  exportLedgerHorizon,
   getDestination,
   getProjectionState,
   getResource,
   getSeries,
   insertBatch,
   journalHead,
+  listDeferredSeries,
+  listHeartbeatSeries,
   listGaps,
+  listLiveSeriesKeys,
+  markSeriesDeferred,
+  markSeriesExported,
   putProjectionState,
   putResource,
   putSeries,
+  putSeriesExportState,
   readJournalAfter,
+  recordExportHour,
   recordGap,
   seriesCountForInstrument,
   seriesCountForProfile,
@@ -95,6 +117,8 @@ export interface MetricPointDto {
     /** One count per boundary plus the final `+Inf` bucket. */
     buckets: number[];
   } | null;
+  /** Absent on historical and cumulative batches, preserving their durable JSON shape. */
+  temporality?: "delta";
 }
 
 export interface MetricsBatchPayload {
@@ -255,7 +279,16 @@ export function runProjectionPass(now = Date.now()): ProjectionPassResult {
 
   for (const projection of registeredProjections()) {
     for (const profile of capturingProfiles(config)) {
-      const one = runOne(projection, profile, profileProducesBatches(config, profile), now);
+      const configuredDestination: TelemetryDestination | null =
+        profile === "user" ? config.user : profile === "product" ? config.product : null;
+      const one = runOne(
+        projection,
+        profile,
+        profileProducesBatches(config, profile),
+        configuredDestination?.temporality ?? "cumulative",
+        exportShape(configuredDestination?.exportShape ?? "full"),
+        now,
+      );
       result.consumed += one.consumed;
       result.batches += one.batches;
       result.spans += one.spans;
@@ -268,6 +301,8 @@ function runOne(
   projection: TelemetryProjection<never>,
   profile: TelemetryProfileId,
   producesBatches: boolean,
+  temporality: TelemetryDestination["temporality"],
+  shape: TelemetryExportShape,
   now: number,
 ): ProjectionPassResult {
   return telemetryTransaction((d) => {
@@ -303,7 +338,31 @@ function runOne(
     }
 
     const events = readJournalAfter(d, consumedSeq, TELEMETRY_LIMITS.projectionBatchSize);
-    if (events.length === 0 && !projection.idleSnapshots) {
+    const heartbeatSeries =
+      projection.id === CATALOG_PROJECTION.id && temporality === "delta" && producesBatches
+        ? listHeartbeatSeries(
+            d,
+            profile,
+            destination.policyEpoch,
+            now - 60 * 60_000,
+            now - TELEMETRY_LIMITS.payloadRetentionMs,
+          ).filter(
+            (series) =>
+              series.kind === "gauge" && !series.instrument.startsWith(`${ANALYTICAL_PREFIX}.`),
+          )
+        : [];
+    // Points the hourly export ledger held back. Carried by the catalog projection's pass, like
+    // the heartbeat, so they go out in a later hour even if nothing new happens.
+    const deferredSeries =
+      projection.id === CATALOG_PROJECTION.id && shape.seriesBudget !== null && producesBatches
+        ? listDeferredSeries(d, profile, destination.policyEpoch)
+        : [];
+    if (
+      events.length === 0 &&
+      !projection.idleSnapshots &&
+      heartbeatSeries.length === 0 &&
+      deferredSeries.length === 0
+    ) {
       // Still persist a first checkpoint, so the head we just chose survives a restart and a
       // later pass cannot rediscover an empty journal and reset to a newer head.
       if (!stored) {
@@ -318,7 +377,12 @@ function runOne(
       return { consumed: 0, batches: 0, spans: 0 };
     }
 
-    const collector = new Collector(profile, destination.policyEpoch, now);
+    const collector = new Collector(
+      profile,
+      destination.policyEpoch,
+      { temporality, generation: destination.generation, shape },
+      now,
+    );
     let highest = consumedSeq;
     for (const event of events) {
       highest = event.seq;
@@ -345,7 +409,7 @@ function runOne(
       lastGapAt: listGaps(d).reduce<number | null>((latest, gap) => Math.max(latest ?? gap.lastAt, gap.lastAt), null),
     });
 
-    const applied = collector.apply(d, producesBatches);
+    const applied = collector.apply(d, producesBatches, heartbeatSeries, deferredSeries);
 
     putProjectionState(
       d,
@@ -393,6 +457,12 @@ class Collector implements TelemetryEmitter {
   constructor(
     private readonly profile: TelemetryProfileId,
     private readonly policyEpoch: number,
+    private readonly exportDescriptor: {
+      temporality: TelemetryDestination["temporality"];
+      generation: number;
+      /** What this profile's destination receives. `full` for `local` and by default. */
+      shape: TelemetryExportShape;
+    },
     private readonly now: number,
   ) {
     this.salt = profileSalt(profile);
@@ -413,12 +483,17 @@ class Collector implements TelemetryEmitter {
       return;
     }
     if (!definition.audience.includes(this.profile)) return;
+    // The destination's shape chose to leave this family out. Not a defect and not a gap.
+    if (shapeExcludes(this.exportDescriptor.shape, instrument)) return;
     if (!Number.isFinite(value)) {
       this.problems.push(`${instrument} emitted a non-finite value`);
       return;
     }
     const bounded: Record<string, string> = {};
-    for (const key of definition.dimensions) {
+    // The shape's kept labels, so contributions that differ only in a dropped label aggregate
+    // into one series. The undeclared check below still reads the FULL list, so a dropped
+    // label is never mistaken for a catalog defect.
+    for (const key of shapeDimensions(this.exportDescriptor.shape, definition)) {
       const raw = dimensions[key];
       // `boundString`, not `slice`. Slicing by UTF-16 code units gets both halves wrong: for
       // multi-byte text it can still exceed the 256-byte budget, and a cut between the halves
@@ -481,6 +556,8 @@ class Collector implements TelemetryEmitter {
   apply(
     d: import("node:sqlite").DatabaseSync,
     producesBatches: boolean,
+    heartbeatSeries: StoredSeries[] = [],
+    deferredSeries: StoredSeries[] = [],
   ): { batches: number; spans: number } {
     for (const problem of this.problems) {
       recordGap(d, "unsupported_schema", problem, this.now);
@@ -520,32 +597,149 @@ class Collector implements TelemetryEmitter {
     // One batch per resource, because an OTLP request carries exactly one resource - and
     // mixing an upgraded binary's points into the previous version's resource is the exact
     // misattribution this whole design exists to prevent.
-    const byResource = new Map<string, StoredSeries[]>();
-    for (const series of touched.values()) {
+    const shape = this.exportDescriptor.shape;
+    const candidates = new Map(touched);
+    const heartbeatKeys = new Set<string>();
+    // A deferred gauge sends its then-current value, so it is forced through like a heartbeat.
+    for (const series of [...heartbeatSeries, ...deferredSeries]) {
+      const key = seriesCacheKey(series);
+      heartbeatKeys.add(key);
+      if (!candidates.has(key)) candidates.set(key, series);
+    }
+    const byResource = new Map<string, ExportCandidate[]>();
+    for (const series of candidates.values()) {
+      let point =
+        this.exportDescriptor.temporality === "delta"
+          ? toDeltaPoint(
+              series,
+              this.exportDescriptor.generation,
+              this.now,
+              heartbeatKeys.has(seriesCacheKey(series)),
+            )
+          : toPoint(series);
+      if (!point) {
+        // Nothing left to send, so nothing is waiting either.
+        if (series.deferredAt !== null) clearSeriesDeferral(d, series);
+        continue;
+      }
+      // A carried series - deferred, or due a heartbeat - that is not live right now has to be
+      // admitted to the live budget like any other, because exporting it makes it live again.
+      // A contribution is admitted in `fold`, so a touched series is always live by here. A
+      // refused one waits with its watermark untouched, as a deferred point does, and goes out
+      // once there is room. It was counted when it first waited, so it is not counted again.
+      if (shape.seriesBudget !== null && !this.isLive(series)) {
+        const definition = TELEMETRY_METRICS[series.instrument];
+        if (!definition || !this.budget(d).admitOwn(definition, series.resourceId, series.dimensionsKey)) {
+          if (series.deferredAt === null) markSeriesDeferred(d, series, this.now);
+          continue;
+        }
+      }
+      // A cumulative point ends at its latest event, and on a budgeted destination that hour
+      // has to have room for it in the ledger. Two kinds of point go out stamped with this
+      // pass's clock instead:
+      //  - one that waited for a later hour, which would otherwise ask the same full hour for
+      //    room on every retry and never leave it;
+      //  - one whose hour is older than the ledger remembers, whose allowance is no longer on
+      //    record and so could not be enforced.
+      // Every other late point keeps its event hour, which the ledger still tracks. The value
+      // is unchanged and still exact, because a cumulative total at this moment is the total
+      // at its latest event: nothing has contributed since. A delta point already ends here.
+      if (
+        shape.seriesBudget !== null &&
+        point.endTimeMs < this.now &&
+        (series.deferredAt !== null || point.endTimeMs < exportLedgerHorizon(this.now))
+      ) {
+        point = { ...point, endTimeMs: this.now };
+      }
       const list = byResource.get(series.resourceId) ?? [];
-      list.push(series);
+      list.push({ series, points: shapePoints(shape, point) });
       byResource.set(series.resourceId, list);
     }
-    for (const [resourceId, list] of byResource) {
-      const resource = getResource(d, resourceId);
-      if (!resource) {
+    const ledger =
+      shape.seriesBudget === null ? null : new HourlyExportLedger(d, this.profile, shape);
+    let deferred = 0;
+    for (const [resourceId, shaped] of byResource) {
+      const stored = getResource(d, resourceId);
+      if (!stored) {
         // Belt to the braces above. An unaddressable series cannot be put in an OTLP request at
         // all, so it is permanent export loss - and the one thing this facility may never do is
         // let loss happen without counting it.
         recordGap(
           d,
           "permanently_rejected",
-          `${list.length} metric series have no addressable resource`,
+          `${shaped.length} metric series have no addressable resource`,
           this.now,
         );
         continue;
       }
+      // The shape's constant attributes join the resource HERE, at build time, so the batch
+      // digest covers them and a queued batch never changes on the wire.
+      const resource =
+        Object.keys(shape.resourceAttributes).length > 0
+          ? { ...stored, ...shape.resourceAttributes }
+          : stored;
+      let list = shaped;
+      const claims: ExportHourClaim[] = [];
+      if (ledger) {
+        list = [];
+        for (const candidate of shaped) {
+          const verdict = ledger.admit(candidate, resource);
+          if (verdict === "deferred") {
+            // Its watermark stays where it was, so the whole delta goes out in a later hour.
+            // Counted once per wait, not once for every pass the series spends waiting.
+            if (markSeriesDeferred(d, candidate.series, this.now)) deferred += 1;
+            continue;
+          }
+          list.push(candidate);
+          if (verdict !== "known") claims.push(verdict);
+        }
+        if (list.length === 0) continue;
+      }
+      const points = list.flatMap((candidate) => candidate.points);
       const payload: MetricsBatchPayload = {
         resource,
         scope: TELEMETRY_SCOPE,
-        metrics: list.map((series) => toPoint(series)),
+        metrics: points,
       };
-      batches += this.writeBatch(d, "metrics", payload, list.length, oldestOf(list));
+      const written = this.writeBatch(
+        d,
+        "metrics",
+        payload,
+        points.length,
+        this.exportDescriptor.temporality === "delta"
+          ? Math.min(...points.map((point) => point.startTimeMs))
+          : oldestOf(list.map(({ series }) => series)),
+      );
+      batches += written;
+      if (written === 0) {
+        // Nothing was queued, so the hour has not spent anything on these series.
+        ledger?.release(claims);
+        continue;
+      }
+      ledger?.commit(claims);
+      for (const { series, points: exported } of list) {
+        if (this.exportDescriptor.temporality === "delta") {
+          putSeriesExportState(
+            d,
+            series,
+            this.exportDescriptor.generation,
+            (exported[0] as MetricPointDto).endTimeMs,
+          );
+        } else if (ledger || series.deferredAt !== null) {
+          // An export keeps a budgeted series live exactly as a delta export does. Default
+          // destinations have no budget to keep, so their cumulative path writes nothing here.
+          markSeriesExported(d, series, this.now);
+        }
+      }
+    }
+    if (deferred > 0) {
+      recordGap(
+        d,
+        "hourly_cap_deferred",
+        `${deferred} series waited for a later hour to keep this hour within the export shape's budget`,
+        this.now,
+        deferred,
+      );
     }
 
     const spansByResource = new Map<string, EmittedSpan[]>();
@@ -693,6 +887,7 @@ class Collector implements TelemetryEmitter {
       instrument: pending.instrument,
     };
 
+    const shape = this.exportDescriptor.shape;
     let existing = getSeries(d, { ...base, dimensionsKey: key });
     if (!existing) {
       const perInstrument = seriesCountForInstrument(
@@ -709,11 +904,33 @@ class Collector implements TelemetryEmitter {
       ) {
         // Fold into an explicit overflow bucket rather than dropping the contribution. The
         // total stays correct; only the breakdown degrades, and the gap says so.
-        dimensions = Object.fromEntries(
-          definition.dimensions.map((dim) => [dim, TELEMETRY_OVERFLOW_VALUE]),
-        );
+        dimensions = overflowDimensions(shapeDimensions(shape, definition));
         key = dimensionsKey(dimensions);
         recordGap(d, "series_overflow", `${pending.instrument} exceeded its series budget`, this.now);
+        existing = getSeries(d, { ...base, dimensionsKey: key });
+      }
+    }
+
+    // A budgeted shape admits every series that is not live right now: a new one, and equally
+    // a stored one that aged out and is reporting again. A live series needs no admission.
+    if (shape.seriesBudget !== null && !this.isLive(existing)) {
+      const admitted = this.budget(d).admit(definition, pending.resourceId, key);
+      if (admitted === "dropped") {
+        recordGap(
+          d,
+          "budget_exhausted",
+          `${pending.instrument} had no room in the export shape's series budget`,
+          this.now,
+        );
+        return null;
+      }
+      if (admitted !== key) {
+        // Refused, and folded into the pair's already paid-for overflow series. A refused resume
+        // leaves its own stored row exactly as it was, so its next delta, once admitted, excludes
+        // everything that went to overflow meanwhile.
+        recordGap(d, "series_overflow", `${pending.instrument} exceeded its series budget`, this.now);
+        dimensions = overflowDimensions(shapeDimensions(shape, definition));
+        key = admitted;
         existing = getSeries(d, { ...base, dimensionsKey: key });
       }
     }
@@ -739,9 +956,16 @@ class Collector implements TelemetryEmitter {
               buckets: Array.from({ length: (definition.boundaries?.length ?? 0) + 1 }, () => 0),
             }
           : null,
+      exportedValue: null,
+      exportedHistogram: null,
+      exportedEnd: null,
+      exportedGeneration: null,
+      lastActivity: this.now,
+      deferredAt: null,
     };
 
     next.lastTime = Math.max(next.lastTime, endTime);
+    next.lastActivity = Math.max(next.lastActivity, this.now);
     if (definition.kind === "histogram") {
       next.histogram = addToHistogram(next.histogram, definition.boundaries ?? [], pending.value);
       next.value = next.histogram.sum;
@@ -753,6 +977,274 @@ class Collector implements TelemetryEmitter {
     putSeries(d, next);
     return next;
   }
+
+  private liveBudget: SeriesBudget | null = null;
+
+  /** This pass's view of the live set, read from the index at the pass's first admission. */
+  private budget(d: import("node:sqlite").DatabaseSync): SeriesBudget {
+    this.liveBudget ??= new SeriesBudget(
+      this.exportDescriptor.shape,
+      listLiveSeriesKeys(d, this.profile, this.policyEpoch, this.liveSince()),
+    );
+    return this.liveBudget;
+  }
+
+  private liveSince(): number {
+    return this.now - TELEMETRY_LIMITS.payloadRetentionMs;
+  }
+
+  private isLive(series: StoredSeries | null): boolean {
+    return series !== null && series.lastActivity >= this.liveSince();
+  }
+}
+
+interface ExportCandidate {
+  series: StoredSeries;
+  /** One point, or a histogram's sum and count counters, exported or deferred together. */
+  points: MetricPointDto[];
+}
+
+function overflowDimensions(kept: readonly string[]): Record<string, string> {
+  return Object.fromEntries(kept.map((dim) => [dim, TELEMETRY_OVERFLOW_VALUE]));
+}
+
+interface BudgetPair {
+  /** Live series other than the overflow series. */
+  series: number;
+  overflowLive: boolean;
+}
+
+/**
+ * A budgeted shape's admission rule, over one consent epoch's live series.
+ *
+ * Committed weight is the weighted live series plus one reservation per `(resource,
+ * instrument)` pair: a pair with a live series reserves the weight of its one overflow series
+ * until that overflow series is live itself. Admitting a new or resumed series needs room for
+ * its own weight AND its pair's reservation if the pair has none yet, so the overflow series a
+ * refusal folds into is always already paid for. The invariant: committed weight never exceeds
+ * `seriesBudget`, so live series in the current epoch and shape, overflow included, never do.
+ *
+ * Read from the index at a pass's first admission and then carried through that pass's own
+ * admissions, all at one clock. It is never persisted: the next pass reads expiry fresh from
+ * `last_activity`, so a series that ages out frees its room without anything having to drift.
+ */
+class SeriesBudget {
+  private readonly pairs = new Map<string, BudgetPair>();
+  private committed = 0;
+
+  constructor(
+    private readonly shape: TelemetryExportShape,
+    live: Array<{ resourceId: string; instrument: string; dimensionsKey: string }>,
+  ) {
+    for (const row of live) {
+      const definition = TELEMETRY_METRICS[row.instrument];
+      if (!definition) continue;
+      const pair = this.pair(row.resourceId, row.instrument);
+      if (row.dimensionsKey === this.overflowKey(definition)) pair.overflowLive = true;
+      else pair.series += 1;
+    }
+    for (const row of new Set(live.map((r) => `${r.resourceId}|${r.instrument}`))) {
+      const definition = TELEMETRY_METRICS[row.slice(row.indexOf("|") + 1)];
+      const pair = this.pairs.get(row);
+      if (definition && pair) this.committed += this.pairWeight(definition, pair);
+    }
+  }
+
+  /**
+   * The series key a contribution may fold into: its own when admitted, its pair's overflow
+   * key when refused but already paid for, or `dropped` when the pair has neither.
+   */
+  admit(
+    definition: TelemetryMetricDefinition,
+    resourceId: string,
+    key: string,
+  ): string | "dropped" {
+    const overflowKey = this.overflowKey(definition);
+    if (key !== overflowKey && this.admitOwn(definition, resourceId, key)) return key;
+    // Only a pair whose overflow series is live or reserved may fold into it. Creating it
+    // converts the reservation, so committed weight does not move. A pair with neither is new
+    // while the budget is full, and its contribution is dropped and counted by the caller.
+    return overflowKey !== null && this.admitOwn(definition, resourceId, overflowKey)
+      ? overflowKey
+      : "dropped";
+  }
+
+  /**
+   * Admit a series under its OWN key, or change nothing and say no.
+   *
+   * What an export of a stored series needs, as opposed to a contribution: a point already
+   * computed for one series cannot be folded into another. An overflow series is admissible
+   * only by converting its pair's reservation, which is the room it was always paid for from.
+   */
+  admitOwn(definition: TelemetryMetricDefinition, resourceId: string, key: string): boolean {
+    const pair = this.pair(resourceId, definition.name);
+    const before = this.pairWeight(definition, pair);
+    if (key === this.overflowKey(definition)) {
+      if (!pair.overflowLive && pair.series === 0) return false;
+      pair.overflowLive = true;
+      this.committed += this.pairWeight(definition, pair) - before;
+      return true;
+    }
+    const after = this.pairWeight(definition, { ...pair, series: pair.series + 1 });
+    if (this.committed - before + after > (this.shape.seriesBudget ?? Number.POSITIVE_INFINITY)) {
+      return false;
+    }
+    pair.series += 1;
+    this.committed += after - before;
+    return true;
+  }
+
+  get weight(): number {
+    return this.committed;
+  }
+
+  private pair(resourceId: string, instrument: string): BudgetPair {
+    const key = `${resourceId}|${instrument}`;
+    let pair = this.pairs.get(key);
+    if (!pair) {
+      pair = { series: 0, overflowLive: false };
+      this.pairs.set(key, pair);
+    }
+    return pair;
+  }
+
+  /** Null for an instrument with no kept labels: its one series has no overflow to fall into. */
+  private overflowKey(definition: TelemetryMetricDefinition): string | null {
+    const kept = shapeDimensions(this.shape, definition);
+    return kept.length === 0 ? null : dimensionsKey(overflowDimensions(kept));
+  }
+
+  private pairWeight(definition: TelemetryMetricDefinition, pair: BudgetPair): number {
+    const overflow =
+      this.overflowKey(definition) !== null && (pair.overflowLive || pair.series > 0) ? 1 : 0;
+    return seriesWeight(this.shape, definition) * (pair.series + overflow);
+  }
+}
+
+/** A profile's committed weight at `now`, read exactly as its next admission would read it. */
+export function committedSeriesWeight(
+  d: import("node:sqlite").DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  shape: TelemetryExportShape,
+  now: number,
+): number {
+  return new SeriesBudget(
+    shape,
+    listLiveSeriesKeys(d, profile, policyEpoch, now - TELEMETRY_LIMITS.payloadRetentionMs),
+  ).weight;
+}
+
+const HOUR_MS = 60 * 60_000;
+
+/** Room one series holds in one hour's ledger until its batch is queued or abandoned. */
+interface ExportHourClaim {
+  hourStart: number;
+  seriesDigest: string;
+  weight: number;
+}
+
+/**
+ * The hard billing bound: the distinct series exported in each UTC clock hour, by point time.
+ *
+ * Durable in `telemetry_export_hours`, keyed by profile and hour and never by shape or epoch, so
+ * a shape change, a consent change or a restart earlier in the hour cannot grant a fresh
+ * allowance. A series already in the hour's ledger always goes out. A new one goes out only while
+ * the hour stays within `seriesBudget`; otherwise it waits with its watermark untouched, so a
+ * counter's delta arrives whole in a later hour.
+ *
+ * Admission only CLAIMS room, in memory, so later candidates in the same pass see it taken. A
+ * claim becomes a ledger row through `commit` once its batch is actually queued, in the same
+ * transaction, and `release` hands the room back when nothing was queued. The hour is never
+ * charged for a point the destination will not receive.
+ */
+class HourlyExportLedger {
+  private readonly hours = new Map<number, { series: Map<string, number>; weight: number }>();
+
+  constructor(
+    private readonly d: import("node:sqlite").DatabaseSync,
+    private readonly profile: TelemetryProfileId,
+    private readonly shape: TelemetryExportShape,
+  ) {}
+
+  /** `known` costs nothing more; a claim must be committed or released; `deferred` waits. */
+  admit(candidate: ExportCandidate, resource: Record<string, string>): ExportHourClaim | "known" | "deferred" {
+    const first = candidate.points[0] as MetricPointDto;
+    const hourStart = Math.floor(first.endTimeMs / HOUR_MS) * HOUR_MS;
+    const hour = this.hour(hourStart);
+    // What the backend counts as custom metrics for this series: the exported names, the
+    // data-point attributes, and the resource they arrive under, host attribute included.
+    const seriesDigest = digest([
+      candidate.points.map((point) => point.name),
+      first.attributes,
+      resource,
+    ]);
+    if (hour.series.has(seriesDigest)) return "known";
+    const definition = TELEMETRY_METRICS[candidate.series.instrument];
+    const weight = definition ? seriesWeight(this.shape, definition) : 1;
+    if (hour.weight + weight > (this.shape.seriesBudget ?? Number.POSITIVE_INFINITY)) return "deferred";
+    hour.series.set(seriesDigest, weight);
+    hour.weight += weight;
+    return { hourStart, seriesDigest, weight };
+  }
+
+  /** The batch carrying these claims was queued: record them with it. */
+  commit(claims: readonly ExportHourClaim[]): void {
+    for (const claim of claims) {
+      recordExportHour(this.d, this.profile, claim.hourStart, claim.seriesDigest, claim.weight);
+    }
+  }
+
+  /** The batch carrying these claims was not queued: give their room back. */
+  release(claims: readonly ExportHourClaim[]): void {
+    for (const claim of claims) {
+      const hour = this.hours.get(claim.hourStart);
+      if (hour?.series.delete(claim.seriesDigest)) hour.weight -= claim.weight;
+    }
+  }
+
+  private hour(hourStart: number): { series: Map<string, number>; weight: number } {
+    let hour = this.hours.get(hourStart);
+    if (!hour) {
+      const series = exportHourLedger(this.d, this.profile, hourStart);
+      hour = { series, weight: [...series.values()].reduce((sum, weight) => sum + weight, 0) };
+      this.hours.set(hourStart, hour);
+    }
+    return hour;
+  }
+}
+
+/**
+ * The points a shape exports for one series' point.
+ *
+ * The identity, except for a histogram the shape does not keep as a distribution: that becomes
+ * a `<name>.sum` counter in the histogram's unit and a `<name>.count` counter in `1`, over the
+ * same window. The histogram point was already computed under the destination's temporality,
+ * so its sum and count are already the cumulative totals or the window's deltas.
+ */
+function shapePoints(shape: TelemetryExportShape, point: MetricPointDto): MetricPointDto[] {
+  const definition = TELEMETRY_METRICS[point.name];
+  if (!definition || !point.histogram || !shapeSplitsHistogram(shape, definition)) return [point];
+  const { histogram } = point;
+  return [
+    {
+      ...point,
+      name: `${point.name}${SUM_COUNT_SUFFIXES.sum}`,
+      kind: "counter",
+      valueType: "double",
+      value: histogram.sum,
+      histogram: null,
+    },
+    {
+      ...point,
+      name: `${point.name}${SUM_COUNT_SUFFIXES.count}`,
+      unit: "1",
+      kind: "counter",
+      valueType: "int",
+      value: histogram.count,
+      histogram: null,
+    },
+  ];
 }
 
 function addToHistogram(
@@ -804,6 +1296,64 @@ function toPoint(series: StoredSeries): MetricPointDto {
           buckets: series.histogram.buckets,
         }
       : null,
+  };
+}
+
+function toDeltaPoint(
+  series: StoredSeries,
+  generation: number,
+  now: number,
+  heartbeat: boolean,
+): MetricPointDto | null {
+  const currentGeneration = series.exportedGeneration === generation;
+  const previousValue = currentGeneration ? series.exportedValue : null;
+  const previousHistogram = currentGeneration ? series.exportedHistogram : null;
+  const previousEnd = currentGeneration ? series.exportedEnd : null;
+  const startTimeMs = previousEnd ?? series.startTime;
+  const endTimeMs = Math.max(now, startTimeMs + 1);
+  const point = toPoint(series);
+
+  if (series.kind === "gauge") {
+    if (!heartbeat && previousValue !== null && previousValue === series.value) return null;
+    return {
+      ...point,
+      startTimeMs,
+      endTimeMs,
+      temporality: "delta",
+    };
+  }
+
+  if (series.kind === "histogram" && series.histogram) {
+    const previousBuckets = previousHistogram?.buckets ?? [];
+    const histogram = {
+      count: series.histogram.count - (previousHistogram?.count ?? 0),
+      sum: series.histogram.sum - (previousHistogram?.sum ?? 0),
+      min: null,
+      max: null,
+      boundaries: point.histogram?.boundaries ?? [],
+      buckets: series.histogram.buckets.map(
+        (count, index) => count - (previousBuckets[index] ?? 0),
+      ),
+    };
+    if (histogram.count === 0 && histogram.buckets.every((count) => count === 0)) return null;
+    return {
+      ...point,
+      startTimeMs,
+      endTimeMs,
+      value: histogram.sum,
+      histogram,
+      temporality: "delta",
+    };
+  }
+
+  const value = series.value - (previousValue ?? 0);
+  if (value === 0) return null;
+  return {
+    ...point,
+    startTimeMs,
+    endTimeMs,
+    value,
+    temporality: "delta",
   };
 }
 

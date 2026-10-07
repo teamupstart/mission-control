@@ -281,7 +281,9 @@ function projectSession(session: VendorSession, runtime: ModelRuntime): PiSessio
       return session.prompt(text, {
         ...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
         ...(options.images?.length ? { images: options.images.map(vendorImage) } : {}),
-        preflightResult: options.preflightResult,
+        // Pi 1.x reports how it accepted the prompt; this driver only needs to
+        // know that it was accepted. Rejections skip the callback and reject.
+        preflightResult: () => options.preflightResult(true),
       });
     },
     abort() {

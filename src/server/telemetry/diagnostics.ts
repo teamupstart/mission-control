@@ -14,6 +14,7 @@ import {
   type TelemetryProfileId,
 } from "@shared/telemetry.ts";
 import { DAEMON_STARTED_EVENT, TELEMETRY_PROBE_EVENT } from "@shared/telemetry-catalog.ts";
+import { exportShape } from "@shared/telemetry-export-shapes.ts";
 import { TELEMETRY_SCOPE } from "./projection.ts";
 import { captureTelemetry, resourceAttributes } from "./capture.ts";
 import { getTelemetryConfig, profileIsExporting, profileSalt, telemetryIdentity } from "./config.ts";
@@ -100,7 +101,8 @@ export async function runTelemetryProbe(
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryProbeResult> {
   const config = getTelemetryConfig();
-  const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
+  const destination = profile === "user" ? config.user : config.product;
+  const endpoint = destination.endpoint;
 
   if (profile === "local" || !profileIsExporting(config, profile) || endpoint.trim() === "") {
     return {
@@ -122,10 +124,20 @@ export async function runTelemetryProbe(
     // does not reach it. Its own request timeout is the bound.
     abort: deps.abort ?? null,
   };
-  const body = serializeMetrics({ resource: resourceAttributes(), scope: TELEMETRY_SCOPE, metrics: [] });
+  // Under the destination's export shape, so the probe arrives with the same constant host
+  // attribute its batches do and never mints a host of its own.
+  const resource = { ...resourceAttributes(), ...exportShape(destination.exportShape).resourceAttributes };
+  const body = serializeMetrics({ resource, scope: TELEMETRY_SCOPE, metrics: [] });
 
   const started = resolved.now();
-  const outcome = await send(signalUrl(endpoint, "metrics"), "metrics", body, profile, resolved);
+  const outcome = await send(
+    signalUrl(endpoint, "metrics"),
+    "metrics",
+    body,
+    profile,
+    resolved,
+    destination.networkGate,
+  );
   // AFTER the request, not before it. `occurredAt` is the moment the operation finished, and
   // the exported span is reconstructed as `[occurredAt - duration, occurredAt]`, so stamping it
   // with a clock read at the top of this function put the whole span before the probe began -
@@ -136,7 +148,11 @@ export async function runTelemetryProbe(
   const latencyMs = Math.max(0, finishedAt - started);
 
   const result: TelemetryProbeResult["outcome"] =
-    outcome.kind === "accepted" ? "accepted" : outcome.kind === "retry" ? "unreachable" : "refused";
+    outcome.kind === "accepted"
+      ? "accepted"
+      : outcome.kind === "retry" || outcome.kind === "waiting"
+        ? "unreachable"
+        : "refused";
   const detail =
     outcome.kind === "accepted"
       ? (outcome.message ?? "The endpoint accepted an OTLP/HTTP request.")

@@ -1,3 +1,4 @@
+import { transferForTask } from "./session-transfers/store.ts";
 import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { inTransaction } from "./db.ts";
@@ -623,6 +624,9 @@ interface ScoutCompletionSnapshot {
  * so a plan finishes on Foreman's ordinary boundary exactly as a ship task does.
  */
 export interface TaskArchiveGate {
+  withCompletion?<T>(taskId: string, complete: () => Promise<T>): Promise<T>;
+  /** Drain accepted reports and refuse new ones until the checkout decision commits. */
+  withCleanup?<T>(taskId: string, cleanup: () => Promise<T>): Promise<T>;
   /** Resolve once the task's verified COMPLETE bundle exists, or say what is wrong. */
   ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
   /** Publish whatever this task produced before its checkout is destroyed. */
@@ -911,10 +915,12 @@ export class TaskManager {
   private closureTimer: ReturnType<typeof setTimeout> | null = null;
   /** When that timer is due, so an earlier kick can pre-empt a pending retry. */
   private closureDueAt: number | null = null;
-  private sweepingClosures = false;
+  private closureSweep: Promise<void> | null = null;
   /** A pass asked for while one was running, so the urgent request is not lost to the retry. */
   private sweepUrgentlyRequested = false;
   private closuresStopped = false;
+  private readonly subscriptions: (() => void)[] = [];
+  private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
@@ -1026,7 +1032,7 @@ export class TaskManager {
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
-    registry.subscribe((e) => {
+    this.subscriptions.push(registry.subscribe((e) => {
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1065,14 +1071,14 @@ export class TaskManager {
         // path - a task whose agent is right here costs no query at all.
         this.reconcileMergedTasks();
       }
-    });
+    }));
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
     // rebuilds it, so the same reconciliation waits for the first completed sweep. This is
     // the half the startup loop above cannot reach: it only visits a task still holding a
     // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
     // it never had resources of ours - was skipped by it on every restart, forever.
-    registry.onSessionsObserved(() => {
+    this.subscriptions.push(registry.onSessionsObserved(() => {
       this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession();
@@ -1081,17 +1087,17 @@ export class TaskManager {
       // not been observed to be gone. See `sweepMissionSessionClosures`.
       this.scheduleMissionSessionClosureSweep(0);
       this.resumeCompletedWorktreeReturns();
-    });
+    }));
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
-    registry.onTaskPrMerged((e) => this.settleMergedTask(e));
+    this.subscriptions.push(registry.onTaskPrMerged((e) => this.settleMergedTask(e)));
     // And the periodic backstop for the tasks that announcement cannot reach: whatever the
     // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
-    registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
+    this.subscriptions.push(registry.onPrMergesRecorded(() => this.reconcileMergedTasks()));
     // A pipeline task belongs to the provider run rather than to any one child agent.
     // The provider projection is therefore its durable completion authority, including
     // the boot-time restore of a run that finished while Mission Control was down.
-    registry.onPipelineRun((run) => this.settlePipelineTask(run));
+    this.subscriptions.push(registry.onPipelineRun((run) => this.settlePipelineTask(run)));
   }
 
   /** Persist the strong terminal-home plus projected-worktree join for a pipeline task. */
@@ -1669,6 +1675,15 @@ export class TaskManager {
     this.closureDueAt = null;
   }
 
+  /** Detach producers before draining their work. Durable obligations resume on next start. */
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.stopMissionSessionClosures();
+    for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    this.stopping = this.settleWorktreeReturns();
+    return this.stopping;
+  }
+
   /**
    * One pass over every owed closure, and the reschedule that keeps the guarantee alive.
    *
@@ -1680,18 +1695,27 @@ export class TaskManager {
    * the process table has not been read yet - and clearing a row there would abandon exactly
    * the closure a restart exists to resume.
    */
-  async sweepMissionSessionClosures(): Promise<void> {
-    if (!this.completedInitialSessionSweep) return;
+  sweepMissionSessionClosures(): Promise<void> {
+    if (this.stopping || !this.completedInitialSessionSweep) return Promise.resolve();
     // A pass asked for while one is already running is REMEMBERED rather than dropped, and
     // that is not tidiness. The urgent caller is `interceptWorkOnClosingSession`: an agent we
     // are closing has started working, and the answer must not be "in up to ten seconds".
     // Dropping the request left exactly that, because the running pass then rescheduled on
     // the ordinary retry interval and the news that a turn had started was already gone.
-    if (this.sweepingClosures) {
+    if (this.closureSweep) {
       this.sweepUrgentlyRequested = true;
-      return;
+      return Promise.resolve();
     }
-    this.sweepingClosures = true;
+    // Publish ownership before a stop callback can synchronously re-enter this boundary.
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const sweep = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
+    this.closureSweep = sweep;
+    void this.runMissionSessionClosureSweep().then(resolve, reject);
+    return sweep;
+  }
+
+  private async runMissionSessionClosureSweep(): Promise<void> {
     try {
       // Every row has its own deadline. Serial stops multiply the 20s budget by fleet
       // size and can leave later runs waiting past four minutes after a restart.
@@ -1703,7 +1727,7 @@ export class TaskManager {
         }
       }));
     } finally {
-      this.sweepingClosures = false;
+      this.closureSweep = null;
       const urgent = this.sweepUrgentlyRequested;
       this.sweepUrgentlyRequested = false;
       this.resumeCompletedWorktreeReturns();
@@ -2290,6 +2314,7 @@ export class TaskManager {
     const candidates = tasks.filter(
       (task) =>
         task.sessionId === null &&
+        !transferForTask(task.id) &&
         task.worktreePath === session.cwd &&
         (!task.terminalResourceId?.startsWith("emulator:") ||
           terminalResourceIds(session).has(task.terminalResourceId)) &&
@@ -2321,6 +2346,7 @@ export class TaskManager {
    * gone, Clean up when it is not.
    */
   private agentWentAway(t: Task): void {
+    if (transferForTask(t.id)) return;
     this.autoCompleted.delete(t.id);
     if (providerOwnsTaskCompletion(t.kind)) {
       if (isActiveTask(t.status)) this.pipelineHostWentAway(t);
@@ -4808,6 +4834,7 @@ export class TaskManager {
    * the regression above.
    */
   private runCompletion(id: string, input: CompletionInput): Promise<Task | null> {
+    if (transferForTask(id)) return Promise.reject(new TaskStatusConflictError("task is being transferred to a terminal"));
     const gate = this.scoutGateFor(id);
     if (!gate) {
       try {
@@ -4854,14 +4881,17 @@ export class TaskManager {
     input: CompletionInput,
     gate: TaskArchiveGate,
   ): Promise<Task | null> {
-    const before = this.scoutCompletionSnapshot(id, input.requireStopped);
-    if (!before) return null;
-    const ready = await gate.ensureReady(id);
-    if (!ready.ok && !input.confirmIncompleteScout) {
-      throw new ScoutArchiveNotReadyError(ready.problems);
-    }
-    this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
-    return this.finishCompletion(id, input);
+    const complete = async () => {
+      const before = this.scoutCompletionSnapshot(id, input.requireStopped);
+      if (!before) return null;
+      const ready = await gate.ensureReady(id);
+      if (!ready.ok && !input.confirmIncompleteScout) {
+        throw new ScoutArchiveNotReadyError(ready.problems);
+      }
+      this.assertScoutCompletionUnchanged(id, input.requireStopped, before);
+      return this.finishCompletion(id, input);
+    };
+    return gate.withCompletion ? gate.withCompletion(id, complete) : complete();
   }
 
   /**
@@ -4933,6 +4963,7 @@ export class TaskManager {
    * cancelled/failed one.
    */
   private assertCompletable(id: string, requireStopped: boolean): void {
+    if (transferForTask(id)) throw new TaskStatusConflictError("task is being transferred to a terminal");
     if (this.reschedulingTasks.has(id)) {
       throw new TaskStatusConflictError("task is being rescheduled");
     }
@@ -5270,81 +5301,88 @@ export class TaskManager {
       };
     }
     this.reschedulingTasks.add(id);
-    this.cleanupReservations.add(id);
     try {
-      try {
-        await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
-      } catch (error) {
-        return {
-          ok: false,
-          error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
-      // whatever the first attempt found is archived here or lost. The new attempt gets its
-      // own work episode and therefore its own archive, which is why this cannot simply be
-      // left to the relaunch.
-      const archived = await this.settleArchivesBeforeTeardown(id);
-      if (!archived.ok) return archived;
-      this.autoCompleted.delete(id);
-      // `taskHasWorktrees` rather than the primary path: a task whose primary tree was
-      // released and whose attached repository's tree survived a partial teardown still has
-      // something to release, and reading the primary alone skipped it entirely - re-filing
-      // the task on top of a checkout the previous attempt still held.
-      if (taskHasWorktrees(t) || t.homeName) {
-        try {
-          const current = this.registry.getTask(id) ?? t;
-          await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
-        } catch (error) {
-          const partial = this.registry.getTask(id) ?? t;
-          this.registry.upsertTask({
-            ...partial,
-            ...releasedTaskResources(partial, reclaimedFrom(error)),
-            updatedAt: Date.now(),
-          });
-          return {
-            ok: false,
-            error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
-          };
-        }
-      }
-      const cur = this.registry.getTask(id);
-      if (!cur) return { ok: false, error: "no such task" };
-      if (cur.status !== "cancelled" && cur.status !== "failed") {
-        return {
-          ok: false,
-          error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
-        };
-      }
-      this.registry.upsertTask({
-        ...cur,
-        status: "backlog",
-        enabled: true,
-        // A re-entering task KEEPS the rank it already has, so a recovered dispatch
-        // reappears where it was rather than at the bottom of a queue it never left. A task
-        // that never had one - dispatched straight out, never a backlog row - is appended,
-        // because arriving somewhere is the whole rule and an unranked row would sit below
-        // everything filed after it.
-        backlogRank: cur.backlogRank ?? this.allocateBacklogRank("bottom"),
-        // Everything came back: this path returns early when the teardown throws.
-        ...releasedTaskResources(cur, null),
-        homeName: null,
-        homeBackend: null,
-        terminalResourceId: null,
-        sessionId: null,
-        pipelineRun: null,
-        outcome: null,
-        outcomeUrl: null,
-        error: null,
-        dispatchedAt: null,
-        completedAt: null,
-        updatedAt: Date.now(),
-      });
-      return { ok: true };
+      return await this.withCleanupReservation<Ok>(
+        id,
+        { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
+        () => this.rescheduleReserved(id, t),
+      );
     } finally {
       this.reschedulingTasks.delete(id);
-      this.cleanupReservations.delete(id);
     }
+  }
+
+  /** `reschedule`'s body, once cleanup and submission admission are reserved. */
+  private async rescheduleReserved(id: string, t: Task): Promise<Ok> {
+    try {
+      await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not stop task agent: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    // Re-filing a scout tears its worktree down and gives the next attempt a fresh one, so
+    // whatever the first attempt found is archived here or lost. The new attempt gets its
+    // own work episode and therefore its own archive, which is why this cannot simply be
+    // left to the relaunch.
+    const archived = await this.settleArchivesBeforeTeardown(id);
+    if (!archived.ok) return archived;
+    this.autoCompleted.delete(id);
+    // `taskHasWorktrees` rather than the primary path: a task whose primary tree was
+    // released and whose attached repository's tree survived a partial teardown still has
+    // something to release, and reading the primary alone skipped it entirely - re-filing
+    // the task on top of a checkout the previous attempt still held.
+    if (taskHasWorktrees(t) || t.homeName) {
+      try {
+        const current = this.registry.getTask(id) ?? t;
+        await teardownWorktree(current, this.legacyWorktrees, "foreground", this.worktrees);
+      } catch (error) {
+        const partial = this.registry.getTask(id) ?? t;
+        this.registry.upsertTask({
+          ...partial,
+          ...releasedTaskResources(partial, reclaimedFrom(error)),
+          updatedAt: Date.now(),
+        });
+        return {
+          ok: false,
+          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    const cur = this.registry.getTask(id);
+    if (!cur) return { ok: false, error: "no such task" };
+    if (cur.status !== "cancelled" && cur.status !== "failed") {
+      return {
+        ok: false,
+        error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    this.registry.upsertTask({
+      ...cur,
+      status: "backlog",
+      enabled: true,
+      // A re-entering task KEEPS the rank it already has, so a recovered dispatch
+      // reappears where it was rather than at the bottom of a queue it never left. A task
+      // that never had one - dispatched straight out, never a backlog row - is appended,
+      // because arriving somewhere is the whole rule and an unranked row would sit below
+      // everything filed after it.
+      backlogRank: cur.backlogRank ?? this.allocateBacklogRank("bottom"),
+      // Everything came back: this path returns early when the teardown throws.
+      ...releasedTaskResources(cur, null),
+      homeName: null,
+      homeBackend: null,
+      terminalResourceId: null,
+      sessionId: null,
+      pipelineRun: null,
+      outcome: null,
+      outcomeUrl: null,
+      error: null,
+      dispatchedAt: null,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
+    return { ok: true };
   }
 
   /**
@@ -5387,10 +5425,10 @@ export class TaskManager {
     conflict: T,
     fn: () => Promise<T>,
   ): Promise<T> {
-    if (this.cleanupReservations.has(id)) return conflict;
+    if (this.cleanupReservations.has(id) || transferForTask(id)) return conflict;
     this.cleanupReservations.add(id);
     try {
-      return await fn();
+      return this.archives?.withCleanup ? await this.archives.withCleanup(id, fn) : await fn();
     } finally {
       this.cleanupReservations.delete(id);
     }
@@ -5604,8 +5642,10 @@ export class TaskManager {
     return this.cleanupQueue.size;
   }
 
-  /** Shutdown drains the same queue used by startup, retention and lifecycle return. */
+  /** Drain producers first: an empty queue alone says nothing about a pending closure/archive. */
   async settleWorktreeReturns(): Promise<void> {
+    await Promise.allSettled([...this.completing.values()]);
+    await this.closureSweep;
     await this.cleanupQueue.settled();
   }
 
@@ -5923,6 +5963,7 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
+    if (transferForTask(t.id)) return;
     if (dispatchHasNoProvisionedResources(t)) {
       const current = this.registry.getTask(t.id);
       if (!current || !dispatchHasNoProvisionedResources(current)) return;

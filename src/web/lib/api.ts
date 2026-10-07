@@ -1,3 +1,4 @@
+import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type {
   AgentType,
@@ -107,13 +108,14 @@ import type {
   EnsembleRun,
   EnsembleSummary,
 } from "@shared/ensemble.ts";
-import type {
-  TelemetryConfigPatch,
-  TelemetryHealth,
-  TelemetryOperationRequest,
-  TelemetryOperationResult,
-  TelemetryProbeResult,
-  TelemetryStatus,
+import {
+  TelemetryConfigSchema,
+  type TelemetryConfigPatch,
+  type TelemetryHealth,
+  type TelemetryOperationRequest,
+  type TelemetryOperationResult,
+  type TelemetryProbeResult,
+  type TelemetryStatus,
 } from "@shared/telemetry.ts";
 import type {
   TelemetryIngressRecord,
@@ -1251,6 +1253,39 @@ export async function fetchSessionFile(
   }
 }
 
+/** What a re-check of an open document found. */
+export type SessionFileRecheck =
+  | { ok: true; unchanged: true }
+  | { ok: true; unchanged: false; file: SessionFileDocument }
+  | { ok: false; error: string };
+
+/**
+ * Re-read a file only if it has moved past `known`, the revision the reader already holds.
+ *
+ * `unchanged` carries no text, so re-checking an open document costs a hash on the daemon
+ * rather than the document over the wire.
+ */
+export async function fetchSessionFileIfChanged(
+  id: string,
+  path: string,
+  known: string,
+): Promise<SessionFileRecheck> {
+  try {
+    const res = await actionFetch(
+      `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`
+        + `&known=${encodeURIComponent(known)}`,
+    );
+    const data = (await res.json().catch(() => ({}))) as
+      & SessionFileDocument
+      & { error?: string; unchanged?: boolean };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (data.unchanged === true) return { ok: true, unchanged: true };
+    return { ok: true, unchanged: false, file: data };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * Which "Open in" targets this build has, and whether the daemon's host can use each.
  *
@@ -1581,6 +1616,8 @@ export function archiveSearchPath(query: Partial<ArchiveSearchQuery>): string {
   const params = new URLSearchParams();
   if (query.q) params.set("q", query.q);
   if (query.producer) params.set("producer", query.producer);
+  if (query.session) params.set("session", query.session);
+  if (query.kind) params.set("kind", query.kind);
   if (query.repo) params.set("repo", query.repo);
   if (query.agent) params.set("agent", query.agent);
   if (query.status) params.set("status", query.status);
@@ -1601,6 +1638,7 @@ export interface ArchiveArtifactBody {
 export const api = {
   listFiles: fetchSessionFiles,
   readFile: fetchSessionFile,
+  readFileIfChanged: fetchSessionFileIfChanged,
   saveFile: (id: string, path: string, text: string, expectedRevision: string) =>
     put<SessionFileSaveResult>(`/api/sessions/${encodeURIComponent(id)}/file`, {
       path,
@@ -1653,11 +1691,23 @@ export const api = {
    * `payload` picks between two argvs the DAEMON composes; nothing here becomes part of a
    * command line, which is why this takes two enums and no strings.
    */
+  sessionTransfers: async (offset = 0): Promise<SessionTransferPage> => {
+    const page = await fetchJson<SessionTransferPage>(`/api/session-transfers?offset=${offset}`);
+    if (!page) throw new Error("Could not load terminal transfers");
+    return page;
+  },
+  latestSessionTransferForSource: async (sourceSessionId: string): Promise<SessionTransferSummary | null> => {
+    const page = await fetchJson<SessionTransferPage>(`/api/session-transfers?sourceSessionId=${encodeURIComponent(sourceSessionId)}`);
+    if (!page) throw new Error("Could not resolve the source's terminal transfer");
+    return page.transfers[0] ?? null;
+  },
+  recheckSessionTransfer: (id: string): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/recheck`, {}),
+  resolveSessionTransfer: (id: string, revision: number): Promise<ActionResult & { transfer?: SessionTransferSummary }> => post(`/api/session-transfers/${encodeURIComponent(id)}/resolve`, { revision, action: "end" }),
   launchTerminal: (
     id: string,
     backend: TerminalBackendId,
     payload: "shell" | "agent",
-  ): Promise<ActionResult & { label?: string }> =>
+  ): Promise<ActionResult & { label?: string; homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
@@ -1762,7 +1812,7 @@ export const api = {
    */
   handoff: (
     id: string,
-  ): Promise<ActionResult & { homeName?: string; sessionId?: string | null }> =>
+  ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
@@ -2430,10 +2480,38 @@ export async function deleteFileComment(
 // whether one is stored; the value has no read path anywhere in the daemon.
 
 /** The stored intent, plus whether a credential exists and whether the endpoint is usable. */
-export const fetchTelemetryConfig = () => fetchJson<TelemetryStatus>("/api/telemetry/config");
+export const fetchTelemetryConfig = async (): Promise<TelemetryStatus | null> => {
+  const status = await fetchJson<TelemetryStatus>("/api/telemetry/config");
+  return status === null ? null : rehydrateTelemetryStatus(status);
+};
+
+/**
+ * The status with every defaulted field restored. The legacy wire shape a daemon with no
+ * stored intent sends leaves out the newer destination fields and `organization`.
+ */
+function rehydrateTelemetryStatus(status: TelemetryStatus): TelemetryStatus {
+  return {
+    ...status,
+    config: TelemetryConfigSchema.parse(status.config),
+    organization: status.organization ?? null,
+  };
+}
 
 /** The full health view: per-profile counts, ages, gap records and the byte budget. */
-export const fetchTelemetryHealth = () => fetchJson<TelemetryHealth>("/api/telemetry/health");
+export const fetchTelemetryHealth = async (): Promise<TelemetryHealth | null> => {
+  const health = await fetchJson<TelemetryHealth>("/api/telemetry/health");
+  return health === null
+    ? null
+    : {
+        ...health,
+        profiles: health.profiles.map((profile) => ({
+          ...profile,
+          waitingForNetwork: profile.waitingForNetwork ?? false,
+          waitingSince: profile.waitingSince ?? null,
+          latePointsSent: profile.latePointsSent ?? 0,
+        })),
+      };
+};
 
 /**
  * One JSON write carrying an operation context.
@@ -2480,6 +2558,17 @@ export const runTelemetryOperation = (
   body: TelemetryOperationRequest,
   operation: AppOperation,
 ) => telemetryWrite<TelemetryOperationResult>("/api/telemetry/operation", "POST", body, operation);
+
+/** Detect the managing organization again and answer the status it leaves behind. */
+export const recheckTelemetryOrganization = async (operation: AppOperation) => {
+  const res = await telemetryWrite<TelemetryStatus>(
+    "/api/telemetry/organization/recheck",
+    "POST",
+    {},
+    operation,
+  );
+  return res.ok ? { ...res, data: rehydrateTelemetryStatus(res.data) } : res;
+};
 
 export const probeTelemetryEndpoint = (
   profile: "user" | "product",

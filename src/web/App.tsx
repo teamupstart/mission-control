@@ -17,6 +17,7 @@ import {
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
+import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, fetchRepos } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
@@ -240,6 +241,7 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
       return "GitHub Inspector is live";
     // Foreman's purple never reaches the gear; the gear ranks only settingsStatus facts.
     case "foreman":
+    case "neutral":
     case null:
       return null;
   }
@@ -363,6 +365,8 @@ export function App(): React.JSX.Element {
     schedules,
     connected,
     hasSnapshot,
+    sessionTransfers,
+    latestSessionTransfer,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
   const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
@@ -616,6 +620,7 @@ export function App(): React.JSX.Element {
     },
     [openSettingsAnchor],
   );
+  const [scoutsTabRequest, setScoutsTabRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
     nonce: number;
@@ -2745,6 +2750,9 @@ export function App(): React.JSX.Element {
     diffTabRequest,
     conversationTabRequest,
     workflowsTabRequest,
+    scoutsTabRequest,
+    archivesRevision,
+    onOpenScout: (archiveKey, sessionId, producerId) => { navigate({ page: "scouts", archiveKey, filters: { session: sessionId, producer: producerId, kind: "scout" } }); },
     files,
     fileCommentThreads,
     fileCommentReviews,
@@ -2802,12 +2810,6 @@ export function App(): React.JSX.Element {
   // then swallow every session shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
-    if (selectedId && !sessions.some((s) => s.id === selectedId)) {
-      setSelectedId(null);
-      // The board's drill-in goes with it. Left standing, the flag would silently
-      // re-open on whatever the cursor landed on next.
-      setBoardOpen(false);
-    }
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
@@ -2815,7 +2817,33 @@ export function App(): React.JSX.Element {
       if (!sessions.some((session) => session.id === id)) files.drop(id);
     }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+  }, [sessions, visible, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+
+  useEffect(() => {
+    if (latestSessionTransfer?.state === "adopted" && selectedId === latestSessionTransfer.sourceSessionId
+      && latestSessionTransfer.successorSessionId && sessions.some((s) => s.id === latestSessionTransfer.successorSessionId)) {
+      setSelectedId(latestSessionTransfer.successorSessionId);
+      return;
+    }
+    if (!selectedId || sessions.some((s) => s.id === selectedId)
+      || sessionTransfers.transfers.some((transfer) => transfer.sourceSessionId === selectedId)
+      || (latestSessionTransfer?.sourceSessionId === selectedId && latestSessionTransfer.successorSessionId)) return;
+    // Resolved transfers deliberately leave the bounded snapshot. Resolve the selected
+    // source from durable history before clearing a drill-in after a missed adoption.
+    let current = true;
+    void api.latestSessionTransferForSource(selectedId).then((transfer) => {
+      if (!current) return;
+      if (transfer && sessionTransferUnresolved(transfer.state)) return;
+      if (transfer?.state === "adopted" && transfer.successorSessionId
+        && sessions.some((s) => s.id === transfer.successorSessionId)) {
+        setSelectedId(transfer.successorSessionId);
+      } else {
+        setSelectedId(null);
+        setBoardOpen(false);
+      }
+    }).catch(() => { /* Keep selection when its outcome cannot be read; the next snapshot retries. */ });
+    return () => { current = false; };
+  }, [latestSessionTransfer, selectedId, sessions, sessionTransfers]);
 
   // Keep the keyboard-selected session in view as selection moves.
   useEffect(() => {
@@ -3364,6 +3392,14 @@ export function App(): React.JSX.Element {
       }
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
       // workflow ladder.
+      if (chord === bindings.sessionScouts) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel) return;
+        e.preventDefault();
+        if (layout === "board") setBoardOpen(true);
+        setScoutsTabRequest((request) => ({ sessionId: sel.id, nonce: (request?.nonce ?? 0) + 1 }));
+        return;
+      }
       if (chord === bindings.sessionWorkflows) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
         if (!sel) return;
@@ -4492,6 +4528,7 @@ export function App(): React.JSX.Element {
 
               {reportOpen && (
                 <ReportPanel
+                  sessionTransfers={sessionTransfers}
                   sessions={sessions}
                   tasks={tasks}
                   backlogPlan={foreman.backlogPlan}

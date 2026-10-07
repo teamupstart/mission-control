@@ -1,6 +1,8 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { dirname } from "node:path";
+import { transferFixture } from "./helpers/session-transfer-fixture.ts";
+import { getSessionTransfer } from "../src/server/session-transfers/store.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -9,6 +11,10 @@ import type { QueueManager } from "../src/server/queue.ts";
 import { mkSession, mkMuxHandle, mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
 import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
+import { STATE_DIR } from "../src/server/config.ts";
+import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
+import { TerminalLaunchError } from "../src/server/terminal/launch-error.ts";
+await managedResumeFixture(STATE_DIR);
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
 // question is what a request is allowed to influence. The answer has to be "which of two
@@ -87,8 +93,8 @@ const UNCERTAIN_TASK = mkTask({
   status: "running",
   sessionId: EXITED_UNCERTAIN.id,
 });
-const TASKS = new Map([[UNCERTAIN_TASK.id, UNCERTAIN_TASK]]);
-let adoptedSession: ReturnType<typeof mkSession> | null = null;
+const TASKS = new Map<string, typeof UNCERTAIN_TASK>();
+const adoptedSession: ReturnType<typeof mkSession> | null = null;
 
 // A real subscriber list, not a no-op: the resume claim is released on `session_remove`,
 // and a stub that swallowed the subscription would let that release rot untested.
@@ -126,6 +132,7 @@ const app = buildApp({
   queues: {} as unknown as QueueManager,
   launchSessionTerminal: async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
+    if (spec.name === "refused-resume") throw new TerminalLaunchError("Ghostty refused the launch", false);
     if (spec.name === "verified-resume") {
       return { ok: true, label: backend, homeName: null,
         terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 };
@@ -163,6 +170,25 @@ async function launch(id: string, body: unknown): Promise<Response> {
     else process.env.MISSION_CLAUDE_BIN = previous;
   }
 }
+
+test("a definite resume refusal preserves the backend cause and attempt identity", async () => {
+  const refused = mkSession({ id: "refused-resume", name: "refused-resume", state: "exited", agentSessionId: "refused-native" });
+  SESSIONS.set(refused.id, refused);
+  try {
+    const response = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error, "Ghostty refused the launch. No terminal was started; recheck launch status before trying again.");
+    assert.equal(body.launchOutcome, "refused");
+    assert.equal(typeof body.resumeLeaseId, "string");
+    const recheck = await app.request(`/api/sessions/${refused.id}/launch`, { headers: HEADERS });
+    assert.ok((await recheck.json()).attempts.some((attempt: { id: string; state: string }) =>
+      attempt.id === body.resumeLeaseId && attempt.state === "revoked"));
+    const retry = await launch(refused.id, { backend: "ghostty", payload: "agent" });
+    assert.equal(retry.status, 409);
+    assert.notEqual((await retry.json()).resumeLeaseId, body.resumeLeaseId, "a definite refusal releases the resume claim");
+  } finally { SESSIONS.delete(refused.id); }
+});
 
 test("the backend is a registered id, never a command", async () => {
   // The closed enum is the whole containment story for this field. Anything that resolves
@@ -254,12 +280,64 @@ test("read-only Pipeline evidence cannot launch either an agent or a shell", asy
   assert.equal(launched.length, 0);
 });
 
-test("an uncertain exited-session resume keeps the terminal resource name", async () => {
-  const res = await launch("exited-uncertain", { backend: "tmux", payload: "agent" });
+async function exitedTransfer(t: TestContext, result: { ok: boolean; label: string; homeName: string | null; status: number; error?: string; terminalResourceId?: string }, discover = false) {
+  const f = transferFixture(t, { processSnapshot: async () => ({ processes: [], unknownReason: null,
+    cwdScopePids: [], completedCollectorPids: [] }) });
+  await f.supervisor.stop(f.source.id);
+  // The fixture stream ended with a positively absent, previously observed child lifetime.
+  const { recordSdkSessionProcess } = await import("../src/server/sdk/store.ts");
+  recordSdkSessionProcess(f.source.id, { pid: 41001, startMs: 1 });
+  let argv: readonly string[] = [];
+  const local = buildApp({ registry: f.registry, tasks: f.tasks, workflows: f.workflows, sessionTransfers: f.transfers,
+    reviews: {} as ReviewManager, queues: {} as QueueManager,
+    handoffDeps: { ...f.deps, waitForSessionAtCwd: async () => discover ? f.discover({ terminals: [mkEmuHandle({ backend: "ghostty", paneId: "resumed-uuid" })] }) : null },
+    launchSessionTerminal: async (_backend, spec) => { argv = spec.argv; return result; },
+  });
+  const prior = process.env.MISSION_CLAUDE_BIN;
+  process.env.MISSION_CLAUDE_BIN = process.execPath;
+  try {
+    const response = await local.request(`/api/sessions/${encodeURIComponent(f.source.id)}/launch`, {
+      method: "POST", headers: HEADERS, body: JSON.stringify({ backend: "ghostty", payload: "agent" }),
+    });
+    return { f, response, argv, app: local };
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_CLAUDE_BIN;
+    else process.env.MISSION_CLAUDE_BIN = prior;
+  }
+}
 
-  assert.equal(res.status, 504);
-  assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.sessionId, null);
-  assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.homeName, "Uncertain resume-abc123");
+test("an uncertain exited-session resume keeps its resource and a durable reservation", async (t) => {
+  const { f, response, argv, app } = await exitedTransfer(t, { ok: false, label: "Ghostty", homeName: "Uncertain resume-abc123", status: 504, error: "Window may still open" });
+  assert.equal(response.status, 200, "accepted observation is pending, not a failed task");
+  assert.ok(launchedArgv(argv).includes("--mcp-config"));
+  assert.equal(f.registry.getTask(f.task!.id)?.sessionId, null);
+  assert.equal(f.registry.getTask(f.task!.id)?.homeName, "Uncertain resume-abc123");
+  const body = await response.json();
+  assert.equal(body.transfer.state, "awaiting_successor");
+  assert.equal(getSessionTransfer(body.transfer.id)?.facts.launchOutcome, "unknown");
+  const repeat = await app.request(`/api/sessions/${encodeURIComponent(f.source.id)}/launch`, {
+    method: "POST", headers: HEADERS, body: JSON.stringify({ backend: "ghostty", payload: "agent" }),
+  });
+  assert.equal(repeat.status, 409, "an exited card with an unbound reserved task cannot bypass the coordinator");
+  assert.equal((await repeat.json()).transfer.id, body.transfer.id);
+});
+
+test("launch recheck survives source removal, starts nothing, and reclaims only expired unclaimed attempts", async () => {
+  const source = mkSession({ id: "recheck-gone", agentSessionId: "recheck-native", name: EXITED_UNCERTAIN.name, state: "exited" });
+  SESSIONS.set(source.id, source);
+  const before = launched.length;
+  assert.equal((await launch(source.id, { backend: "ghostty", payload: "agent" })).status, 504);
+  SESSIONS.delete(source.id);
+  emitSessionRemove(source.id);
+  const response = await app.request(`/api/sessions/${source.id}/launch`, { headers: HEADERS });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { attempts: Array<{ state: string; deadline: number }> };
+  assert.equal(body.attempts[0]?.state, "pending");
+  const { recheckManagedResumes, managedResumeRoot } = await import("../src/server/harness/resume.ts");
+  const { reconcileResumeLeases } = await import("../src/server/terminal/resume-lease.ts");
+  reconcileResumeLeases(managedResumeRoot(), body.attempts[0]!.deadline + 1);
+  assert.equal(recheckManagedResumes().find((s) => s.lease.sourceSessionId === source.id)?.state, "revoked");
+  assert.equal(launched.length, before + 1);
 });
 
 // The shell arm's asymmetry - a shell is not the agent's conversation, so having a pane
@@ -342,7 +420,7 @@ test("a resume claim is released when the session is actually removed", () => {
 
     // The same id, back on the same tty as a new session - the case an absence-based
     // prune gets wrong.
-    SESSIONS.set(gone.id, mkSession({ id: gone.id, state: "exited" }));
+    SESSIONS.set(gone.id, mkSession({ id: gone.id, state: "exited", agentSessionId: "new-conversation" }));
     assert.equal(
       (await launch(gone.id, { backend: "tmux", payload: "agent" })).status,
       200,
@@ -353,60 +431,26 @@ test("a resume claim is released when the session is actually removed", () => {
   })();
 });
 
-test("resuming through an emulator persists NO home, not the dead one", async () => {
-  // The route half of the same contract. The launcher reports null when the backend made no
-  // durable home; this must be WRITTEN as null rather than falling back to the task's
-  // existing `homeName`. That old home belonged to the agent that exited, so keeping it is
-  // the identical bug by another path: a restart reads it as gone and reclaims a worktree
-  // the resumed CLI is working in. Only `false` reclaims, and null is not `false`.
-  const session = mkSession({ id: "emu-resume", state: "exited" });
-  SESSIONS.set(session.id, session);
-  const task = mkTask({
-    id: "task-emu",
-    status: "running",
-    sessionId: session.id,
-    homeName: "home-of-the-agent-that-exited",
-  });
-  TASKS.set(task.id, task);
-  launched.length = 0;
-
-  const res = await launch(session.id, { backend: "wezterm", payload: "agent" });
-  assert.equal(res.status, 200);
-
-  const after = TASKS.get(task.id);
-  assert.equal(
-    after?.homeName,
-    null,
-    "a stale home must be cleared, never carried forward onto a live agent",
-  );
-  assert.equal(after?.terminalResourceId, null);
-
-  TASKS.delete(task.id);
-  SESSIONS.delete(session.id);
+test("resuming through an emulator replaces the dead home and retains an unknown resource", async (t) => {
+  const { f, response } = await exitedTransfer(t, { ok: true, label: "Ghostty", homeName: null, status: 200 });
+  assert.equal(response.status, 200);
+  const task = f.registry.getTask(f.task!.id)!;
+  assert.equal(task.homeName, f.task!.title);
+  assert.equal(task.terminalResourceId, null);
+  assert.equal(task.sessionId, null);
+  assert.equal(task.status, "running");
 });
 
-test("resume retains the spawned UUID and binds only a positively observed recipient", async (t) => {
-  const adoption = t.mock.method(registry, "adoptTerminalLaunch");
+test("resume retains the spawned UUID and binds only a positively discovered recipient", async (t) => {
   for (const matches of [true, false]) {
-    const session = mkSession({ id: `ghostty-resume-${matches}`, name: "verified-resume", state: "exited" });
-    const task = mkTask({ id: `ghostty-task-${matches}`, sessionId: session.id, status: "running" });
-    adoptedSession = mkSession({ id: `adopted-${matches}`, terminals: matches
-      ? [mkEmuHandle({ backend: "ghostty", paneId: "resumed-uuid" })] : [] });
-    SESSIONS.set(session.id, session);
-    TASKS.set(task.id, task);
-    try {
-      assert.equal((await launch(session.id, { backend: "ghostty", payload: "agent" })).status, 200);
-      assert.equal(adoption.mock.calls.at(-1)?.arguments[1].launchStateHome, dirname(launched.at(-1)!.argv[1]!),
-        "resume must retain the wrapper marker source until adoption");
-      const after = TASKS.get(task.id)!;
-      assert.equal(after.terminalResourceId, "emulator:ghostty:resumed-uuid");
-      assert.equal(after.sessionId, matches ? adoptedSession.id : null);
-      assert.deepEqual(after.terminalLaunch, matches
-        ? { resourceId: after.terminalResourceId, sessionId: adoptedSession.id } : null);
-    } finally {
-      SESSIONS.delete(session.id);
-      TASKS.delete(task.id);
-      adoptedSession = null;
-    }
+    const { f, response, argv } = await exitedTransfer(t, { ok: true, label: "Ghostty", homeName: null,
+      terminalResourceId: "emulator:ghostty:resumed-uuid", status: 200 }, matches);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(getSessionTransfer(body.transfer.id)?.facts.home?.launchStateHome, dirname(argv[1]!));
+    const task = f.registry.getTask(f.task!.id)!;
+    assert.equal(task.terminalResourceId, "emulator:ghostty:resumed-uuid");
+    assert.equal(task.sessionId, matches ? f.candidate.syntheticId : null);
+    assert.deepEqual(task.terminalLaunch, matches ? { resourceId: task.terminalResourceId, sessionId: f.candidate.syntheticId } : null);
   }
 });

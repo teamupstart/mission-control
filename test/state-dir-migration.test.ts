@@ -84,7 +84,7 @@ test("importing config.ts does NOT move anything - only the daemon's entry may",
   assert.ok(!existsSync(join(home, ".mission-control")), "and invented nothing");
 });
 
-test("the daemon imports the migration above config, or it would open a doomed path", () => {
+test("the daemon imports the migration first, before direct or transitive config loads", () => {
   // The ordering IS the mechanism: ES modules evaluate imports in source order, and
   // `config.ts` resolves STATE_DIR (and DB_PATH off it) at module scope. Import the
   // migration after it and the daemon computes its db path, THEN renames the directory
@@ -95,4 +95,6 @@ test("the daemon imports the migration above config, or it would open a doomed p
   const config = src.indexOf('from "./config.ts"');
   assert.ok(migrate >= 0, "the daemon still imports the state-dir migration");
   assert.ok(config >= 0 && migrate < config, "and imports it BEFORE ./config.ts");
+  assert.equal(src.match(/^import\b[^\n]*$/m)?.[0], 'import "./migrate-state.ts";',
+    "every other import may transitively freeze STATE_DIR, including scout credentials");
 });

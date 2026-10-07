@@ -24,8 +24,8 @@ import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
  *      transcript would archive that instruction as if a human wrote it.
  *
  * Both are local capture coordination with the same lifetime as `archive_capture_jobs`,
- * and on the same `(task, episode)` key. Once Phase 2 freezes a trail onto a capture job
- * the job is the durable answer and these rows may be cleaned; nothing here is a read
+ * and on the same `(task, episode)` key. Each report freezes its own trail onto a capture job. The journal remains available
+ * for later reports until the episode is retired; nothing here is a read
  * model and nothing renders it.
  */
 
@@ -409,7 +409,7 @@ function markScoutPromptContextTruncated(
 /**
  * Forget one episode's context and trail.
  *
- * The explicit cleanup the capture manager calls once a job has frozen the trail, and the
+ * The explicit cleanup the capture manager calls when the source episode is retired, and the
  * only way these rows go. There is deliberately no timer and no age sweep: the rows have
  * to survive a daemon restart and a session eviction, and "old" is exactly what a scout
  * waiting on a slow reviewer looks like.
@@ -444,4 +444,9 @@ export function scoutPromptTurnId(): string {
 /** Drop every row. For tests that need a clean journal between cases. */
 export function clearScoutPromptContexts(db: DatabaseSync): void {
   db.exec("DELETE FROM scout_prompt_turns; DELETE FROM scout_prompt_contexts;");
+}
+
+/** Bounded episode journals for lifecycle reconciliation, never archive display state. */
+export function allScoutPromptContexts(): ScoutPromptContext[] {
+  return (openDb().prepare("SELECT * FROM scout_prompt_contexts").all() as unknown as ContextRow[]).map(mapContext);
 }

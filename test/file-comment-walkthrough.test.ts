@@ -18,6 +18,7 @@ import {
   progressOf,
   type FileCommentWalkthroughPort,
 } from "../src/server/file-comment-walkthrough.ts";
+import { LEGACY_PARKED_REVIEW_REASONS } from "../src/shared/file-comments.ts";
 
 const SESSION = "s1";
 const REPLY_TOOL = "mcp__mission-control__respond_to_file_comments";
@@ -154,7 +155,9 @@ function harness(rows: FileCommentThread[], over: Partial<Session> = {}): Harnes
     setReviewState: (_id, state, pauseReason) => {
       review.state = state;
       review.pauseReason = pauseReason;
-      if (state === "running" && review.startedAt === null) review.startedAt = now.value;
+      // The store's rule: kept across pause and resume, cleared on a return to idle.
+      if (state === "idle") review.startedAt = null;
+      else if (state === "running" && review.startedAt === null) review.startedAt = now.value;
       review.updatedAt = now.value;
       return { ...review };
     },
@@ -305,7 +308,7 @@ test("Start review sends exactly one comment, and the next only after the first 
   await settle();
 
   assert.equal(h.sent.length, 1, "exactly one turn is outstanding");
-  assert.match(h.sent[0]!, /^Comment 1 of 2 on this review\./);
+  assert.match(h.sent[0]!, /^Review comment 1; 1 more queued behind it\./);
   assert.equal(h.threads.get("a")!.status, "sending");
   assert.equal(h.threads.get("b")!.status, "queued");
 
@@ -331,8 +334,8 @@ test("Start review sends exactly one comment, and the next only after the first 
   await settle();
   assert.equal(h.threads.get("a")!.status, "unanswered");
   assert.equal(h.sent.length, 2);
-  assert.match(h.sent[1]!, /^Comment 2 of 2 on this review\./);
-  assert.match(h.sent[1]!, /it is the last of this review/);
+  assert.match(h.sent[1]!, /^Review comment 2; nothing else is queued yet\./);
+  assert.match(h.sent[1]!, /more comments may still follow/);
 });
 
 test("a busy session holds the queue rather than advancing past a live agent", async () => {
@@ -414,7 +417,9 @@ test("a session that cannot take a message is a pause with a reason, not a lost 
   assert.equal(h.threads.get("a")!.status, "queued", "the comment is still there to send later");
 });
 
-test("a queue with nothing left to send pauses and says so", async () => {
+test("a queue with nothing left to send goes back to idle, not paused", async () => {
+  // Running dry needs no person. A pause here made the next comment wait for a Resume nobody
+  // knew to press; idle is what lets that comment start delivery on its own.
   const h = harness([thread({ id: "a" })]);
   h.walkthrough.start(SESSION);
   await settle();
@@ -423,8 +428,9 @@ test("a queue with nothing left to send pauses and says so", async () => {
   h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
   await h.walkthrough.tick(SESSION);
   await settle();
-  assert.equal(h.review.state, "paused");
-  assert.equal(h.review.pauseReason, PAUSE_REASONS.drained);
+  assert.equal(h.review.state, "idle");
+  assert.equal(h.review.pauseReason, null);
+  assert.equal(h.review.startedAt, null, "the next burst is numbered from 1");
 });
 
 test("pause takes effect after the outstanding comment resolves, and never recalls it", async () => {
@@ -446,7 +452,7 @@ test("pause takes effect after the outstanding comment resolves, and never recal
   await settle();
   assert.equal(h.review.startedAt, startedAt);
   assert.equal(h.sent.length, 2);
-  assert.match(h.sent[1]!, /^Comment 2 of 2 on this review\./);
+  assert.match(h.sent[1]!, /^Review comment 2; nothing else is queued yet\./);
 });
 
 test("an uncertain delivery pauses the review and never stamps the message", async () => {
@@ -581,6 +587,117 @@ test("a thread answered and then replied to delivers the REPLY, not the opening 
   assert.doesNotMatch(h.sent[1]!, /quoting id MC-a\.1\./);
 });
 
+test("a follow-up on text the agent rewrote in answer is DELIVERED, not held", async () => {
+  // The ordinary loop: a person comments on a sentence, the agent answers it by rewriting that
+  // sentence, and the person replies in the same thread to keep iterating. The quote no longer
+  // resolves - the agent's own edit is why - but the agent has already seen this thread and
+  // knows what it changed, so holding the follow-up strands the conversation behind a pause
+  // that only "drop it and comment again" gets past.
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  assert.equal(h.sent.length, 1);
+
+  // The agent's answer: the quoted sentence is rewritten on disk.
+  h.files.set("docs/spec.md", {
+    text: FILE.replace("The retry budget is thirty seconds.", "Retries stop at the deadline."),
+    revision: "r2",
+  });
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  // The person follows up in the same thread; `appendMessage` requeues it.
+  const settled = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...settled,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...settled.messages, message({ id: "m2", threadId: "a", body: "closer, but name the deadline" })],
+    messageCount: 2,
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.equal(h.threads.get("a")!.outdated, true, "the quote really is gone from the file");
+  assert.notEqual(h.review.state, "paused", "a thread already in conversation is not held");
+  assert.equal(h.review.pauseReason, null);
+  assert.equal(h.sent.length, 2, "the follow-up reached the agent");
+  assert.match(h.sent[1]!, /^closer, but name the deadline$/m);
+  assert.match(h.sent[1]!, /quoting id MC-a\.2\./);
+  // The agent is told the quote is the ORIGINAL text, so it reasons from the thread rather
+  // than hunting the file for a sentence it already replaced.
+  assert.match(h.sent[1]!, /no longer in the file/);
+});
+
+test("a follow-up is delivered when its delivered message is only in the FULL history", async () => {
+  // A long conversation: the delivered opening comment and the agent's answer have fallen off
+  // the front of the capped copy the tick reads, which carries only the newest messages. Read
+  // from that copy alone, the thread looks like one the agent has never seen, and the follow-up
+  // would be held on its outdated quote exactly as the bug did.
+  const full = thread({
+    id: "a",
+    quote: "a sentence the agent has since rewritten",
+    revision: "old",
+    messages: [
+      message({ id: "m1", threadId: "a", body: "the opening comment", deliveredAt: 5 }),
+      message({ id: "r1", threadId: "a", author: "agent", body: "Rewrote it." }),
+      message({ id: "m2", threadId: "a", body: "keep going" }),
+    ],
+  });
+  const h = harness([full]);
+  const history = h.port.threadWithHistory;
+  let fullReads = 0;
+  h.port.threadWithHistory = (id) => {
+    fullReads += 1;
+    return history(id);
+  };
+  h.port.threads = () =>
+    [...h.threads.values()].map((t) => ({ ...t, messages: t.messages.slice(-1) }));
+
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.equal(h.threads.get("a")!.outdated, true, "the quote really is gone from the file");
+  assert.notEqual(h.review.state, "paused", "a thread the agent answered is not held");
+  assert.equal(h.review.pauseReason, null);
+  assert.equal(h.sent.length, 1, "the follow-up reached the agent");
+  assert.match(h.sent[0]!, /^keep going$/m);
+  assert.match(h.sent[0]!, /quoting id MC-a\.2\./);
+  assert.match(h.sent[0]!, /no longer in the file/);
+  assert.ok(fullReads > 0, "the hold decision read the whole history");
+});
+
+test("a follow-up on a file the agent removed is delivered with that said", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.files.delete("docs/spec.md");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  const settled = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...settled,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...settled.messages, message({ id: "m2", threadId: "a", body: "put it back" })],
+    messageCount: 2,
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.notEqual(h.review.state, "paused");
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[1]!, /^put it back$/m);
+  assert.match(h.sent[1]!, /no longer in this checkout/);
+});
+
 test("a reply written while the comment was in flight requeues when the turn resolves", async () => {
   // Appending to the outstanding thread is always allowed, but its STATUS must not move: it is
   // the status the single-flight index is built on, and requeueing there would let the next
@@ -636,7 +753,7 @@ test("a restart resumes the walkthrough without re-sending the outstanding comme
   await restarted.tick(SESSION);
   await settle();
   assert.equal(h.sent.length, 2);
-  assert.match(h.sent[1]!, /^Comment 2 of 2 on this review\./);
+  assert.match(h.sent[1]!, /^Review comment 2; nothing else is queued yet\./);
   restarted.stop();
 });
 
@@ -783,7 +900,7 @@ test("no comment is released while ANY turn sits in the shared outbox", async ()
   await h.walkthrough.tick(SESSION);
   await settle();
   assert.equal(h.sent.length, 2);
-  assert.match(h.sent[1]!, /^Comment 2 of 2 on this review\./);
+  assert.match(h.sent[1]!, /^Review comment 2; nothing else is queued yet\./);
 });
 
 test("an unconfirmed turn belonging to somebody else pauses with a reason, not silently", async () => {
@@ -1168,4 +1285,132 @@ test("a transcript turn about a DIFFERENT comment is not filed on this one", asy
   await h.walkthrough.tick(SESSION);
   await settle();
   assert.equal(h.threads.get("a")!.messages.filter((m) => m.author === "agent").length, 0);
+});
+
+// ---- sending is delivering: no Start step ----
+
+test("a comment sent to an idle review goes at once, with no Start", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0]!, /^Review comment 1; nothing else is queued yet\./);
+  assert.equal(h.threads.get("a")!.status, "sending");
+  assert.equal(h.review.state, "running");
+  h.walkthrough.stop();
+});
+
+test("a comment sent while another is out waits its turn behind it", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+
+  h.threads.set("b", thread({ id: "b", queueSeq: 1, startLine: 5, quote: "The table below has no units column." }));
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 1, "one turn outstanding, ever");
+  assert.equal(h.threads.get("b")!.status, "queued");
+
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.threads.get("a")!.status, "unanswered");
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[1]!, /^Review comment 2; nothing else is queued yet\./);
+  h.walkthrough.stop();
+});
+
+test("a person's Pause holds a newly sent comment until they resume", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.pause(SESSION);
+  await settle();
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.review.state, "paused");
+
+  h.walkthrough.start(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 1);
+  h.walkthrough.stop();
+});
+
+test("a blocker pause is not lifted by a new comment arriving", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.review.state = "paused";
+  h.review.pauseReason = PAUSE_REASONS.outboxBlocked;
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.review.pauseReason, PAUSE_REASONS.outboxBlocked);
+});
+
+test("a legacy review parked as paused for running dry reads as idle", async () => {
+  // Rows written before sending started delivery on its own. Nothing about them needs a
+  // person, so a comment sent to one goes without a Resume.
+  for (const reason of LEGACY_PARKED_REVIEW_REASONS) {
+    const h = harness([thread({ id: "a" })]);
+    h.review.state = "paused";
+    h.review.pauseReason = reason;
+    h.walkthrough.onQueued(SESSION);
+    await settle();
+    assert.equal(h.sent.length, 1, reason);
+    assert.equal(h.review.state, "running");
+    assert.equal(h.review.pauseReason, null);
+    h.walkthrough.stop();
+  }
+});
+
+test("after running dry, the next comment sent starts again and is numbered from 1", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+  assert.equal(h.review.state, "idle");
+
+  h.now.value += 60_000;
+  h.threads.set("b", thread({ id: "b", queueSeq: 1 }));
+  h.walkthrough.onQueued(SESSION);
+  await settle();
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[1]!, /^Review comment 1; nothing else is queued yet\./);
+  h.walkthrough.stop();
+});
+
+test("comments left queued in an idle review are sent when the daemon adopts them", async () => {
+  const h = harness([thread({ id: "a" }), thread({ id: "b", queueSeq: 1 })]);
+  // Named twice, as one session with two queued threads is: still one start, one turn.
+  h.walkthrough.adoptQueued([SESSION, SESSION]);
+  await settle();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.review.state, "running");
+  h.walkthrough.stop();
+});
+
+test("the startup adoption leaves a paused review, an empty queue, and a missing session alone", async () => {
+  const paused = harness([thread({ id: "a" })]);
+  paused.review.state = "paused";
+  paused.review.pauseReason = "held by a person";
+  paused.walkthrough.adoptQueued([SESSION]);
+
+  const empty = harness([thread({ id: "a", status: "answered", queueSeq: null })]);
+  empty.walkthrough.adoptQueued([SESSION]);
+
+  // Before the first completed sweep a live session can be missing from the map; this is the
+  // guard behind waiting for that sweep, not a replacement for it.
+  const missing = harness([thread({ id: "a" })]);
+  const unseen = new FileCommentWalkthrough({ ...missing.port, session: () => null });
+  unseen.adoptQueued([SESSION]);
+  await settle();
+
+  assert.equal(paused.sent.length + empty.sent.length + missing.sent.length, 0);
+  assert.equal(paused.review.state, "paused");
+  assert.equal(empty.review.state, "idle");
+  assert.equal(missing.review.state, "idle");
 });

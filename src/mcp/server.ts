@@ -1,3 +1,4 @@
+import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
@@ -22,7 +23,7 @@ import {
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
   captureTerminalEnv,
   readClientToken,
-  readScoutSubmissionCredential,
+  readSessionScoutSubmissionCredential,
 } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 import {
@@ -62,7 +63,9 @@ async function http(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
-    "x-mission-operation-id": crypto.randomUUID().replaceAll("-", ""),
+    // The imported `randomUUID`, never the `crypto` global: Node 18 has no such global, and
+    // a Node 18 child made every tool call fail with "ReferenceError: crypto is not defined".
+    "x-mission-operation-id": randomUUID().replaceAll("-", ""),
     "x-mission-operation-surface": "mcp",
     "x-mission-operation-actor": "agent",
     ...extraHeaders,
@@ -70,7 +73,7 @@ async function http(
     "x-harness-token": readClientToken(),
   };
   if (scoutCredential) {
-    const credential = readScoutSubmissionCredential(process.cwd());
+    const credential = readSessionScoutSubmissionCredential(process.cwd());
     if (credential) headers[SCOUT_SUBMISSION_CREDENTIAL_HEADER] = credential;
   }
   return fetch(BASE_URL + path, {
@@ -1078,10 +1081,14 @@ server.registerTool(
     description:
       "When your scout report is written, submit it. Mission Control captures the report " +
       "directory and the additional files you name into a durable local archive that outlives " +
-      "this session, its checkout and its task card, then lets the task finish. The report must " +
+      "this session, its checkout and its task card. Any session may publish when instructed. " +
+      "Call once per report using a unique directory. Reusing the directory returns the existing " +
+      "immutable report; use a new slug for a revision. Submission does not complete your task. The report must " +
       `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
       "external requests. Do not open a pull request for the report.",
     inputSchema: {
+      title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
+        .describe("Optional display title for this report."),
       reportPath: z
         .string()
         .min(1)
@@ -1116,9 +1123,14 @@ server.registerTool(
         ),
     },
   },
-  async ({ reportPath, summary, tags, supporting }) => {
+  async ({ title, reportPath, summary, tags, supporting }) => {
     try {
+      const health = await http("/api/health", "GET");
+      if (!health.ok || !daemonHealthSupports(await health.json(), DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
+        return textResult("The running Mission Control daemon does not support multiple scout reports. Update/restart the daemon before submitting; no report was sent.", true);
+      }
       const res = await http("/mcp/scouts/submit", "POST", {
+        title,
         reportPath,
         summary,
         tags: tags ?? [],
@@ -1133,13 +1145,13 @@ server.registerTool(
       }
       const body = (await res.json()) as {
         replayed?: boolean;
-        archive?: { artifactCount?: number; captureStatus?: string };
+        archive?: { key?: string; artifactCount?: number; captureStatus?: string };
       };
       const files = body.archive?.artifactCount ?? 0;
       return textResult(
         body.replayed
-          ? `Already submitted; the existing archive of ${files} file(s) still stands. You can stop.`
-          : `Submitted. Your report and ${Math.max(0, files - 1)} supporting file(s) were archived. You can stop.`,
+          ? `Already submitted; the existing immutable archive of ${files} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
+          : `Submitted. This report and ${Math.max(0, files - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

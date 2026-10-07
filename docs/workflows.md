@@ -1154,17 +1154,26 @@ matches and, when material claims remain unresolved under enforced policy, parks
 `evidence_reconciliation_error` before any Persona or author repair delivery. A successful mapping
 that finds no claim remains an ordinary author evidence gap.
 
+An explicit retry or resubmission starts a fresh mapping operation when the previous one failed,
+even with identical mapping inputs. Granting repair rounds gives the first resumed round that
+same fresh budget. Later automatic rounds retain the failed budget until inputs change or the
+operator intervenes again. Replayed requests and daemon restarts resume the current operation's
+checkpoint rather than resetting its two-execution cap. The resumption observer picks up root
+manual and session submissions with a saved mapping checkpoint, including captures marked
+interrupted during startup. Captures without that checkpoint keep their existing recovery path.
+Successful mappings stay cached.
+
 Eligible attached runs expose an explicit evidence recovery action. It reserves one idempotent
 `evidence_recovery` segment in the same round using frozen criteria and evidence, without a live
 recapture, new staged proof, or an author refinement charge. It also repairs proven inherited
 selection regressions and permits inspected legacy reviews to be re-reviewed. Old snapshots and
 verdicts stay intact, pending repair deliveries are retired, and in-flight or uncertain deliveries
 prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
-Each run can reserve at most three recovery segments across all rounds. The store checks that
-durable count atomically with reservation; replaying a request remains idempotent, while a new
-request after exhaustion is refused without provider work. Exhaustion keeps the failed run
-blocked and withdraws its recovery action. This budget is separate from author refinements.
-No historical runs are resumed in bulk.
+Each explicit recovery request may reserve a fresh segment; there is no lifetime recovery cap
+that withdraws the action after repeated failures. Reservation remains atomic and replaying a
+request is idempotent. Each mapping operation keeps its two-execution cap, and background polling
+never creates recovery requests. Recovery is separate from author refinements, and no historical
+runs are resumed in bulk.
 
 Links resolve only against evidence frozen for that submission. Historical snapshots with embedded
 matches normalize into the separate mapping representation when read.
@@ -1500,7 +1509,15 @@ a completed one still reads **Complete** in the very segment its completion crea
 A check skipped because its command is not configured stays amber, with its reason available
 on the check and stage status - a skipped command is not a passed one, so it keeps its own
 explanation rather than being folded into a carried pass.
-A stage of two or more members shows each one and passes only when all do. A version
+A stage of two or more members shows each one and passes only when all do.
+Every reviewer, Command and session action that the viewed round launched shows how long it has
+run beside its chip, and so does its stage header. The clock counts from the moment the round
+launched that member, not from when its process actually started, so time spent queued for a
+provider counts too. A retried member's clock covers every try in the round. A live clock is
+blue with a pulsing dot. It freezes, under a stopwatch mark, the moment that member settles, so a
+finished round reads as a record of where its time went. A stage's clock runs from its first
+member's launch to its last member's finish. A member the round carried forward, or has not
+launched yet, shows no clock. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id. The same fixed
 **GitHub Inspector** footer the author saw follows End here, carrying the gate's live state.

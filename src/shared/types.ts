@@ -3027,6 +3027,8 @@ export type ServerEvent =
   | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
+      /** At most 100 unresolved summaries, with a count for the paginated remainder. */
+      sessionTransfers?: import("./session-transfer.ts").SessionTransferPage;
       sessions: Session[];
       /**
        * Driverless startup views only, bounded by readable live `sdk_sessions` rows.
@@ -3112,7 +3114,7 @@ export type ServerEvent =
        * kilobytes here, and the ordinary installation carries one `[]`.
        *
        * Carried in the snapshot rather than waited for, for `fleetCost`'s reason: the Files
-       * toolbar draws Start review / Pause from this, so a dashboard that had to wait for the
+       * toolbar draws Pause / Resume from this, so a dashboard that had to wait for the
        * next change would open on a control that could not say what it does.
        */
       fileCommentReviews: FileCommentReview[];
@@ -3153,6 +3155,7 @@ export type ServerEvent =
        */
       latestSettingsRestore: import("./settings-backups.ts").SettingsRestoredEvent | null;
     }
+  | { type: "session_transfers"; page: import("./session-transfer.ts").SessionTransferPage; changed?: import("./session-transfer.ts").SessionTransferSummary }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
   | { type: "restoring_session_upsert"; session: RestoringSession }

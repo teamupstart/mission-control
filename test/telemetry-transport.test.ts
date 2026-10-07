@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MetricsBatchPayload } from "../src/server/telemetry/projection.ts";
 
 // The transport half: what an endpoint may be, where a credential may travel, and every branch
 // of the delivery state machine.
@@ -28,6 +29,7 @@ const { registerBuiltinTelemetry, startTelemetry, telemetryCycle } = await impor
 );
 const { setTimeout: delay } = await import("node:timers/promises");
 const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
+const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
 const { credentialSurvivesRedirect, safeEndpointLabel, signalUrl, validateEndpoint } =
   await import("../src/server/telemetry/endpoint.ts");
 const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
@@ -231,6 +233,14 @@ function enableUser(endpoint = "https://otlp.example.com", credential?: string) 
   assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
 }
 
+function enableGatedUser(endpoint = "https://otlp.example.com", lateAfterMs: number | null = null) {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint, networkGate: "cloudflare-edge", lateAfterMs },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+}
+
 function captureAndProject(id: string, now: number): void {
   const result = captureTelemetry({
     event: DAEMON_STARTED_EVENT,
@@ -374,6 +384,454 @@ test("a 401 pauses the destination visibly instead of hammering it", async () =>
   const second = fixture([ok]);
   await runDeliveryPass({ fetch: second.fetch, now: () => 3_000 });
   assert.equal(second.attempts.length, 0);
+});
+
+test("a gated Cloudflare edge refusal waits without pausing and clears after acceptance", async () => {
+  enableGatedUser("https://otlp.example.com", 1_000);
+  captureAndProject("boot-edge", 1_000);
+  const d = openDb();
+  const queued = d.prepare(
+    `SELECT id, digest, payload_json, item_count FROM telemetry_batches
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { id: string; digest: string; payload_json: string; item_count: number };
+  const refused = fixture([
+    () => status(403, { "cf-ray": "abc-IAD", server: "cloudflare", "content-type": "text/html" }),
+    ok,
+  ]);
+  await runDeliveryPass({ fetch: refused.fetch, now: () => 2_000 });
+
+  assert.equal(refused.attempts.length, 2, "the traces signal succeeds after metrics is refused");
+  const waiting = telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!;
+  assert.equal(waiting.pausedReason, null);
+  assert.equal(waiting.waitingForNetwork, true);
+  assert.equal(waiting.waitingSince, 2_000);
+  assert.equal(waiting.latePointsSent, 0, "the initially young refused batches are not counted");
+  const retained = d.prepare(
+    `SELECT id, digest, payload_json, item_count FROM telemetry_batches WHERE id = ?`,
+  ).get(queued.id);
+  assert.deepEqual(retained, queued, "the refusal retains the exact immutable queued payload");
+  const retry = d.prepare(
+    `SELECT state, attempts, next_attempt_at FROM telemetry_delivery WHERE batch_id = ?`,
+  ).get(queued.id) as { state: string; attempts: number; next_attempt_at: number };
+  assert.equal(retry.state, "retry");
+  assert.equal(retry.attempts, 1);
+  assert.ok(retry.next_attempt_at <= 2_000 + TELEMETRY_LIMITS.networkWaitRetryMaxMs * 1.25);
+  assert.equal(
+    (d.prepare(
+      `SELECT state FROM telemetry_delivery WHERE profile = 'user' AND signal = 'traces'`,
+    ).get() as { state: string }).state,
+    "accepted",
+    "another signal may drain without hiding the retained metrics wait",
+  );
+
+  await runDeliveryPass({ fetch: fixture([ok]).fetch, now: () => 400_000 });
+  const accepted = telemetryHealth(400_100).profiles.find((p) => p.profile === "user")!;
+  assert.equal(accepted.waitingForNetwork, false);
+  assert.equal(accepted.waitingSince, null);
+  assert.equal(
+    accepted.latePointsSent,
+    queued.item_count,
+    "the retained batches are counted once when their accepted retry has aged past the cutoff",
+  );
+  const settled = d.prepare(
+    `SELECT state, attempts FROM telemetry_delivery WHERE batch_id = ?`,
+  ).get(queued.id) as { state: string; attempts: number };
+  assert.equal(settled.state, "accepted");
+  assert.equal(settled.attempts, 2);
+  assert.equal(
+    (d.prepare(`SELECT COUNT(*) AS count FROM telemetry_batches WHERE id = ?`).get(queued.id) as {
+      count: number;
+    }).count,
+    0,
+    "the accepted retry drains the retained payload",
+  );
+});
+
+test("expiring the last network-waiting batch clears the destination wait", async () => {
+  enableGatedUser();
+  captureAndProject("boot-expiring-wait", 1_000);
+  const refused = fixture([
+    () => status(403, { "cf-ray": "expiry-IAD", server: "cloudflare", "content-type": "text/html" }),
+    ok,
+  ]);
+  await runDeliveryPass({ fetch: refused.fetch, now: () => 2_000 });
+  assert.equal(
+    telemetryHealth(2_001).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    true,
+  );
+
+  const later = 1_001 + TELEMETRY_LIMITS.payloadRetentionMs + 1;
+  const retained = runRetentionPass(later);
+  assert.equal(retained.expiredBatches, 1);
+  const user = telemetryHealth(later).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.waitingForNetwork, false);
+  assert.equal(user.waitingSince, null);
+});
+
+test("a gated Cloudflare wait stops only the refused signal's backlog", async () => {
+  enableGatedUser();
+  captureAndProject("boot-edge-one", 1_000);
+  captureAndProject("boot-edge-two", 1_100);
+
+  const queuedRows = openDb().prepare(
+    `SELECT signal, COUNT(*) AS count FROM telemetry_delivery
+     WHERE profile = 'user' GROUP BY signal ORDER BY signal`,
+  ).all() as unknown as Array<{ signal: string; count: number }>;
+  const queued = queuedRows.map(({ signal, count }) => ({ signal, count }));
+  assert.deepEqual(queued, [
+    { signal: "metrics", count: 2 },
+    { signal: "traces", count: 2 },
+  ]);
+
+  const refused = fixture([
+    () => status(403, { "cf-ray": "backlog-IAD", server: "cloudflare", "content-type": "text/html" }),
+    ok,
+  ]);
+  const result = await runDeliveryPass({ fetch: refused.fetch, now: () => 2_000 });
+
+  assert.equal(result.retried, 1);
+  assert.equal(
+    refused.attempts.filter((attempt) => attempt.url.endsWith("/v1/metrics")).length,
+    1,
+    "the first wait stops later metrics batches in this delivery pass",
+  );
+  assert.equal(
+    refused.attempts.filter((attempt) => attempt.url.endsWith("/v1/traces")).length,
+    2,
+    "the traces signal still gets its independent bounded drain",
+  );
+});
+
+test("removing the network gate fences an in-flight Cloudflare wait settlement", async () => {
+  enableGatedUser();
+  captureAndProject("boot-gate-fence", 1_000);
+
+  await runDeliveryPass({
+    fetch: fixture([
+      () => status(403, { "cf-ray": "first-IAD", server: "cloudflare", "content-type": "text/html" }),
+      ok,
+    ]).fetch,
+    now: () => 2_000,
+  });
+  assert.equal(
+    telemetryHealth(2_100).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    true,
+  );
+
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let releaseResponse!: () => void;
+  const responseReleased = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+  let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      markStarted();
+      await responseReleased;
+      return status(403, {
+        "cf-ray": "retry-IAD",
+        server: "cloudflare",
+        "content-type": "text/html",
+      });
+    }
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+  let now = 400_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await started;
+
+  now = 400_100;
+  assert.equal(setTelemetryConfig({ user: { networkGate: "none" } }, now).ok, true);
+  assert.equal(
+    telemetryHealth(now).profiles.find((profile) => profile.profile === "user")?.waitingForNetwork,
+    false,
+    "the configuration transition clears the existing wait while the request is in flight",
+  );
+
+  releaseResponse();
+  await delivery;
+
+  const health = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(health.waitingForNetwork, false);
+  assert.equal(health.waitingSince, null);
+  const retained = openDb().prepare(
+    `SELECT state, waiting_for_network FROM telemetry_delivery
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { state: string; waiting_for_network: number };
+  assert.equal(retained.state, "retry", "the refused batch remains queued under the latest configuration");
+  assert.equal(retained.waiting_for_network, 0);
+});
+
+test("the next signal uses a network gate enabled while the first signal is in flight", async () => {
+  enableUser();
+  captureAndProject("boot-enable-gate", 1_000);
+
+  let markMetricsStarted!: () => void;
+  const metricsStarted = new Promise<void>((resolve) => {
+    markMetricsStarted = resolve;
+  });
+  let releaseMetrics!: () => void;
+  const metricsReleased = new Promise<void>((resolve) => {
+    releaseMetrics = resolve;
+  });
+  const attempts: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    attempts.push(url);
+    if (url.endsWith("/v1/metrics")) {
+      markMetricsStarted();
+      await metricsReleased;
+      return ok();
+    }
+    return status(403, {
+      "cf-ray": "next-signal-IAD",
+      server: "cloudflare",
+      "content-type": "text/html",
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  let now = 2_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await metricsStarted;
+  now = 2_001;
+  assert.equal(setTelemetryConfig({ user: { networkGate: "cloudflare-edge" } }, now).ok, true);
+  releaseMetrics();
+  await delivery;
+
+  assert.equal(attempts.length, 2);
+  const user = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.pausedReason, null, "the current gate keeps the traces refusal off the auth path");
+  assert.equal(user.waitingForNetwork, true);
+  assert.equal(
+    (openDb().prepare(
+      `SELECT waiting_for_network FROM telemetry_delivery
+       WHERE profile = 'user' AND signal = 'traces'`,
+    ).get() as { waiting_for_network: number }).waiting_for_network,
+    1,
+  );
+});
+
+test("Cloudflare-shaped and OTLP 403s pause unless they match the configured edge gate", async () => {
+  for (const [name, gated, headers] of [
+    ["ungated", false, { "cf-ray": "abc-IAD", server: "cloudflare", "content-type": "text/html" }],
+    ["missing ray", true, { server: "cloudflare", "content-type": "text/html" }],
+    ["OTLP response", true, { "cf-ray": "abc-IAD", server: "cloudflare", "content-type": "application/x-protobuf" }],
+  ] as const) {
+    if (gated) enableGatedUser(); else enableUser();
+    captureAndProject(`boot-${name}`, 1_000);
+    await runDeliveryPass({ fetch: fixture([() => status(403, headers)]).fetch, now: () => 2_000 });
+    const user = telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!;
+    assert.equal(user.pausedReason, "auth", name);
+    for (const table of TELEMETRY_TABLES) openDb().exec(`DELETE FROM ${table}`);
+    openDb().exec("DELETE FROM app_config");
+  }
+});
+
+test("late-point accounting uses the exact cutoff and counts a retried batch once", async () => {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: {
+      enabled: true,
+      endpoint: "https://otlp.example.com",
+      lateAfterMs: 100,
+    },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+  captureAndProject("boot-late", 1_000);
+
+  const d = openDb();
+  d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+  d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+  const stored = d.prepare(
+    `SELECT id, payload_json FROM telemetry_batches
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { id: string; payload_json: string };
+  const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+  const template = payload.metrics[0]!;
+  const cutoff = 5_000 - 100;
+  payload.metrics = [
+    { ...template, name: "mission.test.before_cutoff", endTimeMs: cutoff - 1 },
+    { ...template, name: "mission.test.on_cutoff", endTimeMs: cutoff },
+    { ...template, name: "mission.test.after_cutoff", endTimeMs: cutoff + 1 },
+  ];
+  d.prepare(
+    `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+  ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+
+  const unavailable = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof globalThis.fetch;
+  await runDeliveryPass({ fetch: unavailable, now: () => 5_000 });
+  let health = telemetryHealth(5_000);
+  let user = health.profiles.find((p) => p.profile === "user")!;
+  assert.equal(user.latePointsSent, 0, "a failed send is not counted as sent");
+  assert.equal(health.gaps.filter((gap) => gap.kind === "late_points").length, 0);
+  assert.equal(
+    (d.prepare(`SELECT late_points_accounted AS accounted FROM telemetry_delivery WHERE batch_id = ?`)
+      .get(stored.id) as { accounted: number }).accounted,
+    0,
+  );
+
+  d.prepare(`UPDATE telemetry_delivery SET next_attempt_at = ? WHERE batch_id = ?`)
+    .run(5_000, stored.id);
+  await runDeliveryPass({ fetch: fixture([ok]).fetch, now: () => 5_000 });
+  health = telemetryHealth(5_100);
+  user = health.profiles.find((p) => p.profile === "user")!;
+  assert.equal(user.latePointsSent, 1, "retrying the same immutable batch does not count it twice");
+  assert.equal(health.gaps.filter((gap) => gap.kind === "late_points").length, 1);
+  assert.equal(
+    (d.prepare(`SELECT late_points_accounted AS accounted FROM telemetry_delivery WHERE batch_id = ?`)
+      .get(stored.id) as { accounted: number }).accounted,
+    1,
+  );
+});
+
+test("late-point accounting uses the acceptance time when a send crosses the cutoff", async () => {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: {
+      enabled: true,
+      endpoint: "https://otlp.example.com",
+      lateAfterMs: 100,
+    },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+  captureAndProject("boot-in-flight-late", 1_000);
+
+  const d = openDb();
+  d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+  d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+  const stored = d.prepare(
+    `SELECT id, payload_json FROM telemetry_batches
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { id: string; payload_json: string };
+  const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+  payload.metrics = [{ ...payload.metrics[0]!, endTimeMs: 4_901 }];
+  d.prepare(
+    `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+  ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+
+  let now = 5_000;
+  const accepted = fixture([() => {
+    now = 5_002;
+    return ok();
+  }]);
+  await runDeliveryPass({ fetch: accepted.fetch, now: () => now });
+
+  const health = telemetryHealth(now);
+  const user = health.profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.latePointsSent, 1, "the point became late before the request was accepted");
+  assert.equal(health.gaps.filter((gap) => gap.kind === "late_points").length, 1);
+});
+
+test("partial success counts only late points that must have been accepted", async () => {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: {
+      enabled: true,
+      endpoint: "https://otlp.example.com",
+      lateAfterMs: 100,
+    },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+  captureAndProject("boot-partial-late", 1_000);
+
+  const d = openDb();
+  d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+  d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+  const stored = d.prepare(
+    `SELECT id, payload_json FROM telemetry_batches
+     WHERE profile = 'user' AND signal = 'metrics'`,
+  ).get() as { id: string; payload_json: string };
+  const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+  const template = payload.metrics[0]!;
+  payload.metrics = [
+    { ...template, name: "mission.test.late_one", endTimeMs: 1_000 },
+    { ...template, name: "mission.test.late_two", endTimeMs: 1_000 },
+    { ...template, name: "mission.test.late_three", endTimeMs: 1_000 },
+  ];
+  d.prepare(
+    `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+  ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+
+  const body = Buffer.from([0x0a, 0x04, 0x08, 0x02, 0x12, 0x00]); // partialSuccess{rejected=2}
+  await runDeliveryPass({
+    fetch: fixture([() => new Response(body, { status: 200 })]).fetch,
+    now: () => 5_000,
+  });
+
+  const health = telemetryHealth(5_100);
+  const user = health.profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(user.latePointsSent, 1, "the two rejected old points are not counted as sent late");
+  const lateGap = health.gaps.find((gap) => gap.kind === "late_points");
+  assert.match(lateGap?.detail ?? "", /1 point\(s\) sent outside/);
+  const delivery = d.prepare(
+    `SELECT accepted_items, rejected_items FROM telemetry_delivery WHERE batch_id = ?`,
+  ).get(stored.id) as { accepted_items: number; rejected_items: number };
+  assert.equal(delivery.accepted_items, 1);
+  assert.equal(delivery.rejected_items, 2);
+});
+
+test("accepted settlement uses the current late window after an in-flight settings change", async () => {
+  for (const [initialWindow, currentWindow, expected] of [
+    [null, 100, 1],
+    [100, null, 0],
+  ] as const) {
+    const applied = setTelemetryConfig({
+      enabled: true,
+      user: {
+        enabled: true,
+        endpoint: "https://otlp.example.com",
+        lateAfterMs: initialWindow,
+      },
+    });
+    assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+    captureAndProject(`boot-window-${String(initialWindow)}`, 1_000);
+
+    const d = openDb();
+    d.exec("DELETE FROM telemetry_delivery WHERE signal = 'traces'");
+    d.exec("DELETE FROM telemetry_batches WHERE signal = 'traces'");
+    const stored = d.prepare(
+      `SELECT id, payload_json FROM telemetry_batches
+       WHERE profile = 'user' AND signal = 'metrics'`,
+    ).get() as { id: string; payload_json: string };
+    const payload = JSON.parse(stored.payload_json) as MetricsBatchPayload;
+    payload.metrics = [{ ...payload.metrics[0]!, endTimeMs: 1_000 }];
+    d.prepare(
+      `UPDATE telemetry_batches SET payload_json = ?, item_count = ? WHERE id = ?`,
+    ).run(JSON.stringify(payload), payload.metrics.length, stored.id);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseResponse!: () => void;
+    const responseReleased = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const fetchImpl = (async () => {
+      markStarted();
+      await responseReleased;
+      return ok();
+    }) as unknown as typeof globalThis.fetch;
+
+    let now = 5_000;
+    const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+    await started;
+    now = 5_001;
+    assert.equal(setTelemetryConfig({ user: { lateAfterMs: currentWindow } }, now).ok, true);
+    releaseResponse();
+    await delivery;
+
+    const user = telemetryHealth(now).profiles.find((profile) => profile.profile === "user")!;
+    assert.equal(user.latePointsSent, expected, `${String(initialWindow)} -> ${String(currentWindow)}`);
+
+    for (const table of TELEMETRY_TABLES) d.exec(`DELETE FROM ${table}`);
+    d.exec("DELETE FROM app_config");
+  }
 });
 
 test("a pause stops the rest of the SAME pass, not just the next one", async () => {
@@ -704,6 +1162,57 @@ test("a batch built for a previous endpoint is never redirected to the new one",
     telemetryHealth(2_100).gaps.some((g) => g.kind === "permanently_rejected"),
     "the operator can see that a queue was left behind",
   );
+});
+
+test("an accepted old-generation request cannot update the current destination", async () => {
+  assert.equal(
+    setTelemetryConfig({
+      enabled: true,
+      user: {
+        enabled: true,
+        endpoint: "https://one.example.com",
+        lateAfterMs: 1,
+      },
+    }).ok,
+    true,
+  );
+  captureAndProject("boot-generation-fence", 1_000);
+
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let acceptResponse!: () => void;
+  const responseAccepted = new Promise<void>((resolve) => {
+    acceptResponse = resolve;
+  });
+  const urls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    urls.push(String(input));
+    markStarted();
+    await responseAccepted;
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+  let now = 2_000;
+  const delivery = runDeliveryPass({ fetch: fetchImpl, now: () => now });
+  await started;
+
+  now = 3_000;
+  assert.equal(
+    setTelemetryConfig({ user: { endpoint: "https://two.example.com" } }, now).ok,
+    true,
+  );
+  const before = telemetryHealth(now).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(before.lastAcceptedAt, null);
+  assert.equal(before.latePointsSent, 0);
+
+  acceptResponse();
+  await delivery;
+
+  const after = telemetryHealth(now + 1).profiles.find((profile) => profile.profile === "user")!;
+  assert.equal(after.lastAcceptedAt, null, "the old endpoint did not accept for the new generation");
+  assert.equal(after.latePointsSent, 0, "old-generation points do not count against the new destination");
+  assert.deepEqual(urls, ["https://one.example.com/v1/metrics"]);
 });
 
 test("the probe's exported span covers when it ran, not a window before it started", async () => {

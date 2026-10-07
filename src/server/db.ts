@@ -1686,6 +1686,28 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- Ordinary table with no REFERENCES clause (unlike the ensemble family and
     -- task_source_sync) and no index: the only reads are by primary key and the
     -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
+    -- Runtime handoff reservations outlive either session. No cascading foreign keys:
+    -- removal must not erase the guard protecting an uncertain external launch.
+    CREATE TABLE IF NOT EXISTS session_runtime_transfers (
+      id TEXT PRIMARY KEY NOT NULL,
+      revision INTEGER NOT NULL,
+      source_session_id TEXT NOT NULL,
+      note_key TEXT NOT NULL,
+      task_id TEXT,
+      state TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      successor_session_id TEXT,
+      facts_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_conversation
+      ON session_runtime_transfers(note_key) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_source
+      ON session_runtime_transfers(source_session_id) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_task
+      ON session_runtime_transfers(task_id) WHERE task_id IS NOT NULL AND state NOT IN ('adopted', 'aborted', 'failed');
+
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
       agent             TEXT NOT NULL,
@@ -2303,6 +2325,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       agent              TEXT,
       model              TEXT,
       source             TEXT,
+      source_session_id TEXT,
+      source_session_json TEXT,
       repositories_json  TEXT,
       -- Every repository label this archive names, lowercased and pipe-delimited, as in
       -- |mission-control|docs| . A filter is instr(repo_labels, ?) with a pipe-wrapped
@@ -2407,7 +2431,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- to stop being derivable. Nothing an agent typed reaches this table.
     CREATE TABLE IF NOT EXISTS archive_capture_jobs (
       operation_key   TEXT NOT NULL PRIMARY KEY,
-      task_id         TEXT NOT NULL,
+      task_id         TEXT,
       session_id      TEXT,
       episode_id      TEXT,
       -- What this capture will produce, frozen at reservation. NOT NULL with a 'scout'
@@ -2416,7 +2440,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- archived. The migration below carries the same value onto rows copied from the
       -- table this one replaces.
       kind            TEXT NOT NULL DEFAULT 'scout',
-      -- reserved | submitted | published | failed. Append-only: a status this build does not
+      -- reserved | submitted | published | failed | deleted. Append-only: a status this build does not
       -- know is treated as unfinished rather than as done, which is the safe direction.
       status          TEXT NOT NULL,
       producer_id     TEXT,
@@ -3064,6 +3088,9 @@ function migrate(d: DatabaseSync): void {
   // derivation, which is precisely what NULL means here, so an upgraded database keeps
   // deriving until someone actually renames a card.
   addColumn(d, "sdk_sessions", "display_name", "TEXT");
+
+  // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
+  addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3911,8 +3938,37 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archive_capture_jobs", "prompts_json", "TEXT");
   addColumn(d, "archives", "prompts_json", "TEXT");
 
+  makeArchiveCaptureTaskOptional(d);
+  addColumn(d, "archives", "source_session_id", "TEXT");
+  addColumn(d, "archives", "source_session_json", "TEXT");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
+}
+
+/** Preserve the capture ledger and its indexes while allowing genuinely taskless owners. */
+function makeArchiveCaptureTaskOptional(d: DatabaseSync): void {
+  const columns = d.prepare("PRAGMA table_info(archive_capture_jobs)").all() as unknown as Array<{ name: string; notnull: number }>;
+  if (!columns.find((column) => column.name === "task_id")?.notnull) return;
+  const schema = d.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'archive_capture_jobs'").get() as { sql: string };
+  const indexes = d.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'archive_capture_jobs' AND sql IS NOT NULL").all() as unknown as Array<{ sql: string }>;
+  const replacement = schema.sql.replace(/CREATE TABLE(?: IF NOT EXISTS)? ["`]?archive_capture_jobs["`]?/i, "CREATE TABLE archive_capture_jobs_nullable")
+    .replace(/(task_id\s+TEXT)\s+NOT NULL/i, "$1");
+  const names = columns.map(({ name }) => `"${name.replaceAll('"', '""')}"`).join(", ");
+  d.exec("SAVEPOINT archive_capture_task_optional");
+  try {
+    d.exec(replacement);
+    d.exec(`INSERT INTO archive_capture_jobs_nullable (${names}) SELECT ${names} FROM archive_capture_jobs`);
+    d.exec("DROP TABLE archive_capture_jobs");
+    d.exec("ALTER TABLE archive_capture_jobs_nullable RENAME TO archive_capture_jobs");
+    for (const index of indexes) d.exec(index.sql);
+    d.exec("RELEASE archive_capture_task_optional");
+  } catch (error) {
+    d.exec("ROLLBACK TO archive_capture_task_optional; RELEASE archive_capture_task_optional");
+    throw error;
+  }
 }
 
 /** Whether a table exists in this database, for a migration that has to read the old one. */
@@ -4332,6 +4388,15 @@ function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
 }
 
 /** Reviews still awaiting a human decision - reloaded into the registry on start. */
+/** Move only unanswered requests; answered history retains its original attribution. */
+export function transferPendingReviews(sourceId: string, successorId: string, now = Date.now()): ReviewItem[] {
+  const db = openDb();
+  if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
+  const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+    WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
@@ -12986,6 +13051,19 @@ export function setAppConfig<Entry extends AppConfigEntry>(
     .run(entry.key, JSON.stringify(value));
 }
 
+/**
+ * Whether a row exists for this entry, readable or not. `getAppConfig` answers undefined for
+ * both "never set" and "set to something that is not JSON"; this tells them apart.
+ */
+export function hasAppConfigRow(entry: AppConfigEntry): boolean {
+  return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
+}
+
+/** Remove a registered config blob, so a later read answers undefined as if never set. */
+export function deleteAppConfig(entry: AppConfigEntry): void {
+  openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+}
+
 // ---- Inspector: the adoption + provenance ledgers ----
 //
 // Everything below is read and written ONLY by the Inspector (daemon-side). The two
@@ -14660,8 +14738,12 @@ export function setFileCommentReviewState(
          state = excluded.state,
          pause_reason = excluded.pause_reason,
          -- The first start is what started_at records; a pause and resume do not restart
-         -- the review, so it is kept rather than rewritten.
-         started_at = COALESCE(file_comment_reviews.started_at, excluded.started_at),
+         -- the review, so it is kept rather than rewritten. Returning to idle ends it: the
+         -- review ran dry, and the next comment sent starts a new one numbered from 1.
+         started_at = CASE
+           WHEN excluded.state = 'idle' THEN NULL
+           ELSE COALESCE(file_comment_reviews.started_at, excluded.started_at)
+         END,
          updated_at = excluded.updated_at`,
     )
     .run(sessionId, state, pauseReason, state === "running" ? now : null, now);

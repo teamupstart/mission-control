@@ -302,6 +302,7 @@ test("a bound session with no task registers against its own single checkout", a
 
     const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
     assert.equal(bound.ok, true, bound.ok ? "" : bound.message);
+    assert.equal(workflows.resumeNeedsEvidence(session), true, "taskless bindings require resume tools");
 
     const artifact = (
       clientItemId: string,
@@ -401,9 +402,11 @@ test("session evidence eligibility follows the active immutable Persona binding"
       return (await response.json() as { registrationEligible: boolean }).registrationEligible;
     };
     assert.equal(await eligible(), false, "an empty tray is not an eligible workflow");
+    assert.equal(workflows.resumeNeedsEvidence(session), false);
     const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
     assert.ok(bound.ok);
     assert.equal(await eligible(), true, "manual attachment does not change task.workflowId");
+    assert.equal(workflows.resumeNeedsEvidence(session), true, "late manual attachment is a resume obligation");
 
     // Publishing a graph without Personas must not change an already pinned binding.
     const noPersonaVersion = `${versionId}-without-personas`;
@@ -420,11 +423,22 @@ test("session evidence eligibility follows the active immutable Persona binding"
     openDb().prepare("UPDATE workflow_definitions SET current_version_id = ? WHERE current_version_id = ?")
       .run(noPersonaVersion, versionId);
     assert.equal(await eligible(), true, "eligibility reads the bound version");
+    assert.equal(workflows.resumeNeedsEvidence(session), true, "resumes read the pinned version, not the newer publication");
     assert.ok(workflows.archiveBinding(bound.value.id).ok);
     assert.equal(await eligible(), false, "removing the binding retires the obligation");
     const noPersona = workflows.createBinding({ workflowVersionId: noPersonaVersion, sessionId: session.id });
     assert.ok(noPersona.ok);
     assert.equal(await eligible(), false, "a binding without a Persona accepts no agent evidence");
+    assert.equal(workflows.resumeNeedsEvidence(session), false);
+    const sibling = workflows.store.insertBinding({
+      id: "secondary-resume-binding", workflowVersionId: versionId, noteKey: noteKeyFor(session),
+      sessionId: session.id, sessionAgent: session.agent, sessionName: session.name,
+      sessionCwd: repo, sessionRepoRoot: repo, repoRoot: `${repo}-secondary`,
+      triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 3, now: Date.now(),
+    });
+    assert.equal(workflows.resumeNeedsEvidence({ ...session, state: "exited" }), true,
+      "a secondary Persona binding still requires tools after the SDK exits");
+    assert.ok(workflows.archiveBinding(sibling.id).ok);
     await assert.rejects(workflows.stageAgentEvidence(session.id, { images: [] }),
       (error: { code?: string }) => error.code === "workflow_unbound");
   } finally {

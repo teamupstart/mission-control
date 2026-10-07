@@ -147,3 +147,81 @@ exactly as they are for unattended work - they are the reason a fleet running ag
 systems fails closed. Mission Control's own boundaries are in [Security](security.md#security), and
 [Task sources](dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog) is where work waiting in an
 internal tracker becomes backlog rows.
+
+### Telemetry to Upstart's Datadog
+
+On a Mac enrolled in Upstart's own Jamf tenant, Mission Control configures its **Product
+analytics** telemetry destination to send to Upstart's telemetry gateway, which forwards to
+Upstart's Datadog. During the pilot it sends only from Macs whose owner has joined the pilot.
+Every other Mac is unchanged.
+
+**What is detected.** Mission Control asks macOS for this Mac's current device management
+enrollment (`profiles status -type enrollment`, which needs no admin rights). The Mac is
+recognized only when that answer says `MDM enrollment: Yes` **and** the `MDM server` it names is
+exactly `https://upstart.jamfcloud.com/...`. The host has to match exactly: no suffix,
+substring, vendor or app matching. Other companies' Jamf Macs have their own
+`<company>.jamfcloud.com` host, so they never match. Jamf's preference file is never read. It
+can outlive an unenrollment, so a Mac that left Upstart for another organization's MDM could
+still name Upstart. Detection runs at daemon start and when you press **Re-check**. It runs only
+on macOS and only in the desktop app or the built daemon, never under a test runner or from a
+state directory inside the temp dir.
+
+**It is managed, so it is view-only.** On a recognized Mac, **Settings > Telemetry** shows a
+**Managed by Upstart** block with the evidence, the lane's state and the configuration it uses.
+The state is one of:
+
+- "Not enrolled in the pilot on this Mac";
+- "Sending to Upstart's Datadog";
+- "Waiting for the Upstart network", when the gateway's network edge refuses this network;
+- "Stopped sending to Upstart's Datadog", when the daemon paused the destination after a
+  refusal, with the reason and **Try again** below it;
+- "Removing Upstart's telemetry settings", when the Mac has left Upstart's management but the
+  write that removes the managed settings failed. Nothing is sent, and **Re-check** retries.
+
+The panel has no switches, fields or Save buttons. The daemon refuses
+`PUT /api/telemetry/config`, queue purges and identity resets with a 403 while Upstart manages
+the Mac. **Test connection**, **Try again** (when the destination is paused) and **Re-check**
+still work, because none of them changes a setting.
+
+**What is sent, and what never is.** The Product analytics audience: the minimized subset of
+Mission Control's own activity metrics and traces that is declared for every audience, in the
+cost-bounded `datadog-lean` export shape, with delta temporality and
+`deployment.environment.name=corp`. Records never include prompts, code, file paths,
+branches, repository or pull request URLs, terminal output, names, hostnames or user names. See
+[What travels, and what never does](observability.md#what-travels-and-what-never-does). The
+gateway also copies metrics to a second metrics destination run by the gateway's owners. That is
+the gateway owners' policy, not something Mission Control controls.
+
+**Joining and leaving the pilot.** Settings has no editing controls on a managed Mac, so pilot
+volunteers enroll with one API call to their own daemon. Use the daemon's configured port if
+it is not 7317:
+
+```sh
+# Join: switches telemetry collection and the Product analytics lane on.
+curl -sS -X POST http://127.0.0.1:7317/api/telemetry/organization/pilot \
+  -H 'content-type: application/json' \
+  -d '{"enrolled":true}'
+# Leave: switches the lane off and puts the collection switch back where it was.
+curl -sS -X POST http://127.0.0.1:7317/api/telemetry/organization/pilot \
+  -H 'content-type: application/json' \
+  -d '{"enrolled":false}'
+```
+
+The route answers 409 on a Mac Upstart does not manage. If the Mac later leaves Upstart's device
+management, the next start or **Re-check** puts back the Product analytics destination and
+collection switch as they were before, and the panel is editable again. There are two
+exceptions, and both err toward not sending. If the saved destination no longer passes the
+transport rules, Product analytics is cleared and switched off instead. If the saved record
+cannot be read, Product analytics is cleared and switched off, and the collection switch is
+left as it is. Data already
+accepted by the gateway cannot be recalled. How the managed lane is applied, kept in step and
+withdrawn is in [Organization defaults](observability.md#organization-defaults).
+
+**Settings > Cost on an Upstart Mac.** Upstart's managed Claude Code policy sends Claude Code's
+own metrics to Upstart's telemetry gateway. A managed policy outranks `~/.claude/settings.json`,
+so sessions you start yourself in a terminal never report their cost to Mission Control, even
+with the Cost switch on. Mission Control does not override the policy. Instead, **Settings >
+Cost** says "Upstart's managed Claude Code policy sends metrics to
+`corp-otel-staging-1.upstart.com`, so the estimate covers only sessions Mission Control runs."
+Sessions Mission Control runs are still counted. Only the host is read out of the policy. See
+[When a managed policy decides where metrics go](sessions.md#when-a-managed-policy-decides-where-metrics-go).

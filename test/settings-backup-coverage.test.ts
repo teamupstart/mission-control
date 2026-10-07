@@ -117,6 +117,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       // turn collection on or merge two installations' identities. See docs/observability.md.
       "telemetry",
       "telemetry.identity",
+      // What recognizing an organization replaced, kept for withdrawal. A fact about this
+      // Mac's device management enrollment, so it is never restored onto another installation.
+      "telemetry.organization",
       "telemetry.runtime",
       "terminals",
       "ui",

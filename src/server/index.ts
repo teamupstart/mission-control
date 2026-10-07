@@ -3,6 +3,8 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
+import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
@@ -29,6 +31,7 @@ import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
+import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
@@ -63,7 +66,8 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
-import { reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
+import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
+import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
@@ -95,7 +99,7 @@ import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentManager } from "./file-comments.ts";
-import { createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
+import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
   PRODUCT_ISSUE_ATTACHMENTS_ENABLED,
   ProductIssueService,
@@ -107,14 +111,17 @@ import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
 import {
   attachSessionTelemetry,
+  describeOrganizationOutcome,
   noteDaemonShuttingDown,
   observeDaemonStart,
   observeSessionOperation,
+  recheckOrganization,
   registerBuiltinTelemetry,
   retainPrObservation,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
+import { configureOrganizationLaunchMode } from "./environment/organization.ts";
 
 // Every launch mode owns the same executable snapshot before any subsystem can detect or
 // start a child. An adopted daemon ran this in its own process when it originally launched.
@@ -168,8 +175,20 @@ try {
 // session id at all, and the ingest can only drop them. The feature would look installed
 // and record nothing.
 warnIfSessionAttributionDisabled();
+// Read the managed Claude Code policy now, in the background, so Settings > Cost can name a
+// policy that redirects metrics from its first poll rather than from its second. Only when Cost
+// is on: that is the only time the panel names it, and an installation that never switched Cost
+// on has no reason to read its organization's policy.
+if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+const reconcileManagedResumeResources = () => {
+  try { recheckManagedResumes(); } catch (error) {
+    console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
+  }
+};
+reconcileManagedResumeResources();
+setInterval(reconcileManagedResumeResources, 30_000).unref();
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
@@ -196,6 +215,7 @@ const reviews = new ReviewManager(registry);
 // dispatcher branches on it and the startup reconciliation below asks it whether an
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
+maintainScoutSessionCredentials(registry);
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
@@ -223,6 +243,9 @@ const archives = new ArchiveManager({
 // row, its task binding and its worktree paths can all still be derived - which is precisely
 // what a capture needs and precisely what `session_remove` no longer has.
 registry.onSessionExit((session) => archives.reserveOnExit(session));
+registry.subscribe((event) => {
+  if (event.type === "session_remove") archives.sessionRemoved(event.id);
+});
 const tasks = new TaskManager(
   registry,
   undefined,
@@ -444,6 +467,11 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
+const sessionTransfers = new SessionTransferCoordinator(registry, {
+  workflows, reviews, settleTask: (id) => tasks.settleAfterFailedHandoff(id),
+  taskBlocked: (id) => tasks.taskCleanupIsReserved(id),
+});
+sessionTransfers.start(true);
 // Restore provider commissions first. A retained Engineer may rotate its native conversation
 // identity while resuming; that rotation must resolve against the exact handoff commission
 // before generic work-episode ownership decides whether the task was abandoned.
@@ -635,6 +663,8 @@ fileComments.start();
 // comment, hands it to `pendingTurns.submit`, and waits for the confirmed-delivery signal that
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
+// Sending a comment is the request to deliver it: there is no separate Start step.
+fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -645,6 +675,7 @@ const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTur
 // this comment goes stale the next time a dependency is added, which is exactly how
 // `focusTerminals` came to be missing from it.
 const app = buildApp({
+  sessionTransfers,
   registry,
   reviews,
   tasks,
@@ -711,6 +742,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // the walkthrough's existing pause-and-confirm path. Ordered after `pendingTurns.start()` for
   // exactly that reason.
   fileCommentWalkthrough.resume(registry.listFileCommentReviews().map((r) => r.sessionId));
+  // Comments left queued in an idle review - written before sending started delivery on its
+  // own - are sent too, once the first completed sweep has put every live session back in the
+  // map. Here, after `FileCommentManager`'s own sweep hook and after the port is won.
+  adoptQueuedOnFirstSweep(registry, fileCommentWalkthrough);
   reviews.startContinuationRecovery((review, text) =>
     pendingTurns.submitReviewContinuation(review.id, review.sessionId, text).ok,
   );
@@ -727,7 +762,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
   // any scout still waiting on a live agent - that one settles through the ordinary paths.
-  void archives.recoverJobs().catch((error: unknown) => {
+  void archives.recoverJobs().then(() => {
+    registry.onSessionsObserved(() => archives.reconcilePromptContexts(new Set(registry.liveSessions().map((session) => session.id))));
+  }).catch((error: unknown) => {
     console.warn("[mission-control] could not resume archive captures:", error);
   });
   // Say at BOOT whether the MCP bundle this daemon would hand a dispatched agent still serves
@@ -775,20 +812,47 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // `publishSettingsStatus` is handed in rather than imported by the telemetry module, so the
   // registry's graph stays on this side of the boundary. It fires only on a cycle that moved
   // something, which on an installation with collection off is never.
-  telemetry = startTelemetry({}, { onHealthChanged: () => publishSettingsStatus(registry) });
-  // And the first fact this installation captures, if it has opted in: that the daemon
-  // started, and how long it took to answer. Measured to HERE, which is what an operator
-  // would call startup, and captured after it rather than before - the observation cannot be
-  // allowed to become part of what it measures.
   //
-  // Inert when collection is off, which is the shipped default: `captureTelemetry` returns
-  // `disabled` without touching a table.
+  // A managing organization is recognized and applied FIRST, so the cycle's first pass already
+  // exports to the right place - and never to a product destination the organization is about
+  // to replace. After the port is won, because applying writes durable rows. Detection is one
+  // bounded `profiles` call on macOS and nothing at all elsewhere.
+  //
+  // `recheckOrganization` registers itself synchronously, here in the listening callback,
+  // before the server reads its first request. The telemetry settings routes wait on it, so an
+  // Upstart Mac never answers an editable panel or accepts a settings write while its startup
+  // recognition is still running.
+  //
+  // Telemetry starts even when that step fails. A failed withdrawal leaves the Mac locked as
+  // withdrawing, and Product analytics export is suspended in that state, so local collection
+  // and the person's own backend keep working while nothing reaches the organization's gateway.
   const launchMode = process.env.MISSION_WEB_DIR ? "desktop" : hasDist ? "daemon" : "dev";
-  observeDaemonStart({
-    startupMs: Math.round(process.uptime() * 1000),
-    schemaUpgraded: databaseMigratedOnOpen(),
-    launchMode,
-  });
+  // The first fact this installation captures, if it has opted in, is that the daemon started
+  // and how long it took to answer. Measured to HERE, which is what an operator would call
+  // startup; captured once the organization step below has settled, so it carries the
+  // environment and destination that step decides.
+  const startupMs = Math.round(process.uptime() * 1000);
+  configureOrganizationLaunchMode(launchMode);
+  void recheckOrganization()
+    .then((outcome) => {
+      const line = describeOrganizationOutcome(outcome);
+      if (line) console.log(line);
+    })
+    .catch((error: unknown) => {
+      console.error("[organization] could not check for a managing organization:", error);
+    })
+    .finally(() => {
+      if (shutdownStarted) return;
+      telemetry = startTelemetry({}, { onHealthChanged: () => publishSettingsStatus(registry) });
+      publishSettingsStatus(registry);
+      // Inert when collection is off, which is the shipped default: `captureTelemetry`
+      // returns `disabled` without touching a table.
+      observeDaemonStart({
+        startupMs,
+        schemaUpgraded: databaseMigratedOnOpen(),
+        launchMode,
+      });
+    });
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
@@ -835,6 +899,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
   await sdkSessions.stopAll();
@@ -850,8 +915,7 @@ async function shutdown(): Promise<void> {
   await retentionObserver.stop();
   // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
   // any recurring mission run whose agent it has not yet observed leave.
-  tasks.stopMissionSessionClosures();
-  await tasks.settleWorktreeReturns();
+  await tasks.stop();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

@@ -176,6 +176,9 @@ export const SCOUT_SUBMISSION_CREDENTIAL_ENV = "MISSION_SCOUT_SUBMISSION_CREDENT
 /** Rotatable scout capability file for an isolated MCP child. */
 export const SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV = "MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE";
 
+/** Private SDK launch locator, issued by the daemon rather than chosen from visible ids. */
+export const SCOUT_SESSION_LOCATOR_ENV = "MISSION_SCOUT_SESSION_LOCATOR";
+
 /** Daemon-issued identity that binds a launch-scoped MCP process to its SDK session. */
 export const MISSION_SESSION_ID_ENV = "MISSION_SESSION_ID";
 
@@ -222,6 +225,26 @@ export function readScoutSubmissionCredential(cwd) {
   } catch {
     return "";
   }
+}
+
+/** Session capabilities live outside the isolated child state home, namespaced by daemon port. */
+export function sessionScoutCredentialDirectory() {
+  return join(tmpdir(), "mission-control-agent-capabilities", `scouts-${PORT}`);
+}
+
+export function sessionScoutCredentialPath(identity) {
+  const key = createHash("sha256").update(identity).digest("hex");
+  return join(sessionScoutCredentialDirectory(), key);
+}
+
+/** OS parent identity or a private SDK launch locator; public session ids grant nothing. */
+export function readSessionScoutSubmissionCredential(_cwd) {
+  const locator = process.env[SCOUT_SESSION_LOCATOR_ENV]?.trim();
+  if (locator && !/^[a-f0-9]{64}$/.test(locator)) return "";
+  const identity = locator ? `session:${locator}` : `pid:${process.ppid}`;
+  try {
+    return readFileSync(sessionScoutCredentialPath(identity), "utf8").trim();
+  } catch { return ""; /* The Registry may not have observed the process yet. */ }
 }
 
 /**

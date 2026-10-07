@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-import { shellWords } from "../../src/server/terminal/shell.ts";
+import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
 
 /**
  * The agent command a terminal backend was really given, read back through the launch wrapper.
@@ -12,8 +13,8 @@ import { shellWords } from "../../src/server/terminal/shell.ts";
  * prompt, unexecuted. See `launchAndCleanupScript` in `src/server/agent-subprocess-env.ts`.
  *
  * So a spec that means "the reopened CLI carried its mode" has to look where the launch is,
- * which is the wrapper's last line. Everything else about those assertions is unchanged: the
- * line is the same `shellCommand` output the backend used to receive directly, so the same
+ * which is the wrapper's last line for ordinary launches, or the private launch.json read by
+ * the guard for managed resumes. Render both as `shellCommand` output so the same
  * single-quoted literals still pin that flags arrived as separate words.
  *
  * The path is decoded with `shellWords` rather than matched with a pattern, because
@@ -27,5 +28,10 @@ import { shellWords } from "../../src/server/terminal/shell.ts";
 export function launchedCommand(command: string): string {
   const wrapper = shellWords(command).find((word) => word.endsWith("launch-and-cleanup.sh"));
   if (!wrapper) return command;
-  return readFileSync(wrapper, "utf8").trimEnd().split("\n").at(-1) ?? "";
+  const script = readFileSync(wrapper, "utf8");
+  if (script.includes("resume-guard.mjs")) {
+    const launch = JSON.parse(readFileSync(join(dirname(wrapper), "launch.json"), "utf8")) as { argv: string[] };
+    return shellCommand(launch.argv);
+  }
+  return script.trimEnd().split("\n").at(-1) ?? "";
 }

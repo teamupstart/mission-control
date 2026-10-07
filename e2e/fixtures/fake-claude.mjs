@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tmpdir } from "node:os";
 /**
  * A stand-in for the `claude` binary, speaking enough of Claude Code's control protocol
  * for the daemon's SDK-runtime driver to bind a session, run turns, and show a transcript.
@@ -34,6 +35,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
 
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -110,6 +112,13 @@ const REVIEW_HELD_TURN_MS = 15_000;
 // rather than after a timer a slow run could outlast.
 const DEFERRED_STEER = "read this steer at your next step";
 const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
+// A turn that stays open until the spec writes this file into the record dir. Matched by
+// INCLUSION, unlike `HELD_TURN`, because the prompt that carries it is a workflow session
+// action's packet: the daemon wraps the authored Markdown in its own envelope, so no exact
+// string can ever equal it. Released by a file rather than a timer so a spec can hold the
+// action waiting for as long as its assertions take, and a slow run cannot outlast it.
+const RELEASED_TURN = "E2E_HOLD_TURN_UNTIL_RELEASED";
+const RELEASE_TURN_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-release-held-turn");
 /**
  * Keep turn one open for specs that inject a lifecycle event from INSIDE that turn.
  *
@@ -237,6 +246,71 @@ const TOOL_TURN = "E2E_OBSERVED_TOOLS";
 const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
+if (process.env.MC_E2E_RESUME_TOOLS === "1" && RESUME_ID && !process.argv.includes("--output-format")) {
+  const configPath = argvValue("--mcp-config");
+  if (!configPath || !recordDir) throw new Error("managed terminal resume omitted its config");
+  const descriptor = JSON.parse(readFileSync(configPath, "utf8")).mcpServers["mission-control"];
+  const untilUnblocked = async (name) => {
+    while (existsSync(join(recordDir, name))) await new Promise((resolve) => setTimeout(resolve, 50));
+  };
+  await untilUnblocked("hook-block");
+  const token = readFileSync(descriptor.env.MISSION_API_TOKEN_FILE, "utf8").trim();
+  const hook = await fetch(`http://127.0.0.1:${process.env.MISSION_PORT}/hooks/SessionStart`, {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({ agent: "claude", sessionId: RESUME_ID, cwd: process.cwd(), source: "resume", env: {} }),
+  });
+  writeFileSync(join(recordDir, "resume-hook.json"), JSON.stringify({ status: hook.status, nativeId: RESUME_ID }));
+  const child = spawn(descriptor.command, descriptor.args, { cwd: process.cwd(),
+    env: { ...process.env, ...descriptor.env }, stdio: ["pipe", "pipe", "pipe"] });
+  const pending = new Map();
+  let sequence = 0;
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    const message = JSON.parse(line);
+    if (message.id) pending.get(message.id)?.(message);
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    const timeout = setTimeout(() => reject(new Error(`MCP ${method} timed out`)), 10_000);
+    pending.set(id, (message) => { clearTimeout(timeout); pending.delete(id); resolve(message); });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+  await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-resumed-cli", version: "1" } });
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  const listed = await request("tools/list", {});
+  let result;
+  // A refused call has not registered anything. Retry this idempotent registration only
+  // while ownership is held, never a prompt delivery with an uncertain outcome.
+  let evidenceResult = null;
+  const payloadPath = join(recordDir, "resume-evidence.json");
+  if (existsSync(payloadPath)) {
+    for (let retry = 0; retry < 900; retry++) {
+      evidenceResult = await request("tools/call", { name: "submit_workflow_evidence", arguments: JSON.parse(readFileSync(payloadPath, "utf8")) });
+      if (!JSON.stringify(evidenceResult).includes("handoff_awaiting_discovery") && !JSON.stringify(evidenceResult).includes("awaiting verified")) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  let scopeRefusal = null;
+  if (evidenceResult?.result && !evidenceResult.result.isError) {
+    const packet = JSON.parse(readFileSync(payloadPath, "utf8"));
+    scopeRefusal = await request("tools/call", { name: "submit_workflow_evidence", arguments: {
+      commandOutputs: [{ ...packet.commandOutputs[0], clientItemId: "outside-issued-scope", repositoryScope: "repo-99" }],
+    } });
+  }
+  result = await request("tools/call", { name: "report_status", arguments: { activity: "Resumed terminal reached Mission tools" } });
+  writeFileSync(join(recordDir, "resume-mcp.json"), JSON.stringify({
+    nativeId: RESUME_ID, missionHome: process.env.MISSION_HOME,
+    sdkIdentity: process.env.MISSION_SESSION_ID ?? null,
+    tools: listed.result.tools.map((tool) => tool.name), result: result.result, evidenceResult: evidenceResult?.result ?? null, scopeRefusal: scopeRefusal?.result ?? null,
+  }));
+  child.stdin.end();
+  await new Promise((resolve) => child.once("exit", resolve));
+  await new Promise((resolve) => {
+    const timer = setInterval(() => {
+      if (existsSync(join(recordDir, "resume-stop"))) { clearInterval(timer); resolve(); }
+    }, 50);
+  });
+  process.exit(0);
+}
 if (recordDir) {
   const resolvedMissionState =
     process.env.MISSION_HOME ?? process.env.FLEET_HOME ?? process.env.HARNESS_HOME ?? homedir();
@@ -869,6 +943,16 @@ function daemonToken() {
 
 /** The opaque credential the daemon provisioned for this exact scout checkout. */
 function scoutCredential() {
+  // The fake is the agent itself, so use its PID (a real MCP child uses its parent PID).
+  const servers = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
+  const locator = process.env.MISSION_SCOUT_SESSION_LOCATOR ?? Object.values(servers)
+    .find((server) => server.env?.MISSION_SCOUT_SESSION_LOCATOR)?.env.MISSION_SCOUT_SESSION_LOCATOR;
+  const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
+  const key = createHash("sha256").update(identity).digest("hex");
+  try {
+    return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",
+      `scouts-${process.env.MISSION_PORT ?? "7317"}`, key), "utf8").trim();
+  } catch { /* Legacy scout fixtures retain their original credential path below. */ }
   const direct = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
   if (direct) return direct;
   const isolatedFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;
@@ -898,7 +982,9 @@ function scoutCredential() {
  */
 async function runScout(prompt) {
   const valid = !prompt.includes(SCOUT_INVALID);
-  const relative = `docs/reports/${SCOUT_SLUG}/report.html`;
+  const requested = /E2E_REPORT_(FIRST|SECOND|RETRY)/.exec(prompt)?.[1];
+  const slug = requested === "SECOND" ? "second-report" : requested ? "first-report" : SCOUT_SLUG;
+  const relative = `docs/reports/${slug}/report.html`;
   const target = join(process.cwd(), relative);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, scoutReportHtml(valid));
@@ -922,6 +1008,7 @@ async function runScout(prompt) {
       },
       body: JSON.stringify({
         reportPath: relative,
+        ...(requested ? { title: requested === "SECOND" ? "Second finding" : "First finding" } : {}),
         summary: "Resume rebuilt the session without replaying the repository grant.",
         tags: ["resume", "permissions"],
         supporting: [],
@@ -1267,7 +1354,7 @@ rl.on("line", (line) => {
     // spec wrote - which is what makes the requirement's delivery the thing under test. The
     // turn is held open across the write and the submission because both are real I/O; the
     // card stays "working" until the archive exists, exactly as a real one would.
-    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED) {
+    if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED || prompt.includes("E2E_REPORT_")) {
       beginScoutTurn(prompt);
       return;
     }
@@ -1310,6 +1397,17 @@ rl.on("line", (line) => {
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
+    if (prompt.includes(RELEASED_TURN)) {
+      const turnState = { prompts: [prompt] };
+      turnState.timer = setInterval(() => {
+        if (!existsSync(RELEASE_TURN_SIGNAL)) return;
+        clearInterval(turnState.timer);
+        openTurn = null;
+        answer(turnState.prompts);
+      }, 100);
+      openTurn = turnState;
+      return;
+    }
     const heldTurnMs = prompt === HELD_TURN
       ? HELD_TURN_MS
       : prompt === REVIEW_HELD_TURN

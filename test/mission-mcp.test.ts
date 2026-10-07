@@ -1,6 +1,7 @@
 import { test, after } from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -101,18 +102,73 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
 });
 
-test("a located Node runtime keeps the locator-owned child environment", async () => {
-  const runtime = await resolveMissionMcpRuntime(
-    "/Applications/Mission Control.app/Contents/MacOS/Mission Control",
-    async () => ({
-      path: "/custom/node/bin/node",
-      env: { PATH: "/custom/node/bin", NODE_OPTIONS: "--require=/custom/register.cjs" },
-    }),
+/**
+ * A checkout that pins an old Node, and a version-manager-style `node` shim that honours the
+ * pin - the environment that ran the MCP server on Node 18. The shim reports itself as Node
+ * 18 with no `crypto` global, so reaching it at all is visible in the result.
+ */
+function pinnedCheckout(): { dir: string; checkout: string; shimDir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "mission-mcp-pinned-"));
+  const shimDir = join(dir, "shims");
+  mkdirSync(shimDir);
+  writeFileSync(
+    join(shimDir, "node"),
+    `#!/bin/sh\nprintf '%s' '{"node":"18.20.8","crypto":"undefined"}'\n`,
+    { mode: 0o755 },
   );
-  assert.deepEqual(runtime, {
-    command: "/custom/node/bin/node",
-    env: { PATH: "/custom/node/bin", NODE_OPTIONS: "--require=/custom/register.cjs" },
+  const checkout = join(dir, "upstart_web");
+  mkdirSync(checkout);
+  writeFileSync(join(checkout, ".tool-versions"), "nodejs 18.20.8\n");
+  return { dir, checkout, shimDir };
+}
+
+test("an Electron daemon launches the MCP server on its own binary in node mode", () => {
+  const electronApp = "/Applications/Mission Control.app/Contents/MacOS/Mission Control";
+  assert.deepEqual(resolveMissionMcpRuntime(electronApp), {
+    command: electronApp,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
   });
+});
+
+test("a daemon running on node hands agents that exact binary", () => {
+  assert.deepEqual(resolveMissionMcpRuntime("/usr/local/bin/node"), { command: "/usr/local/bin/node", env: {} });
+  assert.deepEqual(resolveMissionMcpRuntime(), { command: process.execPath, env: {} });
+});
+
+test("the descriptor ignores a node shim on PATH and names the daemon's own binary", async () => {
+  const { dir, shimDir } = pinnedCheckout();
+  const path = process.env.PATH;
+  process.env.PATH = `${shimDir}:${path ?? ""}`;
+  try {
+    const d = await missionMcpDescriptor();
+    assert.ok(d);
+    assert.equal(d.command, process.execPath);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the runtime an agent starts in a checkout pinning Node 18 is still Mission Control's Node", () => {
+  // The incident, end to end: the agent starts the registered command in its own checkout,
+  // with a version-manager shim first on PATH. What runs must be the daemon's Node, which
+  // has the `crypto` global the server's every tool call reaches for.
+  const { dir, checkout, shimDir } = pinnedCheckout();
+  try {
+    const runtime = resolveMissionMcpRuntime();
+    const out = execFileSync(
+      runtime.command,
+      ["-e", "process.stdout.write(JSON.stringify({ node: process.versions.node, crypto: typeof globalThis.crypto?.randomUUID }))"],
+      {
+        cwd: checkout,
+        env: { ...process.env, ...runtime.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` },
+        encoding: "utf8",
+      },
+    );
+    assert.deepEqual(JSON.parse(out), { node: process.versions.node, crypto: "function" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Pipeline task scoping clones the descriptor and puts its capability in a private file", () => {

@@ -121,6 +121,9 @@ export interface SessionViewProps {
    * tab and its workflow ladder. Nonce for the same reason the others
    * carry one: the request is consumed by a mounted detail, not stored as a tab preference.
    */
+  scoutsTabRequest?: { sessionId: string; nonce: number } | null;
+  archivesRevision?: number;
+  onOpenScout?: (archiveKey: string, sessionId: string, producerId: string) => void;
   workflowsTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   /**

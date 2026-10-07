@@ -411,6 +411,10 @@ class CodexSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  get recoveryProcessId(): number | null {
+    return this.client.pid;
+  }
+
   // ---- delivery ----------------------------------------------------------------------
 
   /**

@@ -102,6 +102,8 @@ export interface ClaudeSdkInterruptReceipt {
 
 /** The live query object, narrowed to the controls this driver drives. */
 export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
+  /** Exact local child launched by sdk-deps; absent on non-process test transports. */
+  readonly recoveryProcessId?: number | null;
   /** Close the streaming query and wait for its subprocess-backed transport to drain. */
   return(value: void | PromiseLike<void>): Promise<IteratorResult<ClaudeSdkMessage, void>>;
   interrupt(): Promise<ClaudeSdkInterruptReceipt | undefined>;

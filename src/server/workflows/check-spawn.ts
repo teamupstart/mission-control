@@ -203,9 +203,7 @@ interface ShimReport {
  * The runtime that runs the shim.
  *
  * Same problem `mission-mcp.ts` solves for launching the bundled MCP server, and the same
- * answer, minus its `which node` step: that exists because an EXTERNAL agent needs a concrete
- * runtime it can record in a config file, whereas this process only has to launch a child of
- * its own. `process.execPath` is always right and always present; under Electron it is the app
+ * answer. `process.execPath` is always right and always present; under Electron it is the app
  * binary, which behaves as node when `ELECTRON_RUN_AS_NODE` is set.
  */
 function shimRuntime(): { command: string; env: NodeJS.ProcessEnv } {

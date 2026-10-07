@@ -812,6 +812,12 @@ export interface SdkTurn {
  * a stream-json subprocess, a JSON-RPC server or a JSONL pipe.
  */
 export interface SdkSessionHandle {
+  /**
+   * The process whose lifetime owns this driver, for read-only crash recovery. An
+   * in-process driver names the daemon; a subprocess driver names its current child.
+   * Missing/null is unknown, never absence. This is not a signal or eviction target.
+   */
+  readonly recoveryProcessId?: number | null;
   /** Structured lifecycle. The supervisor pumps this until it ends. */
   events: AsyncIterable<SdkEvent>;
   /**
@@ -1169,6 +1175,8 @@ export type Harness = HarnessCapabilities & HarnessDaemonSlots;
  * capability and every daemon slot on one flat object.
  */
 interface HarnessDaemonSlots {
+  /** Launch-scoped registration for a managed resume, separate from native resume grammar. */
+  resumeTools: (context: import("./resume-tools.ts").ResumeToolsContext) => Promise<import("./resume-tools.ts").ResumeToolsRender>;
   /** Matches this harness's key in `HARNESSES`. */
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */

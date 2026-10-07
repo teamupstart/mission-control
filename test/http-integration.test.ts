@@ -125,6 +125,7 @@ test("/api/health surfaces the shared runtime identity + package version", async
   assert.deepEqual(body.capabilities, [
     "criterion-mapped-workflow-evidence-v1",
     "daemon-executable-environment-v1",
+    "multiple-scout-reports-v1",
   ]);
 });
 

@@ -14,7 +14,7 @@ export async function buildTerminalBoundaryDaemon(root: string, id: string, wezt
     banner: { js: "import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);" },
     plugins: [{ name: "terminal-boundary", setup(plugin) {
       plugin.onResolve({ filter: /\/(processes|proc-cwd)\.ts$/ }, (args) =>
-        ["src/server/discovery/correlate.ts", "src/server/dispatcher.ts", "src/server/terminal/launch-process.ts"].some((path) => args.importer === join(root, path)) ? { path: fixture } : undefined,
+        ["src/server/discovery/correlate.ts", "src/server/dispatcher.ts", "src/server/terminal/launch-process.ts", "src/server/session-transfers/coordinator.ts"].some((path) => args.importer === join(root, path)) ? { path: fixture } : undefined,
       );
       plugin.onResolve({ filter: /^\.\/ghostty\.ts$/ }, (args) =>
         args.importer === join(root, "src/server/terminal/registry.ts") ? { path: fixture } : undefined,

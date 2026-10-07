@@ -591,9 +591,11 @@ reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>`, `codex resume <thread id>`, or `pi --session <session id>`,
 whichever harness the session detail is. All three vendors keep one session store across
 their programmatic and interactive surfaces, which is what makes this a handoff rather than
-a lost conversation. Discovery adopts the new
-process, and the task's binding follows it across even when discovery takes longer than the
-handoff request waits.
+a lost conversation. Mission Control reserves the running task and every active pinned
+workflow before stopping the SDK. Discovery must prove the same native conversation,
+checkout and launch resource before their ownership moves together to the terminal.
+The task stays running, existing workflow versions and runs stay pinned, and staged and
+frozen evidence stay with the same review. Merely opening a terminal does not prove transfer.
 
 The permission mode crosses with it, where the harness has one - Pi does not, so nothing
 rides along on its resume. An embedded session's mode lives in the driver's own options -
@@ -605,9 +607,33 @@ approval** from **Approve for me**) for Codex. The same carry applies when an ex
 session's session detail resumes its conversation. Model and reasoning effort are deliberately not
 re-stated; the resumed conversation carries those itself.
 
-It is one way. After the handoff the terminal session is the one holding the conversation;
-the embedded session detail goes away. Nothing is lost if the terminal cannot be opened - the error
-tells you the exact resume command to run yourself.
+Before stopping the SDK, Mission Control verifies its required tools and prepares a private
+environment. Claude and Codex receive launch-scoped Mission MCP configuration; Pi uses its
+verified installed extension. A missing bundle, tool, extension, executable, or unusable
+configuration refuses the handoff while the SDK remains available. Attached worktrees keep
+their existing write scope.
+
+After verified handoff the terminal holds the conversation and the embedded detail goes away.
+A detail still viewing the source follows its successor; navigating elsewhere keeps your focus.
+An uncertain launch retains its prepared environment and blocks another resume of the same
+conversation. **Sitrep → Terminal transfers** remains available after the source disappears
+and after restart. **Check again** observes that same attempt and never launches another
+agent. After two minutes without proof, the row explains that the terminal could not be
+verified. A late, proven successor can still complete that transfer. **End transfer** appears
+only when the daemon has positive absence evidence; it retains the checkout.
+
+Queued messages and pending questions remain attached to the conversation. Delivery pauses
+during transfer. Uncertain deliveries still require their existing explicit resolution and
+are never replayed automatically. If no replacement could have started, the existing task
+settlement and workflow orphan policies apply. A surviving SDK after a failed stop keeps its
+original task. Do not downgrade Mission Control while a terminal transfer is unresolved.
+This operation only continues the same native conversation; manual workflow reattach remains
+the recovery action for a genuinely different conversation.
+
+ An unclaimed attempt is fenced and cleaned after its two-minute start deadline;
+a claimed or ambiguous owner keeps its credentials until proven completion. A bare manual
+resume command does not include these managed Mission tools. See the
+[resource lifetime and recheck contract](harnesses-and-terminals.md#managed-terminal-resumes).
 
 ### Interrupt: stop the turn without ending the session
 
@@ -1731,6 +1757,50 @@ exporter fell silent - the very regression the warning is for. It also has to se
 spend before it fires, because silence on a machine nobody is using reports nothing missing, and a
 panel that warns about a quiet weekend is one you learn to scroll past.
 
+#### When a managed policy decides where metrics go
+
+An organization can manage Claude Code through a device management profile or a
+`managed-settings.json` file, and **a managed policy always wins**. It outranks
+`~/.claude/settings.json`, so the Cost switch's `env` block can be in place and still lose. The
+usual case is a policy that sets `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to the organization's own
+collector. The OpenTelemetry SDK prefers that signal-specific variable to the generic
+`OTEL_EXPORTER_OTLP_ENDPOINT` the switch writes, so every discovered session reports there and
+never here. Mission Control never overrides, edits or writes a managed setting.
+
+What it does is name the cause. While Cost is on, the daemon reads Claude Code's macOS managed
+settings, highest precedence first:
+
+1. `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`, the per-user profile;
+2. `/Library/Managed Preferences/com.anthropic.claudecode.plist`, the machine profile;
+3. `/Library/Application Support/ClaudeCode/managed-settings.json`.
+
+The highest-priority location that is present decides. **Settings → Cost** then shows, in
+place of the generic warnings and without waiting for a week of silence:
+
+| The policy | The panel says |
+|---|---|
+| sends metrics to a host other than this daemon | "Your organization's managed Claude Code policy sends metrics to `otel.example.com`, so the estimate covers only sessions Mission Control runs. Sessions you started yourself in a terminal are not counted." |
+| sets `CLAUDE_CODE_ENABLE_TELEMETRY` to `0` or `false`, or `OTEL_METRICS_EXPORTER` to `none` | "Your organization's managed Claude Code policy turns Claude Code's metrics off, so the estimate covers only sessions Mission Control runs." |
+
+On a Mac Mission Control recognizes as [managed by an organization](observability.md#organization-defaults),
+that organization's name replaces "Your organization's". Sessions Mission Control runs are still
+counted either way, because their cost comes off the driver's own stream.
+
+The read is narrow. Only four `env` keys are kept - the two endpoints, `OTEL_METRICS_EXPORTER`
+and `CLAUDE_CODE_ENABLE_TELEMETRY` - and only the endpoint's hostname ever leaves the reader:
+never its scheme, port, path, query or credentials, and never any other key in the block.
+Nothing is logged. Profiles are read with `plutil -extract env`, and the JSON file up to
+64 KiB. A location that is not there gives way to the next, and so does a JSON file that parses
+with no `env` key. A location that is present but cannot be read stops the read, because a
+lower-priority file cannot speak for one Claude Code obeys first. That covers a failure, a
+timeout, an oversized file, unparseable content, a file that cannot be stat'ed, and a profile
+with no `env` key, which `plutil` reports the same way as a failure. Mission Control then claims
+nothing, and the panel reads exactly as it does on an unmanaged machine. The answer is cached
+and refreshed in the background - when a file's modification time or size changes, and
+otherwise every minute - so the dashboard's poll never waits on it. `MISSION_MANAGED_SETTINGS_ROOT` moves the
+root of all three paths, which is how the tests use fixtures instead of the real policy.
+Claude Code's Linux managed path is not read.
+
 #### What the app spends on itself
 
 The Foreman and the GitHub Inspector call models on their own schedule, with nobody asking them
@@ -1970,7 +2040,7 @@ The MCP tools are:
   A reply naming an earlier delivery is still filed - it is a real answer - but advances
   nothing. `addressed` says the agent actually changed the code or document; it marks the
   thread handled and never closes it, because only a person resolves a comment. See
-  [Walk the agent through your review](ui.md#walk-the-agent-through-your-review)
+  [Comments go to the agent as you send them](ui.md#comments-go-to-the-agent-as-you-send-them)
 - `submit_workflow_evidence(images?, artifacts?)` - register bounded gitignored screenshots
   and UTF-8 text or log files for the selected Persona workflow. Every item supplies a stable
   client id, caption, checkout-relative path, and `repositoryScope` set to an issued repository
@@ -2137,9 +2207,21 @@ Sessions **you** start are untouched: they keep the built-in menu, which the das
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
 *Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
-the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
-binary in node mode when there isn't one), the name it is registered under, and - for a launch
+the built bundle's path, the runtime that executes it (always the binary the daemon itself
+runs on: the Electron binary in node mode inside the app, or the daemon's `node` under
+`npm start` - never a `node` found on PATH, because a version-manager shim there picks its
+Node from the agent's checkout), the name it is registered under, and - for a launch
 that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
 leaves whatever **Install integrations** registered machine-wide alone.
+
+
+### Scout reports from a session
+
+The **Scouts** detail tab, immediately left of **Diff**, lists reports explicitly published by this session. Press Shift+Y
+with the session selected to open it, or use the tab in either Board or Console detail.
+Selecting a report opens its source HTML in the Files preview. **Open archive** reads the
+immutable published copy in the archive reader with a source-session filter. Report publication is
+available from every task kind and from taskless sessions; it does not complete the task.
+See [Archives](archives.md) for titles, immutable retries, and retained provenance.

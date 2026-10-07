@@ -17,6 +17,8 @@ import {
 } from "@shared/claude-settings.ts";
 import { PORT } from "./config.ts";
 import { ensureToken } from "./auth.ts";
+import { forgetManagedMetricsPolicy, managedMetricsPolicy } from "./environment/claude-managed.ts";
+import { currentOrganization } from "./environment/organization.ts";
 
 // The "Cost" settings section, mirroring foreman/config.ts, skills/config.ts and
 // harnesses.ts: a schema-validated blob over the `app_config` KV, so a new key needs no
@@ -86,6 +88,9 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
   // off, because a stamp for a feature that is not running would silently shorten the next one.
   if (next.enabled && !previous.enabled) setAppConfig(ENABLED_AT_ENTRY, now);
   if (!next.enabled) setAppConfig(ENABLED_AT_ENTRY, null);
+  // Drop the managed-policy answer the moment Cost goes off, not at the next status poll: a
+  // switch turned off and on again between two polls must not bring back what was read before.
+  if (!next.enabled) forgetManagedMetricsPolicy();
   return next;
 }
 
@@ -180,6 +185,12 @@ function exporterSilentWhileActive(now: number, enabledAt: number | null): boole
  * it is open, and the settings file is read and JSONC-parsed synchronously on the daemon's
  * own thread.
  *
+ * `managedRedirect` is read from a cache and never waited on, so this stays synchronous: the
+ * managed policy can take a `plutil` call to read, and the poll must not. It is read only while
+ * Cost is on - the only time the panel names it - so an installation that never switched Cost on
+ * never touches its organization's policy at all. The organization's label is read per call,
+ * because Re-check can change it between two polls.
+ *
  * `now` is a parameter so the staleness judgement can be tested without waiting a week for it.
  */
 export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
@@ -191,14 +202,30 @@ export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
     backfillEnabledAt(now);
     enabledAt = now;
   }
+  const config = getCostConfig();
   return {
-    config: getCostConfig(),
+    config,
     installed: flags.installed,
     receiving: reportedUsageLedgerHasRows(),
     exporterSilent: exporterSilentWhileActive(now, enabledAt),
+    managedRedirect: managedRedirect(config.enabled, now),
     sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };
+}
+
+/**
+ * The managed policy's effect on metrics, labelled with the organization managing this Mac.
+ * Null, with nothing read and the cache dropped, while Cost is off.
+ */
+function managedRedirect(enabled: boolean, now: number): CostTelemetryStatus["managedRedirect"] {
+  if (!enabled) {
+    forgetManagedMetricsPolicy();
+    return null;
+  }
+  const policy = managedMetricsPolicy(now);
+  if (policy === null) return null;
+  return { ...policy, organizationLabel: currentOrganization()?.entry.label ?? null };
 }
 
 /**

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   isolatedScoutSubmissionCredentialPath,
   scoutSubmissionCredentialPath,
+  sessionScoutCredentialPath,
 } from "@shared/harness-runtime.mjs";
 import { STATE_DIR } from "../config.ts";
 
@@ -19,15 +20,19 @@ import { STATE_DIR } from "../config.ts";
 
 const KEY_PATH = join(STATE_DIR, "scout-submission.key");
 const TOKEN_VERSION = 1;
-const TOKEN_MAX_CHARS = 2_048;
+const TOKEN_MAX_CHARS = 10_240;
 
 export interface ScoutSubmissionAuthority {
-  taskId: string;
+  taskId: string | null;
+  sessionId?: string;
+  episodeId?: string;
+  pid?: number;
+  agentSessionId?: string | null;
   cwd: string;
 }
 
 interface CredentialPayload extends ScoutSubmissionAuthority {
-  v: typeof TOKEN_VERSION;
+  v: 1 | 2;
   nonce: string;
 }
 
@@ -63,7 +68,8 @@ function signature(encoded: string): Buffer {
 
 function encode(authority: ScoutSubmissionAuthority): string {
   const payload: CredentialPayload = {
-    v: TOKEN_VERSION,
+    ...authority,
+    v: authority.sessionId ? 2 : TOKEN_VERSION,
     taskId: authority.taskId,
     cwd: resolve(authority.cwd),
     nonce: randomBytes(16).toString("hex"),
@@ -97,6 +103,34 @@ export function provisionScoutSubmissionCredential(taskId: string, cwd: string):
   return token;
 }
 
+/** A private launch locator cannot be derived from the session id exposed by the API. */
+export function sessionScoutCredentialLocator(sessionId: string): string {
+  return createHmac("sha256", signingKey())
+    .update("mission-scout-session-locator\0")
+    .update(sessionId)
+    .digest("hex");
+}
+
+/** The daemon publishes only identities established by the Registry. */
+export function provisionSessionScoutCredential(
+  authority: ScoutSubmissionAuthority & { sessionId: string; episodeId: string; pid: number; agentSessionId: string | null },
+): string[] {
+  const identities = [`session:${sessionScoutCredentialLocator(authority.sessionId)}`];
+  if (authority.pid > 0) identities.push(`pid:${authority.pid}`);
+
+  const token = encode(authority);
+  const paths = identities.map(sessionScoutCredentialPath);
+  for (const file of paths) {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      writeFileSync(temporary, `${token}\n`, { mode: 0o600 });
+      renameSync(temporary, file);
+    } finally { rmSync(temporary, { force: true }); }
+  }
+  return paths;
+}
+
 /** Verify the signature and bounded payload before any task or session is looked up. */
 export function verifyScoutSubmissionCredential(value: string | undefined): ScoutSubmissionAuthority | null {
   if (!value || value.length > TOKEN_MAX_CHARS) return null;
@@ -122,10 +156,9 @@ export function verifyScoutSubmissionCredential(value: string | undefined): Scou
   if (!payload || typeof payload !== "object") return null;
   const candidate = payload as Partial<CredentialPayload>;
   if (
-    candidate.v !== TOKEN_VERSION ||
-    typeof candidate.taskId !== "string" ||
-    candidate.taskId.length < 1 ||
-    candidate.taskId.length > 256 ||
+    (candidate.v !== 1 && candidate.v !== 2) ||
+    !(candidate.v === 2 && candidate.taskId === null ||
+      typeof candidate.taskId === "string" && candidate.taskId.length > 0 && candidate.taskId.length <= 256) ||
     typeof candidate.cwd !== "string" ||
     candidate.cwd.length < 1 ||
     candidate.cwd.length > 4_096 ||
@@ -135,5 +168,13 @@ export function verifyScoutSubmissionCredential(value: string | undefined): Scou
   ) {
     return null;
   }
-  return { taskId: candidate.taskId, cwd: candidate.cwd };
+  if (candidate.v === 2) {
+    if (typeof candidate.sessionId !== "string" || candidate.sessionId.length < 1 || candidate.sessionId.length > 256 ||
+        typeof candidate.episodeId !== "string" || candidate.episodeId.length < 1 || candidate.episodeId.length > 256 ||
+        !Number.isSafeInteger(candidate.pid) || candidate.pid! < 0 ||
+        !(candidate.agentSessionId === null || typeof candidate.agentSessionId === "string" && candidate.agentSessionId.length <= 256)) return null;
+    return { taskId: candidate.taskId!, cwd: candidate.cwd, sessionId: candidate.sessionId,
+      episodeId: candidate.episodeId, pid: candidate.pid, agentSessionId: candidate.agentSessionId };
+  }
+  return { taskId: candidate.taskId!, cwd: candidate.cwd };
 }

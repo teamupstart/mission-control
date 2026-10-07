@@ -566,3 +566,13 @@ test("a session's review state defaults to idle rather than to an absence", () =
   assert.equal(paused.pauseReason, "the agent deleted the text");
   assert.equal(paused.startedAt, 5_000, "a pause does not restart the review");
 });
+
+test("a review that returns to idle forgets when it started, so the next is numbered afresh", () => {
+  // Sending a comment starts a review and running dry returns it to idle. Keeping the first
+  // start across that would number the next burst "comment 7" an hour later.
+  setFileCommentReviewState("s-idle", "running", null, 6_000);
+  assert.equal(setFileCommentReviewState("s-idle", "paused", null, 6_100).startedAt, 6_000);
+  assert.equal(setFileCommentReviewState("s-idle", "running", null, 6_200).startedAt, 6_000);
+  assert.equal(setFileCommentReviewState("s-idle", "idle", null, 6_300).startedAt, null);
+  assert.equal(setFileCommentReviewState("s-idle", "running", null, 9_000).startedAt, 9_000);
+});

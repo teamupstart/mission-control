@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 91 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 92 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>91</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>92</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -551,7 +551,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>14 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>15 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -562,6 +562,7 @@ LIMIT 20;
                 <div class="table-row"><code>session_launch_turns</code><p>How the dashboard presents the turn that started a Mission Control-managed conversation, per stable note key: a fingerprint of the composed prompt that was delivered, plus the human task request captured at dispatch. Marker state only - the composed prompt itself stays in the harness transcript, which remains authoritative for every server-side consumer.</p></div>
                 <div class="table-row"><code>session_standing_instructions</code><p>What repository standing instructions one session actually received at launch, per stable note key: the whole composed block byte for byte, which channel carried it, and one provenance entry per contributing repository. The launch text and its provenance are written once and never amended - a session keeps the standing instructions it launched with, so this is what an assignment replays and what the session header reads, never a fresh resolution of live configuration. The one field that can be corrected afterwards is the mechanism, and only in one direction: a resumed Codex session that finds its developer-instructions channel unusable is sent the same stored block as prose instead, and the row is moved to <code>prompt-prefix</code> to say so - because that field is what decides whether a later assignment repeats the rule, and a prefix governs only the turn it rode in.</p></div>
                 <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, and whether a turn was interrupted.</p></div>
+                <div class="table-row"><code>session_runtime_transfers</code><p>Durable reservations for Continue in terminal: expected task and pinned workflow ownership, source process lifetime, prepared resume lease, launch proof, revision and recovery outcome. An unresolved row holds ownership across source removal and daemon restart until a proven successor is adopted or absence permits safe settlement. It contains neither credentials nor copied workflow evidence.</p></div>
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
                 <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>
                 <div class="table-row"><code>app_config</code><p>Generic JSON-encoded application settings stored as key and value text.</p></div>

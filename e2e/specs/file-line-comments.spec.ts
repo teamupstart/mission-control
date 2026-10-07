@@ -64,6 +64,21 @@ const FIRST_DRAFT = "Something to change my mind about later.";
 const REPLY = "And the diagram disagrees with both of them.";
 const RETRY_REPLY = "Retyped after the daemon came back.";
 
+/**
+ * A marker for a comment that has been SENT, in whichever state delivery has reached.
+ *
+ * Send is delivery: a comment goes to the agent as soon as nothing is ahead of it, and a
+ * session that has gone quiet moves it on to "no answer" after the grace window. These tests
+ * are about the composer, the marker and the thread, not about delivery timing - that is
+ * `file-comment-auto-send.spec.ts` - so they accept any of the three.
+ */
+function sentMarker(line: number, tail = ""): RegExp {
+  return new RegExp(`^Comment MC-\\w+ on line ${line}, (?:queued|sent|no answer)${tail}$`);
+}
+
+/** The durable statuses a sent comment can hold, for the same reason as `sentMarker`. */
+const SENT_STATUSES = ["queued", "sending", "awaiting", "unanswered"];
+
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -194,6 +209,25 @@ function storedThreads(daemon: DaemonHandle): {
       .all() as never);
 }
 
+/**
+ * Whether the only thread has nothing left to send and nothing out with the agent - the point
+ * from which a person may close it.
+ */
+function settledThread(daemon: DaemonHandle): boolean {
+  const row = withDaemonDb(daemon, (db) =>
+    db
+      .prepare(
+        `SELECT t.status,
+                (SELECT COUNT(*) FROM file_comment_messages m
+                  WHERE m.thread_id = t.id AND m.author = 'human' AND m.delivered_at IS NULL) AS unsent
+           FROM file_comment_threads t
+          ORDER BY t.created_at
+          LIMIT 1`,
+      )
+      .get() as { status: string; unsent: number } | undefined);
+  return !!row && row.unsent === 0 && (row.status === "answered" || row.status === "unanswered");
+}
+
 /** Every opening comment, with the file it was written on. */
 function storedOpeningBodies(daemon: DaemonHandle): { path: string; body: string }[] {
   return withDaemonDb(daemon, (db) =>
@@ -265,23 +299,22 @@ test.describe("line comments in the Files editor", () => {
       })
       .toEqual(["draft"]);
 
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
     // ---- the marker ----
-    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
+    const marker = page.getByRole("button", { name: sentMarker(3) });
     await expect(marker).toBeVisible();
     await expect(box).toBeHidden();
     await shoot(page.locator(".file-main"), page, "marker-on-line");
 
-    // Submitting takes the next position in the session's review queue, in ONE call - phase 3
-    // drains this, and a phase 3 opening onto an empty queue would have nothing to send.
+    // Sending takes the comment out of draft and into delivery in ONE call: it is queued and,
+    // with nothing ahead of it, already on its way to the agent.
     const queued = storedThreads(daemon);
     expect(queued).toHaveLength(1);
     expect(queued[0]!.path).toBe(SOURCE);
     expect(queued[0]!.start_line).toBe(3);
     expect(queued[0]!.quote).toBe("The retry budget is thirty seconds.");
-    expect(queued[0]!.status).toBe("queued");
-    expect(queued[0]!.queue_seq).not.toBeNull();
+    expect(SENT_STATUSES).toContain(queued[0]!.status);
 
     // ---- expanding it, and adding to it ----
     await marker.click();
@@ -310,7 +343,7 @@ test.describe("line comments in the Files editor", () => {
     // The reply is part of what the marker announces now, which is the point of the name
     // carrying the thread's state rather than just its existence.
     const afterReload = page.getByRole("button", {
-      name: /^Comment MC-\w+ on line 3, queued, 1 reply$/,
+      name: sentMarker(3, ", 1 reply"),
     });
     await expect(afterReload).toBeVisible();
     await afterReload.click();
@@ -319,6 +352,19 @@ test.describe("line comments in the Files editor", () => {
     await expect(reopened).toContainText(REPLY);
 
     // ---- closing it ----
+    //
+    // Once the agent has finished with it. A sent comment really goes to the agent now, and so
+    // does the reply - it re-enters the queue when the first turn settles - and a comment out
+    // with the agent is one a person cannot close: the daemon refuses, because closing it would
+    // free the session's one delivery slot while the turn is still live. So this waits for both
+    // messages to have gone and the grace window to settle the last of them.
+    await expect
+      .poll(() => settledThread(daemon), {
+        message: "the comment and its reply never finished going to the agent",
+        timeout: 60_000,
+        intervals: [1_000],
+      })
+      .toBe(true);
     await reopened.getByRole("button", { name: "Resolve" }).click();
     await expect(afterReload).toBeHidden();
     await expect
@@ -431,7 +477,7 @@ test.describe("line comments in the Files editor", () => {
     // line 3 happens to sit in a source column nobody scrolled.
     await expect(box).toBeVisible();
     await box.fill(COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(box).toBeHidden();
 
     await expect(previewButton).toHaveAttribute("aria-pressed", "true");
@@ -441,7 +487,7 @@ test.describe("line comments in the Files editor", () => {
     expect(queued).toHaveLength(1);
     expect(queued[0]!.path).toBe(SOURCE);
     expect(queued[0]!.start_line).toBe(3);
-    expect(queued[0]!.status).toBe("queued");
+    expect(SENT_STATUSES).toContain(queued[0]!.status);
 
     /* The Comments rail gives rendered Preview a visible thread index, so pointing at a block
        already carrying a comment opens that thread directly for follow-up. */
@@ -455,7 +501,7 @@ test.describe("line comments in the Files editor", () => {
     // The Editor still keeps its gutter marker - the dock replaced the split column, not the
     // in-editor surface.
     await page.getByRole("button", { name: "Editor", exact: true }).click();
-    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+    await expect(page.getByRole("button", { name: sentMarker(3) }))
       .toBeVisible();
   });
 
@@ -766,7 +812,7 @@ test.describe("line comments in the Files editor", () => {
     await expect
       .poll(() => storedThreads(daemon).length, { message: "the draft was never written" })
       .toBe(1);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
     await expect(box, "the box must not take edits while the submission is out")
       .toHaveAttribute("readonly", "");
@@ -778,11 +824,11 @@ test.describe("line comments in the Files editor", () => {
     await box.press("Escape");
     await expect(box).toBeVisible();
 
-    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
+    const marker = page.getByRole("button", { name: sentMarker(3) });
     await expect(marker).toBeVisible({ timeout: 10_000 });
     // What was submitted is what was written: nothing rode in behind the queue call.
     expect(storedThreads(daemon)).toHaveLength(1);
-    expect(storedThreads(daemon)[0]!.status).toBe("queued");
+    expect(SENT_STATUSES).toContain(storedThreads(daemon)[0]!.status);
 
     // ---- a refused reply keeps what the reader typed ----
     await marker.click();
@@ -854,8 +900,8 @@ test.describe("line comments in the Files editor", () => {
 
     await lineNumber(page, 3).click();
     await page.getByRole("textbox", { name: "Comment on line 3" }).fill(COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
-    const marker = page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ });
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const marker = page.getByRole("button", { name: sentMarker(3) });
     await expect(marker).toBeVisible();
 
     const thread = page.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
@@ -916,9 +962,9 @@ test.describe("line comments in the Files editor", () => {
     const spanning = page.getByRole("textbox", { name: "Comment on lines 2-3" });
     await expect(spanning, "a blank line reaches DOWN for its quote").toBeVisible();
     await spanning.fill(FIRST_DRAFT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: /^Comment MC-\w+ on line 2, queued$/ }),
+      page.getByRole("button", { name: sentMarker(2) }),
       "reaching down leaves the marker on the line that was clicked",
     ).toBeVisible();
     expect(storedThreads(daemon)[0]!.start_line).toBe(2);
@@ -929,11 +975,11 @@ test.describe("line comments in the Files editor", () => {
     const box = page.getByRole("textbox", { name: "Comment on lines 5-6" });
     await expect(box, "a trailing blank line reaches BACKWARD for its quote").toBeVisible();
     await box.fill(COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
     // The marker belongs to the anchor, not to the line that was clicked - which is exactly
     // the surprise the documentation now warns about.
-    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 5, queued$/ }))
+    await expect(page.getByRole("button", { name: sentMarker(5) }))
       .toBeVisible();
     const stored = storedThreads(daemon);
     expect(stored).toHaveLength(2);
@@ -993,7 +1039,7 @@ test.describe("line comments in the Files editor", () => {
         body: JSON.stringify({ error: "the daemon refused this edit" }),
       }));
     await box.fill(COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
     await expect(page.getByRole("alert")).toBeVisible();
     // Not queued. The row still says draft, and it still holds the OLD body - which is
@@ -1012,8 +1058,8 @@ test.describe("line comments in the Files editor", () => {
 
     // ---- and the same click works once the daemon will take it ----
     await page.unroute("**/api/file-comment-messages/*");
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
-    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("button", { name: sentMarker(3) }))
       .toBeVisible();
     expect(storedOpeningBodies(daemon)[0]!.body, "the queued comment is what the reader wrote")
       .toBe(COMMENT);
@@ -1194,16 +1240,16 @@ test.describe("line comments in the Files editor", () => {
         body: JSON.stringify({ error: "the daemon refused this queue" }),
       }));
     await reopened.fill(COMMENT);
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByRole("alert")).toBeVisible();
 
     // The freeze is over with the submission, so the box takes an edit and the button works.
     await expect(reopened).not.toHaveAttribute("readonly", "");
     await reopened.fill(RETRY_REPLY);
     await page.unroute("**/api/file-comments/*/queue");
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
-    await expect(page.getByRole("button", { name: /^Comment MC-\w+ on line 3, queued$/ }))
+    await expect(page.getByRole("button", { name: sentMarker(3) }))
       .toBeVisible();
     await expect
       .poll(() => storedOpeningBodies(daemon)[0]?.body, {

@@ -1182,8 +1182,10 @@ it. In the **Editor** it opens where it always has, in the document under the li
 
 What you write is saved from the first keystroke as a *draft* - it is a real row in the
 daemon's state, not a string in the browser tab, so closing the file, reloading the page, or
-closing the extracted Files window does not lose it. **Comment** submits it into that
-session's review queue, and it stays in the file as a marker.
+closing the extracted Files window does not lose it. **Send** delivers it to the session's
+agent, or queues it behind the comments already going (see
+[Comments go to the agent as you send them](#comments-go-to-the-agent-as-you-send-them)), and
+it stays in the file as a marker.
 
 **A comment has to quote something, so a blank line borrows the nearest line that speaks.**
 Clicking one quotes a range rather than the empty line alone: down to the next line with text
@@ -1265,25 +1267,45 @@ The exception is a comment you started and never submitted. A **draft** is not a
 comment - it is your composer with half a sentence in it, and the review queue does not list one
 - so pointing at its block reopens it with what you wrote still in it.
 
-### Walk the agent through your review
+### Comments go to the agent as you send them
+
+**Send** in the comment box delivers the comment. There is no separate step to start a review:
+if nothing is out with the agent, the comment goes as its own turn straight away; otherwise it
+waits in the queue behind the comments ahead of it and goes in its turn. The line under the box
+says which before you press it - "Goes to the agent now", "Waits behind 2 comments", that it
+waits for a message you already sent in the conversation, that it goes when the agent is next
+free because the agent is busy, or that delivery is paused or the session cannot take messages. A reply on a thread the agent has
+already answered goes back to the agent the same way.
+
+The next comment goes when the agent has finished with the one before it - a reply, or, failing
+that, the session settling idle for long enough that it has clearly moved on. One comment is
+ever outstanding, and that is the whole design: you see each answer before the next comment
+goes. When the queue runs dry it simply waits for your next comment.
 
 **Review (N)** in the Files toolbar opens the queue: every comment this session holds, in the
-order it will be delivered, across every file. **Start review** sends the first as its own turn.
-The next goes when the agent has finished with it - a reply, or, failing that, the session
-settling idle for long enough that it has clearly moved on. One comment is ever outstanding, and
-that is the whole design: you see each answer before the next comment goes.
+order it will be delivered, across every file. A dot on the button means a comment is out with
+the agent. The panel does not open itself when a comment goes, so it never covers the file while
+you are writing the next one; it opens on its own only when delivery stops for a reason that
+needs you.
 
-Each comment arrives carrying its file, its line range, the text it quotes, and **which comment
-of how many it is**. That last part is not decoration. An agent told "comment 3 of 12, answer
-this one only, the remaining 9 follow" does not restructure the whole document on comment three,
-which is the one thing a single batched message does better and the only thing this design has
-to buy back.
+Each comment arrives carrying its file, its line range, the text it quotes, and **how many more
+are queued behind it**. That last part is not decoration. An agent told "review comment 3; 9
+more queued behind it, answer this one only" does not restructure the whole document on comment
+three, which is the one thing a single batched message does better and the only thing this
+design has to buy back. The comment at the end of the queue says more may still follow, because
+you may still be writing one.
 
 **The queue stays yours while it drains.** Reorder it with the arrows, rewrite a comment that
-has not gone yet, drop one, or **Pause**. Pause takes effect after the comment currently out
-with the agent resolves; nothing already sent is recalled, because the agent has read it. That
-comment still finishes on its own - a pause stops the queue, it does not freeze the one turn
-already in flight - and only you resume the rest.
+has not gone yet, drop one, or **Pause** to hold everything still waiting. Pause is offered once
+delivery has started, so the first comment you send always goes: pause after it to write
+several more and release them together with **Resume**. Pause takes effect after the comment
+currently out with the agent resolves; nothing already sent is recalled, because the agent has
+read it. That comment still finishes on its own - a pause stops the queue, it does not freeze
+the one turn already in flight - and comments you send while paused wait until you press
+**Resume**.
+
+While a comment is out with the agent, the Files tab does not move you to it if you have a
+comment box open: it never takes you away from a comment you are writing.
 
 "One comment outstanding" is really one turn in the session's *whole* outbox, not one review
 comment. Type an ordinary message into the conversation mid-review and the next comment waits
@@ -1318,16 +1340,31 @@ the agent restored the text, or you put it back yourself, the comment simply goe
 A comment further down the queue is marked *moved* in place and you meet it when it reaches the
 head.
 
-The review also pauses when the session cannot take a message at all, when the file a comment is
-anchored to has left the checkout, when there is nothing left to send, and when Mission Control
-could not confirm a comment reached the agent - that last one is the ordinary **Retry** and
-**Mark sent** pair in the conversation, and choosing either on *that comment's* turn resumes the
-review. Resolving some other message you had queued does not, and neither lifts a pause you
-pressed yourself.
+**A reply in a thread the agent has already seen is never held for its quote.** The hold is for
+a comment the agent has not read yet. Once a thread has reached the agent, its quote usually
+stops resolving *because* the agent rewrote that text in answer, and the agent knows what it
+changed. So a follow-up still goes, marked *moved*, and it reaches the agent with a line saying
+the quoted text is what the thread started on and is no longer in the file, or that the file has
+left the checkout. Keep replying in the same thread for as long as the iteration takes.
+
+**The open file follows the file on disk.** While a file is open in the Files tab it is
+re-checked every couple of seconds, and at once when the agent answers one of its threads, so an
+agent's edit re-renders in Preview or the Editor without leaving the file and coming back. A
+check that finds nothing new sends no text. An Editor buffer holding your own unsaved edits is
+never replaced; a newer file on disk still reaches you as the ordinary save conflict.
+
+The review also pauses when the session cannot take a message at all, when the file a comment
+the agent has not seen yet is anchored to has left the checkout (a follow-up in a thread the agent
+has already seen still goes, as described above), and when Mission Control could not confirm a
+comment reached the agent - that last one is the ordinary **Retry** and **Mark sent** pair in the
+conversation, and choosing either on *that comment's* turn resumes the review. Resolving some
+other message you had queued does not, and neither lifts a pause you pressed yourself.
 
 Nothing here lives in the browser. A daemon restart mid-review resumes rather than re-sends: a
 comment that was in flight when the daemon went down surfaces as a paused review awaiting one
-confirmation, rather than being recorded as delivered when it may never have been read.
+confirmation, rather than being recorded as delivered when it may never have been read. Comments
+left queued from before sending delivered on its own are sent once the daemon has found the
+session again.
 
 **The agent answers in the thread, on the line, live.** Each comment arrives naming the id it
 was delivered with - `MC-a41f.2`, the comment's handle plus which delivery of it this is - and

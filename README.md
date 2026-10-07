@@ -9,35 +9,27 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mi
 Requires Node.js 24+ with npm, Git, an authenticated GitHub CLI (`gh auth login`), and
 Xcode command line tools (`xcode-select --install`). Run as your own account, without `sudo`.
 The Bash installer builds the newest stable release and installs it in `~/Applications` on a
-new installation. Reruns preserve the destination recorded in an existing managed receipt.
-Pass `--scope user`, `--scope system`, or `--apps-dir <dir>` to choose a destination explicitly.
-Temporary checkouts and build files are removed; only a small updater installer is retained
-alongside the install receipt.
-See [installation details and options](docs/overview.md#desktop-app-macos).
+new installation. See [installation details and options](docs/overview.md#desktop-app-macos).
 
 **Give yourself superpowers without the compromises.**
 
 Most software factories ask you to adopt their agent, terminal, workflow, and worldview.
 Mission Control sits one layer above them. It is a meta-harness: one control plane for Claude
-Code, Codex, Pi, terminal and Agent SDK sessions, isolated worktrees, verification, review, and
+Code, Codex, Pi, terminal and Agent SDK sessions, isolated worktrees, verification workflows, review gates, and
 delivery.
 
 ## Why Mission Control instead of another software factory?
 
-1. **It just feels good.** Every interaction has been meticulously tuned for an ergonomic, delightful,
-   keyboard-friendly developer experience. Running a fleet should feel as natural as running one
-   agent.
-2. **It works.** High-quality code is not left to chance. Mission Control ships with fast checks, specialized reviewers,
-   evidence-backed repair loops, pull request review, and CI gates enforce the quality
-   bar from first diff to merge.
-3. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
+1. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
    you prefer. It coordinates the system around your tools instead of replacing them. Remote
    sessions are next.
+2. **It feels good.** The application is keyboard friendly. Build and customize you key bindings to match your workflow.
+2. **It comes with great defaults, but gives you the power to customize.** High-quality code is not left to chance. Mission Control ships with fast checks, specialized reviewers,
+   evidence-backed repair loops, pull request review, and CI gates enforce the quality
+   bar from first diff to merge. Build your own custom workflows to meet your preferences.
 4. **It is built for what comes next.** Mission Control is built and supported by Upstart. The
-   local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for
+   **local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for**
    superpowers.
-
-**Mission Control: Building with agents never felt this natural.**
 
 Mission Control's source code is licensed under the [Apache License 2.0](LICENSE).
 
@@ -101,6 +93,12 @@ Read it as a terminal stream or a chat, queue and reorder messages, answer struc
 change permission posture, interrupt a turn, and drop images directly into the composer.
 Interrupted turns retain a visible marker in the conversation across all three harnesses,
 on terminal and Agent SDK runtimes.
+
+Managed terminal resumes [verify Mission tools before stopping the SDK](docs/harnesses-and-terminals.md#managed-terminal-resumes),
+preserve permission posture and attached checkout scope, and retain their prepared environment
+while a terminal launch is uncertain. Durable task and Workflow handoff continuity remains the
+separate Phase 2 repair.
+
 Every message follows one delivery policy, with nothing to choose before sending: it waits for the
 current turn, steers an embedded agent one minute after it was queued, and interrupts the turn three
 minutes after it was queued, keeping the other queued messages. Steer now and Interrupt and deliver are there
@@ -121,7 +119,7 @@ its pane's shell with `exec`, keeping Focus and input available. See [Harnesses 
 backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
 
 Read more in [Sessions and conversations](docs/sessions.md) and
-[the file review UI](docs/ui.md#walk-the-agent-through-your-review).
+[the file review UI](docs/ui.md#comments-go-to-the-agent-as-you-send-them).
 
 ## Dispatch and task types
 
@@ -174,9 +172,10 @@ Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-sess
 
 ## Scouts and the archive
 
-Not every valuable result is a code change. A Scout investigates a question and produces one
-answer-first HTML report with its evidence and limitations. The report is self-contained, opens
-without Mission Control, and must exist before normal Scout completion succeeds.
+Not every valuable result is a code change. A Scout investigates a question and produces self-contained HTML reports with evidence and
+limitations. Any session can publish requested scout reports, with a separate archive for each
+report directory. Normal Scout completion requires at least one complete report and verifies
+every report submitted in that work episode. Other task kinds keep their existing completion rules.
 
 The archive makes reports and plans searchable by their question and content. They outlive the
 temporary task, agent, branch, and worktree that produced them, while preserving an honest record
@@ -184,7 +183,14 @@ of missing or incomplete evidence.
 
 ![Mission Control Scouts archive](docs/images/scouts.png)
 
-Read more in [Archives](docs/archives.md).
+Open a session’s **Scouts** tab, immediately left of **Diff**, to browse its reports, or filter the **Scouts** library by
+source session. Retrying a report path returns its existing archive; publish revisions under a
+new slug. Select a report card to preview its source in **Files**, or **Open archive** to read
+the immutable published copy. Read more in [Archives](docs/archives.md).
+
+SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
+internal launch secret, not a setting to configure. Public session IDs cannot select report
+credentials. See [Configuration](docs/configuration.md) for the launch boundary.
 
 ## Backlog and sources
 
@@ -234,6 +240,8 @@ working agent, gather fresh evidence, and continue the graph. Reports, screensho
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
 round, with applicable evidence carried forward between submissions.
+You can retry failed criterion mapping from the dashboard. See
+[workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 
 A run's **Evidence** tab leads with canonical reconciliation: every criterion the run is measured
 against, worst first, so an unmet one is the first thing read rather than something to find. The

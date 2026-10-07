@@ -135,6 +135,170 @@ test("product analytics is an independently operable export, to a collector you 
   ).toBeChecked();
 });
 
+test("metric temporality is saved independently for each destination", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const userTemporality = dashboard.getByLabel("Metric temporality for your own backend");
+  const productTemporality = dashboard.getByLabel("Metric temporality for product analytics");
+
+  await expect(userTemporality).toHaveValue("cumulative");
+  await expect(productTemporality).toHaveValue("cumulative");
+  await dashboard.getByLabel("Telemetry export endpoint").fill("http://127.0.0.1:14318");
+  await userTemporality.selectOption("delta");
+  await dashboard.getByRole("button", { name: "Save destination", exact: true }).click();
+  await dashboard.reload();
+
+  await expect(dashboard.getByLabel("Metric temporality for your own backend")).toHaveValue(
+    "delta",
+  );
+  await expect(dashboard.getByLabel("Metric temporality for product analytics")).toHaveValue(
+    "cumulative",
+  );
+  await shoot(dashboard, "07-delta-temporality", true);
+  const status = (await (
+    await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)
+  ).json()) as {
+    config: { user: { temporality: string }; product: { temporality: string } };
+  };
+  expect(status.config.user.temporality).toBe("delta");
+  expect(status.config.product.temporality).toBe("cumulative");
+});
+
+test("an edit made while a destination save is pending remains in the draft", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const endpoint = dashboard.getByLabel("Telemetry export endpoint");
+  await endpoint.fill("http://127.0.0.1:14318");
+
+  let releaseSave!: () => void;
+  let requestStarted!: () => void;
+  const held = new Promise<void>((resolve) => { releaseSave = resolve; });
+  const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+  await dashboard.route("**/api/telemetry/config", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    requestStarted();
+    await held;
+    await route.continue();
+  });
+
+  const save = dashboard.getByRole("button", { name: "Save destination", exact: true });
+  const saved = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/telemetry/config") && response.request().method() === "PUT"
+  );
+  await save.click();
+  await started;
+  await endpoint.fill("http://127.0.0.1:24318");
+  const credential = dashboard.getByLabel("Telemetry export credential");
+  await credential.fill("later-token");
+  const shape = dashboard.getByLabel("Export shape for your own backend");
+  await shape.selectOption("datadog-lean");
+  releaseSave();
+  expect((await saved).ok()).toBe(true);
+  await expect(save).toBeEnabled();
+  await expect(endpoint).toHaveValue("http://127.0.0.1:24318");
+  await expect(credential).toHaveValue("later-token");
+  await expect(shape).toHaveValue("datadog-lean");
+
+  const stored = (await (await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)).json()) as {
+    config: { user: { endpoint: string } };
+  };
+  expect(stored.config.user.endpoint).toBe("http://127.0.0.1:14318");
+});
+
+test("the export shape is chosen per destination, and the reset it causes is said before saving", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const userShape = dashboard.getByLabel("Export shape for your own backend");
+  const productShape = dashboard.getByLabel("Export shape for product analytics");
+  const reset = dashboard.getByText(
+    "Saving starts this destination's metric series again from zero under the new shape.",
+    { exact: false },
+  );
+
+  await expect(userShape).toHaveValue("full");
+  await expect(productShape).toHaveValue("full");
+  await expect(userShape.locator("option:checked")).toHaveText("Full");
+  await expect(reset).toHaveCount(0);
+
+  await dashboard.getByLabel("Telemetry export endpoint").fill("http://127.0.0.1:14318");
+  await userShape.selectOption({ label: "Datadog lean" });
+  // The shape's own sentence about what it leaves out, and the reset line, before anything saves.
+  await expect(
+    dashboard.getByText("Leaves out the mission.analytics.v1 cohort gauges", { exact: false }),
+  ).toBeVisible();
+  await expect(reset).toHaveCount(1);
+  await expect(reset).toBeVisible();
+  await shoot(dashboard, "08-export-shape-reset-line", true);
+
+  await dashboard.getByRole("button", { name: "Save destination", exact: true }).click();
+  await expect(reset).toHaveCount(0);
+  await dashboard.reload();
+
+  await expect(dashboard.getByLabel("Export shape for your own backend")).toHaveValue("datadog-lean");
+  await expect(
+    dashboard.getByLabel("Export shape for your own backend").locator("option:checked"),
+  ).toHaveText("Datadog lean");
+  await expect(dashboard.getByLabel("Export shape for product analytics")).toHaveValue("full");
+  await expect(
+    dashboard.getByLabel("Export shape for product analytics").locator("option:checked"),
+  ).toHaveText("Full");
+  await shoot(dashboard, "09-export-shape-saved", true);
+  await dashboard.getByLabel("Export shape for product analytics").scrollIntoViewIfNeeded();
+  await shoot(dashboard, "10-export-shape-product-full");
+  const status = (await (
+    await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)
+  ).json()) as {
+    config: { user: { exportShape: string }; product: { exportShape: string } };
+  };
+  expect(status.config.user.exportShape).toBe("datadog-lean");
+  expect(status.config.product.exportShape).toBe("full");
+});
+
+test("product analytics saves its own export shape and leaves your own backend's alone", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const productShape = dashboard.getByLabel("Export shape for product analytics");
+  await expect(productShape).toHaveValue("full");
+
+  await dashboard.getByLabel("Product analytics endpoint").fill("http://127.0.0.1:14319");
+  await productShape.selectOption({ label: "Datadog lean" });
+  await expect(
+    dashboard.getByText(
+      "Saving starts this destination's metric series again from zero under the new shape.",
+      { exact: false },
+    ),
+  ).toHaveCount(1);
+  await dashboard.getByRole("button", { name: "Save the product analytics destination" }).click();
+  await expect(
+    dashboard.getByText(
+      "Saving starts this destination's metric series again from zero under the new shape.",
+      { exact: false },
+    ),
+  ).toHaveCount(0);
+  await dashboard.reload();
+
+  await expect(dashboard.getByLabel("Export shape for product analytics")).toHaveValue("datadog-lean");
+  await expect(
+    dashboard.getByLabel("Export shape for product analytics").locator("option:checked"),
+  ).toHaveText("Datadog lean");
+  await expect(dashboard.getByLabel("Export shape for your own backend")).toHaveValue("full");
+  await dashboard.getByLabel("Export shape for product analytics").scrollIntoViewIfNeeded();
+  await shoot(dashboard, "11-export-shape-product-saved");
+  const status = (await (
+    await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)
+  ).json()) as {
+    config: { user: { exportShape: string }; product: { exportShape: string; endpoint: string } };
+  };
+  expect(status.config.product.exportShape).toBe("datadog-lean");
+  expect(status.config.product.endpoint).toBe("http://127.0.0.1:14319");
+  expect(status.config.user.exportShape).toBe("full");
+});
+
 test("local capture survives a daemon restart, which is what saved locally means", async ({
   dashboard,
   daemon,

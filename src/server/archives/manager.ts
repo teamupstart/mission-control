@@ -1,3 +1,4 @@
+import { verifyArchiveBundle } from "./bundle.ts";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
@@ -5,6 +6,7 @@ import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
+  ARCHIVE_TEXT_LIMITS,
   archiveKey,
   decodeArchiveCursor,
   isArchiveId,
@@ -17,15 +19,17 @@ import {
   type ArchiveSearchQuery,
   type ArchiveSummary,
 } from "@shared/archives.ts";
-import { SCOUT_REPORT_PATH_SHAPE, type ScoutSubmissionInput } from "@shared/scouts.ts";
+import { SCOUT_REPORT_PATH_SHAPE, scoutReportDirectory, scoutReportSlug, type ScoutSubmissionInput } from "@shared/scouts.ts";
 import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
 import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
 import {
   archiveOperationKey,
+  scoutOperationKey,
   ArchiveCaptureStore,
   type ArchiveCaptureJob,
+  type ArchiveCaptureScope,
 } from "./capture-store.ts";
 import { resolveRoots } from "./checkout.ts";
 import { ArchiveLibrary } from "./library.ts";
@@ -35,7 +39,7 @@ import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
 import { ArchiveTitleStore } from "./titles.ts";
 import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
-import { clearScoutPromptContext } from "../scouts/prompt-context.ts";
+import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
@@ -180,6 +184,7 @@ export class ArchiveManager {
     { pending: number; settled: Promise<void>; resolve: () => void }
   >();
   private acceptingJobs = true;
+  private readonly closingOwners = new Map<string, number>();
 
   constructor(options: ArchiveManagerOptions = {}) {
     this.library = new ArchiveLibrary({ writeRoot: options.root, legacyRoots: options.legacyRoots });
@@ -236,10 +241,10 @@ export class ArchiveManager {
   /**
    * The `submit_scout_artifacts` path: attribute, reserve, capture, publish.
    *
-   * The caller supplies no identity in its body. The route verifies a signed task/checkout
+   * The caller supplies no identity in its body. The route verifies a signed report
    * credential, and the gateway confirms its live session binding before this derives the
    * episode, checkouts, producer namespace, archive id, and destination. A submission cannot
-   * archive on another scout's behalf, choose where bytes land, or claim an existing archive.
+   * archive on another session's behalf, choose where bytes land, or claim an existing archive.
    *
    * Idempotent by the operation key: an MCP retry, a lost HTTP response, and a duplicate call
    * converge on one job and therefore one archive, and a replay re-verifies the published
@@ -253,40 +258,49 @@ export class ArchiveManager {
     }
     const lookup = this.tasks.subjectForSubmission(input.authority);
     if (!lookup.ok) return { ok: false, status: lookup.status, problems: [lookup.detail] };
-    const releaseClaim = this.claimSubmission(lookup.subject);
-    try {
-      if (!this.acceptingJobs) {
-        return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };
-      }
-      await this.afterSubmissionAttribution?.(lookup.subject);
-
-      const job = this.reserve(lookup.subject);
-      const recorded = this.captureStore.recordSubmission(job.operationKey, input.submission);
-      if (!recorded) {
-        // This episode's archive is already published, and a published archive is immutable.
-        // Answering "recorded" would be a lie the scout only discovers when its corrected page
-        // is not the one in the bundle - so the replay is returned when it holds the answer, and
-        // the refusal is explicit when it does not.
-        const replay = await this.runCapture(job.operationKey);
-        if (replay.ok && replay.captureStatus === "complete") return this.result(replay);
-        return {
-          ok: false,
-          status: 409,
-          problems: [
-            "an archive for this scout's current work episode was already published without a " +
-              "report, and a published archive cannot be rewritten. Tell your operator; the page " +
-              "you wrote is still in the checkout.",
-          ],
-        };
-      }
-      return this.result(await this.runCapture(recorded.operationKey));
-    } finally {
-      releaseClaim();
+    const subject = lookup.subject;
+    if (this.closingOwners.has(this.submissionOwnerKey(subject))) {
+      return { ok: false, status: 409, problems: ["this work episode is completing or releasing its checkout; retry after that operation settles"] };
     }
+    const releaseClaim = this.claimSubmission(subject);
+    try {
+      if (!this.acceptingJobs) return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };
+      await this.afterSubmissionAttribution?.(subject);
+      return await this.withMutation(`scout-submit:${this.submissionKey(subject)}`, async () => {
+        const job = await this.reserveReport(subject, input.submission);
+        const recorded = this.captureStore.recordSubmission(job.operationKey, input.submission);
+        const outcome = await this.runCapture(job.operationKey);
+        if (!recorded && outcome.ok && outcome.captureStatus !== "complete") {
+          return { ok: false as const, status: 409, problems: [
+            "this report was already published as incomplete and cannot be rewritten; submit the corrected report under a new slug",
+          ] };
+        }
+        return this.result(outcome);
+      });
+    } finally { releaseClaim(); }
+  }
+
+  /** Keep submission admission closed until TaskManager commits the checked completion. */
+  async withCompletion<T>(taskId: string, complete: () => Promise<T>): Promise<T> {
+    const subject = this.tasks?.subjectForTask(taskId, "scout");
+    if (!subject) return complete();
+    return this.withSubmissionAdmissionClosed(this.submissionOwnerKey(subject), complete);
+  }
+
+  /** Close admission before draining claims, through checkout release or retention. */
+  async withCleanup<T>(taskId: string, cleanup: () => Promise<T>): Promise<T> {
+    const key = this.submissionOwnerKey({ taskId, sessionId: null });
+    return this.withSubmissionAdmissionClosed(key, async () => {
+      // Claims are attributed synchronously, before the durable job necessarily exists.
+      // Admission is now closed for every episode of this owner, so this snapshot is final.
+      await Promise.all([...this.submissionClaims.entries()]
+        .filter(([claimKey]) => JSON.parse(claimKey)[0] === taskId).map(([, claim]) => claim.settled));
+      return cleanup();
+    });
   }
 
   /**
-   * The completion gate: does this task have a verified COMPLETE bundle?
+   * The completion gate: is every submitted report complete, with at least one report?
    *
    * Called before every transition of a scout to `done`, and it deliberately does not
    * recover. A normal completion with nothing submitted must come back to the agent with the
@@ -298,60 +312,29 @@ export class ArchiveManager {
    * do", which is what keeps ship completion byte-for-byte what it was.
    */
   async ensureReady(taskId: string): Promise<ArchiveCaptureResult> {
-    // `"scout"` is passed rather than derived, and that is what makes "a plan task's
-    // completion never waits on its archive" a property of this line instead of a rule
-    // somebody has to remember. A plan is captured at teardown; its `done` is Foreman's
-    // ordinary boundary, exactly as a ship task's is.
     const subject = this.tasks?.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true, archive: null, replayed: false };
-    const jobs = this.captureStore
-      .forTask(taskId)
-      .filter((job) => job.episodeId === subject.episodeId);
-
-    // Only this work episode can satisfy this completion. A cancelled and rescheduled scout
-    // keeps its earlier immutable archive, but that archive answers the superseded attempt and
-    // cannot stand in for evidence from the agent currently doing the work.
-    let publishedIncomplete = false;
-    for (const job of jobs) {
-      if (job.status !== "published") continue;
-      // The index is disposable discovery state, not completion authority. A bundle can be
-      // deleted or damaged after its ready row was written, so every stated completion must
-      // verify the filesystem through the capture path. An absent bundle is rebuilt from the
-      // retained checkout; a damaged final directory is preserved and completion is refused.
+    await this.submissionClaims.get(this.submissionKey(subject))?.settled;
+    const jobs = this.jobsForSubject(subject).filter((job) => job.kind === "scout" && job.status !== "deleted");
+    const submitted = jobs.filter((job) => job.submission !== null);
+    const reports = submitted.length ? submitted : jobs.filter((job) => job.status === "published");
+    if (reports.length === 0) return { ok: false, conflict: false, problems: [
+      `this scout has not submitted a report yet. Write a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} and call the ${SUBMIT_SCOUT_ARTIFACTS_TOOL} tool, then mark the task done.`,
+    ] };
+    let ready: ArchiveCaptureResult = { ok: true, archive: null, replayed: false };
+    const problems: string[] = [];
+    let conflict = false;
+    for (const job of reports) {
       const outcome = await this.runCapture(job.operationKey);
-      if (!outcome.ok) return this.result(outcome);
-      if (outcome.captureStatus === "complete") return this.result(outcome);
-      publishedIncomplete = true;
+      const label = job.submission?.reportPath ?? job.title;
+      if (!outcome.ok) {
+        problems.push(...outcome.problems.map((problem) => `${label}: ${problem}`));
+        conflict ||= outcome.conflict === true;
+      } else if (outcome.captureStatus !== "complete") {
+        problems.push(`${label}: this scout's archive is incomplete; its primary HTML report is missing`);
+      } else ready = this.result(outcome);
     }
-
-    const pending = jobs.find((job) => job.submission !== null && job.status !== "published");
-    if (!pending) {
-      return {
-        ok: false,
-        conflict: false,
-        problems: [
-          publishedIncomplete
-            ? "this scout's archive is incomplete - its primary HTML report is missing - and a " +
-              "published archive cannot be rewritten, so normal completion is not ready."
-            : `this scout has not submitted a report yet. Write a self-contained static page at ` +
-              `${SCOUT_REPORT_PATH_SHAPE} and call the ${SUBMIT_SCOUT_ARTIFACTS_TOOL} tool with its ` +
-              `path and a short summary, then mark the task done.`,
-        ],
-      };
-    }
-    const outcome = await this.runCapture(pending.operationKey);
-    if (!outcome.ok) return this.result(outcome);
-    if (outcome.captureStatus !== "complete") {
-      return {
-        ok: false,
-        conflict: false,
-        problems: [
-          "this scout's archive is incomplete - its primary HTML report is missing, so normal " +
-            "completion is not ready.",
-        ],
-      };
-    }
-    return this.result(outcome);
+    return problems.length ? { ok: false, conflict, problems } : ready;
   }
 
   /**
@@ -361,15 +344,30 @@ export class ArchiveManager {
    * `git worktree remove --force` or hand a pooled lease back, and every one of them would
    * take unarchived work with it. This is the last point at which the sources still exist.
    *
-   * The kind is settled once, here, and each kind's rule is stated in its own method rather
-   * than as branches through a shared one - because the two genuinely differ on the question
-   * that matters most on this path, which is when a refusal is correct. A ship task, and any
-   * task this build does not archive, returns ok without touching the filesystem.
+   * Explicit reports are settled for every kind. Only scouts and plans also discover
+   * recovery artifacts, using their existing kind-specific rules.
    */
   async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    return this.withCleanup(taskId, () => this.settleTaskArchives(taskId));
+  }
+
+  private async settleTaskArchives(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const kind = this.tasks?.captureKind(taskId) ?? null;
+    for (const job of this.captureStore.forTask(taskId).filter((entry) => entry.kind === "scout" && entry.submission !== null)) {
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
+      if (!outcome.ok) return { ok: false, error: `${job.submission!.reportPath}: ${outcome.problems.join("; ")}` };
+      if (outcome.captureStatus !== "complete") return { ok: false,
+        error: `${job.submission!.reportPath}: this explicitly submitted report's archive is incomplete; retaining its source checkout` };
+    }
     if (kind === null) return { ok: true };
-    return kind === "plan" ? this.settlePlan(taskId) : this.settleScout(taskId);
+    const result = await (kind === "plan" ? this.settlePlan(taskId) : this.settleScout(taskId));
+    if (result.ok && !this.tasks?.awaitsAgent(taskId)) {
+      for (const job of this.captureStore.forTask(taskId)) {
+        if (job.episodeId) clearScoutPromptContext(taskId, job.episodeId);
+      }
+    }
+    return result;
   }
 
   /**
@@ -406,7 +404,8 @@ export class ArchiveManager {
     for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
 
     for (const job of jobs.values()) {
-      const outcome = await this.runCapture(job.operationKey);
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
       if (!outcome.ok) {
         return {
           ok: false,
@@ -432,9 +431,7 @@ export class ArchiveManager {
     const subject = this.tasks!.subjectForTask(taskId, "scout");
     if (!subject) return { ok: true };
     await this.submissionClaims.get(this.submissionKey(subject))?.settled;
-    const current = this.captureStore
-      .forTask(taskId)
-      .filter((job) => job.episodeId === subject.episodeId);
+    const current = this.jobsForSubject(subject);
 
     // A prior episode's immutable archive answers that attempt only. If the current episode
     // has no job, reserve it now while its sources still exist. Published current jobs stay
@@ -446,7 +443,8 @@ export class ArchiveManager {
     }
 
     for (const job of current) {
-      const outcome = await this.runCapture(job.operationKey);
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (!outcome) continue;
       if (!outcome.ok) {
         return {
           ok: false,
@@ -458,7 +456,7 @@ export class ArchiveManager {
   }
 
   /**
-   * The last-chance reservation for a SCOUT, on `Registry.onSessionExit`.
+   * Resume explicit reports and reserve scout recovery on `Registry.onSessionExit`.
    *
    * SYNCHRONOUS up to the durable row and asynchronous after it, and the split is the whole
    * design. `beginEviction` gives a session a few seconds before its row disappears, and it
@@ -467,38 +465,25 @@ export class ArchiveManager {
    * only what was just persisted, happens afterwards and cannot delay eviction or throw into
    * it.
    *
-   * Scout-only. The body says why a plan must not be published from here; the short version is
-   * that this fires while the task is still live, and an archive cannot be rewritten.
+   * Automatic recovery discovery remains scout-only. A plan must not be discovered here
+   * while its task is still live, because an archive cannot be rewritten.
    */
   reserveOnExit(session: Session): void {
     if (!this.tasks || !this.acceptingJobs) return;
     try {
+      const explicit = this.captureStore.forSession(session.id).filter((job) => job.kind === "scout" && job.submission !== null && job.status !== "deleted");
+      for (const job of explicit) {
+        const claimed = this.submissionClaims.get(this.submissionKey(job))?.settled;
+        void Promise.resolve(claimed).then(() => this.runCapture(job.operationKey));
+      }
       const exiting = this.tasks.subjectForExitingSession(session);
-      if (!exiting) return;
-      // SCOUTS ONLY, and the exclusion is a correctness rule rather than a scope decision.
-      //
-      // This listener fires while the task is still `running` or `dispatching` - that is the
-      // condition `subjectForExitingSession` selects for. For a scout that is the end of the
-      // work by definition: the report is an untracked file, the session that would have
-      // submitted it is gone, and automatic completion cannot happen without an archive, so
-      // capturing now loses nothing and saves evidence that is otherwise about to be unreachable.
-      //
-      // For a plan it is not the end of the work, and an archive is IMMUTABLE. Publishing
-      // here would freeze whatever the checkout held at the moment a session went away as
-      // the permanent archive of a plan that is still being written, and the teardown that
-      // follows could not replace it: it finds the published job under the same scoped key
-      // and replays the verification rather than re-capturing. A plan's files are committed
-      // and its checkout survives eviction, so there is nothing to rescue early - teardown
-      // is both the last moment and the first correct one.
-      if (exiting.kind !== "scout") return;
+      if (!exiting || exiting.kind !== "scout") return;
       const subject = exiting.subject;
       // Already archived for THIS attempt: this is an ordinary scout finishing and its
       // session going away. A superseded episode's archive must not suppress reservation of
       // the checkout that is about to disappear.
-      const jobs = this.captureStore
-        .forTask(subject.taskId)
-        .filter((job) => job.episodeId === subject.episodeId);
-      if (jobs.some((job) => job.status === "published")) return;
+      const jobs = this.jobsForSubject(subject);
+      if (jobs.some((job) => job.submission !== null || job.status === "published" || job.status === "deleted")) return;
       const job = this.reserve(subject);
       const activeSubmission = this.submissionClaims.get(this.submissionKey(subject))?.settled;
       if (activeSubmission) {
@@ -536,9 +521,9 @@ export class ArchiveManager {
     if (!this.tasks) return;
     for (const job of this.captureStore.unfinished()) {
       if (!this.acceptingJobs) return;
-      if (job.submission === null && this.tasks.awaitsAgent(job.taskId)) continue;
-      const outcome = await this.runCapture(job.operationKey);
-      if (!outcome.ok) {
+      if (job.submission === null && job.taskId && this.tasks.awaitsAgent(job.taskId)) continue;
+      const outcome = await this.captureUnlessDeleted(job.operationKey);
+      if (outcome && !outcome.ok) {
         this.log("could not resume a capture job", {
           taskId: job.taskId,
           operationKey: job.operationKey,
@@ -592,9 +577,77 @@ export class ArchiveManager {
     );
   }
 
+  private jobsForSubject(subject: ArchiveSubject): ArchiveCaptureJob[] {
+    return (subject.taskId ? this.captureStore.forTask(subject.taskId!) : this.captureStore.forSession(subject.sessionId!))
+      .filter((job) => job.taskId === subject.taskId && (
+        job.episodeId === subject.episodeId || (
+          job.episodeId === null && subject.episodeId !== null &&
+          subject.episodeStartedAt != null && job.createdAt >= subject.episodeStartedAt &&
+          job.sessionId === subject.sessionId
+        )
+      ));
+  }
+
+  private async reserveReport(subject: ArchiveSubject, submission: ScoutSubmissionInput): Promise<ArchiveCaptureJob> {
+    const directory = scoutReportDirectory(submission.reportPath);
+    const primary = subject.repos.find((repo) => repo.primary);
+    if (!directory || !primary) throw new ArchiveError(`the report must be at ${SCOUT_REPORT_PATH_SHAPE} in this session's checkout`);
+    const scope: ArchiveCaptureScope = { slot: primary.slot, directory };
+    const operationKey = scoutOperationKey(subject, scope);
+    const existing = this.captureStore.get(operationKey);
+    if (existing) return existing;
+    const jobs = this.jobsForSubject(subject);
+    const early = jobs.find((job) => job.kind === "scout" && job.episodeId === null &&
+      job.scope?.slot === scope.slot && job.scope.directory === scope.directory);
+    if (early) return early;
+    const deleted = jobs.find((job) => job.kind === "scout" && job.status === "deleted"
+      && job.scope?.slot === scope.slot && job.scope.directory === scope.directory);
+    if (deleted) return deleted;
+    const legacy = jobs.find((job) => job.kind === "scout" && job.scope === null);
+    if (legacy) {
+      // An unpublished reservation without a recorded path cannot identify this report.
+      // Reuse legacy identity only when its submission or verified bundle matches.
+      if (legacy.submission?.reportPath === submission.reportPath) return legacy;
+      if (!legacy.submission && legacy.status === "published") {
+        const root = await realpath(this.libraryPath).catch(() => null);
+        const bundle = root ? await verifyArchiveBundle(root, legacy) : null;
+        if (bundle?.kind === "verified" && bundle.bundle.manifest.artifacts.some((artifact) =>
+          artifact.role === "primary_report" && artifact.repoSlot === primary.slot && artifact.originalPath === submission.reportPath)) return legacy;
+      }
+    }
+    const prompts = subject.prompts ?? this.tasks?.scoutPromptTrailFor(subject) ?? null;
+    const suffix = ` / ${scoutReportSlug(submission.reportPath)}`;
+    const fallbackTitle = subject.title.slice(0, ARCHIVE_TEXT_LIMITS.title - suffix.length) + suffix;
+    return this.captureStore.reserve({
+      ...subject, kind: "scout", scope, operationKey, producerId: this.producer.id,
+      title: submission.title ?? fallbackTitle,
+      prompts,
+    });
+  }
+
+  /** Prompt journals outlive the first report, but not a durably removed session. */
+  sessionRemoved(sessionId: string): void {
+    for (const context of allScoutPromptContexts().filter((entry) => entry.sessionId === sessionId)) {
+      const claimed = this.submissionClaims.get(this.submissionKey(context))?.settled;
+      void Promise.resolve(claimed).then(() => clearScoutPromptContext(context.taskId, context.episodeId));
+    }
+  }
+
+  /** A restart can miss session_remove; prune only episodes whose trail is already frozen. */
+  reconcilePromptContexts(liveSessionIds: ReadonlySet<string>): void {
+    for (const context of allScoutPromptContexts()) {
+      if (context.sessionId && liveSessionIds.has(context.sessionId)) continue;
+      const frozen = this.captureStore.forTask(context.taskId).some((job) => job.episodeId === context.episodeId);
+      if (frozen) {
+        const claimed = this.submissionClaims.get(this.submissionKey(context))?.settled;
+        void Promise.resolve(claimed).then(() => clearScoutPromptContext(context.taskId, context.episodeId));
+      }
+    }
+  }
+
   private reserve(subject: ArchiveSubject): ArchiveCaptureJob {
     const existing = this.captureStore.get(
-      archiveOperationKey(subject.taskId, subject.episodeId),
+      archiveOperationKey(subject.taskId!, subject.episodeId),
     );
     // Prompt collection can walk a long transcript. A reservation is immutable, so an
     // existing row already holds the only trail this operation may publish and must never
@@ -603,11 +656,8 @@ export class ArchiveManager {
       ? existing.prompts
       : (subject.prompts ?? this.tasks?.scoutPromptTrailFor(subject) ?? null);
     const job = this.captureStore.reserve({
-      // Scout-only, deliberately. A second kind arrived with its own entry point
-      // (`reservePlanJobs`) and its own planner rather than by widening this one, because the
-      // two answer different questions: a scout reserves ONE job for its episode, before it
-      // knows what will be submitted, while a plan reserves one per directory it already
-      // knows it wrote. Collapsing them would have to lose one of those properties.
+      // Conservative scout recovery reserves a legacy singleton before a report is known.
+      // Explicit submissions use reserveReport and their directory-scoped operation key.
       kind: "scout",
       taskId: subject.taskId,
       sessionId: subject.sessionId,
@@ -619,25 +669,27 @@ export class ArchiveManager {
       origin: subject.origin,
       repos: subject.repos,
     });
-    // Recovery now reads the exact frozen trail from the job. The Phase 1 coordination rows
-    // have served their purpose and can be removed without making a failed publication lose
-    // anything it needs to retry.
-    if (subject.episodeId) {
-      try {
-        clearScoutPromptContext(subject.taskId, subject.episodeId);
-      } catch (error) {
-        this.log("could not clean frozen scout prompt context", {
-          taskId: subject.taskId,
-          episodeId: subject.episodeId,
-          error: describeError(error),
-        });
-      }
-    }
     return job;
   }
 
-  private submissionKey(subject: Pick<ArchiveSubject, "taskId" | "episodeId">): string {
-    return JSON.stringify([subject.taskId, subject.episodeId]);
+  private submissionKey(subject: Pick<ArchiveSubject, "taskId" | "sessionId" | "episodeId">): string {
+    return JSON.stringify([subject.taskId ?? `session:${subject.sessionId}`, subject.episodeId]);
+  }
+
+  private submissionOwnerKey(subject: Pick<ArchiveSubject, "taskId" | "sessionId">): string {
+    return JSON.stringify(subject.taskId ? ["task", subject.taskId] : ["session", subject.sessionId]);
+  }
+
+  private async withSubmissionAdmissionClosed<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    this.closingOwners.set(key, (this.closingOwners.get(key) ?? 0) + 1);
+    try { return await operation(); }
+    finally {
+      // Completion, capture settlement and checkout cleanup may nest or overlap. Only the
+      // last boundary to finish can reopen admission for their shared owner.
+      const remaining = this.closingOwners.get(key)! - 1;
+      if (remaining) this.closingOwners.set(key, remaining);
+      else this.closingOwners.delete(key);
+    }
   }
 
   /**
@@ -674,7 +726,13 @@ export class ArchiveManager {
     const previous = this.captureRuns.get(operationKey) ?? Promise.resolve(null);
     const run: Promise<ArchiveCaptureOutcome> = previous
       .catch(() => null)
-      .then(() => this.captureOnce(operationKey));
+      .then(() => {
+        const job = this.captureStore.get(operationKey);
+        if (!job) return this.captureOnce(operationKey);
+        // Deletion and publication share one identity lock. Re-read the ledger inside it,
+        // so neither a queued retry nor a capture already in flight can undo deletion.
+        return this.withMutation(archiveKey(job.producerId, job.archiveId), () => this.captureOnce(operationKey));
+      });
     const tracked = run.finally(() => {
       if (this.captureRuns.get(operationKey) === tracked) this.captureRuns.delete(operationKey);
     });
@@ -682,9 +740,18 @@ export class ArchiveManager {
     return tracked;
   }
 
+  /** Deletion cancels capture obligations, including work queued before the deletion. */
+  private async captureUnlessDeleted(operationKey: string): Promise<ArchiveCaptureOutcome | null> {
+    const outcome = await this.runCapture(operationKey);
+    return this.captureStore.get(operationKey)?.status === "deleted" ? null : outcome;
+  }
+
   private async captureOnce(operationKey: string): Promise<ArchiveCaptureOutcome> {
     const job = this.captureStore.get(operationKey);
     if (!job) return { ok: false, problems: ["that capture job is no longer on this machine"] };
+    if (job.status === "deleted") return { ok: false, conflict: true, problems: [
+      "this report was deleted; submit a replacement under a new slug",
+    ] };
     this.captureStore.noteAttempt(operationKey);
     let outcome: ArchiveCaptureOutcome;
     try {
@@ -734,7 +801,7 @@ export class ArchiveManager {
     if (query.cursor !== null && cursor === null) {
       throw new ArchiveError("that page cursor is not usable", 400);
     }
-    const { rows, nextCursor } = this.store.list({ ...query, cursor });
+    const { rows, nextCursor } = this.store.list({ ...query, producer: query.producer ?? (query.session ? this.producer.id : null), cursor });
     return {
       archives: rows.map((row) => this.summary(row, query.q)),
       nextCursor,
@@ -920,6 +987,22 @@ export class ArchiveManager {
       throw new ArchiveError("no such archive", 404);
     }
 
+    // Persist intent before moving any bytes. A crash or later deletion error must not
+    // turn the missing bundle into an instruction to recapture the operator's report.
+    // The existing typed-key retry still removes any bundle or sidecar left behind.
+    // A recovered legacy job may have no submission locator. Keep its verified directory
+    // in the tombstone before losing the bundle, so a same-directory retry keeps that identity.
+    const job = this.captureStore.forArchive(identity);
+    let recoveredScope: ArchiveCaptureScope | null = null;
+    if (job?.kind === "scout" && !job.scope && !job.submission && bundle) {
+      const verified = await verifyArchiveBundle(bundle.root, identity).catch(() => null);
+      const primary = verified?.kind === "verified"
+        ? verified.bundle.manifest.artifacts.find((artifact) => artifact.role === "primary_report") : null;
+      const directory = primary?.originalPath ? scoutReportDirectory(primary.originalPath) : null;
+      if (directory && primary?.repoSlot) recoveredScope = { slot: primary.repoSlot, directory };
+    }
+    this.captureStore.markDeleted(identity, recoveredScope);
+
     let deletedBundle = false;
     if (bundle) {
       // Trashed inside the root that holds it, so the durable step stays a rename within one
@@ -1103,6 +1186,7 @@ export class ArchiveManager {
       model: row.model,
       source: row.source,
       repositories: row.repositories,
+      sourceSession: row.sourceSession,
       createdAt: row.createdAt,
       completedAt: row.completedAt,
       indexedAt: row.indexedAt,

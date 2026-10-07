@@ -25,10 +25,11 @@ const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
 );
-const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
+const { getSdkSession, listSdkSessions, upsertSdkSession, getSdkSessionProcess } = await import(
   "../src/server/sdk/store.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { claimInjectionEcho, originOf } = await import("../src/server/injections.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
@@ -214,6 +215,43 @@ const START = {
   taskId: null,
 };
 
+test("the supervisor persists the observed child lifetime after the stream ends and clears it on replacement", async (t) => {
+  const handle = fakeHandle();
+  let pid: number | null = 41001;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  let scans = 0;
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    scans++;
+    return { processes: [{ pid: pid!, ppid: 1, tty: null, startRaw: "fixture", startMs: pid! * 100,
+      command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  await drain();
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41001, startMs: 4100100 });
+  const initialScans = scans;
+  for (let i = 0; i < 10; i++) handle.push({ kind: "state", state: "working", activity: "token" });
+  await drain();
+  assert.equal(scans, initialScans, "activity does not scan the process fleet per event");
+  pid = null;
+  handle.push({ kind: "state", state: "idle", activity: null });
+  await drain();
+  assert.equal(getSdkSessionProcess(session.id), null, "an unknown replacement cannot use stale absence proof");
+  pid = 41002;
+  handle.push({ kind: "bound", agentSessionId: "replacement", transcriptPath: null, modelId: null, pid });
+  await drain();
+  handle.end();
+  await drain();
+  assert.equal(supervisor.handleFor(session.id), null);
+  assert.equal(getSdkSession(session.id)?.status, "exited");
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41002, startMs: 4100200 });
+  upsertSdkSession({ id: session.id, agent: "claude", agentSessionId: "replacement", cwd: START.cwd,
+    taskId: null, model: null, effort: null, permissionMode: null, status: "starting", turnInProgress: false });
+  assert.equal(getSdkSessionProcess(session.id), null, "a restored handle must establish its own lifetime");
+});
+
 test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
   const firstHandle = fakeHandle();
   const secondHandle = fakeHandle();
@@ -243,6 +281,11 @@ test("Codex SDK sessions carry their synthetic identity into Mission MCP", async
     });
     const firstIdentity = fake.calls[0]?.mcp?.env.MISSION_SESSION_ID;
     const secondIdentity = fake.calls[1]?.mcp?.env.MISSION_SESSION_ID;
+    const firstLocator = fake.calls[0]?.mcp?.env.MISSION_SCOUT_SESSION_LOCATOR;
+    const secondLocator = fake.calls[1]?.mcp?.env.MISSION_SCOUT_SESSION_LOCATOR;
+    assert.equal(firstLocator, sessionScoutCredentialLocator(first.id));
+    assert.equal(secondLocator, sessionScoutCredentialLocator(second.id));
+    assert.notEqual(firstLocator, secondLocator, "same-checkout launches get separate private locators");
 
     assert.deepEqual(
       {
@@ -1172,6 +1215,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
       env: {
         ...descriptor.env,
         MISSION_SESSION_ID: "sdk:restore-1",
+        MISSION_SCOUT_SESSION_LOCATOR: sessionScoutCredentialLocator("sdk:restore-1"),
       },
     });
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
@@ -1274,6 +1318,7 @@ test("restore preserves a managed Pipeline task's launch-scoped MCP identity", a
         [PIPELINE_CALLER_CREDENTIAL_FILE_ENV]:
           fake.calls[0]!.mcp!.env[PIPELINE_CALLER_CREDENTIAL_FILE_ENV]!,
         MISSION_SESSION_ID: "sdk:restore-pipeline",
+        MISSION_SCOUT_SESSION_LOCATOR: sessionScoutCredentialLocator("sdk:restore-pipeline"),
       },
     });
     assert.equal(launchAuthorityObserved, true);

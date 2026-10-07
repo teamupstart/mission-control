@@ -1,4 +1,5 @@
 import { piHooks } from "./pi/hooks.ts";
+import { claudeResumeTools, codexResumeTools, piResumeTools } from "./resume-tools.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, PermissionMode, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
@@ -96,6 +97,7 @@ function claudeResumeModeArgs(mode: PermissionMode | null): string[] {
 
 export const HARNESSES: Record<AgentType, Harness> = {
   claude: {
+    resumeTools: claudeResumeTools,
     ...HARNESS_CAPABILITIES.claude,
     transcript: claudeTranscript,
     usage: null,
@@ -146,6 +148,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   // declares its `/permissions` menu there, but option dialogs remain a separate screen
   // grammar and must never be gated on whether a permission control exists.
   codex: {
+    resumeTools: codexResumeTools,
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
     usage: codexUsage,
@@ -200,6 +203,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   // to run no parses. The `→` cursor is recorded in `todo/pi-harness.md` so the follow-up, once
   // pi is logged in, is the one-token confirmation Codex's turned out to be.
   pi: {
+    resumeTools: piResumeTools,
     ...HARNESS_CAPABILITIES.pi,
     transcript: piTranscript,
     usage: piUsage,

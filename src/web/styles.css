@@ -5916,6 +5916,15 @@ body.is-pane-resizing {
   background: color-mix(in oklab, var(--working) 16%, var(--panel));
 }
 .file-comment-toggle:disabled { opacity: .45; cursor: default; }
+/* A comment is out with the agent. The queue no longer opens itself on send, so this says it. */
+.file-review-live {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--attention);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--attention) 25%, transparent);
+}
 
 /* The comment index is navigation, not the review outbox. It remains available when
    comment mode is off and includes resolved threads, so closing a thread never erases the
@@ -6132,6 +6141,25 @@ body.is-pane-resizing {
 .file-comment-box:focus { border-color: var(--working); outline: none; }
 .file-comment-error { margin: 0; color: var(--danger); font-size: 10.5px; }
 .file-comment-panel-foot { display: flex; align-items: center; gap: 6px; }
+/* What Send will do, said before it is pressed: go now, wait its turn, or be held. */
+.file-comment-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.file-comment-hint::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.file-comment-hint.is-now::before { background: var(--idle); }
+.file-comment-hint.is-held::before { background: var(--attention); }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
 .file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
 
@@ -9840,6 +9868,9 @@ mark.find-hit.is-current {
   white-space: nowrap;
 }
 .launch-flash.is-error {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
   background: color-mix(in oklab, var(--danger) 10%, transparent);
   color: var(--danger);
@@ -12147,6 +12178,22 @@ select:not([multiple]) option:focus-visible {
   align-items: center;
   gap: 6px;
   flex: none;
+}
+.report-transfer .report-row-main {
+  width: 100%;
+}
+.report-transfer .report-name,
+.report-transfer .report-sub {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.report-transfer .report-row-actions {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.report-transfer .btn {
+  flex-shrink: 0;
 }
 .report-mark {
   display: flex;
@@ -18540,6 +18587,43 @@ td.wf-command-rule-action {
 .wf-pipeline-reviewer-body { grid-column: 1; }
 .wf-pipeline-reviewer-actions { grid-column: 2; grid-row: 1; }
 .wf-pipeline-reviewer .wf-pipeline-status { grid-column: 1; justify-self: start; }
+/* The chip and its clock, as one grid item on the chip's own row. It wraps rather than
+   squeezing: beside "Changes requested" there is no room for the clock, and a clock that
+   broke one unit per line would read as three numbers. */
+.wf-pipeline-status-line {
+  grid-column: 1;
+  justify-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+/* Tabular monospace digits, so a clock ticking "1m 09s" -> "1m 10s" never changes width and
+   nudges the row beside it. Muted when frozen: the chip is the status, the time is detail. */
+.wf-pipeline-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 600 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.wf-pipeline-elapsed.is-live { color: var(--working); }
+.wf-pipeline-elapsed-mark { font-size: 10px; opacity: 0.8; }
+.wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+  opacity: 1;
+  animation: wf-pipeline-elapsed-pulse 1.4s ease-in-out infinite;
+}
+@keyframes wf-pipeline-elapsed-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .wf-pipeline-elapsed.is-live .wf-pipeline-elapsed-mark { animation: none; }
+}
 .wf-pipeline-reviewer-name {
   display: flex;
   align-items: center;
@@ -19479,6 +19563,10 @@ button.wf-carried.is-link:focus-visible {
 .settings-dot-failing {
   background: var(--danger);
   box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.settings-dot-neutral {
+  background: var(--dim);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--dim) 70%, transparent);
 }
 .settings-dot-foreman {
   background: var(--foreman);
@@ -35116,6 +35204,37 @@ body.foreman-sidecar-open .modal-backdrop {
 .tele-queue p {
   margin: 0 0 4px;
 }
+/* The managed lane's one-line state: what a person on a managed Mac reads first. */
+.tele-managed-state {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* The managed configuration, read-only: label column sized to its longest label, values
+   wrapping in the remaining width so a long endpoint never pushes the panel wider. */
+.tele-managed-config {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 14px;
+  row-gap: 6px;
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.tele-managed-config dt {
+  color: var(--dim);
+}
+.tele-managed-config dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.tele-managed-config dd .kb-row-desc {
+  display: block;
+  margin-top: 2px;
+}
 
 /* ---- the send box's full-size editor ----
    The legend beside the box needs no rule of its own: both renderings print it through the
@@ -35206,3 +35325,18 @@ body.foreman-sidecar-open .modal-backdrop {
 .ts-sync-comparison strong { overflow-wrap: anywhere; }
 .ts-sync-actions { display: flex; gap: 8px; margin-top: 12px; }
 @media (max-width: 700px) { .ts-sync-comparison { grid-template-columns: 1fr; } }
+
+/* Reports in the shared Board/Console session detail. */
+.session-scouts { padding: 16px; }
+.session-scouts > p { color: var(--muted); }
+.session-scouts-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+.session-scouts-report {
+  width: 100%; padding: 14px; text-align: left; display: grid; gap: 6px;
+  color: inherit; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; overflow-wrap: anywhere;
+}
+.session-scouts-report:hover { border-color: var(--working); }
+.session-scouts-report span { color: var(--muted); font-size: 12px; }
+.session-scouts-archive { margin-top: 6px; }
+.scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.scouts-source-session > span { font-size: 12px; color: var(--muted); }

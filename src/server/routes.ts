@@ -1,3 +1,6 @@
+import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
+import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
+import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { ResolveSourceSyncSchema } from "@shared/task-source-sync.ts";
 import { sourceSyncReviews, resolveSourceSync } from "./task-sources/sync.ts";
@@ -238,7 +241,11 @@ import {
   reserveInjection,
 } from "./injections.ts";
 import { runRetro } from "./retro.ts";
-import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { prepareTerminalResume, recheckManagedResumes, resumeConversation, type PreparedResume } from "./harness/resume.ts";
+import { resumeContext } from "./resume-context.ts";
+import { TerminalLaunchError } from "./terminal/launch-error.ts";
+import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
@@ -329,7 +336,7 @@ import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { interruptSession, requestSessionStop } from "./sdk/control.ts";
-import { spawnUniquely } from "./dispatcher.ts";
+import { spawnManagedResume } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask } from "./task-sources/push.ts";
@@ -400,12 +407,22 @@ import {
   observeKillRequested,
   observeSessionOperation,
   recordTelemetryControl,
+  organizationSettled,
+  recheckOrganization,
   runTelemetryOperation,
+  whileOrganizationSettled,
   runTelemetryProbe,
+  setPilotEnrollment,
   setTelemetryConfig,
-  telemetryHealth,
+  telemetryHealthResponse,
   telemetryStatus,
+  telemetryStatusResponse,
 } from "./telemetry/index.ts";
+import { currentOrganization } from "./environment/organization.ts";
+import {
+  TelemetryOrganizationPilotRequestSchema,
+  managedTelemetryRefusal,
+} from "@shared/organizations.ts";
 import {
   getInspectorConfig,
   inspectorModel,
@@ -514,7 +531,7 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
-import { terminalTargetViews, launchAgentTerminal, launchTerminal } from "./terminal/targets.ts";
+import { terminalTargetViews, launchManagedAgentTerminal, launchTerminal } from "./terminal/targets.ts";
 import {
   agentLaunchAction,
   agentLaunchBlockedReason,
@@ -1085,6 +1102,7 @@ export interface RouteDeps {
   away?: AwayWatcher;
   personas?: PersonaManager;
   workflows?: WorkflowManager;
+  sessionTransfers?: SessionTransferCoordinator;
   /**
    * The Recurring Missions service. The schedule routes answer 503 when it is absent rather
    * than constructing a second manager here.
@@ -1193,6 +1211,7 @@ export const ROUTE_DEP_NAMES = [
   "away",
   "personas",
   "workflows",
+  "sessionTransfers",
   "schedules",
   "ensembles",
   "sdkSessions",
@@ -1889,16 +1908,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
-  const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
-    spawn: spawnUniquely,
+  const prepareResume = (session: Session) => {
+    const task = registry.listTasks().find((candidate) => candidate.sessionId === session.id) ?? null;
+    return prepareTerminalResume(session, resumeContext(session, task,
+      workflows?.resumeNeedsEvidence(session) ?? false,
+      task ? Boolean(ensembles?.store.memberForTask(task.id)) : false));
+  };
+  let transfers = deps.sessionTransfers ?? handoffDeps?.transfers;
+  const transferCoordinator = (): SessionTransferCoordinator => {
+    if (!transfers) {
+      // The daemon injects its already-started owner. Legacy compositions only need an
+      // owner when they use a transfer; constructing unrelated routes must not recover
+      // durable work or subscribe to services those routes do not consume.
+      transfers = new SessionTransferCoordinator(registry, {
+        workflows, reviews, settleTask: handoffDeps?.settleTask ?? ((id) => tasks.settleAfterFailedHandoff(id)),
+        taskBlocked: (id) => tasks.taskCleanupIsReserved?.(id) ?? false,
+      });
+      transfers.start();
+    }
+    return transfers;
+  };
+  const defaultHandoffDeps: HandoffDeps = {
+    spawn: spawnManagedResume,
     waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
     settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
+    prepare: prepareResume,
+    ...handoffDeps,
   };
   const handoffSession = async (
     session: Session,
     backend?: Parameters<typeof launchTerminal>[0],
   ) => {
-    if (!sdkSessions) {
+    if (!sdkSessions && session.runtime === "sdk" && session.state !== "exited") {
       return {
         ok: false as const,
         error: "this build has no session supervisor",
@@ -1906,45 +1947,64 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       };
     }
     let label = "default terminal";
+    const handoff = { ...defaultHandoffDeps, transfers: transferCoordinator() };
     const deps = backend
       ? {
-          ...defaultHandoffDeps,
-          spawn: async (
-            name: string,
-            _shortId: string,
-            cwd: string,
-            bin: string,
-            args: readonly string[] = [],
-          ) => {
-            const launched = await launchAgentTerminal(backend, {
-              name,
-              cwd,
-              argv: [bin, ...args],
-            }, terminalLauncher);
+          ...handoff,
+          backend,
+          spawn: async (input: Parameters<typeof spawnManagedResume>[0]) => {
+            const launched = await launchManagedAgentTerminal(backend, input, terminalLauncher);
             label = launched.label;
             // A 504 means the terminal may have opened. The embedded driver is already
             // stopped, so preserve the transfer and let discovery settle what appeared.
             if (!launched.ok && launched.status !== 504) {
-              throw new Error(launched.error ?? `${launched.label} could not open a window`);
+              throw new TerminalLaunchError(launched.error ?? `${launched.label} could not open a window`, false);
             }
             return {
-              homeName: launched.homeName ?? name,
+              homeName: launched.homeName ?? input.name,
               homeBackend: backend,
               terminalResourceId: launched.terminalResourceId ?? null,
               launchProcess: launched.launchProcess,
               launchStateHome: launched.launchStateHome,
+              launchOutcome: launched.ok ? "launched" as const : "unknown" as const,
+              resumeLeaseId: input.prepared.lease.id,
             };
           },
         }
-      : defaultHandoffDeps;
-    const result = await handOffToTerminal(
-      registry,
-      sdkSessions,
-      session,
-      deps,
-    );
+      : handoff;
+    const result = session.state === "exited"
+      ? await deps.transfers.resumeExited(session, sdkSessions, deps)
+      : await handOffToTerminal(registry, sdkSessions!, session, deps);
     return { ...result, label };
   };
+  app.get("/api/session-transfers", (c) => {
+    const parsed = SessionTransferQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    if (parsed.data.sourceSessionId) {
+      const transfer = latestTransferForSource(parsed.data.sourceSessionId);
+      return c.json({ transfers: transfer ? [transferSummary(transfer)] : [], overflow: 0 });
+    }
+    return c.json(sessionTransferPage(parsed.data.offset, parsed.data.limit));
+  });
+  app.get("/api/session-transfers/:id", (c) => {
+    const transfer = getSessionTransfer(c.req.param("id"));
+    return transfer ? c.json(transferSummary(transfer)) : c.json({ error: "no such terminal transfer" }, 404);
+  });
+  app.post("/api/session-transfers/:id/recheck", async (c) => {
+    const parsed = await parseBody(c, RecheckSessionTransferSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
+    return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().recheck(c.req.param("id"))) });
+  });
+  app.post("/api/session-transfers/:id/resolve", async (c) => {
+    const parsed = await parseBody(c, ResolveSessionTransferSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!getSessionTransfer(c.req.param("id"))) return c.json({ error: "no such terminal transfer" }, 404);
+    try {
+      return c.json({ ok: true, transfer: transferSummary(await transferCoordinator().resolve(c.req.param("id"), parsed.data.revision)) });
+    } catch (error) { return c.json({ ok: false, error: error instanceof Error ? error.message : "Transfer cannot be ended safely" }, 409); }
+  });
+
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
@@ -3077,7 +3137,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     try {
-      return c.json(await readWorkspaceDocument(session.id, parsed.data.path));
+      const document = await readWorkspaceDocument(session.id, parsed.data.path);
+      // `known` is the revision the reader already holds. The open document is re-checked
+      // while it is on screen, so an agent's edit re-renders without a reload, and a check
+      // that found nothing new should not ship up to 2 MiB back to say so.
+      const known = c.req.query("known");
+      if (known && document.revision && known === document.revision) {
+        return c.json({ unchanged: true, revision: document.revision });
+      }
+      return c.json(document);
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       const status = known?.status === 403 ? 403
@@ -3499,6 +3567,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = ArchiveSearchQuerySchema.safeParse({
       q: c.req.query("q"),
       producer: c.req.query("producer"),
+      session: c.req.query("session"),
       repo: c.req.query("repo"),
       agent: c.req.query("agent"),
       kind: c.req.query("kind"),
@@ -3514,6 +3583,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       library.list({
         q: query.q ?? null,
         producer: query.producer ?? null,
+        session: query.session ?? null,
         repo: query.repo ?? null,
         agent: query.agent ?? null,
         kind: query.kind ?? null,
@@ -3636,6 +3706,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
   app.get("/api/terminal-targets", (c) =>
     c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
+  // Non-spawning recheck. Resource ownership is independent of task/workflow continuity.
+  app.get("/api/sessions/:id/launch", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    try {
+      const attempts = recheckManagedResumes().filter((status) =>
+        status.lease.sourceSessionId === c.req.param("id") || (session && status.lease.conversation === resumeConversation(session)));
+      if (!session && attempts.length === 0) return c.json({ error: "no such session or managed resume" }, 404);
+      return c.json({ attempts: attempts.map((status) => ({ id: status.lease.id, state: status.state,
+        deadline: status.deadline, owner: status.owner, detail: resumeLeaseDiagnostic(status) })) });
+    } catch {
+      return c.json({ error: "Managed resume records need inspection; uncertain environments are retained and no terminal was started" }, 409);
+    }
+  });
   // Open a terminal on a session's checkout: a shell, or the session's own agent CLI.
   // Both payloads use the backend the operator selected; only their daemon-owned argv differs.
   app.post("/api/sessions/:id/launch", async (c) => {
@@ -3646,6 +3729,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const { backend, payload } = parsed.data;
 
     if (payload === "agent") {
+      const reserved = transferForNote(noteKeyFor(session));
+      if (reserved) return c.json({ ok: false, error: "This conversation is already being handed over. Check its transfer in Sitrep", transfer: transferSummary(reserved) }, 409);
+      if (transferRetiredSource(session.id)) return c.json({ ok: false, error: "This source has already continued in terminal. Focus its successor or check the transfer in Sitrep" }, 409);
       // The daemon owns this rule and the browser reads the SAME predicate to shape the
       // button. A session with a live pane is focusable, and resuming beside it would put
       // a second process on one conversation file - so this refuses and names the action
@@ -3676,8 +3762,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               label: handedOff.label,
               homeName: handedOff.homeName,
               sessionId: handedOff.sessionId,
+              launchOutcome: handedOff.launchOutcome,
+              resumeLeaseId: handedOff.resumeLeaseId,
+              transfer: handedOff.transfer,
             }
-          : { ok: false, backend, label: handedOff.label, error: handedOff.error };
+          : { ok: false, backend, label: handedOff.label, error: handedOff.error, transfer: handedOff.transfer };
         return handedOff.ok ? c.json(body) : c.json(body, 409);
       }
       if (action !== "resume") {
@@ -3693,6 +3782,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           409,
         );
       }
+      const continuity = registry.listTasks().some((task) => task.sessionId === session.id && isActiveTask(task.status))
+        || Boolean(workflows?.store.activeBindingsForNote(noteKeyFor(session)).length);
+      if (continuity) {
+        const result = await handoffSession({ ...session, cwd: workspaceRoot }, backend);
+        return c.json(result, result.ok ? 200 : 409);
+      }
       if (agentResumeClaims.has(session.id)) {
         return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
       }
@@ -3700,20 +3795,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // With the mode the session was last observed in, so the resumed CLI starts where
       // the operator left it - the same carry the embedded handoff makes, and null when
       // nobody measured one, which renders no flag rather than a guess.
-      let argv: string[] | null;
+      agentResumeClaims.add(session.id);
+      let prepared: PreparedResume;
       try {
-        argv = await resumeArgvFor(
-          session.agent,
-          session.agentSessionId!,
-          session.permissionMode,
-        );
+        prepared = await prepareResume({ ...session, cwd: workspaceRoot });
       } catch (error) {
+        agentResumeClaims.delete(session.id);
         const message = error instanceof Error ? error.message : String(error);
         return c.json({ ok: false, backend, error: message }, 409);
       }
-      if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
-
-      agentResumeClaims.add(session.id);
       const task =
         registry
           .listTasks()
@@ -3722,25 +3812,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
               candidate.sessionId === session.id &&
               isActiveTask(candidate.status),
           ) ?? null;
-      if (task) {
-        if (session.runtime === "sdk") clearSdkSessionTask(session.id);
-        // Before launch: the old session's pending `session_remove` must not settle work
-        // that is transferring to the replacement process.
-        registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
-      }
-
       let result;
       try {
-        result = await launchAgentTerminal(backend, {
-          name: session.name,
-          cwd: workspaceRoot,
-          argv,
-        }, terminalLauncher);
+        if (task) {
+          if (session.runtime === "sdk") clearSdkSessionTask(session.id);
+          // Before launch: the old session's pending `session_remove` must not settle work
+          // that is transferring to the replacement process.
+          registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+        }
+      } catch {
+        // Still preparation-owned: no managed launcher has taken the lease yet.
+        agentResumeClaims.delete(session.id);
+        if (prepared.dispose()) {
+          if (task) tasks.settleAfterFailedHandoff(task.id);
+          return c.json({ ok: false, backend, error: "Managed resume could not record its launch intent. No terminal was started; recheck launch status before trying again." }, 409);
+        }
+        return c.json({ ok: false, backend, error: `Managed resume ${prepared.lease.id} has an unknown launch outcome. Its environment is retained; recheck launch status before trying again.` }, 504);
+      }
+      try {
+        result = await launchManagedAgentTerminal(backend, { name: session.name, prepared }, terminalLauncher);
       } catch (error) {
         agentResumeClaims.delete(session.id);
-        if (task) tasks.settleAfterFailedHandoff(task.id);
-        const message = error instanceof Error ? error.message : String(error);
-        return c.json({ ok: false, backend, error: message }, 502);
+        if (error instanceof TerminalLaunchError && !error.outcomeUnknown) {
+          if (task) tasks.settleAfterFailedHandoff(task.id);
+          return c.json({ ok: false, backend, resumeLeaseId: prepared.lease.id, launchOutcome: "refused",
+            error: `${error.message}. No terminal was started; recheck launch status before trying again.` }, 409);
+        }
+        return c.json({ ok: false, backend, error: `Managed resume ${prepared.lease.id} has an unknown launch outcome. Its environment is retained; recheck launch status before trying again.` }, 504);
       }
       if (task && (result.ok || result.status === 504)) {
         const current = registry.getTask(task.id);
@@ -3775,6 +3873,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         ok: result.ok,
         backend,
         label: result.label,
+        resumeLeaseId: prepared.lease.id,
+        launchOutcome: result.ok ? "launched" : result.status === 504 ? "unknown" : "refused",
         ...(result.error ? { error: result.error } : {}),
       };
       return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
@@ -4779,6 +4879,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, SubmitWorkflowEvidenceSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.sessionId && (transferForNote(parsed.data.sessionId) || transferForSource(parsed.data.sessionId))) {
+      return c.json({ error: "Handoff awaiting discovery. Retry evidence registration after the terminal transfer is verified", code: "handoff_awaiting_discovery", retryable: true }, 409);
+    }
     const session = registry.findSessionByEnv(
       parsed.data.env,
       parsed.data.sessionId,
@@ -4842,11 +4945,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER),
     );
     if (!authority) {
-      return c.json({ error: "this scout submission has no valid session credential" }, 403);
+      return c.json({ error: "this session has no valid report capability. Let Mission Control observe the live session, then use its current MCP bridge to retry." }, 403);
     }
     const result = await library.submit({
       authority,
       submission: {
+        title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,
         tags: parsed.data.tags,
@@ -7273,15 +7377,40 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // NOT here: any route that returns a stored credential, a queued payload or an endpoint an
   // operator did not just send us. `telemetryStatus()` reports whether a secret exists; there
   // is no read path for its value, here or anywhere.
-  app.get("/api/telemetry/config", (c) => c.json(telemetryStatus()));
+  //
+  // The managed lock. While an organization manages this Mac, a person's settings writes and
+  // the two destructive operations are refused here, at the route: the daemon's own apply
+  // path calls `setTelemetryConfig` directly and is not a request. Test connection, Try again
+  // and Re-check change no setting and stay available. Nothing outside these routes locks.
+  //
+  // Each of these routes first waits out any organization recheck in flight - the startup one
+  // above all. Until it settles nobody knows whether this Mac is managed, and answering in
+  // that window would render the panel editable and accept a write the lock exists to refuse.
+  // The lock check and the write it guards run together inside `whileOrganizationSettled`,
+  // in one synchronous step, so no recheck can begin between them.
+  const managedRefusal = (): { error: string; managedBy: string } | null => {
+    const organization = currentOrganization();
+    return organization === null
+      ? null
+      : managedTelemetryRefusal(organization.entry.id, organization.entry.label);
+  };
+  app.get("/api/telemetry/config", async (c) => {
+    await organizationSettled();
+    return c.json(telemetryStatusResponse());
+  });
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = managedRefusal();
+      return managed ? { managed } : { applied: setTelemetryConfig(parsed.data) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     // Attribution, never authorization. Nothing below branches on it, and nothing anywhere in
     // the daemon reads it to decide whether this request is allowed: the headers say who the
     // app THINKS asked, and `basis` says how much that is worth.
     const context = resolveOperationContext(c.req.raw.headers);
-    const applied = setTelemetryConfig(parsed.data);
+    const applied = outcome.applied;
     // 409 rather than 500: every refusal here is a configuration the operator can see and
     // fix - an unencrypted remote endpoint carrying a credential, our own address, the
     // product audience that has no service behind it, or a revision that moved underneath.
@@ -7304,8 +7433,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/telemetry/operation", async (c) => {
     const parsed = await parseBody(c, TelemetryOperationRequestSchema);
     if (!parsed.ok) return parsed.res;
+    // `retry` changes no setting - it clears a pause the daemon applied - so it stays open.
+    const { action, profile } = parsed.data;
+    const outcome = await whileOrganizationSettled(() => {
+      const managed = action === "retry" ? null : managedRefusal();
+      return managed ? { managed } : { result: runTelemetryOperation(action, profile) };
+    });
+    if ("managed" in outcome) return c.json(outcome.managed, 403);
     const context = resolveOperationContext(c.req.raw.headers);
-    const result = runTelemetryOperation(parsed.data.action, parsed.data.profile);
+    const result = outcome.result;
     recordTelemetryControl({
       action: parsed.data.action,
       profile: result.profile ?? "all",
@@ -7318,7 +7454,46 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(result);
   });
 
-  app.get("/api/telemetry/health", (c) => c.json(telemetryHealth()));
+  // Join or leave the managing organization's pilot on this Mac. The one telemetry write a
+  // person on a managed Mac can make, because Settings there has no switches: 409 unless an
+  // organization is active and its rollout is still `pilot`.
+  app.post("/api/telemetry/organization/pilot", async (c) => {
+    const parsed = await parseBody(c, TelemetryOrganizationPilotRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => setPilotEnrollment(parsed.data.enrolled));
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
+  });
+
+  // Detect the managing organization again and apply what it finds - managed, unchanged, or
+  // withdrawn - then answer the status the panel renders.
+  app.post("/api/telemetry/organization/recheck", async (c) => {
+    let outcome;
+    try {
+      outcome = await recheckOrganization();
+    } catch (error) {
+      // The store refused the write. The lock still holds - see `settledLock` - so this is
+      // reported, and Re-check can simply be pressed again.
+      publishSettingsStatus(registry);
+      const detail = error instanceof Error ? error.message : String(error);
+      return c.json({ error: `Could not update telemetry settings: ${detail}` }, 500);
+    }
+    if (outcome.kind === "refused") return c.json({ error: outcome.error }, 409);
+    if (outcome.kind === "indeterminate") {
+      return c.json(
+        {
+          error:
+            "Could not read this Mac's device management enrollment just now, so nothing changed. Re-check again in a moment.",
+        },
+        503,
+      );
+    }
+    publishSettingsStatus(registry);
+    return c.json(telemetryStatus());
+  });
+
+  app.get("/api/telemetry/health", (c) => c.json(telemetryHealthResponse()));
 
   // The synthetic connection probe. Sends a real, empty OTLP request, then captures the
   // result through the ordinary durable path - so it answers "can I reach the endpoint?" now

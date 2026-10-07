@@ -114,11 +114,13 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
 
   const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
   // Enter the reader from the selected session, then walk Conversation -> Work queue
-  // -> Workflows -> Diff. This is the path that used to leave focus on the shared
+  // -> Workflows -> Scouts -> Diff. This is the path that used to leave focus on the shared
   // detail body instead of giving the newly selected diff its keyboard controls.
   await dashboard.keyboard.press("Tab");
   await dashboard.keyboard.press("Tab");
   await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await expect(tabs.getByRole("tab", { name: /Scouts$/ })).toHaveAttribute("aria-selected", "true");
   await dashboard.keyboard.press("Tab");
   await expect(tabs.getByRole("tab", { name: /Diff$/ })).toHaveAttribute(
     "aria-selected",

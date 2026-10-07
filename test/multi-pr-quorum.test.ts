@@ -32,14 +32,14 @@ import {
 const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-quorum-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { openDb } = await import("../src/server/db.ts");
 
-const taskManagers: InstanceType<typeof TaskManager>[] = [];
+const managers: InstanceType<typeof TaskManager>[] = [];
 after(() => {
-  for (const manager of taskManagers) manager.stopMissionSessionClosures();
+  for (const manager of managers.splice(0)) manager.stopMissionSessionClosures();
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -177,7 +177,7 @@ function discovered(id: string, cwd: string): DiscoveredSession {
 function fixture(id: string, over: Partial<Task> = {}) {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  taskManagers.push(tasks);
+  managers.push(tasks);
   const taskId = `task-${id}`;
   const cwd = `/wt/${id}-0`;
   const extraCwd = `/wt/${id}-1`;

@@ -26,7 +26,7 @@ const {
   getTask,
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { WorktreeTeardownError } = await import("../src/server/dispatcher.ts");
 const {
   TaskWorktreeRetentionObserver,

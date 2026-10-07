@@ -85,6 +85,29 @@ test("an SDK turn.failed event retains provider origin and token exhaustion", as
   );
 });
 
+test("a successful SDK stream returns its final agent message and usage", async () => {
+  const usage = { input_tokens: 124, cached_input_tokens: 12, output_tokens: 9 };
+  const result = await runCodexSdkOneShot("x", "/bin/codex", {}, {
+    createClient: () => ({ startThread: () => ({
+      id: "th_stream_success",
+      run: async () => { assert.fail("streamed path must be used"); },
+      runStreamed: async () => ({
+        events: (async function* () {
+          yield { type: "item.completed" as const, item: { type: "reasoning", text: "not the answer" } };
+          yield { type: "item.completed" as const, item: { type: "agent_message", text: '{"title":"Streamed answer"}' } };
+          yield { type: "turn.completed" as const, usage };
+        })(),
+      }),
+    }) }),
+  });
+
+  assert.deepEqual(result, {
+    text: '{"title":"Streamed answer"}',
+    usage,
+    threadId: "th_stream_success",
+  });
+});
+
 test("a synchronous SDK construction failure still releases its disposable state home", async () => {
   let stateHome = "";
   await assert.rejects(

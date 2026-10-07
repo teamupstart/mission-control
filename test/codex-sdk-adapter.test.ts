@@ -193,6 +193,7 @@ const settle = () => new Promise((r) => setTimeout(r, 5));
 test("a launch initializes, starts a thread, binds it, and delivers turn one", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);
+  assert.equal(handle.recoveryProcessId, server.pid);
   await settle();
 
   const init = server.calls("initialize")[0];

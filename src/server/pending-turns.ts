@@ -1,3 +1,4 @@
+import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition } from "@shared/types.ts";
 import {
@@ -465,7 +466,7 @@ export class PendingTurnManager {
         }
         const owner = this.registry.sessionForNoteKey(key);
         if (owner) this.observeSession(owner);
-        else this.registry.forgetSteers(key);
+        else if (!transferForNote(key)) this.registry.forgetSteers(key);
       }
       return;
     }
@@ -692,7 +693,7 @@ export class PendingTurnManager {
   }
 
   private scheduleDrain(key: string): void {
-    if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
+    if (this.stopped || this.draining.has(key) || this.pickup.has(key) || transferForNote(key)) return;
     const session = this.registry.sessionForNoteKey(key);
     const next = session ? this.nextDelivery(session) : null;
     if (!next) { this.cancelIdleTimer(key); return; }
@@ -748,7 +749,7 @@ export class PendingTurnManager {
   }
 
   private async drainOne(key: string): Promise<void> {
-    if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
+    if (this.stopped || this.draining.has(key) || this.pickup.has(key) || transferForNote(key)) return;
     const session = this.registry.sessionForNoteKey(key);
     if (!session) return;
     const next = this.nextDelivery(session);
@@ -1117,6 +1118,7 @@ export class PendingTurnManager {
 
   private acceptanceBlocker(handoff: SdkHandoff, steer = false): string | null {
     const current = this.registry.getSession(handoff.sessionId);
+    if (current && transferHold(current)) return transferHold(current);
     if (
       handoff.ownershipUncertain ||
       !current ||

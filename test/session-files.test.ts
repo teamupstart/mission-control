@@ -20,6 +20,7 @@ import {
 import {
   applyFileLoadFailure,
   applyFileLoadSuccess,
+  applyFileRecheck,
   LatestFileRequests,
   updateExistingSession,
   type FileBuffer,
@@ -323,4 +324,75 @@ test("saving refuses a disk version that grew beyond the editor cap", async (t) 
   assert.equal(result.currentText, null);
   assert.equal(result.currentRevision, undefined);
   assert.equal((await stat(target)).size, MAX_SESSION_EDITOR_BYTES + 1);
+});
+
+test("a re-check applies a newer disk read only onto the clean buffer it was taken against", () => {
+  const document = {
+    path: "README.md", kind: "markdown" as const, editable: true, text: "disk",
+    size: 4, mtime: 1, language: "markdown", revision: "one", error: null,
+  };
+  const clean: FileBuffer = {
+    document, text: "disk", savedText: "disk", saveState: "saved", error: null, conflict: null,
+  };
+  const base: SessionFilesState = {
+    files: [], listState: "ready", listError: null, selectedPath: "README.md",
+    openError: null, mode: "preview", buffers: { "README.md": clean },
+  };
+  const edited = { ...document, text: "the agent's edit", revision: "two" };
+  const moved = { ok: true, unchanged: false, file: edited } as const;
+
+  const followed = applyFileRecheck(base, "README.md", "one", moved);
+  assert.equal(followed.buffers["README.md"]!.text, "the agent's edit");
+  assert.equal(followed.buffers["README.md"]!.document.revision, "two");
+  assert.equal(followed.mode, "preview", "a re-render, not a switch of surface");
+
+  // The reader typed while the check was out: their words win and the save path decides.
+  const typing = { ...clean, text: "mine", saveState: "modified" as const };
+  const withTyping = { ...base, buffers: { "README.md": typing } };
+  assert.equal(applyFileRecheck(withTyping, "README.md", "one", moved), withTyping);
+
+  // The reader's own save, or a newer load, moved the buffer on inside the round trip.
+  const saved = { ...clean, document: { ...document, revision: "three" } };
+  const afterSave = { ...base, buffers: { "README.md": saved } };
+  assert.equal(applyFileRecheck(afterSave, "README.md", "one", moved), afterSave);
+
+  // The file was deselected and its buffer dropped.
+  const gone = { ...base, buffers: {} };
+  assert.equal(applyFileRecheck(gone, "README.md", "one", moved), gone);
+});
+
+test("a failed re-check keeps the open document, and the next good one updates it", () => {
+  const document = {
+    path: "docs/spec.md", kind: "markdown" as const, editable: true,
+    text: "The retry budget is thirty seconds.\n",
+    size: 36, mtime: 1, language: "markdown", revision: "one", error: null,
+  };
+  const clean: FileBuffer = {
+    document, text: document.text, savedText: document.text, saveState: "saved", error: null,
+    conflict: null,
+  };
+  const open: SessionFilesState = {
+    files: [], listState: "ready", listError: null, selectedPath: "docs/spec.md",
+    openError: null, mode: "preview", buffers: { "docs/spec.md": clean },
+  };
+
+  // The file is mid-rewrite or briefly gone, so the check fails. The reader keeps what it was
+  // showing: same buffer, same text, and no error raised over it.
+  const failed = applyFileRecheck(open, "docs/spec.md", "one", { ok: false, error: "File not found" });
+  assert.equal(failed, open);
+  assert.equal(failed.buffers["docs/spec.md"]!.text, "The retry budget is thirty seconds.\n");
+  assert.equal(failed.openError, null);
+
+  // Nor does an unchanged answer move anything.
+  assert.equal(applyFileRecheck(failed, "docs/spec.md", "one", { ok: true, unchanged: true }), failed);
+
+  // The file is back with the agent's edit, and the next check brings it on screen.
+  const rewritten = { ...document, text: "Retries stop at the deadline.\n", revision: "two" };
+  const updated = applyFileRecheck(failed, "docs/spec.md", "one", {
+    ok: true, unchanged: false, file: rewritten,
+  });
+  assert.equal(updated.buffers["docs/spec.md"]!.text, "Retries stop at the deadline.\n");
+  assert.equal(updated.buffers["docs/spec.md"]!.document.revision, "two");
+  assert.equal(updated.buffers["docs/spec.md"]!.saveState, "saved");
+  assert.equal(updated.openError, null);
 });

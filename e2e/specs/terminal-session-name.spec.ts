@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, Task } from "../../src/shared/types.ts";
 import type { TerminalBoundaryState } from "../fixtures/terminal-boundary.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { resumeLeaseRoot } from "../../src/server/terminal/resume-lease.ts";
 
 // Compile the production daemon with scripted terminal/OS I/O only. Dispatch,
 // correlation, Registry, persistence, routes and SSE remain the real implementation.
@@ -160,7 +161,10 @@ test("an external Ghostty session sharing a pane cwd has no writable destination
   }
 });
 
+test.describe("managed terminal continuation", () => {
+test.use({ daemonEnv: { MC_E2E_TERMINAL_BOUNDARY: "1", MC_E2E_RESUME_TOOLS: "1", MISSION_POLL_MS: "100" } });
 test("continuing an SDK task in Ghostty retains the returned launch target", async ({ dashboard, daemon }) => {
+  try {
   const response = await fetch(`${daemon.baseURL}/api/tasks`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ repoRoot: daemon.repo, title: "Continue in Ghostty", intent: "Wait for another instruction",
@@ -185,12 +189,11 @@ test("continuing an SDK task in Ghostty retains the returned launch target", asy
   const continued = await getTask();
   expect(continued.sessionId).not.toBe(embedded);
   expect(continued.terminalLaunch?.sessionId).toBe(continued.sessionId);
-  await dashboard.getByRole("navigation", { name: "Sessions" })
-    .getByRole("button", { name: /^Continue in Ghostty running/ }).click();
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /^Continue in Ghostty .* idle / })).toHaveAttribute("aria-current", "true");
   await expect(dashboard.getByPlaceholder("No pane to send to")).toHaveCount(0);
   const nonce = "handoff-to-exact-ghostty-uuid";
-  // This fake has no readiness hooks, so the Chat composer correctly queues new turns.
-  // Exercise the terminal write route directly, as in the native UUID acknowledgement probe.
+  // Exercise the exact terminal write target, as in the native UUID acknowledgement probe.
   const sent = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(continued.sessionId!)}/send`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ text: nonce, submit: false, origin: "human" }),
@@ -203,4 +206,19 @@ test("continuing an SDK task in Ghostty retains the returned launch target", asy
     await dashboard.mouse.move(0, 0);
     await dashboard.screenshot({ path: "e2e/.artifacts/terminal-session-name/ghostty-handoff.png" });
   }
+  } finally {
+    mkdirSync(daemon.recordDir, { recursive: true });
+    writeFileSync(join(daemon.recordDir, "resume-stop"), "stop");
+    const proof = join(daemon.recordDir, "resume-mcp.json");
+    if (existsSync(proof)) {
+      const observed = JSON.parse(readFileSync(proof, "utf8"));
+      const marker = join(observed.missionHome, "terminal-launch.json");
+      if (existsSync(marker)) {
+        const { pid } = JSON.parse(readFileSync(marker, "utf8"));
+        await expect.poll(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, { timeout: 10000 }).toBe(true);
+      }
+      rmSync(resumeLeaseRoot(daemon.home), { recursive: true, force: true });
+    }
+  }
+});
 });

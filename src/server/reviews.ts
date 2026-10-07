@@ -1,3 +1,4 @@
+import { transferForSource, runtimeTransferSuccessor } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PlanDecision,
@@ -12,6 +13,7 @@ import type { Registry } from "./registry.ts";
 import {
   inTransaction,
   insertReview,
+  transferPendingReviews,
   loadReviewContinuationCandidates,
   markReviewWaitDetached,
   updateReviewStatus,
@@ -73,6 +75,7 @@ export class ReviewManager {
     // question on one hiccuping sweep, and there is no way back from a terminal status.
     this.registry.subscribe((e) => {
       if (e.type === "session_remove") this.orphanReviewsFor(e.id);
+      if (e.type === "session_transfers" && e.changed?.state === "adopted") this.retryContinuations(e.changed.sourceSessionId);
       if (e.type === "session_upsert" && this.owedContinuationSessions.has(e.session.id)) {
         this.retryContinuations(e.session.id);
       }
@@ -121,6 +124,7 @@ export class ReviewManager {
   }
 
   private deliverContinuation(review: ReviewItem): void {
+    if (transferForSource(review.sessionId)) { this.owedContinuationSessions.add(review.sessionId); return; }
     if (!this.continuationDelivery) {
       this.owedContinuationSessions.add(review.sessionId);
       return;
@@ -128,7 +132,7 @@ export class ReviewManager {
 
     let delivered = false;
     try {
-      delivered = this.continuationDelivery(review, this.continuationText(review));
+      delivered = this.continuationDelivery({ ...review, sessionId: runtimeTransferSuccessor(review.sessionId) }, this.continuationText(review));
     } catch (error) {
       console.error(`Failed to queue review continuation ${review.id}:`, error);
     }
@@ -430,13 +434,24 @@ export class ReviewManager {
    * delete, so the record of what was asked survives for anything reading history.
    */
   private orphanReviewsFor(sessionId: string): void {
+    if (transferForSource(sessionId)) return;
     for (const r of this.registry.pendingReviews(sessionId)) this.settle(r, "orphaned", null);
   }
+
+  persistRuntimeTransfer(sourceId: string, successorId: string): ReviewItem[] {
+    return transferPendingReviews(sourceId, successorId);
+  }
+
+  publishRuntimeTransfer(reviews: readonly ReviewItem[]): void {
+    for (const review of reviews) this.registry.upsertReview(review);
+  }
+
+  settleRuntimeTransfer(sourceId: string): void { this.orphanReviewsFor(sourceId); }
 
   /** The restart half: pending reviews bound to a session the first sweep never found. */
   private orphanReviewsWithNoLiveSession(): void {
     for (const r of this.registry.pendingReviews()) {
-      if (this.registry.getSession(r.sessionId)) continue;
+      if (this.registry.getSession(r.sessionId) || transferForSource(r.sessionId)) continue;
       this.settle(r, "orphaned", null);
     }
   }

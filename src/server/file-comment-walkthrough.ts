@@ -28,7 +28,11 @@ import { reanchor, type FileCommentAnchor } from "@shared/file-comment-anchor.ts
 import { isOutstandingThreadStatus, isParkedReview } from "@shared/file-comments.ts";
 import { messageBlockReason } from "@shared/pane.ts";
 import { settledIdle } from "@shared/session.ts";
-import { openingDeliveryHandle, renderFileCommentPayload } from "./file-comment-payload.ts";
+import {
+  openingDeliveryHandle,
+  renderFileCommentPayload,
+  type FileCommentPayloadAnchor,
+} from "./file-comment-payload.ts";
 
 /**
  * How long a session must sit settled-idle before a comment it never answered is given up on.
@@ -206,6 +210,23 @@ export function nextMessage(thread: FileCommentThread): { message: FileCommentMe
     if (message.deliveredAt === null) return { message, ordinal };
   }
   return null;
+}
+
+/**
+ * Whether the agent has already seen this thread: one of its messages was confirmed
+ * delivered, or the agent has written in it.
+ *
+ * This is what separates the two cases an unresolvable quote can be. A comment the agent has
+ * never read, quoting text that is gone, would arrive about words it cannot find - that is
+ * the confused exchange the hold exists to prevent. A follow-up in a thread the agent already
+ * answered is the opposite: the quote is usually gone BECAUSE the agent rewrote it in answer,
+ * the agent knows what it changed, and holding the follow-up strands the conversation.
+ *
+ * Read from the WHOLE history. The capped copy carries the newest messages, and a long thread
+ * whose one delivered message fell off the front would otherwise read as never sent.
+ */
+export function threadReachedAgent(thread: FileCommentThread): boolean {
+  return thread.messages.some((m) => m.author === "agent" || m.deliveredAt !== null);
 }
 
 function anchorOf(thread: FileCommentThread): FileCommentAnchor {
@@ -672,9 +693,19 @@ export class FileCommentWalkthrough {
     // simply waits: the review is still running and the armed tick re-asks within the second,
     // by which time this thread is in the snapshot and gets re-anchored like any other.
     if (!reanchored.has(current.id)) return;
-    if (missing.has(current.path)) return this.stopWith(sessionId, PAUSE_REASONS.missingFile(current.path));
-    if (current.outdated) {
-      return this.stopWith(sessionId, PAUSE_REASONS.outdated(current.path, current.shortId));
+    const anchor: FileCommentPayloadAnchor = missing.has(current.path)
+      ? "missing"
+      : current.outdated ? "outdated" : "current";
+    // An anchor that no longer resolves holds only a comment the agent has never seen. A
+    // follow-up in a thread it already answered goes, and the payload says the quote is the
+    // text the thread started on - see `threadReachedAgent`.
+    if (anchor !== "current" && !threadReachedAgent(this.port.threadWithHistory(current.id) ?? current)) {
+      return this.stopWith(
+        sessionId,
+        anchor === "missing"
+          ? PAUSE_REASONS.missingFile(current.path)
+          : PAUSE_REASONS.outdated(current.path, current.shortId),
+      );
     }
 
     // The outbox and the pane, re-asked against the session as it is NOW. A conversation turn
@@ -686,7 +717,7 @@ export class FileCommentWalkthrough {
       return;
     }
 
-    this.send(sessionId, current, now.startedAt, replyTool);
+    this.send(sessionId, current, now.startedAt, replyTool, anchor);
   }
 
   /**
@@ -858,6 +889,7 @@ export class FileCommentWalkthrough {
     head: FileCommentThread,
     startedAt: number | null,
     replyTool: string | null,
+    anchor: FileCommentPayloadAnchor,
   ): void {
     const thread = this.port.threadWithHistory(head.id) ?? head;
     const next = nextMessage(thread);
@@ -881,6 +913,7 @@ export class FileCommentWalkthrough {
       position: sent + 1,
       total: sent + queued,
       replyTool,
+      anchor,
     });
 
     const result = this.port.submit(sessionId, rendered.payload);

@@ -15,8 +15,19 @@ export {
   telemetryIdentity,
   telemetryProductEnrollment,
   telemetryStatus,
+  telemetryStatusResponse,
   userCredentialConfigured,
 } from "./config.ts";
+export {
+  applyOrganization,
+  describeOrganizationOutcome,
+  organizationSettled,
+  recheckOrganization,
+  whileOrganizationSettled,
+  setPilotEnrollment,
+  telemetryOrganizationRecord,
+} from "./organization.ts";
+export type { OrganizationApplyOutcome, PilotEnrollmentResult } from "./organization.ts";
 export {
   recordTelemetryControl,
   runTelemetryOperation,
@@ -24,7 +35,7 @@ export {
 } from "./controls.ts";
 export { observeDaemonStart, runTelemetryProbe } from "./diagnostics.ts";
 export type { DaemonLaunchMode } from "./diagnostics.ts";
-export { telemetryHealth, telemetrySettingsSummary } from "./health.ts";
+export { telemetryHealth, telemetryHealthResponse, telemetrySettingsSummary } from "./health.ts";
 export { admitBrowserTelemetry, resetIngressRateLimitForTesting } from "./ingress.ts";
 export {
   expirePrObservations,

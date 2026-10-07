@@ -271,7 +271,7 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
   await expect.poll(() => workspaceCommands(daemon), { timeout: 20_000 }).toHaveLength(1);
   // Read back THROUGH the launch wrapper: a backend is handed `'/bin/sh' '<wrapper>'` and
   // nothing else, because Herdr can only start a command by typing it into a login shell and
-  // a long paste loses its Enter. The agent's own command line is the wrapper's last line.
+  // a long paste loses its Enter. The guard reads the agent's argv from its private config.
   const command = launchedCommand(workspaceCommands(daemon)[0]!);
   expect(command).toContain(join(daemon.home, "fake-bin", "fake-pi"));
   // `--session`, not `--resume` (which opens Pi's interactive picker and takes no id) and

@@ -63,7 +63,9 @@ async function http(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
-    "x-mission-operation-id": crypto.randomUUID().replaceAll("-", ""),
+    // The imported `randomUUID`, never the `crypto` global: Node 18 has no such global, and
+    // a Node 18 child made every tool call fail with "ReferenceError: crypto is not defined".
+    "x-mission-operation-id": randomUUID().replaceAll("-", ""),
     "x-mission-operation-surface": "mcp",
     "x-mission-operation-actor": "agent",
     ...extraHeaders,

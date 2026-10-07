@@ -78,7 +78,24 @@ export interface FileCommentPayloadInput {
    * answerable at all.
    */
   replyTool?: string | null;
+  /**
+   * Whether the quote still resolves in the file. Anything but `current` is a follow-up in a
+   * thread the agent has already seen - a comment it has not is held instead - so the quote is
+   * printed as the text the thread started on, and the agent is told so rather than left to
+   * search the file for a sentence it has usually already rewritten.
+   */
+  anchor?: FileCommentPayloadAnchor;
 }
+
+/** `current`, or why the quote no longer resolves: the text changed, or the file is gone. */
+export type FileCommentPayloadAnchor = "current" | "outdated" | "missing";
+
+const ANCHOR_NOTES: Record<Exclude<FileCommentPayloadAnchor, "current">, string> = {
+  outdated:
+    "The quoted text is no longer in the file: it is what this thread started on, and the file has changed since. Read the file as it is now.",
+  missing:
+    "This file is no longer in this checkout. The quoted text is what this thread started on.",
+};
 
 export interface RenderedFileComment {
   payload: string;
@@ -203,10 +220,12 @@ export function renderFileCommentPayload(input: FileCommentPayloadInput): Render
 
   const quotedLines = quote.value.split("\n").map((line) => (line ? `> ${line}` : ">"));
   const bodyText = body.value.replace(/\s+$/u, "");
+  const anchorNote = input.anchor && input.anchor !== "current" ? ANCHOR_NOTES[input.anchor] : null;
   const head = [
     positionLine,
     "",
     `${sanitizeWorkflowFeedback(input.path)}, ${lineRangeLabel(input.startLine, input.endLine)}:`,
+    ...(anchorNote ? [anchorNote] : []),
     "",
     ...quotedLines,
     "",

@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { launchPreparedResume, type ManagedResumeLaunch } from "./resume-launch.ts";
 import { readLaunchProcess, type LaunchProcess } from "./launch-process.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { MULTIPLEXER_IDS, EMULATOR_IDS } from "@shared/terminal.ts";
@@ -268,12 +269,32 @@ export async function launchAgentTerminal(
     const argv = isolatedAgentArgv(spec.argv, { cwd: spec.cwd, stateHome });
     const result = await launcher(backend, { ...spec, argv });
     if (!result.ok && result.status !== 504) cleanupDisposableAgentStateHome(stateHome);
-    return result.ok && result.terminalResourceId?.startsWith("emulator:")
-      ? { ...result, launchStateHome: stateHome, launchProcess: await readLaunchProcess(stateHome) } : result;
+    return await observeAgentLaunch(result, stateHome);
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;
   }
+}
+
+/** Selected-backend managed launch; command and lifetime come exclusively from preparation. */
+export async function launchManagedAgentTerminal(
+  backend: TerminalBackendId,
+  input: ManagedResumeLaunch,
+  launcher: TerminalLauncher = launchTerminal,
+): Promise<TerminalLaunchOutcome> {
+  const result = await launchPreparedResume(input, async ({ name, cwd, argv, stateHome }) => {
+    const launched = await launcher(backend, { name, cwd, argv });
+    return { outcome: launched.ok ? "launched" : launched.status === 504 ? "unknown" : "refused",
+      value: await observeAgentLaunch(launched, stateHome) };
+  });
+  return result.outcome === "unknown" && result.value.status !== 504
+    ? { ...result.value, status: 504, error: "The resume wrapper claimed its environment; terminal outcome is unknown" }
+    : result.value;
+}
+
+async function observeAgentLaunch(result: TerminalLaunchOutcome, stateHome: string): Promise<TerminalLaunchOutcome> {
+  return result.ok && result.terminalResourceId?.startsWith("emulator:")
+    ? { ...result, launchStateHome: stateHome, launchProcess: await readLaunchProcess(stateHome) } : result;
 }
 
 function uniqueSessionName(sessions: MuxSessions, baseName: string, launchId: string): string {

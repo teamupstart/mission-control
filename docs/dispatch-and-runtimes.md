@@ -18,3 +18,6 @@ Read [Dispatch, backlog, and task sources](dispatch-and-backlog.md) for the oper
 For the precise runtime-selection and failure rules, use the authoritative
 [dispatch runtime contract](agent-guides/architecture.md#dispatch-runtime). Capability
 boundaries are described in [Harnesses and terminal backends](harnesses-and-terminals.md).
+
+For managed terminal preparation, launch ownership and recovery, see
+[Managed terminal resumes](harnesses-and-terminals.md#managed-terminal-resumes).

@@ -37,6 +37,7 @@ export async function startPi(
     return driver;
   };
   const handle: SdkSessionHandle = {
+    get recoveryProcessId() { return driver?.recoveryProcessId ?? null; },
     events: out,
     send: async (turn: SdkTurn) => requireReady().send(turn),
     sendIfIdle: async (turn: SdkTurn) => {

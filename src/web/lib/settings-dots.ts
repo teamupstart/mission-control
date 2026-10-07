@@ -16,7 +16,7 @@ import type { SettingsCategoryId } from "./settings-registry.ts";
  * that colours it from an existing token (`--idle`/`--attention`/`--danger`/`--foreman`),
  * so no vendor or new token is named - the same discipline the tone badges keep.
  */
-export type SettingsDotTone = "live" | "armed" | "failing" | "foreman";
+export type SettingsDotTone = "live" | "armed" | "failing" | "neutral" | "foreman";
 
 export interface SettingsDotInputs {
   /** The daemon's status tuple, or null before the first snapshot ("unknown", not "off"). */
@@ -109,6 +109,7 @@ export function settingsRailDot(
       if (telemetry.profiles.some((p) => p.pausedReason !== null || (p.failing && p.pending > 0))) {
         return "failing";
       }
+      if (telemetry.profiles.some((p) => p.waitingForNetwork)) return "neutral";
       return telemetry.profiles.some((p) => p.exporting) ? "live" : null;
     }
     default:

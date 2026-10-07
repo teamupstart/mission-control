@@ -17,7 +17,7 @@ export interface PiCandidateReading { healthy: boolean; warning: string | null; 
 
 /** No bundle code enters the daemon. Canonical paths, bounded output, hard timeout, no bearer. */
 export async function loadPiExtensionMetadata(path: string, timeoutMs = 3000): Promise<LoadReading> {
-  const descriptor = await resolveMissionMcpRuntime(process.execPath);
+  const descriptor = resolveMissionMcpRuntime();
   const env = agentSubprocessEnv({ ...process.env, ...descriptor.env });
   try {
     return await new Promise((done) => {

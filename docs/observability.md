@@ -63,6 +63,17 @@ curl -X PUT localhost:7317/api/telemetry/config \
   -H 'content-type: application/json' \
   -d '{"enabled":true,"user":{"enabled":true,"endpoint":"http://127.0.0.1:14318"}}'
 
+# A Datadog-compatible delta destination. networkGate and lateAfterMs are API-only controls;
+# Metric temporality is also editable in Settings > Telemetry.
+curl -X PUT localhost:7317/api/telemetry/config \
+  -H 'content-type: application/json' \
+  -d '{"user":{"temporality":"delta","networkGate":"cloudflare-edge","lateAfterMs":3600000}}'
+
+# The cost-bounded Datadog export shape. Also editable in Settings > Telemetry; see
+# "Export shapes" below for what it leaves out and what changing it resets.
+curl -X PUT localhost:7317/api/telemetry/config \
+  -H 'content-type: application/json' -d '{"user":{"exportShape":"datadog-lean"}}'
+
 curl localhost:7317/api/telemetry/health          # queue depth, bytes, gaps, pause reasons
 curl -X POST localhost:7317/api/telemetry/probe -d '{"profile":"user"}' \
   -H 'content-type: application/json'             # a real OTLP request, plus a captured fact
@@ -107,7 +118,18 @@ not through a poll: a destination that pauses itself has no other symptom anywhe
 a panel polling for it would be a second store of the same facts drifting by up to one interval.
 The rail's Telemetry dot turns red when a destination stopped or is not getting through, green when
 something is actually being exported, and stays dark for local-only - which is a complete state, not
-a half-finished setup.
+a half-finished setup. An edge-gated destination whose Cloudflare edge refuses the current network
+is different: it keeps its queue active, retries with a base backoff capped at five minutes plus
+up to 25 percent positive jitter, reports `waitingForNetwork` and `waitingSince`, and shows a
+neutral dot rather than a failure. A successful send clears the wait without a manual resume.
+
+`lateAfterMs` does not discard an old point. Once the destination accepts the batch, Mission
+Control increments the durable `latePointsSent` counter and records a `late_points` gap so a
+backend's age-window exposure is visible. Failed attempts do not count, and an accepted retry
+that aged past the cutoff while queued counts the batch once. If a partial-success response does
+not identify which points were rejected, the counter records the conservative lower bound that
+must have been both late and accepted.
+The point remains subject to that backend's own historical-ingestion policy.
 
 ### The browser telemetry ingress
 
@@ -161,8 +183,10 @@ per-destination identifiers derived with a profile salt, so the same session rea
 under two unrelated ids and neither can be turned back into the thing it came from.
 
 Every record carries a `deployment.environment.name` resource attribute, `local` by default and
-overridable with `MISSION_TELEMETRY_ENVIRONMENT`. It exists so demo, development and test signals
-can be kept out of adoption analysis rather than filtered out afterwards by guesswork.
+overridable with `MISSION_TELEMETRY_ENVIRONMENT`. On a Mac an organization manages, the
+organization's preset environment (`corp` for Upstart) replaces `local`, and the variable still
+wins over it. It exists so demo, development and test signals can be kept out of adoption analysis
+rather than filtered out afterwards by guesswork.
 
 The installation pseudonym is a local random seed. It supports repeat-use and within-installation
 comparison, and nothing else - there is no account lookup, no cross-device join and no
@@ -187,6 +211,86 @@ only one of those places is a rule an operator can save past:
 - A redirect that changes origin, or downgrades to remote plaintext, drops the credential.
 - `OTEL_*` environment variables are never mutated, so no agent subprocess inherits an exporter
   endpoint or credential.
+
+## Organization defaults
+
+On a machine an organization's device management identifies, Mission Control manages the
+**Product analytics** destination for that organization. Off by default still holds everywhere
+else. Today the only organization is Upstart, and [Running Mission Control at
+Upstart](upstart.md#telemetry-to-upstarts-datadog) covers what is detected and how pilot
+volunteers enroll. Everything an organization contributes - its device management hosts, its
+preset, its rollout - is one entry in `src/server/environment/organizations.ts`.
+
+**Detection** runs once at daemon start, before the telemetry cycle starts, and again on
+**Re-check** (`POST /api/telemetry/organization/recheck`). The result is cached in memory, so no
+request runs a subprocess. `MISSION_ORGANIZATION=none` turns detection off.
+`MISSION_ORGANIZATION=<id>` forces an organization only when `MISSION_ORGANIZATION_ENDPOINT` is
+a loopback URL, which then replaces the preset endpoint. Otherwise the force is ignored and
+logged. Both are diagnostic overrides, not Settings controls.
+
+An answer from `profiles` that cannot be read (a timeout, a failed exit, an overflow, output it
+does not recognize, or an `MDM enrollment` value other than an explicit Yes or No) is not an
+unenrollment, so nothing is applied or withdrawn. A Mac that is
+already managed keeps its stored settings and its lock: the lock this daemon holds, or at start
+the one the stored record names. A machine that was never managed stays unmanaged. **Re-check**
+answers 503 ("nothing changed"), and the next start or Re-check reads again. Only a clean answer
+that does not match the rule withdraws the managed settings.
+
+**Apply.** The first time an organization is recognized, the whole previous Product analytics
+destination and the master switch are kept in the `telemetry.organization` record. In the same
+transaction, the destination is replaced by the preset (endpoint, temporality, network gate,
+acceptance window and export shape) and switched **off**, whatever it was. The endpoint change
+bumps the destination generation, which fences batches queued for the old endpoint, and the
+switch-off drops them, so nothing queued for the previous collector can reach the
+organization's gateway. The master switch does not move. Every write goes through the same
+`setTelemetryConfig` path as a person's edit, attributed to the daemon.
+
+**Keep in step.** Every later start and Re-check writes every preset field again, so a newer
+preset version replaces the old one. An identical configuration stores nothing. While the
+rollout is `pilot`, the destination is on exactly when the Mac has joined the pilot
+(`POST /api/telemetry/organization/pilot` with `{"enrolled": true}`). Joining also turns the
+master switch on. Leaving turns the destination off and puts the master switch back to its
+value before first application.
+
+**Withdraw.** When a Mac that has a record is no longer recognized, the previous destination,
+including its own switch, and the previous master switch are restored in one write, and the
+record is deleted. A destination that was on before is on again, under a new consent epoch.
+Data a backend already accepted is not recalled. In the rare case that the old destination no
+longer passes the transport rules, it is cleared and left off rather than leaving the
+organization's preset in place. A record this build cannot read (corrupted, or written by a
+newer build) still proves the destination was managed, so withdrawal clears and switches off
+the Product analytics destination before deleting it. On a Mac that is still managed, such a
+record is rebuilt with a cleared, switched-off destination as what withdrawal will restore,
+never the gateway configured at that moment.
+
+If the withdrawal write itself fails (a full or locked disk, say), the Mac stays locked until a
+later start or **Re-check** succeeds. The daemon publishes "unmanaged" only once the record is
+gone, so settings stay view-only over a destination that may still name the gateway. Settings
+shows "Removing <organization>'s telemetry settings", the pilot route answers 409, and Product
+analytics export is suspended so nothing reaches the gateway in the meantime. Local collection
+and the person's own backend keep running.
+
+More generally, while an organization holds the lock, Product analytics sends only when all of
+these are stored, not merely implied:
+- a readable record for that organization;
+- the rollout's permission, which during the pilot is a stored enrollment;
+- the managed endpoint in the destination.
+
+If the first application's write fails, nothing is sent, not even when the person's previous
+destination already pointed at the gateway. The next successful start or **Re-check** writes
+the preset.
+
+**The lock.** While an organization is active, `PUT /api/telemetry/config` and the `purge` and
+`reset_identity` operations answer 403 with
+`{"error": "Telemetry settings on this Mac are managed by <organization>", "managedBy": "<id>"}`,
+and Settings > Telemetry renders view-only. The `retry` operation, the connection probe, the
+pilot route and Re-check still work, because none of them is a settings edit. The daemon's own
+apply path is not a request, so the lock never blocks it. Nothing outside Settings > Telemetry
+is locked. `GET /api/telemetry/config` reports the active organization as `organization`, or
+`null`. These routes, and the pilot route, wait for any detection still in flight, including
+the startup detection. A managed Mac therefore never shows an editable panel or accepts a
+write in the moment between the daemon listening and its recognition finishing. Detection is
+bounded at two seconds, so this delays an answer and never withholds one.
 
 ## The durable path
 
@@ -452,7 +556,8 @@ retained for 30 days against the payload window's 7.
 | Payload retention | 7 days | Bounds the bytes: journal facts and undelivered batches are the large objects. Settled delivery bookkeeping is swept on the same window, so the per-batch `accepted`, `rejected` and `expired` counts in the health view describe the retention window rather than the installation's whole history. |
 | Reducer/dedupe state retention | 30 days | Bounds the identities. The rolling cohorts later phases need a 30-day lookback for, and an expired source must not be importable again as fresh activity. |
 | Total logical budget | 256 MiB | Charged across contexts, journal, aggregates and both destination queues. |
-| Series per instrument / per profile | 2,000 / 10,000 | Beyond it, dimension values fold into an explicit overflow bucket. The total stays correct; only the breakdown degrades, and a gap counter says so. |
+| Series per instrument / per profile | 2,000 / 10,000 | Beyond it, dimension values fold into an explicit overflow bucket. The total stays correct; only the breakdown degrades, and a gap counter says so. On a budgeted destination, a retired app version's idle series are pruned after 30 days, so they stop counting. |
+| Weighted series per budgeted destination | 1,500 under `datadog-lean` | Live at once, and exported in any clock hour. See [Export shapes](#export-shapes). |
 | Event payload | 16 KiB | |
 | Request payload | 1 MiB | Prevented at build time rather than split afterwards. |
 | Collection and export cadence | 30 s | |
@@ -536,6 +641,132 @@ exactly that against a real Prometheus.
 A changed app version is a different OTLP resource and therefore a different stream with its own
 start time. A new line appearing on a chart at an upgrade is correct behaviour.
 
+Delta is an explicit per-destination alternative for backends such as Datadog. Counters and
+histograms are differenced against a durable per-series watermark; zero deltas are omitted. Gauges
+are sent when they change and at least hourly while their source remains current. Each delta window
+starts at the previous exported end and ends at the projection pass clock, so a late fact belongs
+to the pass that projected it rather than reopening an earlier time window. Changing an endpoint or
+switching to delta advances the destination generation and baselines existing series, so the new
+destination never receives the installation's cumulative history.
+
+Delta gives up cumulative replay's overwrite behavior. A delta batch lost to expiry, pressure,
+permanent rejection, partial success, or a stale-generation fence is lost data. Re-sending a delta
+batch after an ambiguous acknowledgement repeats that delta unless the backend overwrites the same
+series and timestamp. Those cases remain visible through existing retry and gap accounting; the
+exporter does not guess or reconstruct. Destinations that do not opt in remain cumulative, and
+their durable batch JSON and earlier delivery guarantees are unchanged.
+
+### Export shapes
+
+Each remote destination names an **export shape** (`exportShape`), which changes what that
+destination receives without changing what the local store, the other destination, or any span
+receives. Settings > Telemetry has an Export shape select beside Metric temporality for both
+destinations. The registry is `src/shared/telemetry-export-shapes.ts`, and
+`exportedInstruments(shapeId)` is the only statement of what a shape exports. Anything that needs
+the list, such as a dashboard validator, reads it from there rather than restating it.
+
+- **`full`** is the default and the identity. A destination that never names a shape exports
+  exactly what it exported before shapes existed, byte for byte, and
+  `test/telemetry-export-shape-projection.test.ts` pins that against a fixture taken from the
+  earlier build.
+- **`datadog-lean`** bounds what a Datadog destination is billed for. Datadog bills each distinct
+  metric name and tag combination in every hour it reports, so this shape cuts the combinations
+  rather than the facts:
+  - **No cohort gauges.** `mission.analytics.v1.*` is left out. Those gauges serve the Grafana
+    dashboards' PromQL coherence checks. They report every hour by design, and they dominated the
+    estimated bill.
+  - **Labels trimmed on the largest activity metrics.** Removed from `mission.dispatches`:
+    `resolution_source` and `resolved_effort`. Removed from `mission.action.count` and
+    `mission.automation.actions`: `actor`. Removed from `mission.sessions.ended`:
+    `ended_while_work_open`. Removed from `mission.session.segments`: `quality` and `reason`.
+    Removed from `mission.sessions.started`: `start_observation`. Removed from
+    `mission.session.operations`: `actor_basis`. Removed from `mission.session.turns`: `quality`.
+    Removed from `mission.session.effort.selections`: `applies`. Contributions that differ only
+    in a dropped label aggregate into one series. Every dropped label is still on the matching
+    span, either as a span attribute or, for `actor`, as `mission.actor.kind`, which every span
+    carries. A test refuses a shape that drops a label no span carries.
+  - **Distributions only where percentiles matter.** `mission.session.turn.duration`,
+    `mission.dispatch.duration`, `mission.workflow.duration` and `mission.workflow.node.duration`
+    stay histograms. Every other histogram is exported as a `<name>.sum` counter, in the
+    histogram's unit, and a `<name>.count` counter, in `1`. Those still give averages, at 2
+    custom metrics per combination instead of a distribution's 9. For the product audience, that
+    is seven histograms. `mission.connection.downtime` is operator-only, so it is split only for a
+    lean destination of your own.
+  - **One constant host.** Every metrics batch, and the connection probe, carries the resource
+    attribute `datadog.host.name = mission-control`. Without it, Datadog tags each point with
+    whichever gateway pod received it, and one installation's series split across pods.
+    Installations stay distinct through `service.instance.id`. Spans are not changed.
+  - **A series budget of 1,500 weighted series.** A distribution weighs 9, a sum-and-count pair
+    2, and a counter or gauge 1. The distribution weight is 9 while the gateway keeps
+    `send_aggregation_metrics: true`, and 5 if it is turned off; it is one number in the shape
+    record.
+
+**The live-series budget.** A series is live while its last contribution or export, measured on
+the projection pass clock, is within the 7-day payload window. Every series that is not live
+right now must be admitted, whether it is new or a stored series that aged out and reports again.
+Each `(resource, instrument)` pair has at most one overflow series, with every kept label set to
+`__overflow__`. A pair with a live series reserves that overflow series' weight until the
+overflow series is live itself. A series is admitted only if live weight, plus reservations, plus
+its own weight, plus its pair's reservation if the pair has none yet, stays within the budget.
+What does not fit folds into its pair's overflow series, which is already paid for, and records
+`series_overflow`. If the pair has neither a live series nor a live overflow series, the
+contribution is dropped and counted as `budget_exhausted`. A refused resume leaves its stored row
+untouched, so once it is admitted again, its next delta excludes everything that went to overflow
+meanwhile. Committed weight is read from `idx_telemetry_series_live` at a pass's first admission,
+never kept as a running counter, so a series that ages out frees its room without a sweep. A
+stored series that is carried into a pass without a contribution, because it is waiting or due a
+heartbeat, is admitted the same way before it is exported, since exporting it makes it live again.
+If there is no room it keeps waiting, with its watermark untouched. The 2,000 and 10,000
+ceilings above still apply to every shape.
+
+**The hourly export ledger.** The live budget bounds one shape and one consent epoch. Datadog
+counts an hour, and a shape change or a consent change part-way through it does not start the hour
+again. So a budgeted destination also records, in `telemetry_export_hours`, each distinct series
+it exported in each UTC clock hour of point time, and its weight. The ledger is keyed by profile
+and hour, never by shape or epoch, and it survives restarts. A point for a series already in the
+hour's ledger always goes out. A point for a new series goes out only if the hour stays within the
+budget. Otherwise it waits: its watermark does not move, so a counter's delta arrives whole in a
+later hour, and a waiting gauge sends its then-current value. Each wait is counted once as
+`hourly_cap_deferred`. Waiting series are carried by later passes even when nothing new happens.
+A waiting cumulative point is sent stamped with the pass clock rather than its latest event time.
+Otherwise every retry would ask the same full hour for room. Its value is unchanged, because the
+total at that moment is the total at its latest event. A series takes room in an hour's ledger only
+when its batch is actually queued, and a cumulative export keeps a budgeted series live just as a
+delta export does.
+A cumulative point carries its latest event's time, so a fact projected hours late still lands in
+the hour it happened in. The ledger therefore keeps each hour for
+`TELEMETRY_LIMITS.exportLedgerRetentionMs`, the 7-day payload window plus one hour. That is as long
+as a captured fact can still be projected into it, so a delayed fact is charged against what its
+hour already used. A cumulative point whose hour is older than that is stamped with the pass clock
+and charged to the current hour, whose allowance is on record, with its value unchanged. Retention
+sweeps older rows, and every row is charged to the byte budget: at most one row per distinct series
+exported in each hour. The one case the ledger cannot control is how Datadog attributes a backlog
+delivered late, for example after a day offline with Historical Metrics Ingestion enabled.
+
+**Changing a shape** starts that destination's metric series again from zero, and Settings says so
+under the select before you save. In the same transaction as the config write, the destination
+generation advances, which fences queued batches of the old shape exactly as an endpoint change
+does. The profile's `telemetry_series` rows are also deleted, and a `shape_changed` gap is
+recorded. That is a complete reset because every counter and histogram total, and every delta
+watermark, lives in those rows. The catalog projection holds no reducer state, and a projection
+may not keep cumulative totals in its own state; the rule is on `registerTelemetryProjection`.
+Projection checkpoints are kept, so facts already projected are not counted again, and facts
+captured but not yet projected count once, under the new shape. The analytical projection's
+gauges are recomputed from its retained facts, so they return with their current values when a
+destination switches back to `full`. The consent epoch does not move, and the hourly ledger is
+kept.
+
+**Pruning.** For a destination whose shape has a series budget, retention deletes series whose
+resource is not the running process's resource and whose last activity is older than the 30-day
+reducer window. A resource is an app version, so these are series a running build can no longer
+contribute to, and otherwise they would count against that destination's ceilings forever. The
+running resource's series are never pruned, at any age. Each pass reports the count as
+`prunedSeries`. A `full` destination and local-only collection are never pruned. A pruned series
+whose version runs again, for example after a rollback, restarts its cumulative stream from zero,
+and only a budgeted destination accepts that, because it needs the room. For any other destination
+a retired version's series still count toward the 10,000-series profile ceiling, as they always
+have.
+
 ### What is not proven
 
 - Only Prometheus and Tempo at the pinned versions above have been tested, on macOS on Apple
@@ -559,10 +790,15 @@ the endpoint or credential and clear the pause by saving the configuration again
 throttled ten attempts in a row, with or without a `Retry-After` to say for how long; reduce what
 is being exported or raise the backend's limit, then save the configuration again to resume. A
 plain outage or server fault never pauses, so the backlog drains by itself when the link returns.
+If `waitingForNetwork` is true, a configured Cloudflare edge recognized the current network as
+outside its allowed path. No credential pause was applied; reconnect to the required network and
+the queue will retry on its own.
 
 **A backlog drained but old samples are missing.** Prometheus refuses samples older than its
-out-of-order window. Eight days is configured here; a sample older than that is real, visible loss
-and is reported as such rather than retried forever.
+out-of-order window. Eight days is configured here. For other destinations, set `lateAfterMs` to
+their documented window and inspect `latePointsSent` plus the `late_points` gap. These points are
+still sent, and the counter makes exposure beyond the configured age window visible. Whether the
+backend accepts historical points remains the backend's decision.
 
 **`docker compose` hangs with no output at all.** Docker Desktop's CLI hints and interactive
 Compose menu make network calls before running the command, and a machine where those calls hang

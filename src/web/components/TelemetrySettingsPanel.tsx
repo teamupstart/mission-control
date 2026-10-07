@@ -1,10 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   TelemetryProfileId,
   TelemetryProfileSummary,
   TelemetryPauseReason,
 } from "@shared/telemetry.ts";
+import type { TelemetryOrganizationStatus } from "@shared/organizations.ts";
 import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
+import {
+  TELEMETRY_EXPORT_SHAPE_IDS,
+  TELEMETRY_EXPORT_SHAPES,
+  type TelemetryExportShapeId,
+} from "@shared/telemetry-export-shapes.ts";
 import type { TelemetryState } from "../useTelemetry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -37,9 +43,13 @@ import { Tooltip } from "./Tooltip.tsx";
 const CONFIRM_MS = 5000;
 
 export function TelemetrySettingsPanel({ state }: { state: TelemetryState }): React.JSX.Element {
-  const { summary, status, health, error, conflict, notice, probe, busy, update, operate } = state;
+  const { summary, status, health, error, conflict, notice, probe, busy, update } = state;
   const config = status?.config ?? null;
   const enabled = config?.enabled ?? false;
+
+  if (status?.organization) {
+    return <ManagedTelemetryPanel state={state} organization={status.organization} />;
+  }
 
   return (
     <section className="settings-section">
@@ -143,6 +153,165 @@ export function TelemetrySettingsPanel({ state }: { state: TelemetryState }): Re
   );
 }
 
+/**
+ * The whole panel on a Mac an organization manages: what manages it, what the managed lane is
+ * configured with, and how it is doing - and nothing that edits it.
+ *
+ * View-only is the approved decision, not a styling choice: the daemon refuses every settings
+ * write while an organization is active, so a switch drawn here could only ever be refused.
+ * What stays is what changes no setting - Test connection, Try again on a paused destination,
+ * and Re-check. Every organization-specific word arrives from the daemon in `organization`.
+ */
+function ManagedTelemetryPanel({
+  state,
+  organization,
+}: {
+  state: TelemetryState;
+  organization: TelemetryOrganizationStatus;
+}): React.JSX.Element {
+  const { health, error, notice, probe, busy } = state;
+  const product = profile(state, "product");
+  const effective = organization.effective;
+  const shape = TELEMETRY_EXPORT_SHAPES[effective.exportShape];
+
+  return (
+    <section className="settings-section">
+      <div className="kb-row tele-managed" data-anchor="telemetry/organization">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Managed by {organization.label}</span>
+          <span className="kb-row-desc">{organization.evidence}</span>
+          <span className="kb-row-desc">
+            {organization.withdrawing
+              ? "These settings stay view-only until removing them finishes."
+              : `${organization.label} sets telemetry on this Mac, so these settings can be viewed here but not changed.`}
+          </span>
+          <p className="tele-managed-state">{managedStateLine(organization, product)}</p>
+
+          <dl className="tele-managed-config" aria-label="Managed telemetry configuration">
+            <dt>Destination</dt>
+            <dd>Product analytics</dd>
+            <dt>Endpoint</dt>
+            <dd className="mono">{effective.endpoint}</dd>
+            <dt>Metric temporality</dt>
+            <dd>{effective.temporality === "delta" ? "Delta" : "Cumulative"}</dd>
+            <dt>Export shape</dt>
+            <dd>
+              {shape.label}
+              <span className="kb-row-desc">{shape.summary}</span>
+            </dd>
+            <dt>Environment</dt>
+            <dd className="mono">{effective.environment}</dd>
+            <dt>Network gate</dt>
+            <dd>{effective.networkGate === "cloudflare-edge" ? "Cloudflare edge" : "None"}</dd>
+          </dl>
+
+          {error && <p className="settings-error">{error}</p>}
+          {notice && <p className="settings-hint">{notice}</p>}
+
+          <div className="tele-actions">
+            <Tooltip label={`Send a real, empty OTLP request to ${organization.destinationLabel}`}>
+              <button
+                className="btn"
+                disabled={busy !== null || !product?.exporting}
+                aria-label={`Test the connection to ${organization.destinationLabel}`}
+                onClick={() => void state.probeEndpoint("product")}
+              >
+                Test connection
+              </button>
+            </Tooltip>
+            {product?.pausedReason != null && (
+              <Tooltip label="Clear the pause this daemon applied and attempt the queue now">
+                <button
+                  className="btn"
+                  disabled={busy !== null}
+                  aria-label={`Try sending to ${organization.destinationLabel} again`}
+                  onClick={() => void state.operate("retry", "product")}
+                >
+                  Try again
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label={`Check again whether ${organization.label} manages this Mac`}>
+              <button
+                className="btn"
+                disabled={busy !== null}
+                aria-label={`Check again whether ${organization.label} manages this Mac`}
+                onClick={() => void state.recheck()}
+              >
+                Re-check
+              </button>
+            </Tooltip>
+          </div>
+
+          {product && product.capturing && (
+            <div className="kb-row-desc tele-queue" data-anchor="telemetry/queue-product">
+              <p>
+                {organization.withdrawing
+                  ? `Nothing is sent to ${organization.destinationLabel} until removing these settings finishes.`
+                  : describeDestination(product, organization.destinationLabel)}
+              </p>
+              {product.pending > 0 && (
+                <p>
+                  {product.pending} queued ({formatBytes(product.pendingBytes)})
+                  {product.oldestPendingAgeMs !== null &&
+                    `, oldest ${formatAge(product.oldestPendingAgeMs)}`}
+                  .
+                </p>
+              )}
+              {product.lastAcceptedAt !== null && (
+                <p>Last accepted {formatAge(Date.now() - product.lastAcceptedAt)} ago.</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {probe && (
+        <p className={probe.outcome === "accepted" ? "settings-hint" : "settings-error"}>
+          Connection test: {probe.outcome.replace(/_/g, " ")} in {probe.latencyMs}ms. {probe.detail}
+        </p>
+      )}
+
+      <div className="kb-row" data-anchor="telemetry/identity">
+        <div className="kb-row-text">
+          <span className="kb-row-label">This installation's pseudonym</span>
+          <span className="kb-row-desc">
+            A local random value, not an account and not a device fingerprint. It is what a
+            dashboard filters to when it shows only this installation.
+          </span>
+          {health && health.installationId !== "" ? (
+            <span className="kb-row-desc mono">
+              {health.installationId} (epoch {health.identityEpoch})
+            </span>
+          ) : (
+            <span className="kb-row-desc">
+              No pseudonym has been minted. Nothing has been collected on this machine.
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** One sentence for where the managed lane stands. */
+function managedStateLine(
+  organization: TelemetryOrganizationStatus,
+  product: TelemetryProfileSummary | null,
+): string {
+  // First: while a withdrawal is unwritten nothing is sent, whatever the pilot record says.
+  if (organization.withdrawing) return `Removing ${organization.label}'s telemetry settings`;
+  if (!organization.pilotEnrolled) return "Not enrolled in the pilot on this Mac";
+  // Enrolled, but the live summary has not arrived: nothing says whether anything is being
+  // sent yet, so the line says it does not know rather than claiming delivery.
+  if (product === null) return `Checking whether this Mac is sending to ${organization.destinationLabel}`;
+  // Before "sending": a destination the daemon paused is sending nothing, and the reason and
+  // Try again are right below.
+  if (product?.pausedReason != null) return `Stopped sending to ${organization.destinationLabel}`;
+  if (product?.waitingForNetwork) return `Waiting for ${organization.networkLabel}`;
+  return `Sending to ${organization.destinationLabel}`;
+}
+
 /** Local-only capture: a destination with no endpoint, and the one the master switch gives you. */
 function LocalProfile({ state }: { state: TelemetryState }): React.JSX.Element | null {
   const local = profile(state, "local");
@@ -190,14 +359,26 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const [endpoint, setEndpoint] = useState("");
   const [headerName, setHeaderName] = useState("authorization");
   const [credential, setCredential] = useState("");
+  const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
+  const [shape, setShape] = useState<TelemetryExportShapeId>("full");
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const editVersionRef = useRef(0);
+
+  const markDirty = (): void => {
+    editVersionRef.current += 1;
+    dirtyRef.current = true;
+    setDirty(true);
+  };
 
   // Adopt the stored values whenever the daemon's copy changes, unless the operator is midway
   // through an edit - in which case their typing wins until they save or the panel remounts.
   useEffect(() => {
-    if (dirty || !config) return;
+    if (dirtyRef.current || !config) return;
     setEndpoint(config.user.endpoint);
     setHeaderName(config.user.headerName);
+    setTemporality(config.user.temporality);
+    setShape(config.user.exportShape);
   }, [config, dirty]);
 
   const credentialAfter = credential.length > 0 || (status?.userCredentialConfigured ?? false);
@@ -209,14 +390,18 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
       : null;
 
   const save = async (): Promise<void> => {
+    const submittedVersion = editVersionRef.current;
     const ok = await update({
       user: {
         endpoint: endpoint.trim(),
         headerName: headerName.trim() || "authorization",
+        temporality,
+        exportShape: shape,
       },
       ...(credential.length > 0 ? { userCredential: credential } : {}),
     });
-    if (ok) {
+    if (ok && editVersionRef.current === submittedVersion) {
+      dirtyRef.current = false;
       setDirty(false);
       // Never retained after a successful save. The daemon holds it in its own secret table and
       // has no read path for it; keeping a copy in a React state that survives a route change
@@ -235,6 +420,25 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
           Collector on this machine.
         </span>
 
+        <MetricTemporalitySelect
+          destination="your own backend"
+          value={temporality}
+          onChange={(value) => {
+            markDirty();
+            setTemporality(value);
+          }}
+        />
+
+        <ExportShapeSelect
+          destination="your own backend"
+          value={shape}
+          stored={config?.user.exportShape ?? null}
+          onChange={(value) => {
+            markDirty();
+            setShape(value);
+          }}
+        />
+
         <label className="ts-field">
           <span className="ts-field-label">Endpoint</span>
           <input
@@ -245,7 +449,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry export endpoint"
             onChange={(e) => {
-              setDirty(true);
+              markDirty();
               setEndpoint(e.target.value);
             }}
           />
@@ -260,7 +464,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry credential header name"
             onChange={(e) => {
-              setDirty(true);
+              markDirty();
               setHeaderName(e.target.value);
             }}
           />
@@ -281,7 +485,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
             disabled={!config}
             aria-label="Telemetry export credential"
             onChange={(e) => {
-              setDirty(true);
+              markDirty();
               setCredential(e.target.value);
             }}
           />
@@ -400,11 +604,15 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const unavailable = (state.summary?.productEnrollment ?? "unavailable") === "unavailable";
   const product = profile(state, "product");
   const [endpoint, setEndpoint] = useState("");
+  const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
+  const [shape, setShape] = useState<TelemetryExportShapeId>("full");
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (dirty || !config) return;
     setEndpoint(config.product.endpoint);
+    setTemporality(config.product.temporality);
+    setShape(config.product.exportShape);
   }, [config, dirty]);
 
   // The same shared predicate the personal destination and the daemon both use. No credential is
@@ -444,6 +652,25 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
           />
         </label>
 
+        <MetricTemporalitySelect
+          destination="product analytics"
+          value={temporality}
+          onChange={(value) => {
+            setDirty(true);
+            setTemporality(value);
+          }}
+        />
+
+        <ExportShapeSelect
+          destination="product analytics"
+          value={shape}
+          stored={config?.product.exportShape ?? null}
+          onChange={(value) => {
+            setDirty(true);
+            setShape(value);
+          }}
+        />
+
         {check && !check.ok && <span className="settings-error">{check.detail}</span>}
         {check?.warning && <span className="settings-warn">{check.warning}</span>}
 
@@ -454,7 +681,9 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               disabled={!config || busy !== null || (check !== null && !check.ok)}
               aria-label="Save the product analytics destination"
               onClick={() => {
-                void update({ product: { endpoint: endpoint.trim() } }).then((ok) => {
+                void update({
+                  product: { endpoint: endpoint.trim(), temporality, exportShape: shape },
+                }).then((ok) => {
                   if (ok) setDirty(false);
                 });
               }}
@@ -522,6 +751,9 @@ function ProfileHealth({
       )}
       {summary.lastAcceptedAt !== null && (
         <p>Last accepted {formatAge(Date.now() - summary.lastAcceptedAt)} ago.</p>
+      )}
+      {summary.latePointsSent > 0 && (
+        <p>{summary.latePointsSent} point(s) were sent after this destination's acceptance window.</p>
       )}
       {detail?.lastError && <p className="settings-error">{detail.lastError}</p>}
       {/*
@@ -687,16 +919,97 @@ function describeLocal(local: TelemetryProfileSummary): string {
  * is kept), paused by the daemon (something is wrong and it says what), and reachable but
  * behind.
  */
-function describeDestination(summary: TelemetryProfileSummary): string {
+function describeDestination(summary: TelemetryProfileSummary, destinationLabel?: string): string {
   if (!summary.capturing) return "Off. Nothing is being collected for this destination.";
   if (summary.pausedReason !== null) return pauseSentence(summary.pausedReason);
   if (summary.paused) return "Paused by you. Collection continues and the queue is kept.";
   if (!summary.exporting) return "Collecting, but no endpoint is configured, so nothing is sent.";
+  if (summary.waitingForNetwork) return networkWaitSentence(destinationLabel);
   if (summary.failing && summary.pending > 0) {
     return "The last attempt did not get through. The queue is kept and will be retried.";
   }
   if (summary.pending > 0) return "Sending. Some of the queue has not been delivered yet.";
   return "Up to date. Everything collected has been accepted.";
+}
+
+export function networkWaitSentence(destinationLabel?: string): string {
+  return `Waiting for network access to ${destinationLabel ?? "this destination"}. Queued data is kept and sent when it can get through.`;
+}
+
+function MetricTemporalitySelect({
+  destination,
+  value,
+  onChange,
+}: {
+  destination: string;
+  value: "cumulative" | "delta";
+  onChange: (value: "cumulative" | "delta") => void;
+}): React.JSX.Element {
+  return (
+    <label className="ts-field">
+      <span className="ts-field-label">Metric temporality</span>
+      <Tooltip label="Choose cumulative metrics for Prometheus-style collectors or per-window deltas for Datadog-style collectors">
+        <select
+          className="field-input"
+          value={value}
+          aria-label={`Metric temporality for ${destination}`}
+          onChange={(event) => onChange(event.target.value as "cumulative" | "delta")}
+        >
+          <option value="cumulative">Cumulative (Prometheus, Grafana)</option>
+          <option value="delta">Delta (Datadog)</option>
+        </select>
+      </Tooltip>
+    </label>
+  );
+}
+
+/**
+ * Which export shape a destination receives, with the shape's own sentence about what it
+ * leaves out. Every option and sentence comes from the shape registry, so this never restates
+ * what a shape does.
+ *
+ * A shape change starts the destination's metric series again from zero, so the panel says so
+ * BEFORE the save rather than leaving a person to find a reset in their backend afterwards.
+ */
+function ExportShapeSelect({
+  destination,
+  value,
+  stored,
+  onChange,
+}: {
+  destination: string;
+  value: TelemetryExportShapeId;
+  stored: TelemetryExportShapeId | null;
+  onChange: (value: TelemetryExportShapeId) => void;
+}): React.JSX.Element {
+  return (
+    <>
+      <label className="ts-field">
+        <span className="ts-field-label">Export shape</span>
+        <Tooltip label="Choose what this destination receives. Datadog lean bounds what a Datadog destination is billed for">
+          <select
+            className="field-input"
+            value={value}
+            aria-label={`Export shape for ${destination}`}
+            onChange={(event) => onChange(event.target.value as TelemetryExportShapeId)}
+          >
+            {TELEMETRY_EXPORT_SHAPE_IDS.map((id) => (
+              <option key={id} value={id}>
+                {TELEMETRY_EXPORT_SHAPES[id].label}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+      </label>
+      <span className="kb-row-desc">{TELEMETRY_EXPORT_SHAPES[value].summary}</span>
+      {stored !== null && stored !== value && (
+        <span className="settings-warn">
+          Saving starts this destination's metric series again from zero under the new shape.
+          Anything already sent stays as it is.
+        </span>
+      )}
+    </>
+  );
 }
 
 function pauseSentence(reason: TelemetryPauseReason): string {

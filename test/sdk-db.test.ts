@@ -103,6 +103,7 @@ test("the table reaches a database that already had rows", () => {
       // ALTER TABLE appends on an upgraded database; store reads name columns explicitly.
       "turn_in_progress",
       "display_name",
+      "recovery_process_json",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a

@@ -18,15 +18,26 @@
 import { TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { exportShape } from "@shared/telemetry-export-shapes.ts";
+import { resourceAttributes } from "./capture.ts";
+import { getTelemetryConfig } from "./config.ts";
+import { digest } from "./identity.ts";
 import { expirePrObservations } from "./pr-observations.ts";
 import {
   expiredBatchIds,
+  exportLedgerHorizon,
+  getDestination,
+  hasIdleSeries,
+  hasNetworkWaitingDelivery,
   listGaps,
   lowestConsumedSeq,
   pruneJournalPayloads,
   pruneJournalRows,
   pruneOrphanedContexts,
+  pruneExportHours,
   pruneOrphanedResources,
+  pruneRetiredSeries,
   pruneSourceIdentities,
   pruneTaskOutcomeState,
   pruneTerminalDeliveries,
@@ -35,6 +46,7 @@ import {
   releaseBatchPayload,
   settleDelivery,
   telemetryTransaction,
+  updateDestination,
   usedBytes,
 } from "./store.ts";
 
@@ -52,6 +64,18 @@ const BATCH_LIMIT = 500;
  */
 const PRESSURE_CHUNK = 25;
 
+
+function reconcileNetworkWaitingDestinations(d: DatabaseSync, now: number): void {
+  for (const profile of ["user", "product"] as const) {
+    if (
+      getDestination(d, profile).waitingSince !== null &&
+      !hasNetworkWaitingDelivery(d, profile)
+    ) {
+      updateDestination(d, profile, { waitingSince: null }, now);
+    }
+  }
+}
+
 export interface RetentionPassResult {
   expiredBatches: number;
   prunedPayloads: number;
@@ -59,6 +83,13 @@ export interface RetentionPassResult {
   prunedIdentities: number;
   prunedContexts: number;
   prunedResources: number;
+  /**
+   * Series of a resource this process no longer runs as, idle past the reducer window, on a
+   * destination whose export shape has a series budget.
+   */
+  prunedSeries: number;
+  /** Hourly export ledger rows for hours a backend can no longer be billing. */
+  prunedExportHours: number;
   /** Payloads of terminal batches released past the window, including retained ones. */
   releasedTerminalBatches: number;
   /** Settled delivery rows dropped once nothing referenced them. */
@@ -77,6 +108,8 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       prunedIdentities: 0,
       prunedContexts: 0,
       prunedResources: 0,
+      prunedSeries: 0,
+      prunedExportHours: 0,
       releasedTerminalBatches: 0,
       prunedDeliveries: 0,
       expiredPrObservations: 0,
@@ -101,6 +134,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       );
       releaseBatchPayload(d, id);
     }
+    reconcileNetworkWaitingDestinations(d, now);
     if (stale.length > 0) {
       recordGap(d, "payload_expired", `${stale.length} batch(es) aged out`, now, stale.length);
       result.expiredBatches = stale.length;
@@ -136,7 +170,34 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     result.prunedRows = pruneJournalRows(d, stateCutoff, BATCH_LIMIT);
     result.prunedIdentities = pruneSourceIdentities(d, stateCutoff, BATCH_LIMIT);
     pruneTaskOutcomeState(d, stateCutoff, BATCH_LIMIT);
+    // Series this build can no longer contribute to, for a destination whose export shape has a
+    // series budget. A resource is an app version, so once the running process is a different
+    // one, an old version's idle series only count against that destination's ceilings. The
+    // running resource's series are never pruned, at any age.
+    //
+    // Only budgeted shapes, and deliberately so. A pruned series that its version reports
+    // again - a rollback after a month on a newer build - restarts its cumulative stream from
+    // zero. A budgeted destination accepts that, because its budget needs the room. A `full`
+    // destination and the local profile keep every series, exactly as they always have.
+    const config = getTelemetryConfig();
+    for (const profile of ["user", "product"] as const) {
+      if (exportShape(config[profile].exportShape).seriesBudget === null) continue;
+      if (!hasIdleSeries(d, profile, stateCutoff)) continue;
+      result.prunedSeries += pruneRetiredSeries(
+        d,
+        profile,
+        digest(resourceAttributes()),
+        stateCutoff,
+        BATCH_LIMIT,
+      );
+    }
+    // The hourly export ledger remembers every hour a point can still be stamped with: a fact
+    // projected late keeps its event hour, and that hour's allowance must still be on record.
+    // The projection stamps anything older than this window with its own clock, so the two
+    // agree on which hours are tracked.
+    result.prunedExportHours = pruneExportHours(d, exportLedgerHorizon(now));
     result.prunedContexts = pruneOrphanedContexts(d);
+    // After the series prune, so a retired version's resource row goes in the same pass.
     result.prunedResources = pruneOrphanedResources(d);
 
     // 6. Phase 3's retained pull request associations, on the SAME long window rather than a
@@ -313,6 +374,7 @@ export function relievePressure(
     releaseBatchPayload(d, id);
     expiredBatches += 1;
   }
+  reconcileNetworkWaitingDestinations(d, now);
   if (expiredBatches > 0) {
     recordGap(
       d,

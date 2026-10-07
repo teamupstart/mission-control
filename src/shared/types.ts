@@ -3027,6 +3027,8 @@ export type ServerEvent =
   | import("./settings-backups.ts").SettingsRestoredEvent
   | {
       type: "snapshot";
+      /** At most 100 unresolved summaries, with a count for the paginated remainder. */
+      sessionTransfers?: import("./session-transfer.ts").SessionTransferPage;
       sessions: Session[];
       /**
        * Driverless startup views only, bounded by readable live `sdk_sessions` rows.
@@ -3153,6 +3155,7 @@ export type ServerEvent =
        */
       latestSettingsRestore: import("./settings-backups.ts").SettingsRestoredEvent | null;
     }
+  | { type: "session_transfers"; page: import("./session-transfer.ts").SessionTransferPage; changed?: import("./session-transfer.ts").SessionTransferSummary }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
   | { type: "restoring_session_upsert"; session: RestoringSession }

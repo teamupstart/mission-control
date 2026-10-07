@@ -1,3 +1,7 @@
+import { homeRecord } from "./terminal/home.ts";
+import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
+  adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
+import type { SessionTransferPage } from "@shared/session-transfer.ts";
 import { EMULATORS } from "./terminal/registry.ts";
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
@@ -594,6 +598,7 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // reaches the strip through `Session.pendingReviews` and `session_upsert` the way a
   // pending review already does - which is the same reason `review_upsert` is absent above.
   //
+  // `session_transfers` is absent: the Line counts existing tasks and runs, not transport reservations.
   // `restoring_session_upsert` / `restoring_session_remove` are DELIBERATELY absent. A
   // provisional row has no driver and is excluded from every fleet execution count; these
   // frames move only its inert Board presentation, so a Line refold could not change.
@@ -734,6 +739,9 @@ function sameTelemetrySummary(
       profile.pendingBytes === other.pendingBytes &&
       profile.lastAcceptedAt === other.lastAcceptedAt &&
       profile.failing === other.failing &&
+      profile.waitingForNetwork === other.waitingForNetwork &&
+      profile.waitingSince === other.waitingSince &&
+      profile.latePointsSent === other.latePointsSent &&
       // The oldest-pending AGE is derived from the clock, so it differs on every recompose for
       // as long as anything is queued - comparing it exactly would push a frame to every open
       // dashboard on every task-source sweep. Compared at ten-second granularity instead, which
@@ -1140,7 +1148,18 @@ export class Registry extends EventEmitter {
     this.cleanupDependencyProvenance();
   }
 
+  private lastTransferPage = "";
+
+  publishSessionTransfers(changed?: SessionTransfer): void {
+    const page = sessionTransferPage();
+    const serialized = JSON.stringify(page);
+    if (serialized === this.lastTransferPage && !changed) return;
+    this.lastTransferPage = serialized;
+    this.emitEvent({ type: "session_transfers", page, ...(changed ? { changed: transferSummary(changed) } : {}) });
+  }
+
   snapshot(): {
+    sessionTransfers: SessionTransferPage;
     sessions: Session[];
     restoringSessions: RestoringSession[];
     reviews: ReviewItem[];
@@ -1164,6 +1183,7 @@ export class Registry extends EventEmitter {
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
     return {
+      sessionTransfers: sessionTransferPage(),
       sessions: [...this.sessions.values()],
       restoringSessions: [...this.restoringSessions.values()],
       reviews: [...this.reviews.values()],
@@ -1537,6 +1557,7 @@ export class Registry extends EventEmitter {
 
   /** Resolve a durable conversation key back to its current live session. */
   sessionForNoteKey(noteKey: string): Session | undefined {
+    if (transferForNote(noteKey)) return undefined;
     let owner: Session | undefined;
     for (const session of this.sessions.values()) {
       if (session.state === "exited" || noteKeyFor(session) !== noteKey) continue;
@@ -3071,6 +3092,15 @@ export class Registry extends EventEmitter {
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = spec.toState(evt);
     const workCycleSignal = spec.workCycleSignal(evt);
+    // A keyless emulator hook can arrive before OS discovery. Retain its exact native
+    // identity across restart, but let only the coordinator's launch proof attach it.
+    const transfer = evt.sessionId ? transferForNote(evt.sessionId) : null;
+    if (transfer && evt.event === "SessionStart" && evt.source === "resume" && transfer.facts.sourceStopped
+      && ts >= (transfer.facts.launchAt ?? Infinity)
+      && transferScopeMatches(transfer.facts, { agent: evt.agent, agentSessionId: evt.sessionId, cwd: evt.cwd,
+        repoRoot: transfer.facts.repoRoot })) {
+      updateSessionTransfer(transfer, { facts: { ...transfer.facts, resumeHookAt: ts } });
+    }
     const target = this.findSessionForHook(evt, key);
     if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
 
@@ -3092,7 +3122,8 @@ export class Registry extends EventEmitter {
     // native conversation identity or a unique cwd. Retain that accepted hook on the
     // resolved pane, or the next discovery sweep overwrites Stop with passive state.
     // Resolve only after the witnessed-identity guard above has accepted the target.
-    const retainedKey = key ?? (target ? sessionKey(target) : null);
+    const retainedKey = key ?? (target ? sessionKey(target) : null)
+      ?? (evt.sessionId && transferForNote(evt.sessionId) ? `transfer:${evt.agent}:${evt.sessionId}` : null);
 
     // Permission mode is sticky: events that omit it keep the last known value
     // (from this pane's prior overlay) rather than clearing the card's chip. Only from
@@ -3711,17 +3742,18 @@ export class Registry extends EventEmitter {
     key: string | null = overlayKeyFromEnv(env),
     options: { includeRetiredMissionTargets?: boolean } = {},
   ): Session | undefined {
-    let candidates = this.sessions;
+    if (agentSessionId && (transferForNote(agentSessionId) || transferForSource(agentSessionId))) return undefined;
+    let candidates = new Map([...this.sessions].filter(([id]) => !transferRetiredSource(id)));
     if (options.includeRetiredMissionTargets) {
-      candidates = new Map(this.sessions);
+      candidates = new Map(candidates);
       // A live pane occupant wins over a retired snapshot. A card still lingering during
       // retirement counts once, so its snapshot cannot make a unique cwd ambiguous.
       for (const [id, target] of this.retiredMissionTargets) {
-        if (!candidates.has(id)) candidates.set(id, target);
+        if (!candidates.has(id) && !transferRetiredSource(id)) candidates.set(id, target);
       }
     }
     if (key) {
-      for (const s of candidates.values()) if (sessionKey(s) === key) return s;
+      for (const s of candidates.values()) if (sessionKey(s) === key && !transferHold(s)) return s;
     }
     if (agentSessionId) {
       const registered = candidates.get(agentSessionId);
@@ -3737,7 +3769,7 @@ export class Registry extends EventEmitter {
       // agent doesn't make the match safer, it makes it wrong in the one case that
       // matters, a Claude and a Codex session sharing a worktree: the filter hides the
       // ambiguity and binds the caller to the Claude card with full confidence.
-      const matches = [...candidates.values()].filter((s) => s.cwd === cwd);
+      const matches = [...candidates.values()].filter((s) => s.cwd === cwd && !transferHold(s));
       if (matches.length === 1) return matches[0];
     }
     return undefined;
@@ -4510,6 +4542,10 @@ export class Registry extends EventEmitter {
     return session ? this.ensureWorkEpisode(session) : sessionWorkEpisodeFor(sessionId);
   }
 
+  recordedWorkEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
+    return sessionWorkEpisodeFor(sessionId);
+  }
+
   workEpisodeForTask(taskId: string): TaskWorkEpisodeBinding | null {
     return taskWorkEpisodeForTask(taskId);
   }
@@ -4567,6 +4603,32 @@ export class Registry extends EventEmitter {
       this.bindTaskToWorkEpisode(taskId, observed.id);
     }
     return { session: this.getSession(observed.id) ?? observed, newlyBound };
+  }
+
+  /** Owner-only synchronous portion of runtime adoption; publish after the outer commit. */
+  persistRuntimeTransferTask(task: Task, session: Session, home: SpawnedHome): { task: Task; displaced: string[] } {
+    const episode = sessionWorkEpisodeFor(session.id);
+    if (!episode || episode.awaitingAgentRebind) throw new Error("Successor work episode is not ready");
+    const at = Date.now();
+    const next = { ...task, ...homeRecord(home), sessionId: session.id,
+      terminalLaunch: home.terminalResourceId?.startsWith("emulator:")
+        ? { resourceId: home.terminalResourceId, sessionId: session.id } : null, updatedAt: at };
+    const displaced = dbUpsertTask(next);
+    dbBindTaskWorkEpisode({ taskId: task.id, sessionId: session.id, episodeId: episode.episodeId,
+      agentSessionId: episode.agentSessionId, branch: episode.branch, prUrl: episode.prUrl,
+      prHeadSha: episode.prHeadSha, mergedAt: episode.mergedAt, boundAt: at, updatedAt: at });
+    return { task: next, displaced };
+  }
+
+  publishRuntimeTransferSession(sessionId: string, home: SpawnedHome): void {
+    if (home.terminalResourceId) this.verifiedLaunchesSinceDiscovery.add(home.terminalResourceId);
+    this.resyncSessionTask(sessionId);
+  }
+
+  publishRuntimeTransferTask(task: Task, displaced: string[]): void {
+    if (task.terminalLaunch) this.verifiedLaunchesSinceDiscovery.add(task.terminalLaunch.resourceId);
+    this.publishPersistedTask(task, displaced);
+    this.bindTaskToWorkEpisode(task.id, task.sessionId!);
   }
 
   bindTaskToWorkEpisode(
@@ -6526,6 +6588,8 @@ export class Registry extends EventEmitter {
    * table that is normally empty.
    */
   promptResourceBlockerForSession(sessionId: string): string | null {
+    const heldSession = this.getSession(sessionId);
+    if (heldSession && transferHold(heldSession)) return transferHold(heldSession);
     const closing = taskSessionClosureForSession(sessionId);
     if (closing) {
       const task = this.tasks.get(closing.taskId);
@@ -7290,8 +7354,9 @@ export class Registry extends EventEmitter {
       task.terminalLaunch.resourceId === task.terminalResourceId &&
       task.terminalResourceId?.startsWith("emulator:"),
     );
-    if (owners.length !== 1) return observed;
-    const task = owners[0]!;
+    if (owners.length > 1) return observed;
+    const task = owners[0] ?? adoptedTransferHome(sessionId);
+    if (!task?.terminalResourceId?.startsWith("emulator:")) return observed;
     const backend = EMULATOR_IDS.find((id) => task.terminalResourceId!.startsWith(`emulator:${id}:`));
     if (!backend || (task.homeBackend !== null && task.homeBackend !== backend)) return observed;
     const paneId = task.terminalResourceId!.slice(`emulator:${backend}:`.length);
@@ -8776,7 +8841,7 @@ export class Registry extends EventEmitter {
 
   /** Note keys with at least one live session - what makes a queue "not orphaned". */
   liveNoteKeys(): Set<string> {
-    const keys = new Set<string>();
+    const keys = new Set<string>(unresolvedSessionTransfers().map((transfer) => transfer.noteKey));
     for (const [id, s] of this.sessions) {
       if (this.holdsKey(id, s)) keys.add(noteKeyFor(s));
     }

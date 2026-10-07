@@ -15,6 +15,7 @@ import {
   fetchTelemetryConfig,
   fetchTelemetryHealth,
   probeTelemetryEndpoint,
+  recheckTelemetryOrganization,
   runTelemetryOperation,
   setTelemetryConfig,
   submitBrowserTelemetry,
@@ -56,6 +57,8 @@ export interface TelemetryState {
   operate: (action: TelemetryOperation, profile?: TelemetryProfileId) => Promise<void>;
   probeEndpoint: (profile: "user" | "product") => Promise<void>;
   drain: () => Promise<void>;
+  /** Detect the managing organization again. Shown only while one manages this Mac. */
+  recheck: () => Promise<void>;
 }
 
 export function useTelemetry(
@@ -224,6 +227,26 @@ export function useTelemetry(
     await reload();
   }, [reload]);
 
+  const recheck = useCallback(async (): Promise<void> => {
+    setBusy("recheck");
+    const res = await recheckTelemetryOrganization(beginOperation("settings"));
+    setBusy(null);
+    if (!res.ok) {
+      setError(res.error);
+      setConflict(false);
+      return;
+    }
+    setError(null);
+    setStatus(res.data);
+    setNotice(
+      res.data.organization
+        ? `Checked again: ${res.data.organization.label} still manages telemetry on this Mac.`
+        : "Checked again: no organization manages telemetry on this Mac any more.",
+    );
+    const nextHealth = await fetchTelemetryHealth();
+    if (nextHealth) setHealth(nextHealth);
+  }, []);
+
   // The one browser-originated fact Phase 2 owns: that somebody opened these controls, and what
   // state they were shown. Once per mount, fire and forget, and inert unless collection is on -
   // the daemon refuses it otherwise, which is the point of it going through the ordinary
@@ -271,6 +294,7 @@ export function useTelemetry(
     operate,
     probeEndpoint,
     drain,
+    recheck,
   };
 }
 

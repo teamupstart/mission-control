@@ -25,7 +25,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
 );
-const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
+const { getSdkSession, listSdkSessions, upsertSdkSession, getSdkSessionProcess } = await import(
   "../src/server/sdk/store.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
@@ -214,6 +214,43 @@ const START = {
   mcp: null,
   taskId: null,
 };
+
+test("the supervisor persists the observed child lifetime after the stream ends and clears it on replacement", async (t) => {
+  const handle = fakeHandle();
+  let pid: number | null = 41001;
+  Object.defineProperty(handle, "recoveryProcessId", { get: () => pid });
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  let scans = 0;
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => {
+    scans++;
+    return { processes: [{ pid: pid!, ppid: 1, tty: null, startRaw: "fixture", startMs: pid! * 100,
+      command: "fixture", agent: null, agentNative: false }], unknownReason: null, cwdScopePids: [], completedCollectorPids: [] };
+  } });
+  const session = await supervisor.start(START);
+  await drain();
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41001, startMs: 4100100 });
+  const initialScans = scans;
+  for (let i = 0; i < 10; i++) handle.push({ kind: "state", state: "working", activity: "token" });
+  await drain();
+  assert.equal(scans, initialScans, "activity does not scan the process fleet per event");
+  pid = null;
+  handle.push({ kind: "state", state: "idle", activity: null });
+  await drain();
+  assert.equal(getSdkSessionProcess(session.id), null, "an unknown replacement cannot use stale absence proof");
+  pid = 41002;
+  handle.push({ kind: "bound", agentSessionId: "replacement", transcriptPath: null, modelId: null, pid });
+  await drain();
+  handle.end();
+  await drain();
+  assert.equal(supervisor.handleFor(session.id), null);
+  assert.equal(getSdkSession(session.id)?.status, "exited");
+  assert.deepEqual(getSdkSessionProcess(session.id), { pid: 41002, startMs: 4100200 });
+  upsertSdkSession({ id: session.id, agent: "claude", agentSessionId: "replacement", cwd: START.cwd,
+    taskId: null, model: null, effort: null, permissionMode: null, status: "starting", turnInProgress: false });
+  assert.equal(getSdkSessionProcess(session.id), null, "a restored handle must establish its own lifetime");
+});
 
 test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
   const firstHandle = fakeHandle();

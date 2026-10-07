@@ -591,9 +591,11 @@ reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>`, `codex resume <thread id>`, or `pi --session <session id>`,
 whichever harness the session detail is. All three vendors keep one session store across
 their programmatic and interactive surfaces, which is what makes this a handoff rather than
-a lost conversation. Discovery adopts the new
-process, and the task's binding follows it across even when discovery takes longer than the
-handoff request waits.
+a lost conversation. Mission Control reserves the running task and every active pinned
+workflow before stopping the SDK. Discovery must prove the same native conversation,
+checkout and launch resource before their ownership moves together to the terminal.
+The task stays running, existing workflow versions and runs stay pinned, and staged and
+frozen evidence stay with the same review. Merely opening a terminal does not prove transfer.
 
 The permission mode crosses with it, where the harness has one - Pi does not, so nothing
 rides along on its resume. An embedded session's mode lives in the driver's own options -
@@ -605,9 +607,33 @@ approval** from **Approve for me**) for Codex. The same carry applies when an ex
 session's session detail resumes its conversation. Model and reasoning effort are deliberately not
 re-stated; the resumed conversation carries those itself.
 
-It is one way. After the handoff the terminal session is the one holding the conversation;
-the embedded session detail goes away. Nothing is lost if the terminal cannot be opened - the error
-tells you the exact resume command to run yourself.
+Before stopping the SDK, Mission Control verifies its required tools and prepares a private
+environment. Claude and Codex receive launch-scoped Mission MCP configuration; Pi uses its
+verified installed extension. A missing bundle, tool, extension, executable, or unusable
+configuration refuses the handoff while the SDK remains available. Attached worktrees keep
+their existing write scope.
+
+After verified handoff the terminal holds the conversation and the embedded detail goes away.
+A detail still viewing the source follows its successor; navigating elsewhere keeps your focus.
+An uncertain launch retains its prepared environment and blocks another resume of the same
+conversation. **Sitrep → Terminal transfers** remains available after the source disappears
+and after restart. **Check again** observes that same attempt and never launches another
+agent. After two minutes without proof, the row explains that the terminal could not be
+verified. A late, proven successor can still complete that transfer. **End transfer** appears
+only when the daemon has positive absence evidence; it retains the checkout.
+
+Queued messages and pending questions remain attached to the conversation. Delivery pauses
+during transfer. Uncertain deliveries still require their existing explicit resolution and
+are never replayed automatically. If no replacement could have started, the existing task
+settlement and workflow orphan policies apply. A surviving SDK after a failed stop keeps its
+original task. Do not downgrade Mission Control while a terminal transfer is unresolved.
+This operation only continues the same native conversation; manual workflow reattach remains
+the recovery action for a genuinely different conversation.
+
+ An unclaimed attempt is fenced and cleaned after its two-minute start deadline;
+a claimed or ambiguous owner keeps its credentials until proven completion. A bare manual
+resume command does not include these managed Mission tools. See the
+[resource lifetime and recheck contract](harnesses-and-terminals.md#managed-terminal-resumes).
 
 ### Interrupt: stop the turn without ending the session
 
@@ -2137,8 +2163,10 @@ Sessions **you** start are untouched: they keep the built-in menu, which the das
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
 *Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
-the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
-binary in node mode when there isn't one), the name it is registered under, and - for a launch
+the built bundle's path, the runtime that executes it (always the binary the daemon itself
+runs on: the Electron binary in node mode inside the app, or the daemon's `node` under
+`npm start` - never a `node` found on PATH, because a version-manager shim there picks its
+Node from the agent's checkout), the name it is registered under, and - for a launch
 that requires tools - whether that bundle really serves them. Claude reads
 that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
 `-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and

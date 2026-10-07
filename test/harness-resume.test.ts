@@ -186,12 +186,12 @@ test("both resume readers compose from the harness and pass the session's stored
   // either call site would compile fine only if the parameter went optional, and the
   // symptom - a resumed session opening in the wrong mode - reproduces only with a real
   // CLI at the other end.
-  const src = readFileSync(new URL("../src/server/sdk/handoff.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/server/harness/resume.ts", import.meta.url), "utf8");
   assert.match(src, /resumeArgvFor\(session\.agent, session\.agentSessionId, session\.permissionMode\)/);
   assert.doesNotMatch(src, /\.resumeArgv\(/);
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
   assert.match(
     routes,
-    /resumeArgvFor\(\s*session\.agent,\s*session\.agentSessionId!,\s*session\.permissionMode,?\s*\)/,
+    /prepareResume\(\{ \.\.\.session, cwd: workspaceRoot \}\)/,
   );
 });

@@ -113,6 +113,9 @@ export interface FileWorkspaceHandle {
   focusFileList: () => boolean;
 }
 
+/** How often the open document is re-checked against the file on disk. */
+const FILE_RECHECK_MS = 2_000;
+
 type FileReaderScrollDistance = "arrow" | "page";
 
 interface FileThreadError {
@@ -667,6 +670,39 @@ function FileWorkspaceBody({
     selectedPath,
     session.id,
   ]);
+
+  /*
+   * The open document follows the file on disk.
+   *
+   * A comment is routinely answered by the agent editing the very text it quotes, and the
+   * reader has to see that edit to follow up on it; before this, leaving the file and coming
+   * back was the only way to. So the selected file is re-checked on an interval while the
+   * page is visible, and at once when an agent reply lands on one of its threads - the moment
+   * an edit is most likely to have just happened. A check that finds nothing new costs a hash
+   * on the daemon and no text on the wire, and a buffer with the reader's own edits is never
+   * replaced (see `recheck`).
+   */
+  const recheck = controller.recheck;
+  useEffect(() => {
+    if (!selectedPath) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") recheck(session.id, selectedPath);
+    }, FILE_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [recheck, selectedPath, session.id]);
+  const latestAgentReply = useMemo(() => {
+    let latest = 0;
+    for (const thread of allFileThreads) {
+      for (const message of thread.messages) {
+        if (message.author === "agent" && message.createdAt > latest) latest = message.createdAt;
+      }
+    }
+    return latest;
+  }, [allFileThreads]);
+  useEffect(() => {
+    if (selectedPath && latestAgentReply > 0) recheck(session.id, selectedPath);
+  }, [latestAgentReply, recheck, selectedPath, session.id]);
+
   const fileThreads = useMemo(
     () => showResolved
       ? allFileThreads

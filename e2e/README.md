@@ -1,5 +1,32 @@
 # Browser end-to-end tests
 
+`specs/sdk-terminal-handoff.spec.ts` extends the terminal boundary with
+`MC_E2E_RESUME_TOOLS=1`. It executes the prepared production wrapper; the resumed fake Claude
+reads its MCP configuration, starts the built MCP server, and registers command output, an
+ignored image and mapped coverage. It proves the same running task and old pinned workflow,
+then renders the registered evidence tray. The default handoff case delays the hook until
+source eviction, restarts with discovery held, exercises Sitrep recovery, and then releases
+scripted terminal observations for the daemon to adopt exactly once. Handoff, adoption and
+resumed-agent MCP evidence registration run through production daemon paths with fake agents.
+
+Some test conditions are set directly in the isolated fixture's SQLite database: a newer
+catalog workflow version, a transfer's `launchAt` moved back three minutes to reach recovery,
+101 unresolved transfers for pagination, and an advanced task dispatch timestamp for the
+End transfer ownership-conflict case. The End transfer fixture also revokes its unused
+terminal lease. The daemon evaluates recovery and resolution from those conditions; the
+pagination case exercises the production snapshot, page endpoint and browser controls over
+seeded records without launching 101 agents.
+
+The focused first-page action, paged-action and reconnect cases additionally script HTTP replies and SSE
+frames in the browser to model a missed notification and a replacement snapshot. They prove
+page refresh, action feedback, selection cleanup and successor selection after a missed
+adoption, not daemon adoption or absence proof. The reconnect successor case scripts the
+durable source-lookup reply; focused HTTP tests separately exercise that production lookup.
+The handoff and safe-resolution cases above retain the production daemon boundary.
+
+`MC_E2E_RESUME_PRIVATE_MCP=1` gives refusal tests an isolated copy of the bundle. Evidence
+screenshots are written to `e2e/.artifacts/sdk-terminal-handoff/` with `MC_E2E_EVIDENCE=1`.
+
 Playwright specs that drive the real dashboard against a real daemon. This is the only
 layer in the repository where a click reaches a route, a route reaches a subprocess, and the
 result comes back to the DOM through a server event.

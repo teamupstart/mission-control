@@ -1686,6 +1686,28 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- Ordinary table with no REFERENCES clause (unlike the ensemble family and
     -- task_source_sync) and no index: the only reads are by primary key and the
     -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
+    -- Runtime handoff reservations outlive either session. No cascading foreign keys:
+    -- removal must not erase the guard protecting an uncertain external launch.
+    CREATE TABLE IF NOT EXISTS session_runtime_transfers (
+      id TEXT PRIMARY KEY NOT NULL,
+      revision INTEGER NOT NULL,
+      source_session_id TEXT NOT NULL,
+      note_key TEXT NOT NULL,
+      task_id TEXT,
+      state TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      successor_session_id TEXT,
+      facts_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_conversation
+      ON session_runtime_transfers(note_key) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_source
+      ON session_runtime_transfers(source_session_id) WHERE state NOT IN ('adopted', 'aborted', 'failed');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_transfer_task
+      ON session_runtime_transfers(task_id) WHERE task_id IS NOT NULL AND state NOT IN ('adopted', 'aborted', 'failed');
+
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
       agent             TEXT NOT NULL,
@@ -3067,6 +3089,9 @@ function migrate(d: DatabaseSync): void {
   // deriving until someone actually renames a card.
   addColumn(d, "sdk_sessions", "display_name", "TEXT");
 
+  // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
+  addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
   // databases can contain table shells but no executable bindings, so empty identity
@@ -4363,6 +4388,15 @@ function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
 }
 
 /** Reviews still awaiting a human decision - reloaded into the registry on start. */
+/** Move only unanswered requests; answered history retains its original attribution. */
+export function transferPendingReviews(sourceId: string, successorId: string, now = Date.now()): ReviewItem[] {
+  const db = openDb();
+  if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
+  const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
+    WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
@@ -13015,6 +13049,19 @@ export function setAppConfig<Entry extends AppConfigEntry>(
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(entry.key, JSON.stringify(value));
+}
+
+/**
+ * Whether a row exists for this entry, readable or not. `getAppConfig` answers undefined for
+ * both "never set" and "set to something that is not JSON"; this tells them apart.
+ */
+export function hasAppConfigRow(entry: AppConfigEntry): boolean {
+  return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
+}
+
+/** Remove a registered config blob, so a later read answers undefined as if never set. */
+export function deleteAppConfig(entry: AppConfigEntry): void {
+  openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----

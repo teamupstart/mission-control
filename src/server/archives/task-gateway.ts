@@ -43,6 +43,8 @@ export interface ArchiveSubject {
    * new checkout, and collapsing the two would publish the old evidence under the new task.
    */
   episodeId: string | null;
+  /** Start of the current episode, for attributing a submission that beat its task binding. */
+  episodeStartedAt?: number | null;
   title: string;
   question: string | null;
   prompts: ArchiveManifestPromptTrail | null;
@@ -198,7 +200,20 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
         detail: "the credential does not match this task's live session and checkout",
       };
     }
-    return { ok: true, subject: this.subject(task, session, "scout") };
+    const subject = this.subject(task, session, "scout");
+    if (subject.episodeId === null) {
+      // The agent may submit before the launch projects its task binding and
+      // agentSessionId onto the in-memory session. Read the recorded episode without
+      // requiring that projection, so completion finds this capture under the binding
+      // that arrives a moment later.
+      const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+      if (episode) {
+        subject.episodeId = episode.episodeId;
+        subject.episodeStartedAt = episode.startedAt;
+        subject.origin.session!.episodeId = episode.episodeId;
+      }
+    }
+    return { ok: true, subject };
   }
 
   subjectForTask(taskId: string, kind: ArchiveKind): ArchiveSubject | null {
@@ -247,6 +262,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
    */
   private subject(task: Task, session: Session | null, kind: ArchiveKind): ArchiveSubject {
     const episodeId = this.registry.workEpisodeForTask(task.id)?.episodeId ?? null;
+    const recordedEpisode = session ? this.registry.recordedWorkEpisodeForSession(session.id) : null;
     // Reading one Phase 1 row preserves the exit/restart title fallback without walking the
     // transcript. The bounded prompt trail itself is frozen only at the reservation boundary.
     const frozenSessionName =
@@ -257,6 +273,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
       taskId: task.id,
       sessionId: session?.id ?? task.sessionId,
       episodeId,
+      episodeStartedAt: recordedEpisode?.episodeId === episodeId ? recordedEpisode.startedAt : null,
       title:
         kind === "scout"
           ? scoutArchiveTitle(session?.name, frozenSessionName, task.title)

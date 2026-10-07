@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
 import type {
@@ -10,9 +11,9 @@ import type {
 //
 // Everything else in the driver is written against `ClaudeSdkDeps`, so this file is where
 // the vendor's surface meets ours, and where a version bump that moves that surface fails
-// to compile. It is deliberately thin: no projection, no bookkeeping, nothing a test would
-// want to exercise - all of that is in `sdk.ts`, which a test drives on scripted frames
-// with these deps replaced.
+// to compile. It owns the vendor transport and its local child identity. Projection and
+// session policy stay in `sdk.ts`, which a test drives on scripted frames with these
+// deps replaced; the process-boundary test uses a real vendor query and a fake CLI.
 
 /**
  * Where the `claude` binary is, as an ABSOLUTE path this process has confirmed exists.
@@ -102,10 +103,28 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
     // assigned directly and remains compiler-checked against the installed vendor.
     options = { ...params.options };
   }
-  return query({
+  let recoveryProcessId: number | null = null;
+  if ("canUseTool" in params.options) {
+    // The vendor query deliberately exposes no PID. Its supported local-spawn seam
+    // lets the owning driver supply exact lifetime evidence without guessing by cwd
+    // or replacing the SDK's stdin, abort, or process-cleanup protocol.
+    options.spawnClaudeCodeProcess = ({ command: executable, args, cwd, env, signal }) => {
+      const child = spawn(executable, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      recoveryProcessId = child.pid ?? null;
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (data: string) => {
+        options.stderr?.(data);
+        if (["1", "true"].includes(env.DEBUG_CLAUDE_AGENT_SDK ?? "")) process.stderr.write(data);
+      });
+      return child;
+    };
+  }
+  const started = query({
     prompt: params.prompt as VendorParams["prompt"],
     options,
-  }) as unknown as ClaudeSdkQuery;
+  });
+  Object.defineProperty(started, "recoveryProcessId", { get: () => recoveryProcessId });
+  return started as unknown as ClaudeSdkQuery;
 }
 
 /** A no-turn catalog probe uses the same pinned CLI and SDK transport as a session. */

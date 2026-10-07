@@ -14,6 +14,13 @@ export type LaunchProcess = Pick<Proc, "pid" | "startMs">;
 export async function readLaunchProcess(stateHome: string): Promise<LaunchProcess | null> {
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
+      // Managed resume guards record their own exact lifetime after winning the lease.
+      const marker = JSON.parse(readFileSync(join(stateHome, "terminal-launch.json"), "utf8")) as LaunchProcess;
+      const { listProcesses } = await import("../discovery/processes.ts");
+      const owner = (await listProcesses()).find((p) => p.pid === marker.pid && p.startMs === marker.startMs);
+      if (owner) return marker;
+    } catch { /* Legacy launch wrappers have only the PID file below. */ }
+    try {
       const value = readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8").trim();
       const pid = /^\d+$/.test(value) ? Number(value) : 0;
       const { listProcesses } = await import("../discovery/processes.ts");

@@ -84,6 +84,9 @@ function telemetry(
       oldestPendingAgeMs: null,
       lastAcceptedAt: null,
       failing: false,
+      waitingForNetwork: false,
+      waitingSince: null,
+      latePointsSent: 0,
       ...p,
     })),
     ...over,
@@ -113,6 +116,25 @@ test("the Telemetry dot is red when a destination stopped or is not getting thro
 test("the Telemetry dot is green when something is actually being exported", () => {
   const exporting = status({ telemetry: telemetry([{ capturing: true }, { exporting: true }]) });
   assert.equal(settingsRailDot("telemetry", { status: exporting, ...OFF }), "live");
+});
+
+test("the Telemetry dot is neutral while a destination is waiting for network access", () => {
+  const waiting = status({
+    telemetry: telemetry([
+      {},
+      { exporting: true, waitingForNetwork: true, pending: 3, failing: false },
+    ]),
+  });
+  assert.equal(settingsRailDot("telemetry", { status: waiting, ...OFF }), "neutral");
+
+  const waitingAndStopped = status({
+    telemetry: telemetry([
+      {},
+      { exporting: true, waitingForNetwork: true, pending: 3 },
+      { pausedReason: "auth", pending: 1 },
+    ]),
+  });
+  assert.equal(settingsRailDot("telemetry", { status: waitingAndStopped, ...OFF }), "failing");
 });
 
 test("local-only collection lights nothing, because it is a complete state", () => {

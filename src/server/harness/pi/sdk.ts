@@ -174,6 +174,10 @@ class PiSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  get recoveryProcessId(): number {
+    return process.pid;
+  }
+
   // ---- wiring, called only by `launch` -------------------------------------------------
 
   /**

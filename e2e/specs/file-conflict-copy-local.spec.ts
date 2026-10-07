@@ -6,6 +6,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { holdOpenDocument } from "../fixtures/hold-open-document.ts";
 
 const EVIDENCE = artifactsDir("file-conflict-copy-local");
 
@@ -110,6 +111,8 @@ async function conflictNotice(page: Page, daemon: DaemonHandle): Promise<{
   /** Stale the open document again and type, raising a fresh conflict on the same file. */
   reconflict: (contents: string) => Promise<void>;
 }> {
+  // A conflict needs the document to STAY stale until the keystroke. See the fixture.
+  await holdOpenDocument(page);
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   // Untracked and not ignored, which is what keeps them in the Files list.

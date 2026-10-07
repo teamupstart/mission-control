@@ -61,3 +61,23 @@ changing persisted IDs, workflow evidence, action adapters, or registries, follo
 [change contracts](agent-guides/change-contracts.md#persisted-identifiers) and
 [session-action contract](agent-guides/change-contracts.md#session-actions) rather than
 copying their rules here.
+
+## Runtime continuity
+
+Continue in terminal transfers every active binding of the same native conversation,
+including each repository sibling, while preserving binding IDs, published version pins,
+repository scopes, active runs, rounds, segments and frozen evidence. An existing capture
+finishes before the source stops; new captures wait for verified ownership and reread the
+binding. Evaluators may finish immutable work while transport is held.
+
+Only prepared delivery destinations move. Delivered, refused, cancelled and uncertain
+packets retain their attribution and acknowledgement policy. A transfer does not authorize
+retry, resubmit, a new workflow publication, or manual reattach. Historical delivery observers
+follow committed successor links, while ordinary consent and delivery gates still run before
+an unsent packet can cross the terminal boundary.
+
+Source removal and first discovery both honor the durable reservation. On definite failure,
+the existing orphan policy applies. Unknown launch, ownership conflict or missing proof stays
+visible in Sitrep without manufacturing a replacement workflow or agent. Evidence registration
+returns a retryable `handoff_awaiting_discovery` refusal until the live successor is verified;
+then the existing active Persona binding and issued checkout-scope checks apply unchanged.

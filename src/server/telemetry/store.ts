@@ -405,6 +405,20 @@ export interface StoredSeries extends SeriesKey {
   lastTime: number;
   value: number;
   histogram: StoredHistogram | null;
+  exportedValue: number | null;
+  exportedHistogram: Pick<StoredHistogram, "count" | "sum" | "buckets"> | null;
+  exportedEnd: number | null;
+  exportedGeneration: number | null;
+  /**
+   * The pass clock of this series' latest contribution or export. A budgeted export shape
+   * counts a series as live while this is inside the payload window.
+   *
+   * The pass clock rather than the event time: a backlog drained today can carry week-old
+   * event times, and a series admitted for it must count from the moment it was admitted.
+   */
+  lastActivity: number;
+  /** Set while a point for this series waits for the next clock hour. Null otherwise. */
+  deferredAt: number | null;
 }
 
 export interface StoredHistogram {
@@ -433,6 +447,12 @@ interface SeriesRow {
   hist_min: number | null;
   hist_max: number | null;
   hist_buckets: string | null;
+  exported_value: number | null;
+  exported_histogram_json: string | null;
+  exported_end: number | null;
+  exported_generation: number | null;
+  last_activity: number | null;
+  deferred_at: number | null;
 }
 
 function toSeries(row: SeriesRow): StoredSeries {
@@ -458,6 +478,14 @@ function toSeries(row: SeriesRow): StoredSeries {
             max: row.hist_max,
             buckets: JSON.parse(row.hist_buckets) as number[],
           },
+    exportedValue: row.exported_value,
+    exportedHistogram: row.exported_histogram_json === null
+      ? null
+      : JSON.parse(row.exported_histogram_json) as Pick<StoredHistogram, "count" | "sum" | "buckets">,
+    exportedEnd: row.exported_end,
+    exportedGeneration: row.exported_generation,
+    lastActivity: row.last_activity ?? Math.max(row.last_time, row.exported_end ?? 0),
+    deferredAt: row.deferred_at,
   };
 }
 
@@ -479,8 +507,10 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
     `INSERT INTO telemetry_series (
        profile, policy_epoch, resource_id, instrument, dimensions_key, dimensions_json,
        catalog_version, kind, start_time, last_time, value,
-       hist_count, hist_sum, hist_min, hist_max, hist_buckets
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       hist_count, hist_sum, hist_min, hist_max, hist_buckets,
+       exported_value, exported_histogram_json, exported_end, exported_generation,
+       last_activity, deferred_at
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(profile, policy_epoch, resource_id, instrument, dimensions_key) DO UPDATE SET
        catalog_version = excluded.catalog_version,
        last_time    = excluded.last_time,
@@ -489,7 +519,13 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
        hist_sum     = excluded.hist_sum,
        hist_min     = excluded.hist_min,
        hist_max     = excluded.hist_max,
-       hist_buckets = excluded.hist_buckets`,
+       hist_buckets = excluded.hist_buckets,
+       exported_value = excluded.exported_value,
+       exported_histogram_json = excluded.exported_histogram_json,
+       exported_end = excluded.exported_end,
+       exported_generation = excluded.exported_generation,
+       last_activity = excluded.last_activity,
+       deferred_at = excluded.deferred_at`,
   ).run(
     series.profile,
     series.policyEpoch,
@@ -507,7 +543,237 @@ export function putSeries(d: DatabaseSync, series: StoredSeries): void {
     series.histogram?.min ?? null,
     series.histogram?.max ?? null,
     series.histogram ? JSON.stringify(series.histogram.buckets) : null,
+    series.exportedValue,
+    series.exportedHistogram ? JSON.stringify(series.exportedHistogram) : null,
+    series.exportedEnd,
+    series.exportedGeneration,
+    series.lastActivity,
+    series.deferredAt,
   );
+}
+
+export function listHeartbeatSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  exportedBefore: number,
+  observedAfter: number,
+): StoredSeries[] {
+  const rows = d.prepare(
+    `SELECT * FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ?
+        AND (exported_end IS NULL OR exported_end <= ?)
+        AND last_time >= ?
+      ORDER BY resource_id, instrument, dimensions_key`,
+  ).all(profile, policyEpoch, exportedBefore, observedAfter) as unknown as SeriesRow[];
+  return rows.map(toSeries);
+}
+
+export function putSeriesExportState(
+  d: DatabaseSync,
+  series: StoredSeries,
+  generation: number,
+  end: number,
+): void {
+  d.prepare(
+    `UPDATE telemetry_series SET
+       exported_value = ?, exported_histogram_json = ?, exported_end = ?, exported_generation = ?,
+       last_activity = MAX(COALESCE(last_activity, 0), ?), deferred_at = NULL
+     WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+       AND instrument = ? AND dimensions_key = ?`,
+  ).run(
+    series.value,
+    series.histogram
+      ? JSON.stringify({
+          count: series.histogram.count,
+          sum: series.histogram.sum,
+          buckets: series.histogram.buckets,
+        })
+      : null,
+    end,
+    generation,
+    end,
+    series.profile,
+    series.policyEpoch,
+    series.resourceId,
+    series.instrument,
+    series.dimensionsKey,
+  );
+}
+
+/** Mark a series whose point waits for the next clock hour. Returns whether it was new. */
+export function markSeriesDeferred(d: DatabaseSync, series: SeriesKey, now: number): boolean {
+  const result = d.prepare(
+    `UPDATE telemetry_series SET deferred_at = ?
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ? AND deferred_at IS NULL`,
+  ).run(now, series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+  return Number(result.changes) === 1;
+}
+
+/**
+ * A cumulative point for a budgeted destination was queued: the series is live from this pass,
+ * and nothing is waiting. The delta counterpart is `putSeriesExportState`, which also moves the
+ * watermark; a cumulative stream has none.
+ */
+export function markSeriesExported(d: DatabaseSync, series: SeriesKey, now: number): void {
+  d.prepare(
+    `UPDATE telemetry_series SET last_activity = MAX(COALESCE(last_activity, 0), ?), deferred_at = NULL
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ?`,
+  ).run(now, series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+}
+
+/** A deferred point that went out, or that no longer has anything to send. */
+export function clearSeriesDeferral(d: DatabaseSync, series: SeriesKey): void {
+  d.prepare(
+    `UPDATE telemetry_series SET deferred_at = NULL
+      WHERE profile = ? AND policy_epoch = ? AND resource_id = ?
+        AND instrument = ? AND dimensions_key = ?`,
+  ).run(series.profile, series.policyEpoch, series.resourceId, series.instrument, series.dimensionsKey);
+}
+
+/** Series whose point is waiting for the next clock hour, so a pass with no events still sends them. */
+export function listDeferredSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+): StoredSeries[] {
+  const rows = d.prepare(
+    `SELECT * FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ? AND deferred_at IS NOT NULL
+      ORDER BY resource_id, instrument, dimensions_key`,
+  ).all(profile, policyEpoch) as unknown as SeriesRow[];
+  return rows.map(toSeries);
+}
+
+/**
+ * The identity of every live series in one consent epoch, for a series budget's admission.
+ *
+ * One range read over `idx_telemetry_series_live`. Liveness is evaluated here, at the moment of
+ * the check, so a series that aged out stops counting without any sweep having to run.
+ */
+export function listLiveSeriesKeys(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  liveSince: number,
+): Array<{ resourceId: string; instrument: string; dimensionsKey: string }> {
+  const rows = d.prepare(
+    `SELECT resource_id, instrument, dimensions_key FROM telemetry_series
+      WHERE profile = ? AND policy_epoch = ? AND last_activity >= ?`,
+  ).all(profile, policyEpoch, liveSince) as unknown as Array<{
+    resource_id: string;
+    instrument: string;
+    dimensions_key: string;
+  }>;
+  return rows.map((row) => ({
+    resourceId: row.resource_id,
+    instrument: row.instrument,
+    dimensionsKey: row.dimensions_key,
+  }));
+}
+
+/** Every series of one profile, for an export-shape change that starts them again from zero. */
+export function deleteProfileSeries(d: DatabaseSync, profile: TelemetryProfileId): number {
+  return Number(d.prepare(`DELETE FROM telemetry_series WHERE profile = ?`).run(profile).changes);
+}
+
+/**
+ * Series that can no longer receive data: one profile's series from a resource this process no
+ * longer runs as, idle past the reducer window. The running resource's own series are never
+ * pruned here. Retention calls this only for a profile whose export shape has a series budget,
+ * because pruning restarts a retired version's cumulative stream if that version runs again.
+ */
+export function pruneRetiredSeries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  currentResourceId: string,
+  idleBefore: number,
+  limit: number,
+): number {
+  return Number(
+    d.prepare(
+      `DELETE FROM telemetry_series WHERE rowid IN (
+         SELECT rowid FROM telemetry_series
+          WHERE profile = ? AND resource_id != ? AND COALESCE(last_activity, last_time) < ?
+          LIMIT ?
+       )`,
+    ).run(profile, currentResourceId, idleBefore, limit).changes,
+  );
+}
+
+/** Whether a profile has any series a prune could take, so retention resolves no resource when none can. */
+export function hasIdleSeries(d: DatabaseSync, profile: TelemetryProfileId, idleBefore: number): boolean {
+  return d.prepare(
+    `SELECT 1 FROM telemetry_series WHERE profile = ? AND COALESCE(last_activity, last_time) < ? LIMIT 1`,
+  ).get(profile, idleBefore) !== undefined;
+}
+
+// ---- the hourly export ledger ----
+
+/** The distinct series already exported in one clock hour, with their weights. */
+export function exportHourLedger(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  hourStart: number,
+): Map<string, number> {
+  const rows = d.prepare(
+    `SELECT series_digest, weight FROM telemetry_export_hours WHERE profile = ? AND hour_start = ?`,
+  ).all(profile, hourStart) as unknown as Array<{ series_digest: string; weight: number }>;
+  return new Map(rows.map((row) => [row.series_digest, row.weight]));
+}
+
+export function recordExportHour(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  hourStart: number,
+  seriesDigest: string,
+  weight: number,
+): void {
+  d.prepare(
+    `INSERT INTO telemetry_export_hours (profile, hour_start, series_digest, weight)
+     VALUES (?,?,?,?) ON CONFLICT(profile, hour_start, series_digest) DO NOTHING`,
+  ).run(profile, hourStart, seriesDigest, weight);
+  noteBytesAdded(profile.length + seriesDigest.length + 16);
+}
+
+const LEDGER_HOUR_MS = 60 * 60_000;
+
+/**
+ * The start of the oldest hour the export ledger still tracks at `now`. Retention drops hours
+ * that started before it, and the projection never charges a point to one of them.
+ */
+export function exportLedgerHorizon(now: number): number {
+  return (
+    Math.floor((now - TELEMETRY_LIMITS.exportLedgerRetentionMs) / LEDGER_HOUR_MS) * LEDGER_HOUR_MS
+  );
+}
+
+/** Drop ledger hours that started before `before`. */
+export function pruneExportHours(d: DatabaseSync, before: number): number {
+  return Number(d.prepare(`DELETE FROM telemetry_export_hours WHERE hour_start < ?`).run(before).changes);
+}
+
+export function baselineSeriesForDelta(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+  policyEpoch: number,
+  generation: number,
+  now: number,
+): void {
+  d.prepare(
+    `UPDATE telemetry_series SET
+       exported_value = value,
+       exported_histogram_json = CASE WHEN hist_buckets IS NULL THEN NULL ELSE json_object(
+         'count', COALESCE(hist_count, 0),
+         'sum', COALESCE(hist_sum, 0),
+         'buckets', json(hist_buckets)
+       ) END,
+       exported_end = ?,
+       exported_generation = ?
+     WHERE profile = ? AND policy_epoch = ?`,
+  ).run(now, generation, profile, policyEpoch);
 }
 
 /** How many distinct streams one instrument already has, for the per-instrument ceiling. */
@@ -676,6 +942,7 @@ export function settleDelivery(
     nextAttemptAt: number;
     acceptedItems?: number;
     rejectedItems?: number;
+    waitingForNetwork?: boolean;
     lastError: string | null;
   },
   now: number,
@@ -684,7 +951,7 @@ export function settleDelivery(
     `UPDATE telemetry_delivery
         SET state = ?, attempts = ?, lease_owner = NULL, lease_expires_at = NULL,
             next_attempt_at = ?, accepted_items = ?, rejected_items = ?,
-            last_error = ?, updated_at = ?
+            waiting_for_network = ?, last_error = ?, updated_at = ?
       WHERE batch_id = ?`,
   ).run(
     next.state,
@@ -692,10 +959,50 @@ export function settleDelivery(
     next.nextAttemptAt,
     next.acceptedItems ?? 0,
     next.rejectedItems ?? 0,
+    next.waitingForNetwork ? 1 : 0,
     next.lastError,
     now,
     batchId,
   );
+}
+
+/** Whether any retained delivery for this destination is still waiting on its network gate. */
+export function hasNetworkWaitingDelivery(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+): boolean {
+  return d.prepare(
+    `SELECT 1 FROM telemetry_delivery
+      WHERE profile = ? AND waiting_for_network = 1
+        AND state IN ('pending','retry','leased')
+      LIMIT 1`,
+  ).get(profile) !== undefined;
+}
+
+/** Clear per-delivery wait facts when configuration or a terminal pause stops all sends. */
+export function clearNetworkWaitingDeliveries(
+  d: DatabaseSync,
+  profile: TelemetryProfileId,
+): void {
+  d.prepare(
+    `UPDATE telemetry_delivery SET waiting_for_network = 0
+      WHERE profile = ? AND waiting_for_network != 0`,
+  ).run(profile);
+}
+
+/**
+ * Claim the one durable late-point accounting slot for a batch.
+ *
+ * Kept separate from attempts because a batch can be young on its first refused send and old
+ * when a later send is accepted. The claim lives on the delivery row after its payload is
+ * released, so replaying settlement cannot increment the destination counter twice.
+ */
+export function claimLatePointAccounting(d: DatabaseSync, batchId: string): boolean {
+  const result = d.prepare(
+    `UPDATE telemetry_delivery SET late_points_accounted = 1
+      WHERE batch_id = ? AND late_points_accounted = 0`,
+  ).run(batchId);
+  return Number(result.changes) === 1;
 }
 
 /**
@@ -834,6 +1141,8 @@ export interface StoredDestination {
   pausedReason: TelemetryPauseReason | null;
   lastAcceptedAt: number | null;
   lastError: string | null;
+  waitingSince: number | null;
+  latePointsSent: number;
 }
 
 export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): StoredDestination {
@@ -846,6 +1155,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
         paused_reason: string | null;
         last_accepted_at: number | null;
         last_error: string | null;
+        waiting_since: number | null;
+        late_points_sent: number;
       }
     | undefined;
   if (!row) {
@@ -861,6 +1172,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
       pausedReason: null,
       lastAcceptedAt: null,
       lastError: null,
+      waitingSince: null,
+      latePointsSent: 0,
     };
   }
   return {
@@ -871,6 +1184,8 @@ export function getDestination(d: DatabaseSync, profile: TelemetryProfileId): St
     pausedReason: (row.paused_reason as TelemetryPauseReason | null) ?? null,
     lastAcceptedAt: row.last_accepted_at,
     lastError: row.last_error,
+    waitingSince: row.waiting_since,
+    latePointsSent: row.late_points_sent,
   };
 }
 
@@ -885,8 +1200,8 @@ export function updateDestination(
   d.prepare(
     `INSERT INTO telemetry_destinations
        (profile, generation, policy_epoch, endpoint_digest, paused_reason,
-        last_accepted_at, last_error, updated_at)
-     VALUES (?,?,?,?,?,?,?,?)
+        last_accepted_at, last_error, waiting_since, late_points_sent, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(profile) DO UPDATE SET
        generation       = excluded.generation,
        policy_epoch     = excluded.policy_epoch,
@@ -894,6 +1209,8 @@ export function updateDestination(
        paused_reason    = excluded.paused_reason,
        last_accepted_at = excluded.last_accepted_at,
        last_error       = excluded.last_error,
+       waiting_since    = excluded.waiting_since,
+       late_points_sent = excluded.late_points_sent,
        updated_at       = excluded.updated_at`,
   ).run(
     profile,
@@ -903,6 +1220,8 @@ export function updateDestination(
     next.pausedReason,
     next.lastAcceptedAt,
     next.lastError,
+    next.waitingSince,
+    next.latePointsSent,
     now,
   );
 }
@@ -1031,7 +1350,9 @@ export function usedBytes(d: DatabaseSync): number {
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
-         + (SELECT COALESCE(SUM(LENGTH(dimensions_json) + 64),0) FROM telemetry_series)
+         + (SELECT COALESCE(SUM(
+             LENGTH(dimensions_json) + LENGTH(COALESCE(exported_histogram_json,'')) + 96
+           ),0) FROM telemetry_series)
          -- Durable dedupe. Tiny per row and easy to forget, but it is the one table that keeps
          -- growing AFTER payloads are pruned: it is retained for 30 days against the payload
          -- window's 7, so on a busy installation it outlives everything it deduplicates. The
@@ -1041,6 +1362,7 @@ export function usedBytes(d: DatabaseSync): number {
            ),0) FROM telemetry_source_identities)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_contexts)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_resources)
+         + (SELECT COALESCE(SUM(LENGTH(profile) + LENGTH(series_digest) + 16),0) FROM telemetry_export_hours)
          AS total`,
     )
     .get() as { total: number } | undefined;

@@ -137,8 +137,14 @@ export interface DaemonHandle {
    * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
    */
   crash(): Promise<void>;
-  /** Boot a fresh daemon on the same port and home after `crash()`. */
-  restart(): Promise<void>;
+  /**
+   * Boot a fresh daemon on the same port and home after `crash()`.
+   *
+   * `envChanges` alters the successor's environment - an `undefined` value removes a variable -
+   * for the states a different launch produces on the same installation, such as a Mac its
+   * organization no longer manages.
+   */
+  restart(envChanges?: Record<string, string | undefined>): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -263,6 +269,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  if (extraEnv.MC_E2E_RESUME_PRIVATE_MCP === "1") {
+    copyFileSync(join(REPO_ROOT, "dist/mcp/server.mjs"), join(home, "resume-mcp.mjs"));
+    extraEnv = { ...extraEnv, MISSION_MCP_SERVER: join(home, "resume-mcp.mjs") };
+  }
   writeProductAuthorizationBin(home);
   const herdrEnabled = extraEnv.MC_E2E_HERDR === "1";
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";
@@ -542,6 +552,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
     // instead of quietly spending.
     ANTHROPIC_API_KEY: "",
+    // No organization manages a fixture daemon, whatever Mac runs the suite. The temp-dir
+    // state home already refuses detection; this says so outright. A spec that drives the
+    // managed panel opts in through `daemonEnv` with `MISSION_ORGANIZATION=upstart` and a
+    // loopback `MISSION_ORGANIZATION_ENDPOINT`.
+    MISSION_ORGANIZATION: "none",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through
@@ -744,8 +759,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     await gone;
   };
 
-  const restart = async (): Promise<void> => {
+  const restart = async (envChanges: Record<string, string | undefined> = {}): Promise<void> => {
     if (!exited) throw new Error("restart() is for a dead daemon - call crash() first");
+    for (const [key, value] of Object.entries(envChanges)) {
+      if (value === undefined) delete isolatedEnv[key];
+      else isolatedEnv[key] = value;
+    }
     // Same port, same home, same env: the successor is the same installation coming back,
     // which is exactly the case transient state (keep awake) must reset across. The boot
     // check re-verifies identity by pid, so a squatter that stole the freed port between

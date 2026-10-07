@@ -1,3 +1,4 @@
+import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
@@ -224,9 +225,6 @@ function evidencePreflightRefinementLimit(round: number): number {
     ? (EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1) * 2 - 1
     : EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT;
 }
-
-/** Explicit recovery has a separate durable run budget, independent of author repairs. */
-export const EVIDENCE_RECOVERY_LIMIT = 3;
 
 type RunCursor = { updatedAt: number; id: string };
 
@@ -4743,6 +4741,35 @@ export class WorkflowStore {
     return row ? parseWorkflowBindingRow(row) : null;
   }
 
+  /** Compare every active repository slot, including its pinned version and write scope. */
+  runtimeTransferBindingsMatch(noteKey: string, expected: readonly TransferBinding[]): boolean {
+    return JSON.stringify(this.activeBindingsForNote(noteKey).map(transferBinding)) === JSON.stringify(expected);
+  }
+
+  /** Registry/task/review owners must share the coordinator's single commit boundary. */
+  assertRuntimeTransferConnection(db: DatabaseSync): void {
+    if (this.db !== db) throw new Error("Runtime transfer owners must share the daemon database connection");
+  }
+
+  /** Synchronous owner write, composed into the coordinator's adoption transaction. */
+  transferRuntimeBindings(noteKey: string, sourceId: string, successorId: string,
+    expected: readonly TransferBinding[], now = Date.now()): void {
+    if (!this.db.isTransaction) throw new Error("Workflow transfer requires an ownership transaction");
+    if (!this.runtimeTransferBindingsMatch(noteKey, expected)) throw new Error("Pinned workflow ownership changed");
+    for (const binding of expected) {
+      if (binding.sessionId !== sourceId) throw new Error("Conflicting workflow owner");
+      this.mutate(() => {
+        this.db.prepare("UPDATE workflow_bindings SET session_id = ?, updated_at = ? WHERE id = ?")
+          .run(successorId, now, binding.id);
+        // Payload and historical attribution stay immutable. Only an unsent destination moves.
+        this.db.prepare(`UPDATE workflow_deliveries SET session_id = ?, updated_at = ?
+          WHERE session_id = ? AND note_key = ? AND state = 'prepared'
+            AND run_id IN (SELECT id FROM workflow_runs WHERE binding_id = ?)`)
+          .run(successorId, now, sourceId, noteKey, binding.id);
+      }, () => ({ kind: "binding", id: binding.id, now }));
+    }
+  }
+
   insertBinding(input: WorkflowBindingInsert): WorkflowBinding {
     return this.mutate(() => {
       this.db.prepare(
@@ -7930,10 +7957,14 @@ export class WorkflowStore {
          JOIN workflow_submissions s ON s.id = a.submission_id
          JOIN workflow_runs r ON r.id = s.run_id
         WHERE a.state = 'waiting'
-          AND d.session_id = ? AND d.state = 'delivered'
+          AND d.note_key IN (SELECT note_key FROM workflow_bindings WHERE session_id = ? AND state = 'active')
+          AND d.state = 'delivered'
           AND r.status NOT IN ('completed', 'cancelled', 'failed')
         ORDER BY a.created_at ASC, a.id ASC`,
-    ).all(sessionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+    ).all(sessionId) as unknown[]).map(parseWorkflowNodeAttemptRow).filter((attempt) => {
+      const delivery = this.listDeliveriesForAttempt(attempt.id).find((d) => d.state === "delivered");
+      return Boolean(delivery && runtimeTransferConnects(delivery.sessionId, sessionId, delivery.noteKey, this.db));
+    });
   }
 
   /**
@@ -8440,8 +8471,9 @@ export class WorkflowStore {
     noteKey: string,
     limit = 200,
   ): Array<{ payload: string; transcriptAnchor: number }> {
+    const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
-      `SELECT d.payload,
+      `SELECT d.payload, d.session_id,
               CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
                 AS transcript_anchor
          FROM workflow_deliveries d
@@ -8449,13 +8481,14 @@ export class WorkflowStore {
            ON e.run_id = d.run_id
           AND e.event_kind = 'delivery_delivered'
           AND json_extract(e.payload_json, '$.deliveryId') = d.id
-        WHERE d.session_id = ? AND d.note_key = ?
+        WHERE d.note_key = ? AND d.session_id IN (${sessions.map(() => "?").join(",")})
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
           AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
-    ).all(sessionId, noteKey, limit) as Array<{
+    ).all(noteKey, ...sessions, limit) as Array<{
+      session_id: string;
       payload: string;
       transcript_anchor: number;
     }>).map((row) => ({
@@ -8531,6 +8564,10 @@ export class WorkflowStore {
           throw new Error("A session action delivery must name a submission of its own run");
         }
       }
+      const run = this.getRun(input.runId);
+      const binding = run ? this.getBinding(run.bindingId) : null;
+      const sessionId = binding?.state === "active" && binding.sessionId && binding.noteKey === input.noteKey
+        && runtimeTransferConnects(input.sessionId, binding.sessionId, input.noteKey, this.db) ? binding.sessionId : input.sessionId;
       this.db.prepare(
         `INSERT INTO workflow_deliveries (
            id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
@@ -8542,7 +8579,7 @@ export class WorkflowStore {
         input.submissionId,
         input.kind,
         nodeAttemptId,
-        input.sessionId,
+        sessionId,
         input.noteKey,
         input.payload,
         input.payloadSha256,
@@ -8561,7 +8598,7 @@ export class WorkflowStore {
   claimDeliverySend(id: string, allowRefused = false, now = Date.now()): WorkflowDelivery | null {
     return this.mutate(() => {
       const delivery = this.getDelivery(id);
-      if (!delivery) return null;
+      if (!delivery || transferForNote(delivery.noteKey, this.db)) return null;
       const run = this.getRun(delivery.runId);
       if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
       const eligible = delivery.state === "prepared" || (allowRefused && delivery.state === "refused");
@@ -9066,11 +9103,6 @@ export class WorkflowStore {
     return row?.state === "failed";
   }
 
-  evidenceRecoveryCount(runId: string): number {
-    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_submissions
-      WHERE run_id = ? AND refinement_reason = 'evidence_recovery'`).get(runId) as { n: number }).n;
-  }
-
   reserveEvidenceRecovery(input: {
     id: string; runId: string; parentId: string; requestId: string; reason: string; now: number;
   }): { submission: WorkflowSubmission; idempotent: boolean } | null {
@@ -9079,8 +9111,6 @@ export class WorkflowStore {
       const existing = this.submissionByTrigger(key);
       if (existing) return existing.parentSubmissionId === input.parentId
         ? { submission: existing, idempotent: true } : null;
-      // Count and reserve under the same transaction; unique request ids cannot reset it.
-      if (this.evidenceRecoveryCount(input.runId) >= EVIDENCE_RECOVERY_LIMIT) return null;
       const run = this.getRun(input.runId);
       const parent = this.getSubmission(input.parentId);
       if (!run || !parent || parent.runId !== run.id || this.latestSubmission(run.id)?.id !== parent.id
@@ -10166,7 +10196,7 @@ export class WorkflowStore {
    * here would put a presentation rule in the store and make the field lie to any other
    * reader.
    */
-  private runRepairGrant(runId: string): WorkflowRunDetail["repairGrant"] {
+  runRepairGrant(runId: string): WorkflowRunDetail["repairGrant"] {
     const granted = this.listEvents(runId)
       .filter((event) => event.kind === "repair_rounds_granted")
       .at(-1);

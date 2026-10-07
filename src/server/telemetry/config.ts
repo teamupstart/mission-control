@@ -18,15 +18,23 @@ import {
   type TelemetryStatus,
 } from "@shared/telemetry.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import {
+  TelemetryOrganizationRecordSchema,
+  type TelemetryOrganizationStatus,
+} from "@shared/organizations.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
-import { PORT } from "../config.ts";
+import { PORT, envVar } from "../config.ts";
+import { currentOrganization } from "../environment/organization.ts";
 import { digest } from "./identity.ts";
 import { isLoopbackHost, validateEndpoint } from "./endpoint.ts";
 import { registeredProjections } from "./registration.ts";
 import { noteTelemetryCollectionChanged } from "./retention.ts";
 import { resetSessionTelemetryObservations } from "./sessions.ts";
 import {
+  baselineSeriesForDelta,
+  clearNetworkWaitingDeliveries,
   clearSecret,
+  deleteProfileSeries,
   getDestination,
   getSecret,
   hasSecret,
@@ -34,6 +42,7 @@ import {
   purgeProfileQueue,
   putProjectionState,
   putSecret,
+  recordGap,
   retirePrObservationWindows,
   telemetryTransaction,
   updateDestination,
@@ -100,6 +109,12 @@ export function installProductIngestForTesting(descriptor: string | null): void 
 /** The stored configuration with schema defaults applied. Every default is off. */
 export function getTelemetryConfig(): TelemetryConfig {
   return TelemetryConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+}
+
+/** True only after an operator has stored telemetry intent. A read never creates this row. */
+export function hasStoredTelemetryConfig(): boolean {
+  const stored = getAppConfig(CONFIG_ENTRY);
+  return stored !== null && stored !== undefined;
 }
 
 /**
@@ -221,7 +236,33 @@ export function profileProducesBatches(config: TelemetryConfig, profile: Telemet
 /** Whether this profile may have a request sent for it right now. */
 export function profileIsExporting(config: TelemetryConfig, profile: TelemetryProfileId): boolean {
   if (!profileProducesBatches(config, profile)) return false;
+  if (profile === "product" && !managedProductMaySend(config)) return false;
   return destinationFor(config, profile)?.paused !== true;
+}
+
+/**
+ * While an organization holds the lock, whether its Product analytics lane may send.
+ *
+ * Only what is durably stored counts, never what the lock implies. Each failed write would
+ * otherwise send where nobody chose:
+ *   - a first application that failed leaves the person's previous destination in place, on
+ *     a Mac whose panel says it is managed - even one that already pointed at the gateway;
+ *   - a withdrawal that failed leaves the gateway on a Mac the organization no longer manages.
+ * So sending needs a readable record for this organization, the rollout's own permission -
+ * during `pilot`, a stored enrollment - and the managed endpoint actually stored. Batches
+ * queue as they would while paused, and the endpoint change the next successful apply or
+ * withdrawal makes fences them.
+ */
+function managedProductMaySend(config: TelemetryConfig): boolean {
+  const organization = currentOrganization();
+  if (organization === null) return true;
+  if (organization.withdrawing === true) return false;
+  const record = TelemetryOrganizationRecordSchema.safeParse(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization),
+  );
+  if (!record.success || record.data.organization !== organization.entry.id) return false;
+  if (organization.entry.rollout === "pilot" && record.data.pilotEnrolledAt === null) return false;
+  return config.product.endpoint.trim() === organization.endpoint;
 }
 
 /** Every profile eligible for capture, in stable order. */
@@ -368,6 +409,21 @@ export function setTelemetryConfig(
       const isCapturing = profileIsCapturing(next, profile);
       const destination = getDestination(d, profile);
       const endpointDigest = digest(destinationFor(next, profile)?.endpoint ?? "");
+      const previousDestination = destinationFor(previous, profile);
+      const nextDestination = destinationFor(next, profile);
+      const temporalityChanged =
+        previousDestination !== null &&
+        nextDestination !== null &&
+        previousDestination.temporality !== nextDestination.temporality;
+      const shapeChanged =
+        previousDestination !== null &&
+        nextDestination !== null &&
+        previousDestination.exportShape !== nextDestination.exportShape;
+      const waitingIsNoLongerPossible =
+        destination.waitingSince !== null &&
+        (nextDestination === null ||
+          !profileIsExporting(next, profile) ||
+          nextDestination.networkGate !== "cloudflare-edge");
 
       if (!wasCapturing && isCapturing) {
         // A new opt-in starts a new baseline. Runs already in progress stay visible as
@@ -410,19 +466,58 @@ export function setTelemetryConfig(
         // Withdrawal. Unsent batches and this profile's projections go; already accepted data
         // at a remote backend cannot be recalled and is not pretended otherwise.
         purgeProfileQueue(d, profile);
-        updateDestination(d, profile, { endpointDigest, pausedReason: null, lastError: null }, now);
-        continue;
-      }
-
-      if (endpointDigest !== destination.endpointDigest) {
-        // A new destination generation. Batches built for the previous endpoint keep their own
-        // generation and are refused by the sender rather than redirected.
         updateDestination(
           d,
           profile,
-          { generation: destination.generation + 1, endpointDigest, pausedReason: null, lastError: null },
+          { endpointDigest, pausedReason: null, lastError: null, waitingSince: null },
           now,
         );
+        continue;
+      }
+
+      if (shapeChanged) {
+        // A new shape starts this destination's series again from zero. Every counter and
+        // histogram total lives in these rows - the catalog projection holds no reducer state -
+        // and so do the delta watermarks, so deleting them is the whole reset: no merged delta
+        // can span two label sets. Projection checkpoints stay where they are, so facts already
+        // projected are never counted again and facts not yet projected count once, under the
+        // new shape. The policy epoch is deliberately NOT bumped: that would skip those facts.
+        // Queued batches of the old shape are fenced by the generation bump below. The hourly
+        // export ledger is kept, because the hour the backend bills has not started again.
+        deleteProfileSeries(d, profile);
+        if (isCapturing) {
+          recordGap(
+            d,
+            "shape_changed",
+            `${profile} now receives the ${nextDestination?.exportShape ?? "full"} export shape`,
+            now,
+          );
+        }
+      }
+
+      if (endpointDigest !== destination.endpointDigest || temporalityChanged || shapeChanged) {
+        // A new destination generation. Batches built for the previous endpoint keep their own
+        // generation and are refused by the sender rather than redirected.
+        const generation = destination.generation + 1;
+        clearNetworkWaitingDeliveries(d, profile);
+        updateDestination(
+          d,
+          profile,
+          {
+            generation,
+            endpointDigest,
+            pausedReason: null,
+            lastError: null,
+            waitingSince: null,
+          },
+          now,
+        );
+        if (nextDestination?.temporality === "delta") {
+          baselineSeriesForDelta(d, profile, destination.policyEpoch, generation, now);
+        }
+      } else if (waitingIsNoLongerPossible) {
+        clearNetworkWaitingDeliveries(d, profile);
+        updateDestination(d, profile, { waitingSince: null }, now);
       }
     }
 
@@ -462,6 +557,91 @@ export function telemetryStatus(): TelemetryStatus {
     endpoint: endpoint
       ? { ok: endpoint.ok, detail: endpoint.detail, warning: endpoint.warning }
       : null,
+    organization: organizationStatus(config),
+  };
+}
+
+/**
+ * The `deployment.environment.name` every resource carries: the operator's
+ * `MISSION_TELEMETRY_ENVIRONMENT`, then the managing organization's preset environment, then
+ * the default an ordinary install has.
+ *
+ * The organization's value sits below the operator's on purpose. It exists so a managed fleet
+ * reports one environment rather than its own plus `local`, and an operator who sets the
+ * variable - a test run, a demo - has said something more specific about this process.
+ *
+ * Trimmed and checked for emptiness rather than `??`, which only catches unset: an
+ * exported-but-empty variable is ordinary shell, and would otherwise label every record with
+ * no environment at all.
+ */
+export function environmentName(): string {
+  const configured = envVar("TELEMETRY_ENVIRONMENT")?.trim();
+  if (configured !== undefined && configured.length > 0) return configured;
+  return currentOrganization()?.entry.preset.environment ?? "local";
+}
+
+/**
+ * The managing organization as Settings renders it, or null on an unmanaged machine.
+ *
+ * `effective` is read back from the stored product destination rather than from the preset,
+ * so the panel shows what this Mac is actually configured with.
+ */
+function organizationStatus(config: TelemetryConfig): TelemetryOrganizationStatus | null {
+  const organization = currentOrganization();
+  if (organization === null) return null;
+  const record = TelemetryOrganizationRecordSchema.safeParse(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryOrganization),
+  );
+  const { entry } = organization;
+  return {
+    id: entry.id,
+    label: entry.label,
+    evidence: organization.evidence,
+    destinationLabel: entry.destinationLabel,
+    networkLabel: entry.networkLabel,
+    rollout: entry.rollout,
+    managed: true,
+    pilotEnrolled: record.success && record.data.pilotEnrolledAt !== null,
+    withdrawing: organization.withdrawing === true,
+    effective: {
+      destination: "product",
+      endpoint: config.product.endpoint,
+      temporality: config.product.temporality,
+      exportShape: config.product.exportShape,
+      networkGate: config.product.networkGate,
+      lateAfterMs: config.product.lateAfterMs,
+      environment: environmentName(),
+    },
+  };
+}
+
+/**
+ * The HTTP representation preserves the exact pre-Phase-1 bytes until telemetry intent exists.
+ * Internal readers always use the fully defaulted schema above; the browser rehydrates this
+ * legacy wire shape at its boundary.
+ *
+ * `organization` is left off that legacy shape while it is null, which it always is there: a
+ * recognized organization stores its configuration as it is applied.
+ */
+export function telemetryStatusResponse(): object {
+  const status = telemetryStatus();
+  if (hasStoredTelemetryConfig()) return status;
+  const legacyDestination = ({
+    enabled,
+    endpoint,
+    headerName,
+    paused,
+  }: TelemetryDestination): object => ({ enabled, endpoint, headerName, paused });
+  const { organization, ...rest } = status;
+  return {
+    ...rest,
+    ...(organization === null ? {} : { organization }),
+    config: {
+      enabled: status.config.enabled,
+      user: legacyDestination(status.config.user),
+      product: legacyDestination(status.config.product),
+      revision: status.config.revision,
+    },
   };
 }
 

@@ -182,6 +182,56 @@ test("cumulative temporality is what a monotonic counter is exported as", () => 
   assert.equal((metric as { isMonotonic?: boolean }).isMonotonic, true);
 });
 
+test("delta temporality is serialized for sums and histograms but not gauges", () => {
+  const counter = historicalBatch().metrics[0]!;
+  const deltaCounter = {
+    ...historicalBatch(),
+    metrics: [{ ...counter, temporality: "delta" as const }],
+  };
+  assert.equal(
+    toResourceMetrics(deltaCounter).scopeMetrics[0]!.metrics[0]!.aggregationTemporality,
+    0 /* DELTA */,
+  );
+
+  const deltaHistogram = {
+    ...historicalBatch(),
+    metrics: [
+      {
+        ...historicalBatch().metrics[0]!,
+        kind: "histogram" as const,
+        temporality: "delta" as const,
+        histogram: {
+          count: 1,
+          sum: 25,
+          min: null,
+          max: null,
+          boundaries: [10, 100],
+          buckets: [0, 1, 0],
+        },
+      },
+    ],
+  };
+  assert.equal(
+    toResourceMetrics(deltaHistogram).scopeMetrics[0]!.metrics[0]!.aggregationTemporality,
+    0 /* DELTA */,
+  );
+
+  const gauge = {
+    ...historicalBatch(),
+    metrics: [
+      {
+        ...historicalBatch().metrics[0]!,
+        kind: "gauge" as const,
+        temporality: "delta" as const,
+      },
+    ],
+  };
+  assert.equal(
+    toResourceMetrics(gauge).scopeMetrics[0]!.metrics[0]!.aggregationTemporality,
+    1 /* CUMULATIVE: gauges have no temporality semantics */,
+  );
+});
+
 test("a metrics batch serializes to OTLP protobuf bytes", () => {
   const bytes = serializeMetrics(historicalBatch());
   assert.ok(bytes.length > 0);

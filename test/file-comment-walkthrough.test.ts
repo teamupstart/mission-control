@@ -587,6 +587,117 @@ test("a thread answered and then replied to delivers the REPLY, not the opening 
   assert.doesNotMatch(h.sent[1]!, /quoting id MC-a\.1\./);
 });
 
+test("a follow-up on text the agent rewrote in answer is DELIVERED, not held", async () => {
+  // The ordinary loop: a person comments on a sentence, the agent answers it by rewriting that
+  // sentence, and the person replies in the same thread to keep iterating. The quote no longer
+  // resolves - the agent's own edit is why - but the agent has already seen this thread and
+  // knows what it changed, so holding the follow-up strands the conversation behind a pause
+  // that only "drop it and comment again" gets past.
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  assert.equal(h.sent.length, 1);
+
+  // The agent's answer: the quoted sentence is rewritten on disk.
+  h.files.set("docs/spec.md", {
+    text: FILE.replace("The retry budget is thirty seconds.", "Retries stop at the deadline."),
+    revision: "r2",
+  });
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  // The person follows up in the same thread; `appendMessage` requeues it.
+  const settled = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...settled,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...settled.messages, message({ id: "m2", threadId: "a", body: "closer, but name the deadline" })],
+    messageCount: 2,
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.equal(h.threads.get("a")!.outdated, true, "the quote really is gone from the file");
+  assert.notEqual(h.review.state, "paused", "a thread already in conversation is not held");
+  assert.equal(h.review.pauseReason, null);
+  assert.equal(h.sent.length, 2, "the follow-up reached the agent");
+  assert.match(h.sent[1]!, /^closer, but name the deadline$/m);
+  assert.match(h.sent[1]!, /quoting id MC-a\.2\./);
+  // The agent is told the quote is the ORIGINAL text, so it reasons from the thread rather
+  // than hunting the file for a sentence it already replaced.
+  assert.match(h.sent[1]!, /no longer in the file/);
+});
+
+test("a follow-up is delivered when its delivered message is only in the FULL history", async () => {
+  // A long conversation: the delivered opening comment and the agent's answer have fallen off
+  // the front of the capped copy the tick reads, which carries only the newest messages. Read
+  // from that copy alone, the thread looks like one the agent has never seen, and the follow-up
+  // would be held on its outdated quote exactly as the bug did.
+  const full = thread({
+    id: "a",
+    quote: "a sentence the agent has since rewritten",
+    revision: "old",
+    messages: [
+      message({ id: "m1", threadId: "a", body: "the opening comment", deliveredAt: 5 }),
+      message({ id: "r1", threadId: "a", author: "agent", body: "Rewrote it." }),
+      message({ id: "m2", threadId: "a", body: "keep going" }),
+    ],
+  });
+  const h = harness([full]);
+  const history = h.port.threadWithHistory;
+  let fullReads = 0;
+  h.port.threadWithHistory = (id) => {
+    fullReads += 1;
+    return history(id);
+  };
+  h.port.threads = () =>
+    [...h.threads.values()].map((t) => ({ ...t, messages: t.messages.slice(-1) }));
+
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.equal(h.threads.get("a")!.outdated, true, "the quote really is gone from the file");
+  assert.notEqual(h.review.state, "paused", "a thread the agent answered is not held");
+  assert.equal(h.review.pauseReason, null);
+  assert.equal(h.sent.length, 1, "the follow-up reached the agent");
+  assert.match(h.sent[0]!, /^keep going$/m);
+  assert.match(h.sent[0]!, /quoting id MC-a\.2\./);
+  assert.match(h.sent[0]!, /no longer in the file/);
+  assert.ok(fullReads > 0, "the hold decision read the whole history");
+});
+
+test("a follow-up on a file the agent removed is delivered with that said", async () => {
+  const h = harness([thread({ id: "a" })]);
+  h.walkthrough.start(SESSION);
+  await settle();
+  h.deliver();
+  await settle();
+  h.files.delete("docs/spec.md");
+  h.now.value += FILE_COMMENT_ADVANCE_SETTLE_MS + 1;
+  await h.walkthrough.tick(SESSION);
+  await settle();
+
+  const settled = h.threads.get("a")!;
+  h.threads.set("a", {
+    ...settled,
+    status: "queued",
+    queueSeq: 1,
+    messages: [...settled.messages, message({ id: "m2", threadId: "a", body: "put it back" })],
+    messageCount: 2,
+  });
+  h.walkthrough.start(SESSION);
+  await settle();
+
+  assert.notEqual(h.review.state, "paused");
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[1]!, /^put it back$/m);
+  assert.match(h.sent[1]!, /no longer in this checkout/);
+});
+
 test("a reply written while the comment was in flight requeues when the turn resolves", async () => {
   // Appending to the outstanding thread is always allowed, but its STATUS must not move: it is
   // the status the single-flight index is built on, and requeueing there would let the next

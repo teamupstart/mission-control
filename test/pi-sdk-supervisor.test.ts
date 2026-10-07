@@ -105,7 +105,7 @@ test("Pi queue acceptance survives a fast turn, refusal retries, questions block
     skipScoutWrapup: true, skipReviewArtifactWrapup: true };
   try {
     const started = await supervisor.start({ ...START, prompt: "" });
-    await drain();
+    await waitFor(() => registry.getSession(started.id)?.agentSessionId === "pi-session-1");
     const current = () => registry.getSession(started.id)!;
     const tick = () => decideQueueTick({ session: current(), bucket: reportBucket(current()),
       queue: queues.get(started.id)!, intent: null, cfg, mayActLive: true, now: Date.now() + 10 });
@@ -139,7 +139,7 @@ test("Pi queue acceptance survives a fast turn, refusal retries, questions block
     const item = queues.add(started.id, "first queue item")!;
     assert.ok(item);
     const question = sdk.runtime.session.ui!.input("Queue blocked");
-    await drain();
+    await waitFor(() => Boolean(current().paneDialog));
     assert.notEqual(tick().kind, "send");
     const dialog = current().paneDialog!;
     await supervisor.answer(started.id, dialog.requestId!, { kind: "form", answers: [{ question: "Queue blocked", labels: [], text: "continue" }] });
@@ -160,7 +160,7 @@ test("Pi queue acceptance survives a fast turn, refusal retries, questions block
     assert.equal(sdk.runtime.session.deliveries.at(-1)?.text, command);
     await supervisor.interrupt(started.id);
     await supervisor.clearContext(started.id);
-    await drain();
+    await waitFor(() => current().agentSessionId === "replacement-1");
     assert.equal(current().agentSessionId, "replacement-1");
     const generation = current().workCycle?.generation;
     sdk.runtime.session.emit({ type: "agent_settled" });

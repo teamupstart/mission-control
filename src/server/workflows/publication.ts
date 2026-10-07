@@ -15,7 +15,10 @@ import { inspectCheckoutTextArtifact } from "./images.ts";
  * as ordinary workflow text evidence before the submission can use this projection.
  * Images belong inline in the page; independent ignored evidence uses the existing tray.
  */
-export async function captureWorkflowPublication(cwd: string): Promise<{
+export async function captureWorkflowPublication(
+  cwd: string,
+  reservedTextEvidence: readonly Pick<WorkflowEvidenceTextArtifact, "bytes">[] = [],
+): Promise<{
   contentTreeOid: string;
   publication: NonNullable<WorkflowContextSnapshot["evidence"]["publication"]>;
   artifacts: WorkflowEvidenceTextArtifact[];
@@ -36,7 +39,9 @@ export async function captureWorkflowPublication(cwd: string): Promise<{
   const problem = (path: string, reason: string) => {
     if (artifactProblems.length < 100) artifactProblems.push(`${path}: ${reason}`.slice(0, 2_000));
   };
-  let bytes = 0;
+  // The submission's frozen reservation has first claim on the shared text budget.
+  // A report group that cannot fit stays in the publication tree, including its companions.
+  let bytes = reservedTextEvidence.reduce((total, item) => total + item.bytes, 0);
   for (const reportPath of untracked) {
     const directory = scoutReportDirectory(reportPath);
     if (!directory) continue;
@@ -48,7 +53,7 @@ export async function captureWorkflowPublication(cwd: string): Promise<{
       problem(reportPath, "artifact path exceeds the retention limit");
       continue;
     }
-    if (artifacts.length + paths.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount) {
+    if (reservedTextEvidence.length + artifacts.length + paths.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount) {
       problem(reportPath, "too many report artifacts to retain");
       continue;
     }

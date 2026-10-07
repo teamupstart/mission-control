@@ -583,6 +583,19 @@ test("repository capture fails closed and detects worktree evidence changes", as
   assert.notEqual(repairedProbe.diffFingerprint, dirtyProbe.diffFingerprint);
   assert.equal(probeMatchesEvidence(repairedProbe, dirtyCapture.context.evidence), false);
 
+  const reportPath = join(repo, "docs/reports/probe/report.html");
+  mkdirSync(join(repo, "docs/reports/probe"), { recursive: true });
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>First proof.</p>");
+  const reportCapture = await readWorkflowContextRaw(registry, binding);
+  const reportProbe = await readWorkflowEvidenceProbe(registry, binding);
+  assert.equal(probeMatchesEvidence(reportProbe, reportCapture.context.evidence), true);
+  assert.equal(reportProbe.publicationVersion, 1);
+  assert.notEqual(reportProbe.contentTreeOid, reportCapture.context.evidence.publication?.treeOid,
+    "the probe must include reports in full content identity");
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>Other proof.</p>");
+  assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), reportCapture.context.evidence), false);
+  rmSync(join(repo, "docs"), { recursive: true });
+
   writeFileSync(join(repo, "file.txt"), "one\n");
   for (let index = 0; index <= 500; index++) {
     writeFileSync(join(repo, `untracked-${String(index).padStart(3, "0")}.txt`), "");

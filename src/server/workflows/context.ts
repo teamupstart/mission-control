@@ -55,6 +55,7 @@ import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
+import { captureWorktreeTree } from "../git/worktree-tree.ts";
 import { captureWorkflowPublication } from "./publication.ts";
 
 const MAX_GOAL = 16_000;
@@ -883,7 +884,10 @@ async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
   return { diff, allStatus, status, statusTruncated, statusFingerprint };
 }
 
-async function readRepositoryEvidence(cwd: string | null): Promise<{
+async function readRepositoryEvidence(
+  cwd: string | null,
+  reservedTextEvidence: Parameters<typeof captureWorkflowPublication>[1] = [],
+): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
@@ -898,7 +902,7 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   const work = await readRepositoryWorkEvidence(cwd);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
-  const { contentTreeOid, publication, artifacts } = await captureWorkflowPublication(cwd);
+  const { contentTreeOid, publication, artifacts } = await captureWorkflowPublication(cwd, reservedTextEvidence);
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
@@ -1189,12 +1193,14 @@ export async function readWorkflowContextRaw(
   /**
    * The run's frozen intent, or null for a run created before the snapshot existed.
    *
-   * Positional and last so the injected `readContextRaw` seam keeps its current arity. A
+   * Positional so the injected `readContextRaw` seam keeps its existing arguments. A
    * supplied snapshot REPLACES the live Goal read entirely - it is not merged with it and not
    * compared against it - because anything that consulted the live value could still be moved
    * by a repair packet typed into the pane.
    */
   frozenIntent: WorkflowRunIntentSnapshot | null = null,
+  /** The submission's frozen text reservation, before any local report exemptions. */
+  reservedTextEvidence: Parameters<typeof captureWorkflowPublication>[1] = [],
 ): Promise<WorkflowRawCaptureRead> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -1229,7 +1235,7 @@ export async function readWorkflowContextRaw(
     publication,
     artifacts,
     repositoryFingerprint,
-  } = await readRepositoryEvidence(checkout);
+  } = await readRepositoryEvidence(checkout, reservedTextEvidence);
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
@@ -1361,10 +1367,10 @@ export async function readWorkflowEvidenceProbe(
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
   const work = await readRepositoryWorkEvidence(checkout);
-  const capture = await captureWorkflowPublication(checkout);
+  const { treeOid: contentTreeOid } = await captureWorktreeTree(checkout);
   return {
-    contentTreeOid: capture.contentTreeOid,
-    publicationVersion: capture.publication.version,
+    contentTreeOid,
+    publicationVersion: 1,
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
     diffFingerprint: sha(JSON.stringify({

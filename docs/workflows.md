@@ -2214,7 +2214,10 @@ create publication exemptions. Existing gitignored evidence continues through th
 
 The daemon preserves the exact report bytes in the existing submission text-evidence store before
 using the exemption, with path, byte count and SHA-256 receipts. Workflow text limits apply:
-64 KiB per file, 48 files and 384 KiB total including other text evidence. Invalid reports stay
+64 KiB per file, 48 files and 384 KiB total including other text evidence. The submission's
+reserved text evidence consumes that budget first. A report and its companions that do not fit
+stay together in the publication tree, with a retention-limit problem, rather than failing the
+whole submission. Invalid reports stay
 required until corrected; the Intent tab's **Evidence snapshot** names the validation problem and
 required publication paths. Do not commit a report to silence the gate. Correct it and resubmit.
 The same view shows how many local artifacts were retained outside Git.

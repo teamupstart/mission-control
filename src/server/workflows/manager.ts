@@ -6509,6 +6509,7 @@ export class WorkflowManager {
             binding.noteKey,
           ),
           frozenIntent,
+          this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,

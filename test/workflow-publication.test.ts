@@ -149,6 +149,13 @@ for (const boundary of [
       { id, triggerSource: "manual", triggerKey: id, context: {}, evidence: {}, now: 3 },
     );
     assert.equal(store.listReservedWorkflowEvidence(submission.id).length, 1);
+    const reserved = store.listReservedWorkflowEvidence(submission.id);
+    const budgetedOverflow = await captureWorkflowPublication(root, reserved);
+    assert.equal(budgetedOverflow.artifacts.length, 0, "an over-budget report group stays required");
+    assert.ok(budgetedOverflow.publication.unpublishedPaths.includes(reportPath));
+    assert.ok(budgetedOverflow.publication.unpublishedPaths.includes("docs/reports/result/overflow.txt"));
+    assert.equal(budgetedOverflow.publication.treeOid, budgetedOverflow.contentTreeOid);
+    assert.match(budgetedOverflow.publication.artifactProblems?.join("\n") ?? "", /retain|retention/);
     await assert.rejects(
       captureSubmissionTextArtifacts(store, submission.id, 4, aboveLimit.artifacts),
       (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_aggregate",
@@ -156,6 +163,9 @@ for (const boundary of [
     assert.deepEqual(store.listSubmissionTextArtifacts(submission.id), [], "rejection must not retain a partial capture");
 
     rmSync(overflowPath);
+    const budgetedAtLimit = await captureWorkflowPublication(root, reserved);
+    assert.equal(budgetedAtLimit.artifacts.length, boundary.localCount);
+    assert.ok(!budgetedAtLimit.publication.unpublishedPaths.includes(reportPath));
     const retained = await captureSubmissionTextArtifacts(store, submission.id, 5, atLimit.artifacts);
     assert.equal(retained.length, boundary.localCount + 1);
     assert.equal(retained.reduce((sum, item) => sum + item.bytes, 0), boundary.reservedBytes + boundary.localCount * boundary.localBytes);

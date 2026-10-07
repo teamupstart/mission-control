@@ -397,7 +397,8 @@ if (process.argv.includes("--setting-sources=")) {
         process.stderr.write("Usage limit reached for this account. Check your plan and usage limits.");
         process.exit(1);
       }
-      if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
+      if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")
+        || (prompt.includes("E2E_PERSONA_TOKEN_AFTER_CONTRACT") && prompt.includes("Correction required:"))) {
         process.stdout.write(JSON.stringify({ type: "result", subtype: "error_during_execution",
           is_error: true, terminal_reason: "api_error",
           errors: [TOKEN_REFUSAL_DIAGNOSTIC] }));
@@ -645,7 +646,8 @@ function runHeadlessSdk() {
         session_id: SESSION_ID, errors: ["Usage limit reached for this account. Check your plan and usage limits."] });
       process.exit(0);
     }
-    if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")) {
+    if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")
+      || (prompt.includes("E2E_PERSONA_TOKEN_AFTER_CONTRACT") && prompt.includes("Correction required:"))) {
       emit({ type: "result", subtype: "error_during_execution", is_error: true,
         terminal_reason: "api_error", session_id: SESSION_ID,
         errors: [TOKEN_REFUSAL_DIAGNOSTIC] });

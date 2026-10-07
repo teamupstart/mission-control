@@ -1146,11 +1146,12 @@ export class WorkflowEngine {
         claimed.reviewInput ? { shapeGuaranteed: true } : undefined,
       );
       if (result.kind === "ok") { verdict = result.value; break; }
-      failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
       if (result.providerFailure) {
+        failure = result.reason;
         providerFailure = result.providerFailure;
         break;
       }
+      failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
       if (result.cause === "cancelled") break;
     }
     if (claimed.reviewInput && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {

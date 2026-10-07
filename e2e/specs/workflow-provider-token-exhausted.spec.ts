@@ -11,7 +11,11 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   return await response.json() as T;
 }
 
-test("a provider token refusal appears immediately as a blocked run with no retry action", async ({ dashboard, daemon }) => {
+for (const afterContractRejection of [false, true]) test(
+  afterContractRejection
+    ? "a token refusal after a rejected review shows the provider reason"
+    : "a provider token refusal appears immediately as a blocked run with no retry action",
+  async ({ dashboard, daemon }) => {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -31,7 +35,9 @@ test("a provider token refusal appears immediately as a blocked run with no retr
 
   const reviewer = await api<{ id: string }>(daemon, "/api/personas", {
     name: "Token refusal reviewer",
-    guidanceMarkdown: "# Token refusal reviewer\n\nE2E_PERSONA_TOKEN_EXHAUSTED",
+    guidanceMarkdown: afterContractRejection
+      ? "# Token refusal reviewer\n\nE2E_CONTRACT_REVIEW E2E_PERSONA_TOKEN_AFTER_CONTRACT"
+      : "# Token refusal reviewer\n\nE2E_PERSONA_TOKEN_EXHAUSTED",
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E provider token refusal",
@@ -53,17 +59,24 @@ test("a provider token refusal appears immediately as a blocked run with no retr
     workflowVersionId: published.version.id, sessionId, deliveryMode: "preview",
   });
   const submitted = await api<{ run: { id: string } }>(daemon, `/api/workflow-bindings/${binding.id}/submit`, {
-    requestId: "e2e-provider-token-refusal",
+    requestId: `e2e-provider-token-refusal-${afterContractRejection}`,
   });
   const runId = submitted.run.id;
   await expect.poll(async () => {
     const { run } = await api<{ run: { status: string; currentPhase: string } }>(daemon, `/api/workflow-runs/${runId}`);
     return `${run.status}/${run.currentPhase}`;
   }, { timeout: 60_000 }).toBe("blocked/provider_token_exhausted");
+  const { run } = await api<{ run: { gateState: { error: string } } }>(daemon, `/api/workflow-runs/${runId}`);
+  expect(run.gateState.error).toContain("Claude error_during_execution (api_error)");
+  expect(run.gateState.error).not.toContain("Persona review contract error");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const header = dashboard.locator("header.wf-run-head");
   await expect(header).toContainText("provider token or quota limit reached");
   await expect(header.getByRole("button", { name: "Retry the failed call" })).toHaveCount(0);
   await expect(header.getByRole("button", { name: "Cancel run" })).toBeVisible();
+  const gatePacket = dashboard.locator("details.wf-run-packet", { hasText: "Join and gate packet" });
+  await gatePacket.locator("summary").click();
+  await expect(gatePacket).toContainText("Claude error_during_execution (api_error)");
+  await expect(gatePacket).not.toContainText("Persona review contract error");
 });

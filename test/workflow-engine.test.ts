@@ -858,6 +858,42 @@ test("provider token exhaustion blocks immediately without scheduling a retry", 
   assert.equal(store.lastPersonaCallErrorCode(store.latestAttemptForNode("submission-provider-token", "p")!.id), "persona_token_exhausted");
 });
 
+for (const [kind, code, expectedState] of [
+  ["token", "prompt_too_long", "blocked"],
+  ["retryable", "api_error", "retry_wait"],
+] as const) test(`provider ${kind} reason survives a rejected review response`, async () => {
+  const id = `provider-after-contract-${kind}`;
+  const store = seedSubmission(id, providerRetryGraph);
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls === 1) return JSON.stringify({
+      verdict: "fail", summary: "Registration objection", confidence: 1,
+      requestedChanges: [{ basis: "coverage_registration", title: "Register coverage",
+        rationale: "Missing coverage declaration", evidence: [{ kind: "goal", quote: "coverage" }] }],
+    });
+    throw new ProviderFailure("provider refused the corrected review", code);
+  });
+  const engine = providerRetryEngine(store, runner, Date.now);
+  engine.start();
+  engine.activateSubmission(`submission-${id}`);
+  let error = "";
+  try {
+    await waitFor(() => expectedState === "blocked"
+      ? store.getRun(`run-${id}`)?.status === "blocked"
+      : store.latestAttemptForNode(`submission-${id}`, "p")?.state === "retry_wait");
+    error = expectedState === "blocked"
+      ? (store.getRun(`run-${id}`)?.gateState as { error: string }).error
+      : store.latestAttemptForNode(`submission-${id}`, "p")?.error ?? "";
+  } finally {
+    if (expectedState === "retry_wait") store.cancelRun(`run-${id}`, "test_cleanup");
+    await engine.stop();
+  }
+  assert.equal(calls, 2);
+  assert.match(error, /provider refused the corrected review/);
+  assert.doesNotMatch(error, /Persona review contract error/);
+});
+
 test("provider retry may start just before the deadline but not at it", async () => {
   for (const [suffix, offset, expectedCalls] of [
     ["before", 10 * 60_000 - 1, 2],

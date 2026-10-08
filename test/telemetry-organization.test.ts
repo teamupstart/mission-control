@@ -827,6 +827,25 @@ test("default-on starts exporting on a newly managed Mac and restores its previo
   assert.equal(telemetryOrganizationRecord(), null);
 });
 
+test("default-on fences batches queued for a previous collector", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  assert.ok(setTelemetryConfig({ enabled: true, product: { enabled: true, endpoint: ORIGINAL } }).ok);
+  captureStart(10);
+  assert.ok(runProjectionPass(11).batches > 0);
+  assert.ok(queuedProductBatches() > 0);
+
+  await manage();
+  const net = collectors();
+  await runDeliveryPass({ fetch: net.fetch, now: () => 1_001 });
+  assert.deepEqual(net.to(ORIGINAL), []);
+  assert.deepEqual(net.to(GATEWAY), [], "old batches cannot be redirected to the managed gateway");
+
+  captureStart(1_010);
+  assert.ok(runProjectionPass(1_011).batches > 0);
+  assert.ok((await runDeliveryPass({ fetch: net.fetch, now: () => 1_012 })).accepted > 0);
+  assert.ok(net.to(`${GATEWAY}/v1/metrics`).length > 0);
+});
+
 test("default-on upgrades a pilot record without changing the saved prior state", async () => {
   await manage();
   const before = telemetryOrganizationRecord()?.previous;

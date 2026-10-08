@@ -98,7 +98,7 @@ Run the focused tests named in each phase, plus repository-required typecheck, l
 
 ## Scheduling state
 
-Both implementation tasks were created successfully through Mission Control on 2026-10-06. Their exact submitted intents are in [task-briefs.md](task-briefs.md). The tool confirmed the canonical repository `/Users/jordanmance/workspace/mission-control`, no additional repositories, and backlog status for both tasks.
+Both implementation tasks were created successfully through Mission Control on 2026-10-06. Their exact submitted intents are in [task-briefs.md](task-briefs.md). The tool confirmed the canonical repository `$REPO_ROOT` (the owning `mission-control` checkout), no additional repositories, and backlog status for both tasks.
 
 On 2026-10-08 the operator explicitly requested this plans-only PR and retained merge ownership.
 Commit and push only the five Markdown sources; rendered HTML, the earlier design report,

@@ -1,11 +1,15 @@
 # Plan storage policy: backlog task briefs
 
-These are the exact goal-level intents submitted in the two successful `create_task` calls. Both tasks target `/Users/jordanmance/workspace/mission-control`, with no attached repositories or model/effort override. Both retain `dependsOnCurrentSession: true`; Phase 2 also depends on Phase 1. They remain in the backlog until their publication prerequisites are satisfied.
+These are the exact goal-level intents submitted in the two successful `create_task` calls. Both tasks target `$REPO_ROOT` (the owning `mission-control` checkout), with no attached repositories or model/effort override. Both retain `dependsOnCurrentSession: true`; Phase 2 also depends on Phase 1. They remain in the backlog until their publication prerequisites are satisfied.
 
 The operator's 2026-10-08 plans-only PR instruction retains these original briefs without
 narrowing either task. Their phase documents describe full implementation scope; this PR
 provides planning inputs only. The state above is the successful scheduling response from
 2026-10-06, not a substitute for Mission Control's live task status.
+
+The quoted intents below are inputs for the future implementation tasks, not instructions
+for PR reviewers. Their imperative wording is preserved solely as a record of the scheduled
+tasks.
 
 ## Phase 1
 

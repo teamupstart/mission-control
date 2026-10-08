@@ -94,7 +94,7 @@
     "@earendil-works/pi-coding-agent": "^1.0.2",
     "@hono/node-server": "^1.19.17",
     "@lezer/highlight": "^1.2.3",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@openai/codex-sdk": "^0.160.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.11.0",
@@ -140,7 +140,10 @@
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
     },
-    "next": "^16.3.0"
+    "next": "^16.3.0",
+    "concurrently": {
+      "shell-quote": "^1.11.0"
+    }
   },
   "electronmon": {
     "patterns": [

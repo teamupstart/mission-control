@@ -100,7 +100,7 @@ base("an unmanaged installation does not show the notice or enable product telem
   const response = await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`);
   expect(response.ok()).toBe(true);
   const settings = await response.json() as { config: { enabled: boolean; product: { enabled: boolean } }; organization: unknown };
-  expect(settings.organization).toBeNull();
+  expect(settings.organization ?? null).toBeNull();
   expect(settings.config.enabled).toBe(false);
   expect(settings.config.product.enabled).toBe(false);
 });
@@ -193,12 +193,27 @@ async function shoot(page: Page, name: string): Promise<void> {
 }
 
 test("the default-on notice appears once and its dismissal survives a daemon restart", async ({ dashboard, daemon }) => {
-  await dashboard.goto(`${daemon.baseURL}/`);
+  await dashboard.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        (window as Window & { testEventSource?: EventSource }).testEventSource = this;
+      }
+    };
+  });
+  await dashboard.reload();
   const notice = dashboard.getByRole("status", { name: "Upstart telemetry notice" });
   await expect(notice).toBeVisible();
   await expect(notice).toContainText("Mission Control usage telemetry is on for this Upstart-managed Mac.");
+  await expect(notice).toContainText("Upstart manages this setting.");
   await expect(notice.getByRole("link", { name: "View telemetry" })).toHaveAttribute("href", "#/settings/telemetry");
   await shoot(dashboard, "00-default-on-notice");
+  await dashboard.evaluate(() => {
+    const stream = (window as Window & { testEventSource?: EventSource }).testEventSource;
+    if (!stream) throw new Error("the dashboard event stream was not created");
+    stream.close();
+  });
   await notice.getByRole("button", { name: "Dismiss managed telemetry notice" }).click();
   await expect(notice).toHaveCount(0);
   await daemon.crash();

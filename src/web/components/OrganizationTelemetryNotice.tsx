@@ -11,7 +11,7 @@ export function OrganizationTelemetryNotice({
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
   if (notice === null) return null;
-  return <VisibleNotice notice={notice} onDismiss={onDismiss} />;
+  return <VisibleNotice key={notice.label} notice={notice} onDismiss={onDismiss} />;
 }
 
 function VisibleNotice({
@@ -20,9 +20,10 @@ function VisibleNotice({
 }: {
   notice: NonNullable<TelemetrySettingsSummary["organizationNotice"]>;
   onDismiss: () => Promise<string | null>;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const [dismissing, setDismissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   const dismiss = async (): Promise<void> => {
     setDismissing(true);
@@ -30,7 +31,10 @@ function VisibleNotice({
     const nextError = await onDismiss();
     setDismissing(false);
     setError(nextError);
+    if (nextError === null) setAcknowledged(true);
   };
+
+  if (acknowledged) return null;
 
   return (
     <section className="app-banner app-banner-organization" role="status" aria-label={`${notice.label} telemetry notice`}>
@@ -39,8 +43,8 @@ function VisibleNotice({
         <p>
           Because this Mac is enrolled in {notice.label}'s device management, Mission Control
           sends a minimized set of its own activity metrics and traces through
-          {` ${notice.label}'s telemetry gateway to ${notice.label}'s Datadog`}. {notice.label}
-          manages this setting. Prompts, code, file paths, terminal output and names are
+          {` ${notice.label}'s telemetry gateway to ${notice.label}'s Datadog. ${notice.label} manages this setting. `}
+          Prompts, code, file paths, terminal output and names are
           excluded. The gateway also copies metrics to a second destination managed by its owners.
         </p>
         {error && <p className="settings-error" role="alert">{error}</p>}

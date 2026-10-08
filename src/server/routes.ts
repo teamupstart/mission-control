@@ -8361,7 +8361,7 @@ function trustedLoopbackJsonRequest(c: Context): boolean {
   if (!origin) return true;
   try {
     const url = new URL(origin);
-    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
+    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
   } catch {
     return false;
   }

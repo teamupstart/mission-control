@@ -897,12 +897,14 @@ test("cross-origin and non-JSON requests cannot acknowledge the managed notice",
     assert.equal(response.status, 403);
     assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, null);
   }
-  const accepted = await app().request("/api/telemetry/organization/notice", {
-    method: "POST",
-    headers: { ...HEADERS, origin: "http://127.0.0.1:7317" },
-    body: "{}",
-  });
-  assert.equal(accepted.status, 200);
+  for (const origin of ["http://127.0.0.1:7317", "http://localhost:5173", "http://[::1]:7317"]) {
+    const accepted = await app().request("/api/telemetry/organization/notice", {
+      method: "POST",
+      headers: { ...HEADERS, origin },
+      body: "{}",
+    });
+    assert.equal(accepted.status, 200, origin);
+  }
 });
 
 test("re-check under the test runner detects nothing and withdraws a forced organization", async () => {

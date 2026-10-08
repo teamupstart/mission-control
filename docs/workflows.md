@@ -1259,9 +1259,15 @@ historical registration requests without removing human requirements or substant
 New Persona failures declare a finding basis: `substantive`, `coverage_registration`, or
 `evidence_access`. The latter two are review execution problems and cannot emit author repair
 receipts. Mixed responses are rejected whole, never trimmed into approval. One correction shares
-a durable maximum of two provider executions with parsing, transport and restart recovery.
-Exhaustion pauses in `infrastructure_error`; an explicit infrastructure retry starts a new bounded
-operation with the same frozen review input. Rejected responses remain inspectable on the attempt.
+a durable maximum of two correction executions with parsing, local transport and restart recovery.
+A confirmed provider refusal has a separate, durable ten-minute window measured from the first
+refusal. The daemon retries the same frozen input after progressive delays of 1, 2, 4, 8, 16, 32,
+then at most 60 seconds, without consuming the correction budget. A restart preserves the window
+and pending retry. When the window ends, the run pauses in `infrastructure_error`; an explicit
+infrastructure retry starts a new bounded operation. Provider token or quota exhaustion instead
+pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
+timeouts, process failures, parse errors, and contract violations keep their existing bounded
+policy. Rejected responses remain inspectable on the attempt.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the

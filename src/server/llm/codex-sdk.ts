@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { Codex } from "@openai/codex-sdk";
 import type { LlmRunOptions } from "@shared/llm.ts";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import { ProviderFailure } from "./provider-failure.ts";
 
 /**
  * One headless Codex call, driven through `@openai/codex-sdk` instead of hand-parsed argv.
@@ -68,6 +69,45 @@ interface SdkThread {
     finalResponse?: string | null;
     usage?: Record<string, unknown> | null;
   }>;
+  runStreamed?(prompt: string, turnOptions?: { signal?: AbortSignal; outputSchema?: unknown }): Promise<{
+    events: AsyncGenerator<
+      | { type: "item.completed"; item: { type: string; text?: string } }
+      | { type: "turn.completed"; usage: Record<string, unknown> }
+      | { type: "turn.failed"; error: { message: string } }
+      | { type: "error"; message: string }
+      | { type: string }
+    >;
+  }>;
+}
+
+async function runWithProviderEvents(
+  thread: SdkThread,
+  prompt: string,
+  options: { signal?: AbortSignal; outputSchema?: unknown },
+): Promise<{ finalResponse: string; usage: Record<string, unknown> | null }> {
+  // The SDK's run() throws only Error(message) for turn.failed, erasing the fact that
+  // the message came from a provider event. Read the same stream directly when available.
+  if (!thread.runStreamed) {
+    const result = await thread.run(prompt, options);
+    return { finalResponse: result.finalResponse ?? "", usage: result.usage ?? null };
+  }
+  const { events } = await thread.runStreamed(prompt, options);
+  let finalResponse = "";
+  let usage: Record<string, unknown> | null = null;
+  let completed = false;
+  for await (const event of events) {
+    if (event.type === "turn.failed" && "error" in event) throw new ProviderFailure(event.error.message);
+    if (event.type === "error" && "message" in event) throw new Error(event.message);
+    if (event.type === "item.completed" && "item" in event && event.item.type === "agent_message") {
+      finalResponse = event.item.text ?? "";
+    }
+    if (event.type === "turn.completed") {
+      completed = true;
+      if ("usage" in event) usage = event.usage;
+    }
+  }
+  if (!completed) throw new Error("codex sdk stream ended before turn.completed");
+  return { finalResponse, usage };
 }
 
 export interface CodexSdkDeps {
@@ -152,7 +192,7 @@ export async function runCodexSdkOneShot(
     // `outputSchema` is the SDK's spelling of the exec transport's `--output-schema`. Passing
     // it keeps a structured job answering the same shape on either transport; omitting it made
     // the two paths disagree for exactly the callers that care most.
-    const run = thread.run(prompt, {
+    const run = runWithProviderEvents(thread, prompt, {
       signal: controller.signal,
       ...(opts.schema ? { outputSchema: opts.schema } : {}),
     });

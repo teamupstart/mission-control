@@ -62,6 +62,8 @@ function sessionIdForCwd() {
 }
 const RESUME_ID = argvValue("--resume");
 const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? RESUME_ID ?? sessionIdForCwd();
+// Put the hard-limit diagnostic beyond the provider error text retained by the daemon.
+const TOKEN_REFUSAL_DIAGNOSTIC = `${"provider detail ".repeat(24)}prompt exceeds model token limit`;
 
 /**
  * A process-scoped snapshot of the operator's Claude authentication.
@@ -469,6 +471,13 @@ if (process.argv.includes("--setting-sources=")) {
         process.stderr.write("Usage limit reached for this account. Check your plan and usage limits.");
         process.exit(1);
       }
+      if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")
+        || (prompt.includes("E2E_PERSONA_TOKEN_AFTER_CONTRACT") && prompt.includes("Correction required:"))) {
+        process.stdout.write(JSON.stringify({ type: "result", subtype: "error_during_execution",
+          is_error: true, terminal_reason: "api_error",
+          errors: [TOKEN_REFUSAL_DIAGNOSTIC] }));
+        process.exit(1);
+      }
       process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
       process.exit(0);
     };
@@ -709,6 +718,13 @@ function runHeadlessSdk() {
     if (foremanUsageFailure(prompt)) {
       emit({ type: "result", subtype: "error_during_execution", is_error: true,
         session_id: SESSION_ID, errors: ["Usage limit reached for this account. Check your plan and usage limits."] });
+      process.exit(0);
+    }
+    if (prompt.includes("E2E_PERSONA_TOKEN_EXHAUSTED")
+      || (prompt.includes("E2E_PERSONA_TOKEN_AFTER_CONTRACT") && prompt.includes("Correction required:"))) {
+      emit({ type: "result", subtype: "error_during_execution", is_error: true,
+        terminal_reason: "api_error", session_id: SESSION_ID,
+        errors: [TOKEN_REFUSAL_DIAGNOSTIC] });
       process.exit(0);
     }
     const answer = headlessAnswer(prompt);

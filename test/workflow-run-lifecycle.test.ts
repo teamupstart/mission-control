@@ -163,6 +163,10 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     detail: asJson({ nodeId: "n", attempts: 3, error: "provider call failed" }),
     kind: "opaque",
   },
+  provider_token_exhausted: {
+    detail: asJson({ nodeId: "n", error: "model token limit reached" }),
+    kind: "opaque",
+  },
   inspector_gate_context_invalid: { detail: asJson({ error: "no snapshot" }), kind: "opaque" },
   invalid_version: { detail: asJson({ error: "invalid" }), kind: "opaque" },
   missing_workflow_version: { detail: asJson({ error: "missing" }), kind: "opaque" },
@@ -1111,7 +1115,7 @@ test("every blocked-capable phase has a clause that beats the fallback", () => {
   // from the registry cannot quietly shrink what this test walks.
   const blockedCapable = WORKFLOW_RUN_PHASES
     .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
-  assert.equal(blockedCapable.length, 28);
+  assert.equal(blockedCapable.length, 29);
 
   // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
   // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.

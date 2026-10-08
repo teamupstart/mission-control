@@ -1,4 +1,5 @@
 import type { ZodTypeAny, TypeOf } from "zod";
+import { providerFailureKind, type ProviderFailureKind } from "./provider-failure.ts";
 
 // Asking a model for a VALUE rather than for text, and the two helpers every caller that
 // does needs. Provider-neutral by construction: nothing here spawns anything, and nothing
@@ -37,7 +38,7 @@ import type { ZodTypeAny, TypeOf } from "zod";
  */
 export type StructuredResult<T> =
   | { kind: "ok"; value: T }
-  | { kind: "failed"; reason: string; cause: "transport" | "parse" | "cancelled" };
+  | { kind: "failed"; reason: string; cause: "transport" | "parse" | "cancelled"; providerFailure?: ProviderFailureKind };
 
 export interface StructuredAttemptObserver {
   /**
@@ -48,7 +49,7 @@ export interface StructuredAttemptObserver {
   start(attempt: number, prompt: string): boolean | void;
   finish(
     attempt: number,
-    result: { parsed: boolean; raw: string | null; error: string | null },
+    result: { parsed: boolean; raw: string | null; error: string | null; providerFailure?: ProviderFailureKind },
   ): void;
 }
 
@@ -126,8 +127,9 @@ export async function runStructured<S extends ZodTypeAny>(
       raw = await run(p);
     } catch (err) {
       const error = String(err);
-      observer?.finish(attempt, { parsed: false, raw: null, error });
-      return { kind: "failed", reason: `${label} failed: ${String(err)}`, cause: "transport" };
+      const providerFailure = providerFailureKind(err);
+      observer?.finish(attempt, { parsed: false, raw: null, error, providerFailure: providerFailure ?? undefined });
+      return { kind: "failed", reason: `${label} failed: ${error}`, cause: "transport", providerFailure: providerFailure ?? undefined };
     }
     const value = extract(raw);
     observer?.finish(attempt, { parsed: value !== null, raw, error: null });

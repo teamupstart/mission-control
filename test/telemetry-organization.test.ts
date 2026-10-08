@@ -879,6 +879,32 @@ test("the default-on notice is acknowledged once and persists across reapplicati
   assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, acknowledgedAt);
 });
 
+test("cross-origin and non-JSON requests cannot acknowledge the managed notice", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  await manage();
+  const invalidHeaders: Array<Record<string, string>> = [
+    { origin: "https://example.com", "content-type": "text/plain" },
+    { origin: "https://example.com", "content-type": "application/json" },
+    { origin: "null", "content-type": "application/json" },
+    { "content-type": "text/plain" },
+  ];
+  for (const headers of invalidHeaders) {
+    const response = await app().request("/api/telemetry/organization/notice", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", ...headers },
+      body: "{}",
+    });
+    assert.equal(response.status, 403);
+    assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, null);
+  }
+  const accepted = await app().request("/api/telemetry/organization/notice", {
+    method: "POST",
+    headers: { ...HEADERS, origin: "http://127.0.0.1:7317" },
+    body: "{}",
+  });
+  assert.equal(accepted.status, 200);
+});
+
 test("re-check under the test runner detects nothing and withdraws a forced organization", async () => {
   await manage();
   // The route re-detects with this process's own environment, which forces nothing - and the

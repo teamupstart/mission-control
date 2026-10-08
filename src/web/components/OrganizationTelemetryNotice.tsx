@@ -28,10 +28,15 @@ function VisibleNotice({
   const dismiss = async (): Promise<void> => {
     setDismissing(true);
     setError(null);
-    const nextError = await onDismiss();
-    setDismissing(false);
-    setError(nextError);
-    if (nextError === null) setAcknowledged(true);
+    try {
+      const nextError = await onDismiss();
+      setError(nextError);
+      if (nextError === null) setAcknowledged(true);
+    } catch {
+      setError("Could not dismiss the notice. Try again.");
+    } finally {
+      setDismissing(false);
+    }
   };
 
   if (acknowledged) return null;

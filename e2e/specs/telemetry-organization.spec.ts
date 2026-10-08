@@ -209,6 +209,11 @@ test("the default-on notice appears once and its dismissal survives a daemon res
   await expect(notice).toContainText("Upstart manages this setting.");
   await expect(notice.getByRole("link", { name: "View telemetry" })).toHaveAttribute("href", "#/settings/telemetry");
   await shoot(dashboard, "00-default-on-notice");
+  await dashboard.route("**/api/telemetry/organization/notice", (route) => route.abort());
+  await notice.getByRole("button", { name: "Dismiss managed telemetry notice" }).click();
+  await expect(notice.getByRole("alert")).toBeVisible();
+  await expect(notice.getByRole("button", { name: "Dismiss managed telemetry notice" })).toBeEnabled();
+  await dashboard.unroute("**/api/telemetry/organization/notice");
   await dashboard.evaluate(() => {
     const stream = (window as Window & { testEventSource?: EventSource }).testEventSource;
     if (!stream) throw new Error("the dashboard event stream was not created");

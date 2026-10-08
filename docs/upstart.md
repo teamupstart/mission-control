@@ -152,8 +152,9 @@ internal tracker becomes backlog rows.
 
 On a Mac enrolled in Upstart's own Jamf tenant, Mission Control configures its **Product
 analytics** telemetry destination to send to Upstart's telemetry gateway, which forwards to
-Upstart's Datadog. During the pilot it sends only from Macs whose owner has joined the pilot.
-Every other Mac is unchanged.
+Upstart's Datadog. It turns collection and this destination on by default when the Mac is
+recognized. Every other Mac is unchanged. The dashboard shows a one-time notice that can be
+dismissed after reading it.
 
 **What is detected.** Mission Control asks macOS for this Mac's current device management
 enrollment (`profiles status -type enrollment`, which needs no admin rights). The Mac is
@@ -170,7 +171,6 @@ state directory inside the temp dir.
 **Managed by Upstart** block with the evidence, the lane's state and the configuration it uses.
 The state is one of:
 
-- "Not enrolled in the pilot on this Mac";
 - "Sending to Upstart's Datadog";
 - "Waiting for the Upstart network", when the gateway's network edge refuses this network;
 - "Stopped sending to Upstart's Datadog", when the daemon paused the destination after a
@@ -192,22 +192,8 @@ branches, repository or pull request URLs, terminal output, names, hostnames or 
 gateway also copies metrics to a second metrics destination run by the gateway's owners. That is
 the gateway owners' policy, not something Mission Control controls.
 
-**Joining and leaving the pilot.** Settings has no editing controls on a managed Mac, so pilot
-volunteers enroll with one API call to their own daemon. Use the daemon's configured port if
-it is not 7317:
-
-```sh
-# Join: switches telemetry collection and the Product analytics lane on.
-curl -sS -X POST http://127.0.0.1:7317/api/telemetry/organization/pilot \
-  -H 'content-type: application/json' \
-  -d '{"enrolled":true}'
-# Leave: switches the lane off and puts the collection switch back where it was.
-curl -sS -X POST http://127.0.0.1:7317/api/telemetry/organization/pilot \
-  -H 'content-type: application/json' \
-  -d '{"enrolled":false}'
-```
-
-The route answers 409 on a Mac Upstart does not manage. If the Mac later leaves Upstart's device
+**Default-on and withdrawal.** The pilot enrollment route now answers 409; it cannot switch
+the managed destination off. If the Mac later leaves Upstart's device
 management, the next start or **Re-check** puts back the Product analytics destination and
 collection switch as they were before, and the panel is editable again. There are two
 exceptions, and both err toward not sending. If the saved destination no longer passes the

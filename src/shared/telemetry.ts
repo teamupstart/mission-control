@@ -655,6 +655,8 @@ export interface TelemetryProfileSummary {
 
 export interface TelemetrySettingsSummary {
   enabled: boolean;
+  /** Shown once after an organization's default-on lane is eligible to export. */
+  organizationNotice: { label: string } | null;
   /**
    * The configuration's change counter, carried so an open panel knows its stored copy is
    * stale without polling for it.

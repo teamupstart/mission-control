@@ -402,6 +402,7 @@ import {
 } from "@shared/telemetry-ingress.ts";
 import {
   admitBrowserTelemetry,
+  acknowledgeOrganizationNotice,
   telemetryCycle,
   observeEffortSelected,
   observeKillRequested,
@@ -420,6 +421,7 @@ import {
 } from "./telemetry/index.ts";
 import { currentOrganization } from "./environment/organization.ts";
 import {
+  TelemetryOrganizationNoticeRequestSchema,
   TelemetryOrganizationPilotRequestSchema,
   managedTelemetryRefusal,
 } from "@shared/organizations.ts";
@@ -7464,6 +7466,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!result.ok) return c.json({ error: result.error }, result.status);
     if (result.changed) publishSettingsStatus(registry);
     return c.json(telemetryStatus());
+  });
+
+  app.post("/api/telemetry/organization/notice", async (c) => {
+    const parsed = await parseBody(c, TelemetryOrganizationNoticeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => acknowledgeOrganizationNotice());
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json({ acknowledged: true });
   });
 
   // Detect the managing organization again and apply what it finds - managed, unchanged, or

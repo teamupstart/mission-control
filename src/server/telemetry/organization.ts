@@ -7,10 +7,8 @@
  * as they do to a person's edit. Each write is one transaction with the record it implies, so a
  * crash can never leave the record describing a configuration that was not stored.
  *
- * The pilot invariant: while an organization is active and its rollout is `pilot`, the product
- * destination is enabled if and only if this Mac joined the pilot. Every apply re-asserts it,
- * which is what keeps every path - first application, an upgrade, a Re-check, a restart after a
- * crash - from leaving a non-enrolled Mac sending to the organization's gateway.
+ * During the pilot, Product analytics sends only from an enrolled Mac. Under default-on, every
+ * recognized Mac sends. Every apply re-asserts the selected rollout after a start or Re-check.
  *
  * Design source: docs/plans/upstart-datadog-telemetry/phase-3-recognize-upstart.md.
  */
@@ -92,20 +90,19 @@ const UNKNOWN_PREVIOUS: TelemetryOrganizationRecord["previous"] = {
  * The product destination and master switch the organization's lane requires.
  *
  * Every field is written, not just the preset's: the destination is wholly managed, so
- * `paused` and `headerName` go back to their defaults too. The master switch is on while
- * enrolled, because the lane cannot send with collection off; otherwise it is what the person
- * had before first application, which the lock means nobody has changed since.
+ * `paused` and `headerName` go back to their defaults too. The master switch is on whenever
+ * the lane sends; otherwise it is what the person had before first application.
  */
 function managedState(
   organization: DetectedOrganization,
   record: TelemetryOrganizationRecord,
 ): { enabled: boolean; product: TelemetryDestination } {
   const { preset } = organization.entry;
-  const enrolled = record.pilotEnrolledAt !== null;
+  const sending = organization.entry.rollout === "default-on" || record.pilotEnrolledAt !== null;
   return {
-    enabled: enrolled ? true : record.previous.enabled,
+    enabled: sending ? true : record.previous.enabled,
     product: TelemetryDestinationSchema.parse({
-      enabled: enrolled,
+      enabled: sending,
       endpoint: organization.endpoint,
       temporality: preset.temporality,
       networkGate: preset.networkGate,
@@ -143,11 +140,13 @@ function storeManaged(
  *
  * - Detected, no record: first application. The whole prior product destination and the
  *   master switch are kept in the record, and the product destination becomes the preset,
- *   switched OFF whatever it was, in one transaction. No Mac is enrolled at first application.
+ *   switched according to the rollout in one transaction. No Mac is pilot-enrolled at first
+ *   application.
  *   The endpoint change bumps the generation, which fences batches queued for the previous
- *   endpoint, and the switch-off drops them, so neither can be redirected to the gateway.
- * - Detected, record present: every preset field is written again and the pilot invariant is
- *   re-asserted. A write that changes nothing stores nothing and bumps nothing.
+ *   endpoint, so they cannot be redirected to the gateway. During a pilot, switch-off also
+ *   drops them.
+ * - Detected, record present: every preset field and the rollout switch are written again.
+ *   A write that changes nothing stores nothing and bumps nothing.
  * - Not detected, record present: the previous product destination and master switch are
  *   restored in one write, and the record is deleted.
  * - A record that exists but cannot be read is managed state whose saved destination is lost.
@@ -180,7 +179,7 @@ export function applyOrganization(
               ? UNKNOWN_PREVIOUS
               : previousOf(record, getTelemetryConfig()),
           pilotEnrolledAt: null,
-          enabledByDefault: false,
+          enabledByDefault: organization.entry.rollout === "default-on",
           noticeAcknowledgedAt: null,
           appliedAt: now,
         };
@@ -191,6 +190,7 @@ export function applyOrganization(
   const next: TelemetryOrganizationRecord = {
     ...base,
     presetVersion: organization.entry.presetVersion,
+    enabledByDefault: organization.entry.rollout === "default-on",
   };
   try {
     const changed = storeManaged(organization, next, now);
@@ -300,6 +300,23 @@ export function setPilotEnrollment(enrolled: boolean, now = Date.now()): PilotEn
     if (error instanceof ApplyRefused) return { ok: false, status: 409, error: error.message };
     throw error;
   }
+}
+
+/** Acknowledge the one-time notice on this installation, without changing telemetry consent. */
+export function acknowledgeOrganizationNotice(now = Date.now()):
+  | { ok: true; changed: boolean }
+  | { ok: false; status: 409; error: string } {
+  const organization = currentOrganization();
+  if (organization === null || organization.withdrawing || organization.entry.rollout !== "default-on") {
+    return { ok: false, status: 409, error: "No default-on managed telemetry notice is active on this Mac." };
+  }
+  const record = telemetryOrganizationRecord();
+  if (record === null || record.organization !== organization.entry.id || !record.enabledByDefault) {
+    return { ok: false, status: 409, error: "The managed telemetry notice is not ready to acknowledge." };
+  }
+  if (record.noticeAcknowledgedAt !== null) return { ok: true, changed: false };
+  telemetryTransaction(() => setAppConfig(RECORD_ENTRY, { ...record, noticeAcknowledgedAt: now }));
+  return { ok: true, changed: true };
 }
 
 /**
@@ -462,7 +479,7 @@ export function describeOrganizationOutcome(outcome: OrganizationApplyOutcome): 
         : `[organization] could not read this Mac's device management enrollment; the telemetry settings ${organization.entry.label} manages are unchanged`;
     case "applied":
       return outcome.first
-        ? `[organization] ${organization?.entry.label ?? "an organization"} manages telemetry on this Mac; its product destination is configured and off until pilot enrollment`
+        ? `[organization] ${organization?.entry.label ?? "an organization"} manages telemetry on this Mac; its product destination is ${organization?.entry.rollout === "default-on" ? "on by default" : "off until pilot enrollment"}`
         : null;
     case "withdrawn":
       return outcome.restored === "previous"

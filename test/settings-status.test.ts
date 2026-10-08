@@ -127,6 +127,7 @@ const ALL_OFF: SettingsStatus = {
   // minted, so nothing has ever been captured. See `telemetrySettingsSummary`.
   telemetry: {
     enabled: false,
+    organizationNotice: null,
     configRevision: 0,
     productEnrollment: "unavailable",
     usedBytes: 0,
@@ -153,7 +154,11 @@ const ALL_OFF: SettingsStatus = {
 const LEGACY_ALL_OFF = {
   ...ALL_OFF,
   telemetry: {
-    ...ALL_OFF.telemetry!,
+    ...(() => {
+      const { organizationNotice, ...legacy } = ALL_OFF.telemetry!;
+      void organizationNotice;
+      return legacy;
+    })(),
     profiles: ALL_OFF.telemetry!.profiles.map((profile) => {
       const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
       void waitingForNetwork;
@@ -345,6 +350,10 @@ test("the suppression compares every field, so no change can be dropped in silen
       },
     },
     "telemetry.enabled": { ...base, telemetry: { ...telemetry(base), enabled: !telemetry(base).enabled } },
+    "telemetry.organizationNotice": {
+      ...base,
+      telemetry: { ...telemetry(base), organizationNotice: { label: "Upstart" } },
+    },
     "telemetry.configRevision": {
       ...base,
       telemetry: { ...telemetry(base), configRevision: telemetry(base).configRevision + 1 },

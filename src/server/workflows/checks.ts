@@ -87,6 +87,8 @@ export interface CheckExecutionRequest {
   workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
+  /** Expected publishable content, when captured by the publication policy. */
+  publicationTreeOid?: string | null;
 }
 
 export type CheckExecutionResult =
@@ -279,6 +281,7 @@ export async function runCheck(
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
+    publicationTreeOid?: string | null;
   },
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
@@ -369,6 +372,7 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    ...(input.publicationTreeOid ? { publicationTreeOid: input.publicationTreeOid } : {}),
   });
   if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };
   if (result.kind === "unavailable") {

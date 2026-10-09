@@ -1,3 +1,4 @@
+import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
 import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
@@ -2949,11 +2950,29 @@ function IntentPane({
                 {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
               </dd>
             </div>
+            {context.evidence.publication && <div><dt>Publication</dt><dd>
+              {workflowHasUnpublishedChanges(context.evidence)
+                ? "Required changes still need to be committed and pushed"
+                : "Required changes are committed; the PR must match this content"}
+            </dd></div>}
             <div><dt>Fingerprint</dt><dd><code>{evidenceFingerprint}</code></dd></div>
             <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
             <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
             <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
           </dl>
+          {context.evidence.publication && (
+            <>
+              <p>{workflowPublicationRetained(context.evidence)
+                ? `${context.evidence.publication.localArtifacts.length} local report artifact${context.evidence.publication.localArtifacts.length === 1 ? "" : "s"} retained outside Git`
+                : "Local artifact retention is incomplete; publication exemptions cannot be used"}</p>
+              {context.evidence.publication.unpublishedPaths.length > 0 && (
+                <div><p>Required publication paths</p><pre>{context.evidence.publication.unpublishedPaths.join("\n")}</pre></div>
+              )}
+              {(context.evidence.publication.artifactProblems?.length ?? 0) > 0 && (
+                <div><p>Correct these reports before resubmitting</p><pre>{context.evidence.publication.artifactProblems!.join("\n")}</pre></div>
+              )}
+            </>
+          )}
           {context.evidence.retention?.state === "pruned" ? (
             <p>
               Raw diff, transcript, status paths, and standards bodies were pruned.

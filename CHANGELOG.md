@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.27.0](https://github.com/teamupstart/mission-control/compare/v1.26.0...v1.27.0) (2026-10-09)
+
+
+### Features
+
+* **board:** collapse, normal, and expanded widths for every column ([#1150](https://github.com/teamupstart/mission-control/issues/1150)) ([4c95a8f](https://github.com/teamupstart/mission-control/commit/4c95a8fbccc864e5458defc7a8790b6360d6c3f0))
+* **cost:** name the host a managed Claude Code policy sends metrics to ([#1169](https://github.com/teamupstart/mission-control/issues/1169)) ([8930afa](https://github.com/teamupstart/mission-control/commit/8930afa1715a331ec347c2f8b46dfe8ef7225c3a))
+* default Upstart managed telemetry on ([#1173](https://github.com/teamupstart/mission-control/issues/1173)) ([e00afcc](https://github.com/teamupstart/mission-control/commit/e00afccb68d3426d433501039fe6f98b875b8158))
+* export delta telemetry and wait through Cloudflare refusals ([#1162](https://github.com/teamupstart/mission-control/issues/1162)) ([b606a18](https://github.com/teamupstart/mission-control/commit/b606a188c3dd0d4b50a576546f4adf4703f9815d))
+* **files:** send line comments as they are written ([#1157](https://github.com/teamupstart/mission-control/issues/1157)) ([f560bbf](https://github.com/teamupstart/mission-control/commit/f560bbf876d3e82583b574d2d93fbf6a9d508fba))
+* **handoff:** preserve tasks and workflows through terminal transfers ([#1161](https://github.com/teamupstart/mission-control/issues/1161)) ([6b2dc2c](https://github.com/teamupstart/mission-control/commit/6b2dc2cea0d78b3897882f2bdb909f6f8d2d41cd))
+* **scouts:** publish multiple reports from one session ([#1156](https://github.com/teamupstart/mission-control/issues/1156)) ([cb93361](https://github.com/teamupstart/mission-control/commit/cb9336168d0e0e4545339cb25157a5745532bbd4))
+* **telemetry:** add per-destination export shapes with a cost-bounded Datadog lean shape ([#1164](https://github.com/teamupstart/mission-control/issues/1164)) ([2012e91](https://github.com/teamupstart/mission-control/commit/2012e91bf7a1b398a04eb099957a86ffa8279703))
+* **telemetry:** recognize Upstart-managed Macs and manage their Product analytics lane ([#1167](https://github.com/teamupstart/mission-control/issues/1167)) ([a7273f6](https://github.com/teamupstart/mission-control/commit/a7273f63ec965305ccd21a4ce5213a20d96d23df))
+* **workflows:** show how long each run stage member has run ([#1155](https://github.com/teamupstart/mission-control/issues/1155)) ([0eba7ca](https://github.com/teamupstart/mission-control/commit/0eba7caba4429fae988183e58b11ba72ca80ef5b))
+
+
+### Bug Fixes
+
+* **docs:** Update Readme to be not-awful and read like a human wrote it. ([#1168](https://github.com/teamupstart/mission-control/issues/1168)) ([1e98dce](https://github.com/teamupstart/mission-control/commit/1e98dce7877b09b92911775b39ebc6a11adc4a73))
+* **files:** keep comment threads going after the agent edits their text ([#1160](https://github.com/teamupstart/mission-control/issues/1160)) ([5a23448](https://github.com/teamupstart/mission-control/commit/5a23448a741902327c157588adbb8732a6e37666))
+* **handoff:** preserve tools and managed resume environments ([#1153](https://github.com/teamupstart/mission-control/issues/1153)) ([47fe759](https://github.com/teamupstart/mission-control/commit/47fe759e26e37f086ff2e21363c25a5a749d8d46))
+* **mcp:** run the MCP server on Mission Control's own Node runtime ([#1163](https://github.com/teamupstart/mission-control/issues/1163)) ([f96d566](https://github.com/teamupstart/mission-control/commit/f96d5667024b77bcaad077837d84df7dddd81768))
+* **security:** remediate 4 vulnerabilities ([#1166](https://github.com/teamupstart/mission-control/issues/1166)) ([be37a78](https://github.com/teamupstart/mission-control/commit/be37a7842b9dae3af1e922077f511c7bcc780b71))
+* **security:** remediate 4 vulnerabilities ([#1171](https://github.com/teamupstart/mission-control/issues/1171)) ([789d09e](https://github.com/teamupstart/mission-control/commit/789d09e631e5cb92ae8214212881a3c3424a79ed))
+* **tasks:** drain background cleanup and retire test managers ([#1154](https://github.com/teamupstart/mission-control/issues/1154)) ([6a01669](https://github.com/teamupstart/mission-control/commit/6a01669be4c353870dd205822bba3c4c51cd0e3e))
+* **workflows:** reset mapping budgets for manual retries ([#1158](https://github.com/teamupstart/mission-control/issues/1158)) ([e2c87b1](https://github.com/teamupstart/mission-control/commit/e2c87b1f28114e3ccf796523ad6cb41173165d69))
+* **workflows:** retry provider failures for up to ten minutes ([#1170](https://github.com/teamupstart/mission-control/issues/1170)) ([d9a9196](https://github.com/teamupstart/mission-control/commit/d9a9196ac29f5020969d6c01511adb7025eebbb0))
+
 ## [1.26.0](https://github.com/teamupstart/mission-control/compare/v1.25.0...v1.26.0) (2026-09-29)
 
 

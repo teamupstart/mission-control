@@ -68,6 +68,7 @@ function telemetry(
 ): TelemetrySettingsSummary {
   return {
     enabled: true,
+    organizationNotice: null,
     configRevision: 1,
     productEnrollment: "unavailable",
     usedBytes: 0,

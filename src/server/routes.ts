@@ -402,6 +402,7 @@ import {
 } from "@shared/telemetry-ingress.ts";
 import {
   admitBrowserTelemetry,
+  acknowledgeOrganizationNotice,
   telemetryCycle,
   observeEffortSelected,
   observeKillRequested,
@@ -420,6 +421,7 @@ import {
 } from "./telemetry/index.ts";
 import { currentOrganization } from "./environment/organization.ts";
 import {
+  TelemetryOrganizationNoticeRequestSchema,
   TelemetryOrganizationPilotRequestSchema,
   managedTelemetryRefusal,
 } from "@shared/organizations.ts";
@@ -7466,6 +7468,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(telemetryStatus());
   });
 
+  app.post("/api/telemetry/organization/notice", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, TelemetryOrganizationNoticeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => acknowledgeOrganizationNotice());
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json({ acknowledged: true });
+  });
+
   // Detect the managing organization again and apply what it finds - managed, unchanged, or
   // withdrawn - then answer the status the panel renders.
   app.post("/api/telemetry/organization/recheck", async (c) => {
@@ -7619,17 +7631,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (parsed.data.id === "pi-integration") {
       // JSON requires a CORS preflight. No cross-origin CORS permission is granted;
       // validate Origin too, while allowing the dashboard's loopback Vite proxy.
-      const origin = c.req.header("origin");
-      let trustedOrigin = !origin;
-      if (origin) {
-        try {
-          const url = new URL(origin);
-          trustedOrigin = url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
-        } catch { trustedOrigin = false; }
-      }
-      if (!trustedOrigin || c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-        return c.json({ error: "forbidden" }, 403);
-      }
+      if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
@@ -8348,6 +8350,21 @@ export function hostIsLoopback(host: string | undefined): boolean {
   // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
   const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+/** Guard browser-write routes that accept an otherwise empty JSON object. */
+function trustedLoopbackJsonRequest(c: Context): boolean {
+  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return false;
+  }
+  const origin = c.req.header("origin");
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 

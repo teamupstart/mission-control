@@ -60,7 +60,7 @@ export const ORGANIZATIONS: Readonly<Record<OrganizationId, OrganizationEntry>> 
       exportShape: "datadog-lean",
       environment: "corp",
     },
-    presetVersion: 1,
-    rollout: "pilot",
+    presetVersion: 2,
+    rollout: "default-on",
   },
 };

@@ -299,10 +299,12 @@ function managedStateLine(
   organization: TelemetryOrganizationStatus,
   product: TelemetryProfileSummary | null,
 ): string {
-  // First: while a withdrawal is unwritten nothing is sent, whatever the pilot record says.
+  // First: while a withdrawal is unwritten nothing is sent, whatever the rollout says.
   if (organization.withdrawing) return `Removing ${organization.label}'s telemetry settings`;
-  if (!organization.pilotEnrolled) return "Not enrolled in the pilot on this Mac";
-  // Enrolled, but the live summary has not arrived: nothing says whether anything is being
+  if (organization.rollout === "pilot" && !organization.pilotEnrolled) {
+    return "Not enrolled in the pilot on this Mac";
+  }
+  // Allowed to send, but the live summary has not arrived: nothing says whether anything is being
   // sent yet, so the line says it does not know rather than claiming delivery.
   if (product === null) return `Checking whether this Mac is sending to ${organization.destinationLabel}`;
   // Before "sending": a destination the daemon paused is sending nothing, and the reason and

@@ -57,6 +57,7 @@ function hydrateSettingsStatus(status: SettingsStatus): SettingsStatus {
     ...status,
     telemetry: {
       ...status.telemetry,
+      organizationNotice: status.telemetry.organizationNotice ?? null,
       profiles: status.telemetry.profiles.map((profile) => ({
         ...profile,
         waitingForNetwork: profile.waitingForNetwork ?? false,

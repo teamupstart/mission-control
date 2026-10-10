@@ -39,6 +39,7 @@ import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeS
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -896,6 +897,28 @@ server.registerTool(
     }
   },
 );
+
+async function managedPlanCall(operation: string, input: unknown) {
+  try {
+    const payload = operation === "read" ? { input } : input;
+    const response = await http(`/mcp/plans/${operation}`, "POST", {
+      ...payload as object, env: ENV, sessionId: SESSION_ID, cwd: process.cwd(),
+    });
+    return textResult(await response.text(), !response.ok);
+  } catch (error) { return textResult(`Managed plan ${operation} failed: ${String(error)}`, true); }
+}
+server.registerTool("get_plan_context", {
+  description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",
+  inputSchema: PlanContextInputSchema.shape, annotations: { readOnlyHint: true },
+}, async (input) => managedPlanCall("context", input));
+server.registerTool("save_plan", {
+  description: "Save a complete immutable Markdown and static HTML plan bundle. Use a UUID requestId for retries, expectedRevision 0 for creation, then the returned planId/revision. The daemon pins policy and writes eligible checkout files. Saving does not approve, commit, push or publish. Files are flat bounded UTF-8 content; each Markdown file needs a same-name HTML rendering.",
+  inputSchema: SavePlanInputSchema.shape,
+}, async (input) => managedPlanCall("save", input));
+server.registerTool("read_plan", {
+  description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Revisions and local previews survive authoring-worktree cleanup.",
+  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+}, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The
 // daemon attributes the existing launch environment and resolves repository slots itself.

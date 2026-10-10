@@ -13,6 +13,7 @@ import { isWrapupPayload } from "../src/shared/queue.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
 import type { WorkflowStagedEvidenceList } from "../src/shared/workflow.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { waitForWorkerObservation } from "./helpers/worker-observation.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
 // daemon, and a fake `claude`.
@@ -272,9 +273,6 @@ const WORKER_READY = "Foreman worker started";
 /** How long the worker may take to announce itself before the action budget starts. */
 const BOOT_MS = 30_000;
 
-/** The multiple of an action budget a run may reach once starvation is credited back. */
-const STARVATION_ALLOWANCE = 6;
-
 /**
  * Boot the real worker against a stub daemon, let it run, then stop it.
  *
@@ -288,7 +286,7 @@ async function runWorker(
     claudeBin: string;
     claudeLog: string;
     ms: number;
-    until?: () => boolean;
+    until?: (output: string) => boolean;
   },
 ): Promise<string> {
   let out = "";
@@ -335,29 +333,9 @@ async function runWorker(
   // Matched against the ACCUMULATED stdout rather than one chunk: a pipe may split the line.
   const booted = (): boolean => stdout.includes(WORKER_READY);
   const bootDeadline = Date.now() + BOOT_MS;
-  while (!booted() && Date.now() < bootDeadline && !opts.until?.()) await sleep(25);
+  while (!booted() && Date.now() < bootDeadline && !opts.until?.(out)) await sleep(25);
 
-  /**
-   * `opts.ms` as an OPPORTUNITY budget rather than a wall-clock one.
-   *
-   * A starved event loop returns from `sleep(50)` after seconds, so a plain wall-clock
-   * deadline is spent by the very contention the worker is also suffering - the loop exits
-   * having given the child almost no polls, and the assertion below reports a worker that
-   * "never acted" when nothing was ever asked of it. Each oversleep is credited back, so the
-   * budget means what its callers read it as: this much time for the worker to do the thing.
-   *
-   * `ceiling` keeps that honest. A worker that is genuinely wedged still fails, within a
-   * bounded multiple of the budget, rather than extending itself forever.
-   */
-  let deadline = Date.now() + opts.ms;
-  const ceiling = Date.now() + opts.ms * STARVATION_ALLOWANCE;
-  do {
-    const asked = Math.min(50, Math.max(1, deadline - Date.now()));
-    const before = Date.now();
-    await sleep(asked);
-    const overslept = Date.now() - before - asked;
-    if (overslept > asked) deadline = Math.min(deadline + overslept, ceiling);
-  } while (Date.now() < deadline && !opts.until?.());
+  await waitForWorkerObservation(() => opts.until?.(out) ?? false, opts.ms);
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
@@ -1767,6 +1745,7 @@ async function runShipEvidenceScenario(input: {
   let evidenceFailureAt = 0;
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
+    if (p === "/api/pipelines/foreman") return { status: 200, json: { enabled: false, items: [] } };
     if (p === "/api/foreman/config") {
       return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
     }
@@ -1874,8 +1853,11 @@ async function runShipEvidenceScenario(input: {
       ? () => stub.to("POST", "/api/sessions/s1/workflow-completion").length > 0
       : input.stopOn === "consume"
         ? () => stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length > 0
-        : () => evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250
-          && stub.to("GET", "/api/sessions/s1/workflow-evidence").length >= (input.evidenceReadsBeforeStop ?? 1),
+        : (output) => input.eligibilityAfterVerification !== undefined
+          // Receiving the request is not proof that the worker processed its response.
+          ? output.includes("workflow evidence eligibility changed or is unavailable")
+          : evidenceFailureAt > 0 && Date.now() - evidenceFailureAt >= 250
+            && stub.to("GET", "/api/sessions/s1/workflow-evidence").length >= (input.evidenceReadsBeforeStop ?? 1),
   });
   await stub.close();
   return { stub, out, prompt: fake.prompt, log: fake.log };
@@ -1958,6 +1940,7 @@ test("a binding change during verification leaves the generation available for a
     });
     assert.equal(claudeCalls(result.log).length, 1, result.out);
     assert.match(result.out, /workflow evidence eligibility changed or is unavailable/);
+    assert.doesNotMatch(result.out, /pipeline triage failed/);
     assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
     assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0);
   }
@@ -1982,6 +1965,8 @@ test("same-episode registered evidence is fenced into the prompt and a clean ver
     evidence: registeredCommandEvidence(),
     stopOn: "claim",
   });
+  assert.equal(claudeCalls(result.log).length, 1, result.out);
+  assert.doesNotMatch(result.out, /pipeline triage failed/);
   const prompt = readFileSync(result.prompt, "utf8");
   const fence = prompt.indexOf("BEGIN UNTRUSTED EVIDENCE");
   assert.ok(fence > 0, result.out);

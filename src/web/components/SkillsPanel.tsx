@@ -170,6 +170,17 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         </label>
       </Tooltip>
 
+      <div className="kb-row" data-anchor="skills/commit-plan-html">
+        <div className="kb-row-text">
+          <label className="kb-row-label" htmlFor="commit-plan-html">Commit generated HTML plan files</label>
+          <span className="kb-row-desc">New managed plans commit Markdown by default. HTML is still generated and retained locally for review. Existing plans keep their policy.</span>
+        </div>
+        <Tooltip label="Include rendered HTML in Git for new managed plans; existing plans keep their saved policy">
+          <input id="commit-plan-html" type="checkbox" checked={view?.commitPlanHtml ?? false}
+            disabled={!view} onChange={(event) => void update({ commitPlanHtml: event.target.checked })} />
+        </Tooltip>
+      </div>
+
       {/* Cascade from the master switch, ForemanBar's pattern: off means nothing is
           symlinked whatever the rows say, so the rows must not look clickable. The
           `skills/catalog` anchor is the settings-search jump target for the catalog as a

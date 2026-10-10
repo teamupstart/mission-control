@@ -60,6 +60,19 @@ beforeEach(() => {
 
 const links = (): string[] => readdirSync(claudeSkills).sort();
 
+test("new and upgraded settings exclude HTML; changing the preference never reconciles skill links", () => {
+  assert.equal(getSkillsConfig().commitPlanHtml, false);
+  openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
+  assert.equal(getSkillsConfig().commitPlanHtml, false);
+  const before = getSkillsConfig();
+  const changed = applySkillsConfig({ commitPlanHtml: true }, NOW);
+  assert.equal(changed.config.commitPlanHtml, true);
+  assert.equal(changed.changed, false);
+  assert.equal(changed.config.generation, before.generation);
+  assert.equal(changed.config.generationAt, before.generationAt);
+  assert.deepEqual(links(), []);
+});
+
 test("migration's daemon request passes the real patch schema and preserves disabled skill configuration", async () => {
   const {createMigrationIntegrationPorts} = await import('../src/main/migration-integration-ports.ts');
   const {SkillsConfigPatchSchema} = await import('../src/shared/protocol.ts');

@@ -1,6 +1,9 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
   ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
+  ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],
+  ["POST", "/mcp/plans/read", "Read-only exact revision or catalog query; not a publication or action outcome."],
+  ["POST", "/mcp/plans/save", "Agent artifact checkpoint, including retry recovery; excluded from primary-action counts because saving does not publish or complete a plan task."],
   ["POST", "/api/sessions/:id/workflow-review", "Phase 4 owns workflow run/submission facts through the WorkflowStore mutation observer."],
   ["POST", "/api/sessions/:id/html-block-anchor", "Read-only renderer handshake; Files entry/preview owns intentional use."],
   ["POST", "/api/sessions/:id/html-block-target", "Read-only renderer handshake; Files entry/preview owns intentional use."],

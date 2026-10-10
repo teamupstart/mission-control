@@ -94,7 +94,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
 /** Both planning skills on, one generation old, catalog healthy. */
 const config: SkillsConfig = {
   enabled: true,
-  defaultSkillEnabled: false,
+  commitPlanHtml: false, defaultSkillEnabled: false,
   skills: Object.fromEntries(PLAN_SKILL_IDS.map((id) => [id, true])),
   generation: 3,
   generationAt: 100,
@@ -296,14 +296,14 @@ test("the skills the contract names are the skills the dispatch requires", () =>
 
 test("every plan launch requires the tools its prompt names", () => {
   const appendix = planContractAppendix(CLAUDE_SKILLS);
-  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL]) {
+  for (const tool of [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan"]) {
     assert.ok(appendix.includes(tool), `the prompt names ${tool}`);
     assert.ok(([...MISSION_MCP_TOOLS] as string[]).includes(tool), `a caller can require ${tool}`);
   }
   const required = kindMissionMcpRequirement(mkTask(), null);
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL].sort(),
+    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan"].sort(),
   );
 });
 
@@ -311,7 +311,7 @@ test("a plan's requirement is unioned with the caller's, and stays a set", () =>
   const required = kindMissionMcpRequirement(mkTask(), { tools: ["report_status"] });
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL].sort(),
+    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan"].sort(),
   );
   const again = kindMissionMcpRequirement(mkTask(), required);
   assert.equal(again?.tools.length, required?.tools.length, "a repeat adds nothing");

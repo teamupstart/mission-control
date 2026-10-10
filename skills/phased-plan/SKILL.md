@@ -13,6 +13,23 @@ Turn an approved plan into implementation units that separate agents can execute
 Treat the source plan and its recorded human selections as requirements, then verify those
 requirements against the repository before deciding the phase boundaries.
 
+## Managed repository artifacts
+
+Call `get_plan_context` before authoring and `read_plan` for an existing managed revision.
+Follow the single `html-plans` procedure: submit complete bounded bundles through `save_plan`,
+including `plan.md`, `plan.html`, `phased-plan.md`, `phased-plan.html`, and each phase's Markdown
+and HTML rendering. Reuse the plan id with its expected revision. Open the returned preview.
+Markdown lands under `docs/plans/<name>/`; HTML is retained locally by default and enters Git
+only under the plan's pinned opt-in. Do not rewrite installed skills or copy excluded HTML
+into committable paths. Unregistered sessions must report the managed-tool refusal.
+
+Only the returned `requiredPaths` belong in the publication checks below. Phase task pointers
+must name Markdown sources. Verify excluded HTML through `read_plan`; it need not resolve in
+the pushed commit. Preserve existing unmanaged tracked layouts when explicitly editing them.
+Saving does not approve or publish a plan. Keep the commit/push-before-scheduling contract and
+the planning-session merge prerequisite. Register current saved Markdown and applicable phase
+context through `submit_workflow_evidence` before workflow handoff.
+
 ## Establish the source of truth
 
 1. Resolve the source plan to an absolute Markdown path. Prefer the `plan.md` beside a supplied

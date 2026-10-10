@@ -198,6 +198,17 @@ so the session’s Scouts tab reuses the archive API and `archive_changed` rathe
 the session snapshot. Only scout task completion requires report readiness; every owned checkout
 cleanup settles its explicit capture jobs. See [Archives](../archives.md).
 
+## Managed repository plans
+
+`src/server/plans/store.ts` owns repository identity, pinned artifact policy, the operational
+ledger, immutable manifests and recoverable checkout writes. MCP is an attributed HTTP
+bridge and never writes SQLite. `save_plan` exposes a ready revision only after all retained
+and policy-eligible checkout bytes verify; readiness is not approval or publication.
+The existing archive manager consumes exact registered revisions alongside legacy diff
+capture. Preview reads use scoped plan/revision/file identifiers and the shared HTML sandbox,
+without widening session-file access. See [managed plans](../managed-plans.md) for the
+flow, tool contracts and Phase 2 extension boundary.
+
 ## Harnesses and terminals
 
 Harness capabilities split by purity:

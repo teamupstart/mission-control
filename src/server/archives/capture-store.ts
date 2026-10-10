@@ -82,6 +82,8 @@ export interface ArchiveRepoSlot {
  * must archive what was reserved, not whatever the checkout holds by then.
  */
 export interface ArchiveCaptureScope {
+  /** Registered plan revisions bypass checkout discovery, never its global safety rules. */
+  managed?: { planId: string; revision: number };
   /** The repository slot the directory below lives in. */
   slot: string;
   /** The checkout-relative directory this job captures. */
@@ -497,7 +499,7 @@ function readScope(raw: string | null): ArchiveCaptureScope | null {
   const parsed = parseJson<Partial<ArchiveCaptureScope>>(raw);
   if (!parsed || typeof parsed.slot !== "string" || typeof parsed.directory !== "string") return null;
   if (parsed.slot === "" || parsed.directory === "") return null;
-  return { slot: parsed.slot, directory: parsed.directory };
+  return { slot: parsed.slot, directory: parsed.directory, ...(parsed.managed ? { managed: parsed.managed } : {}) };
 }
 
 /** The display name a job falls back to when the task it froze had no usable title. */

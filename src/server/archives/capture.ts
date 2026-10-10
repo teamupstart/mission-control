@@ -157,6 +157,10 @@ async function publish(
         copyProblems.push(`${file.originalPath}: ${copied.reason}`);
         continue;
       }
+      if (file.expectedSha256 && copied.sha256 !== formatArchiveDigest(file.expectedSha256)) {
+        copyProblems.push(`${file.originalPath}: no longer matches its registered revision digest`);
+        continue;
+      }
       artifacts.push({
         id: file.role === "primary_report" ? ARCHIVE_PRIMARY_ARTIFACT_ID : archiveArtifactId(++ordinal),
         role: file.role,

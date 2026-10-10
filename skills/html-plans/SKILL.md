@@ -1,6 +1,6 @@
 ---
 name: html-plans
-description: Render every written plan as a self-contained HTML page beside its markdown, draw data/request-flow changes between major components or external services as inline SVG diagrams, and when a plan has open choices, present them as selectable options the human can submit or dismiss from the Mission Control dashboard. Use whenever you write, publish, render, or share a plan, or a plan needs the human to decide between options.
+description: Render every written plan as a self-contained HTML page retained with its Markdown revision, draw data/request-flow changes between major components or external services as inline SVG diagrams, and when a plan has open choices, present them as selectable options the human can submit or dismiss from the Mission Control dashboard. Use whenever you write, publish, render, or share a plan, or a plan needs the human to decide between options.
 metadata:
   mission:
     category: planning
@@ -23,23 +23,32 @@ the interactive path below instead of asking in prose.
 
 ## Always: render the plan as HTML
 
-1. Write (or find) the plan's markdown under `docs/plans/<name>/plan.md`. That file stays
-   the source of truth; the page is a rendering of it, never a fork.
-2. Emit `docs/plans/<name>/plan.html` beside it: one file, no external requests - inline
-   the CSS, embed any image as a `data:` URI. It must open correctly from `file://` with
-   no network.
-3. Keep the structure the markdown already has. Headings stay headings, tables stay
-   tables. This is a rendering, not a redesign.
-4. Style both light and dark via `prefers-color-scheme`, and let wide content (tables,
-   code blocks) scroll inside its own container so the page body never scrolls sideways.
-5. Say where you wrote it. A page nobody can find is a page nobody reads.
-6. Open it for review - every time. Writing the file is not showing it. Where your harness
-   can render a page inline (for example `SendUserFile` with `display: "render"`), open
-   `plan.html` that way so the plan is reviewed as the rendered page it is. Where it
-   cannot, make the path unmissable - link `plan.html` explicitly and say it is the page to
-   open, not just where the file lives. Either way the human reviews the render, not raw
-   markdown; do this for every plan, including the ones that then go on to the interactive
-   decisions below.
+1. Call `get_plan_context` for the issued repository slot before writing a new plan. Use
+   `read_plan` to discover an existing managed plan and read its exact revision. If registration
+   or the managed tools are unavailable, report the refusal; do not silently write HTML to Git.
+2. Author `plan.md` and a self-contained static `plan.html` rendering in memory. Markdown is
+   authoritative. Inline CSS, SVG, and data images; no scripts or external requests. Keep
+   headings, tables, and diagrams consistent, support light/dark via `prefers-color-scheme`
+   and contain wide content.
+3. Call `save_plan` with `repoSlot`, a new UUID `requestId`, a kebab-case `slug`,
+   `expectedRevision: 0`, and `files: [{name, content}, ...]`. Each Markdown source needs its
+   same-name HTML rendering, including the phased index and phase files. Use flat filenames.
+   The daemon writes `docs/plans/<name>/plan.md`; `docs/plans/<name>/plan.html` is eligible
+   only when the pinned policy includes it. Other review companions remain local.
+4. For revisions, pass the returned `planId` and `expectedRevision`, all bundle files, and a new
+   request UUID. Retry the identical request UUID after an interrupted save. Conflicts require
+   reconciling operator edits, never forcing an overwrite. A plan keeps its creation policy.
+5. Open and link the returned `preview` URL for every review. It identifies the exact revision
+   and its Markdown source. Use `read_plan` for retained text. Excluded HTML remains beneath
+   the configured Mission state home, normally `~/.mission-control/plans/`, even after checkout
+   cleanup. Do not copy excluded HTML into a normal checkout path or stage it manually.
+6. Save is neither approval nor publication. Commit and verify only returned `requiredPaths`
+   when the task's completion handoff permits it. Cite repository Markdown in downstream tasks;
+   repository publication still requires the planning PR's merge. Legacy unmanaged tracked
+   plans keep their existing layout; edit them explicitly and do not migrate or untrack HTML.
+7. Before workflow handoff, register a gitignored UTF-8 evidence bundle with
+   `submit_workflow_evidence`: the current root Markdown, phase context, decisions, and exact
+   revision identity. A local preview URL alone is not evidence that a Persona can inspect.
 
 ## Always: offer a phased implementation follow-up
 
@@ -74,7 +83,7 @@ When the returned response says **Create phased implementation plan** (the `phas
 
 1. Apply every submitted plan choice to `plan.md`, removing resolved alternatives and recording the
    adopted decisions.
-2. Regenerate and reopen `plan.html`, so the phased plan reads the approved source rather than a
+2. Save the complete new revision and reopen its returned HTML preview, so the phased plan reads the approved source rather than a
    pre-decision draft.
 3. Invoke the `phased-plan` skill with the absolute `plan.md` path and the complete submitted decision
    response. Let that skill investigate, write phases beside the source, and create the dependent

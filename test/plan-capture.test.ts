@@ -38,6 +38,8 @@ const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { planDirectoryOf } = await import("../src/server/plans/capture-scopes.ts");
 const { changedPathsSince } = await import("../src/server/diff.ts");
+const { savePlan } = await import("../src/server/plans/store.ts");
+const { randomUUID } = await import("node:crypto");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -189,6 +191,34 @@ function archivedPaths(dir: string): string[] {
 // ---------------------------------------------------------------------------
 // The central claim, and its negative half
 // ---------------------------------------------------------------------------
+
+test("registered Markdown-only plans archive complete retained previews after the authoring checkout is removed", async () => {
+  const h = harness();
+  const { repoRoot, worktreePath } = makeCheckout();
+  const task = mkPlan({ worktreePath, repoRoot, status: "done" });
+  h.registry.upsertTask(task);
+  const saved = await savePlan({ sessionId: "registered-plan", taskId: task.id, episodeId: null, repoSlot: "repo-01", checkout: worktreePath, repoRoot }, {
+    repoSlot: "repo-01", requestId: randomUUID(), slug: "managed", expectedRevision: 0,
+    files: [
+      { name: "plan.md", content: "# Managed source" },
+      { name: "plan.html", content: planHtml("Managed preview", '<a href="phase-1.html">Phase one</a>') },
+      { name: "phase-1.md", content: "# Phase one source" },
+      { name: "phase-1.html", content: planHtml("Phase one", '<a href="plan.html">Root plan</a>') },
+    ],
+  });
+  assert.equal(saved.manifest.policy.commitPlanHtml, false);
+  assert.equal(existsSync(join(worktreePath, "docs/plans/managed/plan.html")), false);
+  execFileSync("git", ["-C", repoRoot, "worktree", "remove", "--force", worktreePath]);
+  const result = await h.archives.settleBeforeCleanup(task.id);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const bundles = bundleDir(h, task.id);
+  assert.equal(bundles.length, 1);
+  assert.match(readFileSync(join(bundles[0]!, "report/report.html"), "utf8"), /Managed preview/);
+  assert.match(readFileSync(join(bundles[0]!, "report/phase-1.html"), "utf8"), /Phase one/);
+  const manifest = JSON.parse(readFileSync(join(bundles[0]!, "manifest.json"), "utf8"));
+  assert.equal(manifest.archive.capture_status, "complete");
+  assert.deepEqual(manifest.missing, []);
+});
 
 test("a plan task archives the plan directory its own diff touched", async () => {
   const h = harness();

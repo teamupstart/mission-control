@@ -29,6 +29,8 @@ export interface ResolvedRoot extends ArchiveRepoSlot {
 }
 
 export interface PlannedFile {
+  /** Immutable producers pin bytes as well as inode identity. Legacy discovery omits it. */
+  expectedSha256?: string;
   /** Absolute, realpath'd, proven to be a regular file with no symlinked component. */
   source: string;
   /** The validated file identity. The opened handle must still name this exact inode. */
@@ -95,4 +97,3 @@ export function limitProblems(files: readonly PlannedFile[]): string[] {
 export function clipReason(reason: string): string {
   return reason.slice(0, ARCHIVE_TEXT_LIMITS.error);
 }
-

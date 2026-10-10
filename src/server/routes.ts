@@ -444,6 +444,9 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
+import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
+import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -615,6 +618,9 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/** JSON escapes can expand each content byte to six bytes. Keep the decoded content
+ * limit in the writer, with 1 MiB of transport headroom for filenames and attribution. */
+const MANAGED_PLAN_BODY_MAX_BYTES = PLAN_CONTENT_LIMITS.totalBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024 * 1024;
 /**
  * The semantic schema counts JavaScript code units, while this stream guard counts raw request
  * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
@@ -4872,6 +4878,63 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.planPublicationContext(session.id));
   });
 
+  const planFailure = (c: Context, error: unknown) => c.json({ error: error instanceof Error ? error.message : "Plan operation failed" }, error instanceof PlanStoreError ? error.status : 409);
+  app.post("/mcp/plans/context", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanContextInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session; launch or register this session first" }, 403);
+    try { return c.json(await planContext(planAuthority(registry, session, parsed.data.repoSlot))); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/save", bodyLimit({ maxSize: MANAGED_PLAN_BODY_MAX_BYTES, onError: (c) => c.json({ error: "Plan request is too large" }, 413) }), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(SavePlanInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    const { env: _env, sessionId: _sessionId, cwd: _cwd, ...input } = parsed.data;
+    try { return c.json(await savePlan(planAuthority(registry, session, input.repoSlot), input)); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/read", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.extend({ input: ReadPlanInputSchema }));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    try {
+      const input = parsed.data.input;
+      const authority = planAuthority(registry, session, input.repoSlot);
+      if (!input.planId) return c.json(await listPlans(authority));
+      await authorizePlan(authority, input.planId);
+      return c.json(input.file ? { content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") } : readPlanRevision(input.planId, input.revision!));
+    } catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/sessions/:id/plans", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "No such session" }, 404);
+    try {
+      const slot = c.req.query("repoSlot");
+      const authorities = slot === undefined ? sessionPlanAuthorities(registry, session) : [planAuthority(registry, session, slot)];
+      const revisions = (await Promise.all(authorities.map(listPlans))).flat();
+      authorities.forEach((authority) => authority.assertCurrent?.());
+      return c.json([...new Map(revisions.map((revision) => [revision.manifest.planId, revision])).values()]);
+    }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision", (c) => {
+    try { return c.json(readPlanRevision(c.req.param("id"), Number(c.req.param("revision")))); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision/files/:file", (c) => {
+    try {
+      const bytes = readPlanFile(c.req.param("id"), Number(c.req.param("revision")), c.req.param("file"));
+      return c.body(new Uint8Array(bytes), 200, { "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "no-store" });
+    } catch (error) { return planFailure(c, error); }
+  });
+
   app.post("/mcp/workflow-evidence", bodyLimit({
     maxSize: WORKFLOW_EVIDENCE_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "Workflow evidence request is too large" }, 413),
@@ -6560,6 +6623,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const catalog = readCatalog();
     return {
       enabled: cfg.enabled,
+      commitPlanHtml: cfg.commitPlanHtml,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a

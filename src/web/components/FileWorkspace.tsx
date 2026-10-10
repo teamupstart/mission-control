@@ -95,6 +95,7 @@ import {
 } from "../lib/htmlPreview.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { ResizablePaneDivider } from "./ResizablePaneDivider.tsx";
+import { ManagedPlanLinks } from "./ManagedPlanReader.tsx";
 
 function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   const labels: Record<FileBuffer["saveState"], string> = {
@@ -2240,6 +2241,7 @@ function FileWorkspaceBody({
   return (
     <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
       <aside ref={fileNavRef} className="file-nav">
+        {!readOnlyWorkspace && <ManagedPlanLinks sessionId={session.id} />}
         <div className="file-nav-tools">
           <input
             className="file-filter"

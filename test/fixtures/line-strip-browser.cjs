@@ -54,8 +54,10 @@ app.whenReady().then(async () => {
       budgetMs: budgetFromArgv(process.argv),
       measure: MEASURE,
     });
-    process.stdout.write(`${JSON.stringify(measured)}\n`);
-    app.quit();
+    // This disposable process has finished measuring and destroyed its window. Do not
+    // let graceful Electron shutdown hold the parent until its 240s launch timeout,
+    // but do wait for the result to reach stdout before forcing the process to exit.
+    process.stdout.write(`${JSON.stringify(measured)}\n`, () => app.exit(0));
   } catch (error) {
     console.error(error);
     // One turn of the loop so that message reaches the terminal - `app.exit` does not wait

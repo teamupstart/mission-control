@@ -13,7 +13,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 
 const config: SkillsConfig = {
   enabled: true,
-  defaultSkillEnabled: false,
+  commitPlanHtml: false, defaultSkillEnabled: false,
   skills: { "pull-request": true },
   generation: 3,
   generationAt: 100,
@@ -58,7 +58,7 @@ test("a required workflow skill uses each harness's native invocation", () => {
 });
 
 test("a required skill can be invoked from the catalog default without a row override", () => {
-  const defaultOn = { ...config, defaultSkillEnabled: true, skills: {} };
+  const defaultOn = { ...config, commitPlanHtml: false, defaultSkillEnabled: true, skills: {} };
   const fromDefault = deps({ config: () => defaultOn });
 
   assert.deepEqual(

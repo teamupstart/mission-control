@@ -61,10 +61,15 @@ beforeEach(() => {
 const links = (): string[] => readdirSync(claudeSkills).sort();
 
 test("new and upgraded settings exclude HTML; changing the preference never reconciles skill links", () => {
-  assert.equal(getSkillsConfig().commitPlanHtml, false);
   openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
   assert.equal(getSkillsConfig().commitPlanHtml, false);
+  const legacy = { enabled: true, skills: { alpha: true, beta: false }, generation: 7, generationAt: 123 };
+  setAppConfig(APP_CONFIG_ENTRIES.skills, legacy);
+  const stored = openDb().prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string };
+  assert.equal(Object.hasOwn(JSON.parse(stored.value), "commitPlanHtml"), false, "the saved legacy record lacks the new preference");
   const before = getSkillsConfig();
+  assert.equal(skillsConfigProblem(), null);
+  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, commitPlanHtml: false }, "parsing defaults the new preference and preserves legacy values");
   const changed = applySkillsConfig({ commitPlanHtml: true }, NOW);
   assert.equal(changed.config.commitPlanHtml, true);
   assert.equal(changed.changed, false);

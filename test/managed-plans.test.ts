@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { PlanAuthority } from "../src/server/plans/store.ts";
-import type { SavePlanInput } from "../src/shared/managed-plans.ts";
+import { SavePlanInputSchema, type SavePlanInput } from "../src/shared/managed-plans.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
 process.env.MISSION_HOME = join(home, "state");
@@ -419,6 +419,60 @@ test("restart holds interrupted writes for an explicit retry that refuses confli
   writeFileSync(join(a.checkout, "docs/plans/interrupted/plan.md"), request.files[0]!.content);
   assert.equal((await savePlan(a, update)).manifest.revision, 2);
 });
+
+async function checkBundleLimit(files: SavePlanInput["files"], rejection?: RegExp) {
+  const a = repo();
+  const request = { ...input("bundle-limit"), files };
+  if (rejection) {
+    await assert.rejects(savePlan(a, request), rejection);
+    assert.equal(openDb().prepare("SELECT * FROM managed_plan_revisions WHERE request_id = ?").get(request.requestId), undefined, "rejected input creates no revision, ready or otherwise");
+    assert.deepEqual(await listPlans(a), []);
+    assert.equal(existsSync(join(a.checkout, "docs")), false, "rejected input writes no checkout output");
+    return;
+  }
+  const saved = await savePlan(a, request);
+  assert.deepEqual(readPlanRevision(saved.manifest.planId, 1), saved, "the accepted revision is ready");
+  assert.equal(saved.manifest.files.length, files.length);
+  assert.deepEqual(saved.requiredPaths, ["docs/plans/bundle-limit/plan.md"]);
+  for (const file of files) {
+    assert.equal(readPlanFile(saved.manifest.planId, 1, file.name).toString("utf8"), file.content, "all accepted bytes are retained");
+    assert.equal(saved.manifest.files.find((entry) => entry.name === file.name)!.bytes, Buffer.byteLength(file.content));
+  }
+  assert.equal(readFileSync(join(a.checkout, saved.requiredPaths[0]!), "utf8"), files.find((file) => file.name === "plan.md")!.content);
+  assert.equal(existsSync(join(a.checkout, "docs/plans/bundle-limit/plan.html")), false);
+}
+
+const minimalBundle = (): SavePlanInput["files"] => [
+  { name: "plan.md", content: "# Plan" },
+  { name: "plan.html", content: "<h1>Plan</h1>" },
+];
+for (const excess of [0, 1]) {
+  test(`bundle limits: ${excess ? "rejects 65" : "accepts 64"} files`, async () => {
+    const files = [...minimalBundle(), ...Array.from({ length: 62 + excess }, (_, i) => ({ name: `review-${i}.txt`, content: "Review" }))];
+    assert.equal(files.length, 64 + excess);
+    await checkBundleLimit(files, excess ? /Array must contain at most 64 element/ : undefined);
+  });
+
+  test(`bundle limits: ${excess ? "rejects 1 MiB plus one byte" : "accepts 1 MiB"} of multibyte UTF-8`, async () => {
+    const files = minimalBundle();
+    files[0]!.content = "é".repeat(512 * 1024) + "x".repeat(excess);
+    assert.equal(Buffer.byteLength(files[0]!.content), 1024 * 1024 + excess);
+    assert.ok(files[0]!.content.length < 1024 * 1024, "the character count is allowed even when the byte count is too large");
+    SavePlanInputSchema.parse({ ...input(), files });
+    await checkBundleLimit(files, excess ? /Invalid UTF-8 text or oversized plan file/ : undefined);
+  });
+
+  test(`bundle limits: ${excess ? "rejects 8 MiB plus one byte" : "accepts 8 MiB"} in total`, async () => {
+    const files = minimalBundle();
+    const initialBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0);
+    files.push(...Array.from({ length: 7 }, (_, i) => ({ name: `review-${i}.txt`, content: "x".repeat(1024 * 1024) })));
+    files.push({ name: "remainder.txt", content: "x".repeat(1024 * 1024 - initialBytes + excess) });
+    assert.equal(files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0), 8 * 1024 * 1024 + excess);
+    assert.ok(files.every((file) => Buffer.byteLength(file.content) <= 1024 * 1024), "each file is within its own byte limit");
+    SavePlanInputSchema.parse({ ...input(), files });
+    await checkBundleLimit(files, excess ? /Plan bundle exceeds its size limit/ : undefined);
+  });
+}
 
 test("corruption, path escapes, symlink swaps, invalid encodings and incomplete HTML are refused", async () => {
   const a = repo();

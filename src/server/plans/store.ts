@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, lstatSync, realpathSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, renameSync, lstatSync, realpathSync, existsSync, rmSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -26,6 +26,11 @@ interface RevisionRow {
   plan_id: string; revision: number; request_id: string; request_hash: string; manifest_hash: string;
   status: string; checkout_root: string; intent: string;
   session_id: string; task_id: string | null; episode_id: string | null; repo_slot: string;
+}
+interface SavePlanHooks {
+  beforeCheckoutWrite?: () => Promise<void>;
+  afterRevisionStaged?: () => Promise<void>;
+  afterCheckoutWrite?: (name: string) => void;
 }
 const IntentSchema = z.object({ writes: z.array(z.object({ name: z.string(), before: z.string().nullable() }).strict()), manifest: PlanManifestSchema }).strict();
 const queues = new Map<string, Promise<unknown>>();
@@ -127,13 +132,20 @@ function validateFiles(input: SavePlanInput): void {
   }
 }
 
-async function finish(plan: PlanRow, saved: RevisionRow, beforeWrite: () => Promise<void>): Promise<ManagedPlanRevision> {
+function assertWriteAuthority(authority: PlanAuthority, saved: RevisionRow): void {
+  authority.assertCurrent?.();
+  if (saved.checkout_root !== authority.checkout || saved.repo_slot !== authority.repoSlot) throw new PlanStoreError("Pending plan checkout or repository slot is no longer issued to its writer", 403);
+  if (saved.session_id !== authority.sessionId || saved.task_id !== authority.taskId || saved.episode_id !== authority.episodeId) throw new PlanStoreError("Pending plan writer attribution changed", 403);
+}
+
+async function finish(plan: PlanRow, saved: RevisionRow, authority: PlanAuthority, hooks: SavePlanHooks): Promise<ManagedPlanRevision> {
   const manifest = manifestFor(plan, saved);
   if (saved.status === "ready") return receipt(manifest);
   if (saved.status !== "pending" && saved.status !== "staging") throw new PlanStoreError("Unknown plan write state");
   if (await resolveRepoRoot(saved.checkout_root) !== plan.repo_root) throw new PlanStoreError("Pending plan checkout no longer belongs to its repository");
   const intent = IntentSchema.parse(JSON.parse(saved.intent)).writes;
-  await beforeWrite();
+  await hooks.beforeCheckoutWrite?.();
+  assertWriteAuthority(authority, saved);
   // Preflight the whole intent before writing any file. Matching writes are replay-safe.
   for (const entry of intent) {
     const file = manifest.files.find((f) => f.name === entry.name && f.checkoutPath)!;
@@ -147,10 +159,17 @@ async function finish(plan: PlanRow, saved: RevisionRow, beforeWrite: () => Prom
     if (current && digest(current) === file.sha256) continue;
     const bytes = readSafe(retainedRoot(), `${revisionPath(plan, saved.revision)}/${file.name}`)!;
     replaceSafe(saved.checkout_root, file.checkoutPath!, bytes, entry.before);
+    hooks.afterCheckoutWrite?.(file.name);
   }
   const db = openDb();
   db.exec("BEGIN IMMEDIATE");
   try {
+    // Check the whole output set after all replacements and after acquiring the ledger lock.
+    // A concurrent editor can have changed an earlier output while later files were written.
+    for (const file of manifest.files.filter((file) => file.checkoutPath)) {
+      const bytes = readSafe(saved.checkout_root, file.checkoutPath!);
+      if (!bytes || bytes.length !== file.bytes || digest(bytes) !== file.sha256) throw new PlanStoreError(`Checkout output ${file.checkoutPath} no longer matches its saved digest; pending revision remains incomplete`);
+    }
     db.prepare("UPDATE managed_plan_revisions SET status = 'ready', intent = '{}' WHERE plan_id = ? AND revision = ?").run(plan.id, saved.revision);
     db.prepare("UPDATE managed_plans SET current_revision = ? WHERE id = ?").run(saved.revision, plan.id);
     db.exec("COMMIT");
@@ -159,7 +178,7 @@ async function finish(plan: PlanRow, saved: RevisionRow, beforeWrite: () => Prom
 }
 
 /** Saves never approve, publish, stage Git, or satisfy task dependencies. */
-export async function savePlan(authority: PlanAuthority, request: SavePlanInput, hooks: { beforeCheckoutWrite?: () => Promise<void>; afterRevisionStaged?: () => Promise<void> } = {}): Promise<ManagedPlanRevision> {
+export async function savePlan(authority: PlanAuthority, request: SavePlanInput, hooks: SavePlanHooks = {}): Promise<ManagedPlanRevision> {
   authority = { ...authority, checkout: realpathSync(authority.checkout) };
   const input = SavePlanInputSchema.parse(request);
   validateFiles(input);
@@ -167,14 +186,14 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
   if (await resolveRepoRoot(authority.checkout) !== context.repoRoot) throw new PlanStoreError("Checkout does not belong to the authorized repository", 403);
   return exclusive(context.repoKey, async () => {
     authority.assertCurrent?.();
-    const beforeWrite = async () => { await hooks.beforeCheckoutWrite?.(); authority.assertCurrent?.(); };
     const db = openDb();
     const requestHash = digest(JSON.stringify({ ...input, files: [...input.files].sort((a, b) => a.name.localeCompare(b.name)), repoKey: context.repoKey, sessionId: authority.sessionId, episodeId: authority.episodeId }));
     const replay = db.prepare("SELECT * FROM managed_plan_revisions WHERE request_id = ?").get(input.requestId) as unknown as RevisionRow | undefined;
     if (replay) {
       if (replay.request_hash !== requestHash) throw new PlanStoreError("Save request identity was reused with different content or attribution");
+      if (replay.status !== "ready") assertWriteAuthority(authority, replay);
       if (replay.status === "staging") stageRevision(row(replay.plan_id), replay, input.files);
-      return finish(row(replay.plan_id), replay, beforeWrite);
+      return finish(row(replay.plan_id), replay, authority, hooks);
     }
     let plan: PlanRow;
     if (input.planId) {
@@ -221,7 +240,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     const saved = revisionRow(plan.id, manifest.revision);
     stageRevision(plan, saved, input.files);
     await hooks.afterRevisionStaged?.();
-    return finish(plan, saved, beforeWrite);
+    return finish(plan, saved, authority, hooks);
   });
 }
 
@@ -231,6 +250,16 @@ function stageRevision(plan: PlanRow, saved: RevisionRow, files: SavePlanInput["
   const manifest = IntentSchema.parse(JSON.parse(saved.intent)).manifest;
   const root = retainedRoot();
   const destination = revisionPath(plan, saved.revision);
+  // The repository queue excludes live stages. Only UUID staging directories are scratch;
+  // published revisions have numeric names and are never candidates for removal.
+  const directory = path.dirname(safePath(root, `${plan.store_path}/manifest.json`));
+  if (existsSync(directory)) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.name)) continue;
+      const orphan = path.dirname(safePath(root, `${plan.store_path}/${entry.name}/manifest.json`));
+      rmSync(orphan, { recursive: true, force: true });
+    }
+  }
   const published = readSafe(root, `${destination}/manifest.json`);
   if (published) { manifestFor(plan, saved); return; }
   const stage = `${plan.store_path}/staging-${randomUUID()}`;

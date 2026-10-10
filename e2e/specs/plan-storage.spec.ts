@@ -39,12 +39,13 @@ test("new plan policy persists, stages eligible files, and renders exact preview
     return Boolean(session?.agentSessionId && session.state === "idle");
   }, { message: "the fake agent must finish binding before an attributed plan save" }).toBe(true);
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
-  const save = async (slug: string): Promise<ManagedPlanRevision> => {
+  const save = async (slug: string, previous?: ManagedPlanRevision): Promise<ManagedPlanRevision> => {
+    const title = previous ? "Updated repository plan" : "Managed repository plans";
     const response = await fetch(`${daemon.baseURL}/mcp/plans/save`, { method: "POST", headers: { "content-type": "application/json", "x-harness-token": token }, body: JSON.stringify({
-      env: {}, sessionId: session.id, cwd: session.cwd, repoSlot: "repo-01", slug, requestId: randomUUID(), expectedRevision: 0,
+      env: {}, sessionId: session.id, cwd: session.cwd, repoSlot: "repo-01", slug, requestId: randomUUID(), expectedRevision: previous?.manifest.revision ?? 0, planId: previous?.manifest.planId,
       files: [
-        { name: "plan.md", content: "# Managed repository plans\n\nMarkdown is authoritative. [Phases](phased-plan.md)" },
-        { name: "plan.html", content: '<!doctype html><html><head><style>body{font:20px system-ui;max-width:900px;margin:50px auto;color:#203248}h1{font-size:42px}a{color:#176368}</style></head><body><h1>Managed repository plans</h1><p>Markdown is authoritative. HTML remains available for review.</p><a href="phased-plan.html">Review implementation phases</a></body></html>' },
+        { name: "plan.md", content: `# ${title}\n\nMarkdown is authoritative. [Phases](phased-plan.md)` },
+        { name: "plan.html", content: `<!doctype html><html><head><style>body{font:20px system-ui;max-width:900px;margin:50px auto;color:#203248}h1{font-size:42px}a{color:#176368}</style></head><body><h1>${title}</h1><p>Markdown is authoritative. HTML remains available for review.</p><a href="phased-plan.html">Review implementation phases</a></body></html>` },
         { name: "phased-plan.md", content: "# Implementation phases\n\nPhase 2 waits for Phase 1 to merge." },
         { name: "phased-plan.html", content: '<h1>Implementation phases</h1><p>Phase 2 waits for Phase 1 to merge.</p><a href="plan.md">Read source Markdown</a>' },
       ],
@@ -63,6 +64,23 @@ test("new plan policy persists, stages eligible files, and renders exact preview
   await expect(dashboard.getByRole("button", { name: "Refresh managed plans" })).toHaveAccessibleDescription("Load the latest saved plan revisions for this repository");
   await expect(dashboard.getByRole("link", { name: "markdown-default · revision 1" })).toHaveAttribute("href", markdown.preview);
   await dashboard.screenshot({ path: `${evidence}managed-plan-discovery.png` });
+  const updated = await save("markdown-default", markdown);
+  await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
+  const latest = dashboard.getByRole("link", { name: "markdown-default · revision 2" });
+  await expect(latest).toHaveAttribute("href", updated.preview);
+  const opened = dashboard.waitForEvent("popup");
+  await latest.click();
+  const reader = await opened;
+  await expect(reader.frameLocator("iframe").getByRole("heading", { name: "Updated repository plan" })).toBeVisible();
+  const previous = reader.getByRole("navigation", { name: "Plan revision history" }).getByRole("link", { name: "Previous revision" });
+  await expect(previous).toHaveAttribute("href", markdown.preview);
+  await expect(previous).toHaveAccessibleDescription("Open the retained plan at revision 1");
+  await reader.screenshot({ path: `${evidence}revision-history.png` });
+  await previous.click();
+  await expect(reader).toHaveURL(`${daemon.baseURL}${markdown.preview}`);
+  await expect(reader.frameLocator("iframe").getByRole("heading", { name: "Managed repository plans" })).toBeVisible();
+  await expect(reader.getByRole("link", { name: "Previous revision" })).toHaveCount(0);
+  await reader.close();
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/skills`);
   await control.check();

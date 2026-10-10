@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ManagedPlanRevision } from "@shared/managed-plans.ts";
+import { managedPlanPreview, type ManagedPlanRevision } from "@shared/managed-plans.ts";
 import { HTML_PREVIEW_LINK_MESSAGE, HTML_PREVIEW_SANDBOX, htmlPreviewSource, inlinePreviewStyles } from "../lib/htmlPreview.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -55,6 +55,7 @@ export function ManagedPlanReader({ id, revision }: { id: string; revision: numb
       <Tooltip label="Return to the Mission Control dashboard"><a href="/">Mission Control</a></Tooltip>
       <h1>{plan?.manifest.slug ?? "Managed plan"}</h1>
       <p>Revision {revision} · {plan?.manifest.policy.commitPlanHtml ? "Markdown and HTML included in Git" : "Markdown in Git; HTML retained locally"}</p>
+      {plan && revision > 1 && <nav aria-label="Plan revision history"><Tooltip label={`Open the retained plan at revision ${revision - 1}`}><a href={managedPlanPreview(id, revision - 1)}>Previous revision</a></Tooltip></nav>}
       <p>Saved for review. Publication still requires the planning pull request to merge.</p>
       {source && <p>Rendering of <Tooltip label="Read the source Markdown saved with this rendering"><button className="btn" onClick={() => setFile(source)}>{source}</button></Tooltip> at this exact revision.</p>}
       <nav aria-label="Plan revision files">{plan?.manifest.files.map((entry) => <Tooltip key={entry.name} label={`Read ${entry.name} from revision ${revision}`}><button className="btn" aria-current={file === entry.name ? "page" : undefined} onClick={() => setFile(entry.name)}>{entry.name}</button></Tooltip>)}</nav>

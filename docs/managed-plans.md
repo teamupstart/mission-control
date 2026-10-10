@@ -56,10 +56,13 @@ and policy-eligible checkout paths. Unknown manifest or policy versions refuse r
 A write intent is durable before staging starts. All retained files are staged and
 verified before their revision directory is renamed into place. Checkout replacements
 compare recorded baselines and use temporary files plus rename. Only after every
-required output is written does the ledger expose the ready revision. Startup reports
+required output is rechecked against its saved digest does the ledger expose the ready
+revision. Conflicting edits during a multi-file write leave the save incomplete. Startup reports
 incomplete revisions without applying their intents, because writer registration may have
 been revoked before the interruption. A currently registered session must retry the exact
-save request with matching attribution. That retry rechecks live authority and replays
+save request with matching attribution, repository slot, and issued checkout. That retry
+rechecks live authority, removes orphan UUID staging directories under the repository's
+write queue without touching published revisions or following symlinks, and replays
 matching writes; operator conflicts remain incomplete. No cross-filesystem atomicity is
 claimed, and the service never resets the index or runs Git publication commands.
 
@@ -73,8 +76,9 @@ workflow versions are unchanged.
 ## Review and archives
 
 Every save returns an exact `/?plan=<id>&revision=<n>` preview. Files > **Refresh managed
-plans** lists repository revisions and opens that reader. It identifies the revision,
-source Markdown and pinned Git eligibility. Relative phase links navigate the verified
+plans** lists each repository plan's latest revision and opens that reader. **Previous
+revision** links make every retained older revision reachable from the latest. The reader
+identifies the revision, source Markdown and pinned Git eligibility. Relative phase links navigate the verified
 bundle. It uses the same sandbox and CSP as Files and Archives. Guarded file endpoints
 serve attachments; the session-file API remains checkout-confined.
 

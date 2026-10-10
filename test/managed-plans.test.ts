@@ -183,6 +183,82 @@ test("a live registry rebind leaves the save incomplete through restart until an
   assert.deepEqual(pendingPlanWriteWarnings(), []);
 });
 
+test("an interrupted save cannot replay in a checkout no longer issued to its writer", async () => {
+  const a = repo(), request = input("moved-writer");
+  const linked = join(home, randomUUID());
+  git(a.checkout, "worktree", "add", "--detach", linked);
+  const registry = new Registry();
+  const discovered = {
+    syntheticId: a.sessionId, agent: "claude" as const, name: "plan", nameSource: "process" as const,
+    cwd: a.checkout, gitBranch: "main", gitRoot: a.checkout, repoRoot: a.repoRoot,
+    pid: 100, tty: null, terminals: [], startedAt: 1,
+  };
+  registry.applyDiscovery([discovered]);
+  const currentAuthority = () => planAuthority(registry, registry.getSession(a.sessionId)!, "repo-01");
+  await assert.rejects(savePlan(currentAuthority(), request, {
+    afterRevisionStaged: async () => { throw new Error("interrupted"); },
+  }), /interrupted/);
+  registry.applyDiscovery([{ ...discovered, cwd: linked, gitRoot: linked }]);
+  assert.equal(currentAuthority().checkout, linked);
+  await assert.rejects(savePlan(currentAuthority(), request), /checkout or repository slot.*writer/);
+  assert.equal((await listPlans(a)).length, 0);
+  for (const checkout of [a.checkout, linked]) assert.equal(existsSync(join(checkout, "docs/plans/moved-writer")), false);
+  registry.applyDiscovery([discovered]);
+  // Even the same repository and checkout do not authorize another issued slot.
+  await assert.rejects(savePlan({ ...currentAuthority(), repoSlot: "repo-02" }, request), /checkout or repository slot.*writer/);
+  assert.equal((await savePlan(currentAuthority(), request)).manifest.revision, 1);
+});
+
+test("a save stays incomplete if an earlier checkout output changes during later writes", async () => {
+  const a = repo();
+  const first = await savePlan(a, input("concurrent-edit"));
+  const update = { ...input("concurrent-edit", "Second revision"), planId: first.manifest.planId, expectedRevision: 1 };
+  update.files.find((file) => file.name === "phased-plan.md")!.content = "# Updated phases";
+  const phasePath = join(a.checkout, "docs/plans/concurrent-edit/phased-plan.md");
+  let changed = false;
+  await assert.rejects(savePlan(a, update, { afterCheckoutWrite: (name) => {
+    if (name !== "plan.md") return;
+    assert.equal(readFileSync(phasePath, "utf8"), "# Updated phases", "the earlier output was already replaced");
+    writeFileSync(phasePath, "operator changed the earlier output");
+    changed = true;
+  } }), /no longer matches.*incomplete/);
+  assert.equal(changed, true);
+  assert.equal((await listPlans(a))[0]!.manifest.revision, 1);
+  assert.throws(() => readPlanRevision(first.manifest.planId, 2), /incomplete/);
+  assert.equal(readFileSync(phasePath, "utf8"), "operator changed the earlier output");
+  await assert.rejects(savePlan(a, update), /Operator edit/);
+  writeFileSync(phasePath, "# Updated phases");
+  assert.equal((await savePlan(a, update)).manifest.revision, 2);
+});
+
+test("authorized recovery removes orphan staging directories while preserving published revisions", async () => {
+  const a = repo();
+  const first = await savePlan(a, input("orphan-stages"));
+  const update = { ...input("orphan-stages", "Second revision"), planId: first.manifest.planId, expectedRevision: 1 };
+  await assert.rejects(savePlan(a, update, { afterRevisionStaged: async () => { throw new Error("interrupted"); } }), /interrupted/);
+  const planStore = join((await planContext(a)).localStore, first.manifest.planId);
+  const published = [1, 2].map((revision) => readFileSync(join(planStore, String(revision), "manifest.json")));
+  // Model a process exit partway through filling a staging directory. It has no manifest.
+  const orphan = join(planStore, `staging-${randomUUID()}`);
+  mkdirSync(orphan);
+  writeFileSync(join(orphan, "plan.md"), "partial bundle");
+  const unrelated = join(planStore, "operator-notes");
+  mkdirSync(unrelated);
+  writeFileSync(join(unrelated, "keep.txt"), "keep");
+  const link = join(planStore, `staging-${randomUUID()}`);
+  symlinkSync(unrelated, link);
+  closeDb();
+  assert.equal(pendingPlanWriteWarnings().length, 1);
+  assert.equal(existsSync(orphan), true, "startup has no writer authority to recover");
+  const recovered = await savePlan(a, update);
+  assert.equal(recovered.manifest.revision, 2);
+  assert.equal(existsSync(orphan), false);
+  for (const revision of [1, 2]) assert.deepEqual(readFileSync(join(planStore, String(revision), "manifest.json")), published[revision - 1]);
+  assert.match(readPlanFile(first.manifest.planId, 1, "plan.md").toString(), /A saved plan/);
+  assert.equal(readFileSync(join(unrelated, "keep.txt"), "utf8"), "keep");
+  assert.equal(existsSync(link), true, "cleanup never follows symlinks");
+});
+
 test("archive publication rejects retained bytes changed after managed capture planning", async () => {
   const a = repo();
   await savePlan(a, input("capture-tamper"));

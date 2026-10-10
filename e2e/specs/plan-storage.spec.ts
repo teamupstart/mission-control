@@ -31,12 +31,13 @@ test("new plan policy persists, stages eligible files, and renders exact preview
   await expectContentClearsBorder(dialog);
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  let session: { id: string; cwd: string };
+  let session: { id: string; cwd: string; agentSessionId: string | null; state: string };
   await expect.poll(async () => {
     const snapshot = await (await fetch(`${daemon.baseURL}/api/sessions`)).json();
     session = snapshot.sessions?.[0] ?? snapshot[0];
-    return session?.id;
-  }).toBeTruthy();
+    // Dispatch exposes the session before the SDK finishes binding its writer identity.
+    return Boolean(session?.agentSessionId && session.state === "idle");
+  }, { message: "the fake agent must finish binding before an attributed plan save" }).toBe(true);
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const save = async (slug: string): Promise<ManagedPlanRevision> => {
     const response = await fetch(`${daemon.baseURL}/mcp/plans/save`, { method: "POST", headers: { "content-type": "application/json", "x-harness-token": token }, body: JSON.stringify({
@@ -61,6 +62,7 @@ test("new plan policy persists, stages eligible files, and renders exact preview
   await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
   await expect(dashboard.getByRole("button", { name: "Refresh managed plans" })).toHaveAccessibleDescription("Load the latest saved plan revisions for this repository");
   await expect(dashboard.getByRole("link", { name: "markdown-default · revision 1" })).toHaveAttribute("href", markdown.preview);
+  await dashboard.screenshot({ path: `${evidence}managed-plan-discovery.png` });
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/skills`);
   await control.check();
@@ -94,7 +96,8 @@ test("refused preference changes revert and show the daemon error", async ({ das
   const control = dashboard.getByRole("checkbox", { name: "Commit generated HTML plan files" });
   await expect(control).not.toBeChecked();
   await dashboard.route("**/api/skills/config", (route) => route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Stored Skills settings are invalid" }) }));
-  await control.check();
+  // A refused save can roll back before check() verifies the post-click checked state.
+  await control.click();
   await expect(control).not.toBeChecked();
   await expect(dashboard.getByText("That didn't stick: Stored Skills settings are invalid")).toBeVisible();
 });

@@ -138,6 +138,21 @@ for (const commitPlanHtml of [false, true]) test(`updates initialize missing out
   assert.equal(existsSync(join(b.checkout, "docs/plans/cross-checkout/plan.html")), commitPlanHtml);
   assert.equal(readPlanFile(first.manifest.planId, 1, "plan.md").toString(), original.files[0]!.content);
   assert.equal(readPlanFile(first.manifest.planId, 2, "plan.html").toString(), update.files[1]!.content);
+  const returning = { ...input("cross-checkout", "Third revision"), planId: first.manifest.planId, expectedRevision: 2 };
+  const third = await savePlan(a, returning);
+  assert.equal(readPlanRevision(first.manifest.planId, 3).manifest.revision, 3);
+  for (const file of third.manifest.files) {
+    if (!file.checkoutPath) continue;
+    assert.equal(readFileSync(join(a.checkout, file.checkoutPath), "utf8"), returning.files.find((f) => f.name === file.name)!.content);
+    assert.equal(readFileSync(join(b.checkout, file.checkoutPath), "utf8"), update.files.find((f) => f.name === file.name)!.content);
+  }
+  // A checkout may also have received the current published files through Git.
+  for (const file of third.manifest.files) {
+    if (file.checkoutPath) writeFileSync(join(b.checkout, file.checkoutPath), returning.files.find((f) => f.name === file.name)!.content);
+  }
+  const fourth = await savePlan(b, { ...input("cross-checkout", "Fourth revision"), planId: first.manifest.planId, expectedRevision: 3 });
+  assert.equal(readPlanRevision(first.manifest.planId, 4).manifest.revision, 4);
+  assert.deepEqual(fourth.requiredPaths, second.requiredPaths);
 });
 
 test("cross-worktree updates preserve edited files and previously managed deletions", async () => {
@@ -155,9 +170,13 @@ test("cross-worktree updates preserve edited files and previously managed deleti
   assert.throws(() => readPlanRevision(first.manifest.planId, 2), /No such plan revision/);
   rmSync(join(b.checkout, planPath));
   await savePlan(b, update);
+  const returning = { ...input("protected", "Third revision"), planId: first.manifest.planId, expectedRevision: 2 };
+  writeFileSync(join(a.checkout, planPath), "operator edited after the other checkout saved");
+  await assert.rejects(savePlan(a, returning), /Operator edit/);
+  assert.equal(readFileSync(join(a.checkout, planPath), "utf8"), "operator edited after the other checkout saved");
   // Another checkout becoming current must not turn a deletion in the first into a new output.
   rmSync(join(a.checkout, planPath));
-  await assert.rejects(savePlan(a, { ...input("protected", "Third revision"), planId: first.manifest.planId, expectedRevision: 2 }), /Operator edit/);
+  await assert.rejects(savePlan(a, returning), /Operator edit/);
   assert.equal(existsSync(join(a.checkout, planPath)), false);
   assert.equal(readPlanRevision(first.manifest.planId, 2).manifest.revision, 2);
   assert.throws(() => readPlanRevision(first.manifest.planId, 3), /No such plan revision/);

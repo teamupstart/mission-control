@@ -58,8 +58,9 @@ verified before their revision directory is renamed into place. Checkout replace
 compare recorded baselines and use temporary files plus rename. Only after every
 required output is rechecked against its saved digest does the ledger expose the ready
 revision. An update from another linked checkout can create outputs never written there.
-Existing files must match the preceding revision; deleting a previously managed output
-in that checkout remains a conflict even after another checkout saves a newer revision.
+Existing files must match that checkout's last saved revision or the latest repository
+revision received through Git. Deleting a previously managed output in that checkout
+remains a conflict even after another checkout saves a newer revision.
 Conflicting edits during a multi-file write leave the save incomplete. Startup reports
 incomplete revisions without applying their intents, because writer registration may have
 been revoked before the interruption. A currently registered session must retry the exact

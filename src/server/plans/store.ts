@@ -228,9 +228,12 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
       const bytes = readSafe(authority.checkout, file.checkoutPath!);
       // A linked checkout may never have received this output. Once written there,
       // absence is an operator deletion, even if the latest revision was saved elsewhere.
-      const previouslyWritten = checkoutPrevious?.files.some((old) => old.checkoutPath === file.checkoutPath);
-      const before = bytes === null && !previouslyWritten ? null : previous?.files.find((f) => f.name === file.name)?.sha256 ?? null;
-      if ((bytes ? digest(bytes) : null) !== before) throw new PlanStoreError(`Operator edit conflicts with ${file.checkoutPath}`);
+      const checkoutFile = checkoutPrevious?.files.find((old) => old.checkoutPath === file.checkoutPath);
+      const latestFile = previous?.files.find((old) => old.checkoutPath === file.checkoutPath);
+      const before = bytes ? digest(bytes) : null;
+      // Accept unchanged local output or the latest repository output received through Git.
+      const unchanged = before === null ? !checkoutFile : before === checkoutFile?.sha256 || before === latestFile?.sha256;
+      if (!unchanged) throw new PlanStoreError(`Operator edit conflicts with ${file.checkoutPath}`);
       return { name: file.name, before };
     });
     const ignored = await run("git", ["-C", authority.checkout, "check-ignore", "--", ...manifest.files.flatMap((file) => file.checkoutPath ? [file.checkoutPath] : [])]);

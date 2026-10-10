@@ -113,6 +113,56 @@ test("linked worktrees share identity, same-name clones are isolated, retained p
   assert.match(readFileSync(captured.files.find((f) => f.role === "primary_report")!.source, "utf8"), /A saved plan/);
 });
 
+for (const commitPlanHtml of [false, true]) test(`updates initialize missing outputs in a second linked worktree (HTML ${commitPlanHtml})`, async () => {
+  applySkillsConfig({ commitPlanHtml });
+  const owner = repo();
+  const linked = [0, 1].map(() => {
+    const checkout = join(home, randomUUID());
+    git(owner.checkout, "worktree", "add", "--detach", checkout);
+    return { ...owner, checkout };
+  });
+  const [a, b] = linked as [PlanAuthority, PlanAuthority];
+  const original = input("cross-checkout");
+  const first = await savePlan(a, original);
+  const update = { ...input("cross-checkout", "Second revision"), planId: first.manifest.planId, expectedRevision: 1 };
+  assert.equal(existsSync(join(b.checkout, "docs/plans/cross-checkout")), false);
+  const second = await savePlan(b, update);
+  assert.equal(second.manifest.revision, 2);
+  assert.deepEqual(readPlanRevision(first.manifest.planId, 2), second, "the revision is ready");
+  assert.equal(second.requiredPaths.length, commitPlanHtml ? 4 : 2);
+  for (const file of second.manifest.files) {
+    if (!file.checkoutPath) continue;
+    assert.equal(readFileSync(join(b.checkout, file.checkoutPath), "utf8"), update.files.find((f) => f.name === file.name)!.content);
+    assert.equal(readFileSync(join(a.checkout, file.checkoutPath), "utf8"), original.files.find((f) => f.name === file.name)!.content);
+  }
+  assert.equal(existsSync(join(b.checkout, "docs/plans/cross-checkout/plan.html")), commitPlanHtml);
+  assert.equal(readPlanFile(first.manifest.planId, 1, "plan.md").toString(), original.files[0]!.content);
+  assert.equal(readPlanFile(first.manifest.planId, 2, "plan.html").toString(), update.files[1]!.content);
+});
+
+test("cross-worktree updates preserve edited files and previously managed deletions", async () => {
+  const a = repo(), checkout = join(home, randomUUID());
+  git(a.checkout, "worktree", "add", "--detach", checkout);
+  const b = { ...a, checkout };
+  const first = await savePlan(a, input("protected"));
+  const update = { ...input("protected", "Second revision"), planId: first.manifest.planId, expectedRevision: 1 };
+  const planPath = "docs/plans/protected/plan.md";
+  mkdirSync(join(b.checkout, "docs/plans/protected"), { recursive: true });
+  writeFileSync(join(b.checkout, planPath), "operator content");
+  await assert.rejects(savePlan(b, update), /Operator edit/);
+  assert.equal(readFileSync(join(b.checkout, planPath), "utf8"), "operator content");
+  assert.equal(existsSync(join(b.checkout, "docs/plans/protected/phased-plan.md")), false);
+  assert.throws(() => readPlanRevision(first.manifest.planId, 2), /No such plan revision/);
+  rmSync(join(b.checkout, planPath));
+  await savePlan(b, update);
+  // Another checkout becoming current must not turn a deletion in the first into a new output.
+  rmSync(join(a.checkout, planPath));
+  await assert.rejects(savePlan(a, { ...input("protected", "Third revision"), planId: first.manifest.planId, expectedRevision: 2 }), /Operator edit/);
+  assert.equal(existsSync(join(a.checkout, planPath)), false);
+  assert.equal(readPlanRevision(first.manifest.planId, 2).manifest.revision, 2);
+  assert.throws(() => readPlanRevision(first.manifest.planId, 3), /No such plan revision/);
+});
+
 test("tracked legacy plans and operator edits remain untouched", async () => {
   const a = repo();
   const directory = join(a.checkout, "docs/plans/legacy");

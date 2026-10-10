@@ -212,6 +212,11 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     if (plan.current_revision !== input.expectedRevision) throw new PlanStoreError("Stale expected plan revision");
     if (db.prepare("SELECT 1 FROM managed_plan_revisions WHERE plan_id = ? AND status != 'ready'").get(plan.id)) throw new PlanStoreError("A previous save is incomplete; retry its exact request first");
     const previous = plan.current_revision ? readPlanRevision(plan.id, plan.current_revision).manifest : null;
+    const checkoutRevision = db.prepare("SELECT revision FROM managed_plan_revisions WHERE plan_id = ? AND checkout_root = ? AND status = 'ready' ORDER BY revision DESC LIMIT 1")
+      .get(plan.id, authority.checkout) as { revision: number } | undefined;
+    const checkoutPrevious = checkoutRevision
+      ? checkoutRevision.revision === plan.current_revision ? previous : readPlanRevision(plan.id, checkoutRevision.revision).manifest
+      : null;
     const policy = previous?.policy ?? context.policy;
     const files = [...input.files].sort((a, b) => a.name.localeCompare(b.name));
     const manifest: PlanManifest = { version: 1, planId: plan.id, repoKey: plan.repo_key, slug: plan.slug, revision: plan.current_revision + 1, policy, createdAt: Date.now(), files: files.map((file) => {
@@ -220,8 +225,11 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     }) };
     if (previous?.files.some((old) => old.checkoutPath && !manifest.files.some((file) => file.checkoutPath === old.checkoutPath))) throw new PlanStoreError("Removing existing checkout outputs requires an explicit migration");
     const intent = manifest.files.filter((f) => f.checkoutPath).map((file) => {
-      const before = previous?.files.find((f) => f.name === file.name)?.sha256 ?? null;
       const bytes = readSafe(authority.checkout, file.checkoutPath!);
+      // A linked checkout may never have received this output. Once written there,
+      // absence is an operator deletion, even if the latest revision was saved elsewhere.
+      const previouslyWritten = checkoutPrevious?.files.some((old) => old.checkoutPath === file.checkoutPath);
+      const before = bytes === null && !previouslyWritten ? null : previous?.files.find((f) => f.name === file.name)?.sha256 ?? null;
       if ((bytes ? digest(bytes) : null) !== before) throw new PlanStoreError(`Operator edit conflicts with ${file.checkoutPath}`);
       return { name: file.name, before };
     });

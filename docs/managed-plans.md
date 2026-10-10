@@ -25,6 +25,9 @@ Both terminal and SDK plan dispatches require these tools in the built MCP hands
 `save_plan` accepts a UUID request identity, a slug, an expected revision, and a complete
 array of UTF-8 `{name, content}` files. Updates also name the returned plan id. Repeat
 the identical request after an interruption; use a new request id for new content.
+Every retry, including an already-ready save, requires the original issued checkout,
+repository slot, and writer attribution. Moving to another checkout requires a new update
+request; a ready receipt never implies that its files were copied into the new checkout.
 Each Markdown file has a same-name HTML rendering. The API accepts flat `.md`, `.html`,
 `.txt`, `.css`, and `.svg` files, at most 64 files, 1 MiB per file and 8 MiB total.
 HTML is static and self-contained, using inline resources and bundle-relative navigation.
@@ -80,7 +83,9 @@ workflow versions are unchanged.
 ## Review and archives
 
 Every save returns an exact `/?plan=<id>&revision=<n>` preview. Files > **Refresh managed
-plans** lists each repository plan's latest revision and opens that reader. **Previous
+plans** lists the latest revisions across the session's primary and attached repositories
+and opens that reader. The session listing API accepts `repoSlot` to narrow discovery;
+omitting it includes all issued slots, with each retained plan listed once. **Previous
 revision** links make every retained older revision reachable from the latest. The reader
 identifies the revision, source Markdown and pinned Git eligibility. Relative phase links navigate the verified
 bundle. It uses the same sandbox and CSP as Files and Archives. Guarded file endpoints

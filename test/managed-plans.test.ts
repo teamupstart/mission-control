@@ -278,6 +278,38 @@ test("an interrupted save cannot replay in a checkout no longer issued to its wr
   assert.equal((await savePlan(currentAuthority(), request)).manifest.revision, 1);
 });
 
+test("a ready save retry refuses a writer rebound to another checkout without changing either checkout", async () => {
+  const a = repo(), request = input("ready-writer");
+  const linked = join(home, randomUUID());
+  git(a.checkout, "worktree", "add", "--detach", linked);
+  const registry = new Registry();
+  const discovered = {
+    syntheticId: a.sessionId, agent: "claude" as const, name: "plan", nameSource: "process" as const,
+    cwd: a.checkout, gitBranch: "main", gitRoot: a.checkout, repoRoot: a.repoRoot,
+    pid: 100, tty: null, terminals: [], startedAt: 1,
+  };
+  registry.applyDiscovery([discovered]);
+  const currentAuthority = () => planAuthority(registry, registry.getSession(a.sessionId)!, "repo-01");
+  const saved = await savePlan(currentAuthority(), request);
+  assert.deepEqual(readPlanRevision(saved.manifest.planId, 1), saved);
+  const destination = join(linked, "docs/plans/ready-writer");
+  mkdirSync(destination, { recursive: true });
+  writeFileSync(join(destination, "plan.md"), "operator content in the new checkout");
+  registry.applyDiscovery([{ ...discovered, cwd: linked, gitRoot: linked }]);
+  assert.equal(currentAuthority().checkout, linked);
+  await assert.rejects(savePlan(currentAuthority(), request), { status: 403, message: /checkout or repository slot.*writer/ });
+  for (const file of saved.manifest.files.filter((file) => file.checkoutPath)) {
+    assert.equal(readFileSync(join(a.checkout, file.checkoutPath!), "utf8"), request.files.find((f) => f.name === file.name)!.content);
+  }
+  assert.equal(readFileSync(join(destination, "plan.md"), "utf8"), "operator content in the new checkout");
+  assert.equal(existsSync(join(destination, "phased-plan.md")), false);
+  assert.equal(existsSync(join(destination, "plan.html")), false);
+  assert.deepEqual(readPlanRevision(saved.manifest.planId, 1), saved);
+  registry.applyDiscovery([discovered]);
+  await assert.rejects(savePlan({ ...currentAuthority(), repoSlot: "repo-02" }, request), { status: 403 });
+  assert.deepEqual(await savePlan(currentAuthority(), request), saved);
+});
+
 test("a save stays incomplete if an earlier checkout output changes during later writes", async () => {
   const a = repo();
   const first = await savePlan(a, input("concurrent-edit"));

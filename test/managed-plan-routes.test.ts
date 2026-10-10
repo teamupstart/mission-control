@@ -93,6 +93,16 @@ test("registered sessions save in issued repository slots and read only their ex
     const response = await request("save", payload);
     assert.equal(response.status, 200, await response.clone().text());
     const saved = await response.json();
+    const discover = (query = "") => app.request(`/api/sessions/${id}/plans${query}`, { headers: { host: "127.0.0.1:7317" } });
+    const attached = await discover("?repoSlot=repo-02");
+    assert.equal(attached.status, 200, await attached.clone().text());
+    assert.deepEqual(await attached.json(), [saved], "Files offers the attached slot's exact saved revision");
+    assert.deepEqual(await (await discover("?repoSlot=repo-01")).json(), []);
+    assert.equal((await discover("?repoSlot=repo-99")).status, 403);
+    const allSlots = await discover();
+    assert.equal(allSlots.status, 200, await allSlots.clone().text());
+    assert.deepEqual(await allSlots.json(), [saved], "the unfiltered Files request includes attached repositories");
+    assert.deepEqual(await (await app.request("/api/sessions/plan-owner-2/plans", { headers: { host: "127.0.0.1:7317" } })).json(), []);
     const read = { planId: saved.manifest.planId, revision: 1, file: "plan.md" };
     assert.equal((await request("read", { input: { ...read, repoSlot: "repo-01" } })).status, 403);
     assert.equal((await request("read", { input: { ...read, repoSlot: "repo-02" } })).status, 200);

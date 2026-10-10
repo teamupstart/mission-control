@@ -61,7 +61,7 @@ test("new plan policy persists, stages eligible files, and renders exact preview
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   await dashboard.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }).click();
   await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
-  await expect(dashboard.getByRole("button", { name: "Refresh managed plans" })).toHaveAccessibleDescription("Load the latest saved plan revisions for this repository");
+  await expect(dashboard.getByRole("button", { name: "Refresh managed plans" })).toHaveAccessibleDescription("Load the latest saved plan revisions for this session's repositories");
   await expect(dashboard.getByRole("link", { name: "markdown-default · revision 1" })).toHaveAttribute("href", markdown.preview);
   await dashboard.screenshot({ path: `${evidence}managed-plan-discovery.png` });
   const updated = await save("markdown-default", markdown);
@@ -118,4 +118,53 @@ test("refused preference changes revert and show the daemon error", async ({ das
   await control.click();
   await expect(control).not.toBeChecked();
   await expect(dashboard.getByText("That didn't stick: Stored Skills settings are invalid")).toBeVisible();
+});
+
+test("Files discovers and opens plans saved in an attached repository", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("Review plans across attached repositories");
+  await dialog.getByLabel("Kind").selectOption("ship");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await expectContentClearsBorder(dialog);
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  let session: { id: string; cwd: string; agentSessionId: string | null; state: string };
+  await expect.poll(async () => {
+    const snapshot = await (await fetch(`${daemon.baseURL}/api/sessions`)).json();
+    session = snapshot.sessions?.[0] ?? snapshot[0];
+    return Boolean(session?.agentSessionId && session.state === "idle");
+  }, { message: "wait for the attributed writer to bind" }).toBe(true);
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const saved: ManagedPlanRevision[] = [];
+  for (const [repoSlot, slug, title] of [["repo-01", "primary-slot", "Primary repository plan"], ["repo-02", "attached-slot", "Attached repository plan"]]) {
+    const response = await fetch(`${daemon.baseURL}/mcp/plans/save`, { method: "POST", headers: { "content-type": "application/json", "x-harness-token": token }, body: JSON.stringify({
+      env: {}, sessionId: session!.id, cwd: session!.cwd, repoSlot, slug, requestId: randomUUID(), expectedRevision: 0,
+      files: [{ name: "plan.md", content: `# ${title}` }, { name: "plan.html", content: `<h1>${title}</h1>` }],
+    }) });
+    expect(response.status, await response.clone().text()).toBe(200);
+    saved.push(await response.json());
+  }
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await dashboard.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }).click();
+  await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
+  await expect(dashboard.getByRole("link", { name: "primary-slot · revision 1" })).toHaveAttribute("href", saved[0]!.preview);
+  const attached = dashboard.getByRole("link", { name: "attached-slot · revision 1" });
+  await expect(attached).toHaveAttribute("href", saved[1]!.preview);
+  mkdirSync(evidence, { recursive: true });
+  await dashboard.setViewportSize({ width: 1440, height: 1000 });
+  await dashboard.screenshot({ path: `${evidence}attached-repository-discovery.png` });
+  const opened = dashboard.waitForEvent("popup");
+  await attached.click();
+  const reader = await opened;
+  await expect(reader).toHaveURL(`${daemon.baseURL}${saved[1]!.preview}`);
+  await expect(reader.frameLocator("iframe").getByRole("heading", { name: "Attached repository plan" })).toBeVisible();
+  await reader.close();
 });

@@ -134,8 +134,8 @@ function validateFiles(input: SavePlanInput): void {
 
 function assertWriteAuthority(authority: PlanAuthority, saved: RevisionRow): void {
   authority.assertCurrent?.();
-  if (saved.checkout_root !== authority.checkout || saved.repo_slot !== authority.repoSlot) throw new PlanStoreError("Pending plan checkout or repository slot is no longer issued to its writer", 403);
-  if (saved.session_id !== authority.sessionId || saved.task_id !== authority.taskId || saved.episode_id !== authority.episodeId) throw new PlanStoreError("Pending plan writer attribution changed", 403);
+  if (saved.checkout_root !== authority.checkout || saved.repo_slot !== authority.repoSlot) throw new PlanStoreError("Saved plan checkout or repository slot is no longer issued to its writer", 403);
+  if (saved.session_id !== authority.sessionId || saved.task_id !== authority.taskId || saved.episode_id !== authority.episodeId) throw new PlanStoreError("Saved plan writer attribution changed", 403);
 }
 
 async function finish(plan: PlanRow, saved: RevisionRow, authority: PlanAuthority, hooks: SavePlanHooks): Promise<ManagedPlanRevision> {
@@ -191,7 +191,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     const replay = db.prepare("SELECT * FROM managed_plan_revisions WHERE request_id = ?").get(input.requestId) as unknown as RevisionRow | undefined;
     if (replay) {
       if (replay.request_hash !== requestHash) throw new PlanStoreError("Save request identity was reused with different content or attribution");
-      if (replay.status !== "ready") assertWriteAuthority(authority, replay);
+      assertWriteAuthority(authority, replay);
       if (replay.status === "staging") stageRevision(row(replay.plan_id), replay, input.files);
       return finish(row(replay.plan_id), replay, authority, hooks);
     }

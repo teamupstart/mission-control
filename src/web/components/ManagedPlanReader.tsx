@@ -85,7 +85,7 @@ export function ManagedPlanLinks({ sessionId }: { sessionId: string }): React.JS
     return () => controller.abort();
   }, [sessionId, refresh]);
   return <section aria-label="Managed plans">
-    <Tooltip label="Load the latest saved plan revisions for this repository"><button className="btn" onClick={() => setRefresh((n) => n + 1)}>Refresh managed plans</button></Tooltip>
+    <Tooltip label="Load the latest saved plan revisions for this session's repositories"><button className="btn" onClick={() => setRefresh((n) => n + 1)}>Refresh managed plans</button></Tooltip>
     {error && <p role="alert">{error}</p>}
     {plans.map((plan) => <p key={plan.manifest.planId}><Tooltip label="Open this exact saved plan revision in a new tab"><a href={plan.preview} target="_blank" rel="noreferrer">{plan.manifest.slug} · revision {plan.manifest.revision}</a></Tooltip></p>)}
   </section>;

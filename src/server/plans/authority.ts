@@ -4,6 +4,13 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { scoutRepoSlots } from "../scouts/repos.ts";
 import { PlanStoreError, type PlanAuthority } from "./store.ts";
 
+/** Files discovers the same repository slots that the daemon issues to the writer. */
+export function sessionPlanAuthorities(registry: Registry, session: Session): PlanAuthority[] {
+  const task = registry.taskForSession(session.id, session.cwd);
+  const slots = task ? scoutRepoSlots(task, session.cwd).map((repo) => repo.slot) : ["repo-01"];
+  return slots.map((slot) => planAuthority(registry, session, slot));
+}
+
 /** Session/task owners issue slots; no request chooses an absolute repository or owner. */
 export function planAuthority(registry: Registry, session: Session, slot: string): PlanAuthority {
   if (session.state === "exited" || registry.sessionResetInProgress(session.id)) throw new PlanStoreError("An active registered session is required", 403);

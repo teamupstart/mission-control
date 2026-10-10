@@ -443,7 +443,7 @@ import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { planAuthority } from "./plans/authority.ts";
+import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
 import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
@@ -4910,7 +4910,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/plans", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "No such session" }, 404);
-    try { return c.json(await listPlans(planAuthority(registry, session, c.req.query("repoSlot") ?? "repo-01"))); }
+    try {
+      const slot = c.req.query("repoSlot");
+      const authorities = slot === undefined ? sessionPlanAuthorities(registry, session) : [planAuthority(registry, session, slot)];
+      const revisions = (await Promise.all(authorities.map(listPlans))).flat();
+      authorities.forEach((authority) => authority.assertCurrent?.());
+      return c.json([...new Map(revisions.map((revision) => [revision.manifest.planId, revision])).values()]);
+    }
     catch (error) { return planFailure(c, error); }
   });
   app.get("/api/plans/:id/:revision", (c) => {

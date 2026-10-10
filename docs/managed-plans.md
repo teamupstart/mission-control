@@ -30,6 +30,10 @@ repository slot, and writer attribution. Moving to another checkout requires a n
 request; a ready receipt never implies that its files were copied into the new checkout.
 Each Markdown file has a same-name HTML rendering. The API accepts flat `.md`, `.html`,
 `.txt`, `.css`, and `.svg` files, at most 64 files, 1 MiB per file and 8 MiB total.
+File sizes count decoded UTF-8 bytes. The HTTP save body allows 49 MiB: up to sixfold
+JSON escaping of the 8 MiB content, plus 1 MiB for filenames and attribution metadata.
+Bodies above that transport limit are refused before saving; the decoded file limits
+still apply independently.
 HTML is static and self-contained, using inline resources and bundle-relative navigation.
 Unsupported artifacts, invalid Unicode, traversal, case collisions, missing renderings,
 symlink components, and conflicting edits refuse the whole save. No file import or

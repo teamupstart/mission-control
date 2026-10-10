@@ -16,7 +16,8 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
-const { closeDb } = await import("../src/server/db.ts");
+const { openDb, closeDb } = await import("../src/server/db.ts");
+const { readPlanRevision, readPlanFile } = await import("../src/server/plans/store.ts");
 const { gitInfo } = await import("../src/server/util/git.ts");
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 
@@ -66,6 +67,56 @@ for (const linked of [false, true]) {
     } finally { await tasks.stop(); }
   });
 }
+
+test("HTTP save accepts an escaped 8 MiB bundle and refuses bodies beyond the transport limit", async () => {
+  const cwd = realpathSync(mkdtempSync(join(home, "escaped-bundle-")));
+  execFileSync("git", ["init", "-q", cwd]);
+  const id = randomUUID();
+  const registry = new Registry();
+  registry.applyDiscovery([{ syntheticId: id, agent: "claude", name: "plan", nameSource: "process", cwd, gitBranch: "main", gitRoot: cwd, repoRoot: cwd, pid: 100, tty: null, terminals: [], startedAt: 1 }]);
+  const tasks = new TaskManager(registry);
+  const app = buildApp({ registry, tasks, reviews: new ReviewManager(registry), queues: new QueueManager(registry) });
+  try {
+    // Controls require six JSON bytes each; quotes and backslashes require two.
+    const escapedText = (bytes: number) => "\u0001".repeat(bytes - 2) + '"\\';
+    const files = [{ name: "plan.md", content: escapedText(1024 * 1024) }, { name: "plan.html", content: "<h1>Plan</h1>" }];
+    files.push(...Array.from({ length: 6 }, (_, i) => ({ name: `review-${i}.txt`, content: escapedText(1024 * 1024) })));
+    files.push({ name: "remainder.txt", content: escapedText(1024 * 1024 - Buffer.byteLength(files[1]!.content)) });
+    assert.equal(files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0), 8 * 1024 * 1024);
+    assert.ok(files.every((file) => Buffer.byteLength(file.content) <= 1024 * 1024));
+    const payload = { env: {}, sessionId: id, cwd, repoSlot: "repo-01", requestId: randomUUID(), slug: "escaped-bundle", expectedRevision: 0, files };
+    const encoded = JSON.stringify(payload);
+    assert.ok(Buffer.byteLength(encoded) > 47 * 1024 * 1024, "valid content can expand well beyond the old 10 MiB HTTP cap");
+    const transportLimit = 49 * 1024 * 1024;
+    const body = encoded + " ".repeat(transportLimit - Buffer.byteLength(encoded));
+    assert.equal(Buffer.byteLength(body), transportLimit);
+    const headers = { "content-type": "application/json", "x-harness-token": ensureToken() };
+    const response = await app.request("/mcp/plans/save", { method: "POST", headers, body });
+    assert.equal(response.status, 200, await response.clone().text());
+    const saved = await response.json();
+    assert.deepEqual(readPlanRevision(saved.manifest.planId, 1), saved, "the HTTP save became ready");
+    assert.deepEqual(saved.requiredPaths, ["docs/plans/escaped-bundle/plan.md"]);
+    assert.equal(readFileSync(join(cwd, saved.requiredPaths[0]), "utf8"), files[0]!.content);
+    assert.equal(existsSync(join(cwd, "docs/plans/escaped-bundle/plan.html")), false);
+    for (const file of files) assert.equal(readPlanFile(saved.manifest.planId, 1, file.name).toString("utf8"), file.content);
+
+    for (const contentLength of [false, true]) {
+      const requestId = randomUUID(), slug = `too-large-${contentLength}`;
+      const rejected = JSON.stringify({ ...payload, requestId, slug });
+      // Valid JSON and valid decoded content, but one transport byte beyond the cap.
+      const oversized = rejected + " ".repeat(transportLimit + 1 - Buffer.byteLength(rejected));
+      assert.equal(Buffer.byteLength(oversized), transportLimit + 1);
+      const refusal = await app.request("/mcp/plans/save", { method: "POST", headers: { ...headers, ...(contentLength ? { "content-length": String(Buffer.byteLength(oversized)) } : {}) }, body: oversized });
+      assert.equal(refusal.status, 413);
+      assert.deepEqual(await refusal.json(), { error: "Plan request is too large" });
+      assert.equal(openDb().prepare("SELECT * FROM managed_plan_revisions WHERE request_id = ?").get(requestId), undefined);
+      assert.equal(openDb().prepare("SELECT * FROM managed_plans WHERE slug = ?").get(slug), undefined);
+      assert.equal(existsSync(join(cwd, "docs/plans", slug)), false);
+    }
+    assert.deepEqual(readPlanRevision(saved.manifest.planId, 1), saved, "refused requests preserve the earlier ready revision");
+    assert.equal(readFileSync(join(cwd, saved.requiredPaths[0]), "utf8"), files[0]!.content);
+  } finally { await tasks.stop(); }
+});
 
 test("registered sessions save in issued repository slots and read only their exact revisions", async () => {
   const repos = ["primary", "attached", "unrelated"].map((name) => {

@@ -442,7 +442,7 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
-import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
 import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
 import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
@@ -616,6 +616,9 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/** JSON escapes can expand each content byte to six bytes. Keep the decoded content
+ * limit in the writer, with 1 MiB of transport headroom for filenames and attribution. */
+const MANAGED_PLAN_BODY_MAX_BYTES = PLAN_CONTENT_LIMITS.totalBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024 * 1024;
 /**
  * The semantic schema counts JavaScript code units, while this stream guard counts raw request
  * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
@@ -4883,7 +4886,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try { return c.json(await planContext(planAuthority(registry, session, parsed.data.repoSlot))); }
     catch (error) { return planFailure(c, error); }
   });
-  app.post("/mcp/plans/save", bodyLimit({ maxSize: 10 * 1024 * 1024, onError: (c) => c.json({ error: "Plan request is too large" }, 413) }), async (c) => {
+  app.post("/mcp/plans/save", bodyLimit({ maxSize: MANAGED_PLAN_BODY_MAX_BYTES, onError: (c) => c.json({ error: "Plan request is too large" }, 413) }), async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpPlanPublicationSchema.merge(SavePlanInputSchema));
     if (!parsed.ok) return parsed.res;

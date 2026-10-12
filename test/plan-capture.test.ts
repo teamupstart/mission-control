@@ -1,3 +1,5 @@
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+ensureNativeStateLockAddon();
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

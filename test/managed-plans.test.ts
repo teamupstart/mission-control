@@ -1,7 +1,9 @@
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+ensureNativeStateLockAddon();
 // These boundaries span Git eligibility, the retained filesystem and the daemon ledger.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync, renameSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -486,6 +488,19 @@ for (const excess of [0, 1]) {
     await checkBundleLimit(files, excess ? /Plan bundle exceeds its size limit/ : undefined);
   });
 }
+
+test("a checkout parent replaced during a save leaves the revision incomplete and outside files untouched", async () => {
+  const a = repo(), request = input("parent-swap");
+  const outside = join(home, randomUUID());
+  mkdirSync(outside);
+  await assert.rejects(savePlan(a, request, { afterCheckoutWrite: () => {
+    renameSync(join(a.checkout, "docs/plans"), join(a.checkout, "original-plans"));
+    symlinkSync(outside, join(a.checkout, "docs/plans"));
+  } }), /symbolic link/);
+  assert.deepEqual(readdirSync(outside), []);
+  assert.equal(openDb().prepare("SELECT * FROM managed_plan_revisions WHERE status = 'ready'").all().length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
+});
 
 test("corruption, path escapes, symlink swaps, invalid encodings and incomplete HTML are refused", async () => {
   const a = repo();

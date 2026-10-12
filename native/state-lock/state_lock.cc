@@ -245,6 +245,87 @@ napi_value RenamePaths(napi_env env, napi_callback_info info, bool exchange) {
 napi_value ExchangePaths(napi_env env, napi_callback_info info) { return RenamePaths(env, info, true); }
 napi_value RenameNoReplace(napi_env env, napi_callback_info info) { return RenamePaths(env, info, false); }
 
+// Plan filesystem operations resolve one component at a time from held directory
+// descriptors. Never accept a path here: even an intermediate symlink would defeat
+// O_NOFOLLOW, which protects only the final component of openat.
+bool ReadEntry(napi_env env, napi_value value, std::string* output) {
+  return ReadString(env, value, output) && !output->empty() &&
+      *output != "." && *output != ".." && output->find('/') == std::string::npos &&
+      output->find('\0') == std::string::npos;
+}
+
+napi_value PlanIoError(napi_env env) {
+  const int error = errno;
+  const char* code = error == ENOENT ? "ENOENT" : error == EEXIST ? "EEXIST" :
+      error == ELOOP ? "ELOOP" : error == ENOTDIR ? "ENOTDIR" : "EPLANIO";
+  return ThrowSystemError(env, code, std::string("anchored plan filesystem operation failed: ") + std::strerror(error));
+}
+
+napi_value OpenPlanEntry(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int32_t parent, flags;
+  std::string name;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      !ReadEntry(env, argv[1], &name) || napi_get_value_int32(env, argv[2], &flags) != napi_ok) {
+    return ThrowTypeError(env, "openPlanEntry requires a directory descriptor, one entry name, and flags");
+  }
+  int fd;
+  do { fd = openat(parent, name.c_str(), flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600); }
+  while (fd < 0 && errno == EINTR);
+  if (fd < 0) return PlanIoError(env);
+  napi_value result;
+  if (napi_create_int32(env, fd, &result) != napi_ok) {
+    close(fd);
+    return nullptr;
+  }
+  return result;
+}
+
+napi_value MakePlanDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  int32_t parent;
+  std::string name;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 || !ReadEntry(env, argv[1], &name)) {
+    return ThrowTypeError(env, "makePlanDirectory requires a directory descriptor and one entry name");
+  }
+  if (mkdirat(parent, name.c_str(), 0700) != 0 && errno != EEXIST) return PlanIoError(env);
+  return Undefined(env);
+}
+
+napi_value RenamePlanEntry(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int32_t parent;
+  std::string source, destination;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      !ReadEntry(env, argv[1], &source) || !ReadEntry(env, argv[2], &destination)) {
+    return ThrowTypeError(env, "renamePlanEntry requires a directory descriptor and two entry names");
+  }
+  int result;
+  do { result = renameat(parent, source.c_str(), parent, destination.c_str()); }
+  while (result != 0 && errno == EINTR);
+  if (result != 0) return PlanIoError(env);
+  return Undefined(env);
+}
+
+napi_value UnlinkPlanEntry(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  int32_t parent;
+  std::string name;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 || !ReadEntry(env, argv[1], &name)) {
+    return ThrowTypeError(env, "unlinkPlanEntry requires a directory descriptor and one entry name");
+  }
+  if (unlinkat(parent, name.c_str(), 0) != 0 && errno != ENOENT) return PlanIoError(env);
+  return Undefined(env);
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
@@ -254,8 +335,12 @@ NAPI_MODULE_INIT() {
       {"linkSymlinkNoReplace", nullptr, LinkSymlinkNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"exchangePaths", nullptr, ExchangePaths, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renameNoReplace", nullptr, RenameNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"openPlanEntry", nullptr, OpenPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"makePlanDirectory", nullptr, MakePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"renamePlanEntry", nullptr, RenamePlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"unlinkPlanEntry", nullptr, UnlinkPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  if (napi_define_properties(env, exports, 5, properties) != napi_ok) {
+  if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native state lock addon");
     return nullptr;
   }

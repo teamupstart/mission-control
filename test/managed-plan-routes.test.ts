@@ -1,3 +1,5 @@
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+ensureNativeStateLockAddon();
 // Attributed APIs must neither fall back to cwd guesses nor let an agent name another owner.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";

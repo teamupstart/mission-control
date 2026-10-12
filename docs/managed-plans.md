@@ -61,8 +61,11 @@ version 1 and contain a bounded inventory, SHA-256 digests, source-rendering dig
 and policy-eligible checkout paths. Unknown manifest or policy versions refuse reads.
 
 A write intent is durable before staging starts. All retained files are staged and
-verified before their revision directory is renamed into place. Checkout replacements
-compare recorded baselines and use temporary files plus rename. Only after every
+verified before their revision directory is renamed into place. Plan reads and checkout
+replacements walk directory components with no-follow, descriptor-relative operations
+from the existing native filesystem addon. Temporary creation, baseline reads, rename,
+and cleanup share a held parent directory, so a substituted parent symlink cannot redirect
+them. Replacements compare recorded baselines and use temporary files plus rename. Only after every
 required output is rechecked against its saved digest does the ledger expose the ready
 revision. An update from another linked checkout can create outputs never written there.
 Existing files must match that checkout's last saved revision or the latest repository

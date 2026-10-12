@@ -3,12 +3,13 @@ ensureNativeStateLockAddon();
 // These boundaries span Git eligibility, the retained filesystem and the daemon ledger.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync, renameSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync, renameSync, readdirSync, cpSync, constants, openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { nativePlanFiles } from "../src/server/plans/native.ts";
 import type { PlanAuthority } from "../src/server/plans/store.ts";
 import { SavePlanInputSchema, type SavePlanInput } from "../src/shared/managed-plans.ts";
 
@@ -347,6 +348,27 @@ test("a save stays incomplete if an earlier checkout output changes during later
   assert.equal((await savePlan(a, update)).manifest.revision, 2);
 });
 
+test("a retry cannot mark an interrupted exchange ready when its displaced bytes contain an operator edit", async () => {
+  const a = repo();
+  const first = await savePlan(a, input("exchange-conflict"));
+  const update = { ...input("exchange-conflict", "Second revision"), planId: first.manifest.planId, expectedRevision: 1 };
+  const directory = join(a.checkout, "docs/plans/exchange-conflict");
+  await assert.rejects(savePlan(a, update, { beforeCheckoutRename: (name) => {
+    if (name !== "plan.md") return;
+    writeFileSync(join(directory, name), "operator's last-moment edit");
+    const temporary = readdirSync(directory).find((name) => name.endsWith(".tmp"))!;
+    const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try { nativePlanFiles().renamePlanEntry(fd, temporary, name, true); } finally { closeSync(fd); }
+    throw new Error("interrupted immediately after exchange");
+  } }), /interrupted/);
+  assert.match(readFileSync(join(directory, "plan.md"), "utf8"), /Second revision/);
+  await assert.rejects(savePlan(a, update), /Operator edit conflict/);
+  assert.equal(readFileSync(join(directory, "plan.md"), "utf8"), "operator's last-moment edit");
+  assert.throws(() => readPlanRevision(first.manifest.planId, 2), /incomplete/);
+  assert.equal((await listPlans(a)).plans[0]!.manifest.revision, 1);
+  await assert.rejects(savePlan(a, update), /Operator edit/);
+});
+
 test("authorized recovery removes orphan staging directories while preserving published revisions", async () => {
   const a = repo();
   const first = await savePlan(a, input("orphan-stages"));
@@ -373,6 +395,28 @@ test("authorized recovery removes orphan staging directories while preserving pu
   assert.match(readPlanFile(first.manifest.planId, 1, "plan.md").toString(), /A saved plan/);
   assert.equal(readFileSync(join(unrelated, "keep.txt"), "utf8"), "keep");
   assert.equal(existsSync(link), true, "cleanup never follows symlinks");
+});
+
+for (const interrupt of [false, true]) test(`retained publication and cleanup stay anchored after parent substitution (interrupt ${interrupt})`, async () => {
+  const a = repo(), request = input("retained-parent-race");
+  const context = await planContext(a);
+  const outside = join(home, randomUUID());
+  mkdirSync(outside);
+  let stage = "";
+  await assert.rejects(savePlan(a, request, { beforeRetainedPublish: () => {
+    const plan = openDb().prepare("SELECT id FROM managed_plans").get() as { id: string };
+    const directory = join(context.localStore, plan.id);
+    stage = readdirSync(directory).find((name) => name.startsWith("staging-"))!;
+    assert.ok(stage);
+    cpSync(join(directory, stage), join(outside, stage), { recursive: true });
+    renameSync(directory, `${directory}-original`);
+    symlinkSync(outside, directory);
+    if (interrupt) throw new Error("interrupted after substitution");
+  } }), /symbolic link|interrupted/);
+  assert.equal(existsSync(join(outside, "1")), false, "publication cannot follow a substituted retained parent");
+  assert.equal(existsSync(join(outside, stage, "manifest.json")), true, "cleanup cannot follow a substituted retained parent");
+  assert.equal(openDb().prepare("SELECT * FROM managed_plan_revisions WHERE status = 'ready'").all().length, 0);
+  assert.equal(existsSync(join(a.checkout, "docs/plans")), false);
 });
 
 test("archive publication rejects retained bytes changed after managed capture planning", async () => {

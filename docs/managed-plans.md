@@ -65,7 +65,12 @@ verified before their revision directory is renamed into place. Plan reads and c
 replacements walk directory components with no-follow, descriptor-relative operations
 from the existing native filesystem addon. Temporary creation, baseline reads, rename,
 and cleanup share a held parent directory, so a substituted parent symlink cannot redirect
-them. Replacements compare recorded baselines and use temporary files plus rename. Only after every
+them. New outputs use an exclusive rename. Updates exchange the staged file with the
+current output atomically, then verify the displaced bytes against the recorded baseline.
+A mismatch exchanges them back and retains both entries for conflict resolution. Stable
+scratch names let an interrupted retry verify displaced bytes before accepting an already
+matching output. Retained revision publication and recursive staging cleanup also use held
+directory descriptors; publication cannot replace an existing revision. Only after every
 required output is rechecked against its saved digest does the ledger expose the ready
 revision. An update from another linked checkout can create outputs never written there.
 Existing files must match that checkout's last saved revision or the latest repository

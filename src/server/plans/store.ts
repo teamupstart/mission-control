@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, lstatSync, realpathSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import { resolveRepoRoot } from "../repos.ts";
 import { getSkillsConfig, skillsConfigProblem } from "../skills/config.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
 import { run } from "../util/exec.ts";
-import { PlanStoreError, digest, readSafe, replaceSafe, safePath } from "./files.ts";
+import { PlanStoreError, digest, readSafe, replaceSafe, withPlanDirectory } from "./files.ts";
 export { PlanStoreError } from "./files.ts";
 
 export interface PlanAuthority {
@@ -31,6 +31,8 @@ interface SavePlanHooks {
   beforeCheckoutWrite?: () => Promise<void>;
   afterRevisionStaged?: () => Promise<void>;
   afterCheckoutWrite?: (name: string) => void;
+  beforeCheckoutRename?: (name: string) => void;
+  beforeRetainedPublish?: () => void;
 }
 const IntentSchema = z.object({ writes: z.array(z.object({ name: z.string(), before: z.string().nullable() }).strict()), manifest: PlanManifestSchema }).strict();
 const queues = new Map<string, Promise<unknown>>();
@@ -175,10 +177,8 @@ async function finish(plan: PlanRow, saved: RevisionRow, authority: PlanAuthorit
   }
   for (const entry of intent) {
     const file = manifest.files.find((f) => f.name === entry.name)!;
-    const current = readSafe(saved.checkout_root, file.checkoutPath!);
-    if (current && digest(current) === file.sha256) continue;
     const bytes = readSafe(retainedRoot(), `${revisionPath(plan, saved.revision)}/${file.name}`)!;
-    replaceSafe(saved.checkout_root, file.checkoutPath!, bytes, entry.before);
+    replaceSafe(saved.checkout_root, file.checkoutPath!, bytes, entry.before, () => hooks.beforeCheckoutRename?.(file.name));
     hooks.afterCheckoutWrite?.(file.name);
   }
   const db = openDb();
@@ -212,7 +212,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     if (replay) {
       if (replay.request_hash !== requestHash) throw new PlanStoreError("Save request identity was reused with different content or attribution");
       assertWriteAuthority(authority, replay);
-      if (replay.status === "staging") stageRevision(row(replay.plan_id), replay, input.files);
+      if (replay.status === "staging") stageRevision(row(replay.plan_id), replay, input.files, hooks.beforeRetainedPublish);
       return finish(row(replay.plan_id), replay, authority, hooks);
     }
     let plan: PlanRow;
@@ -269,7 +269,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
       db.exec("COMMIT");
     } catch (error) { db.exec("ROLLBACK"); throw error; }
     const saved = revisionRow(plan.id, manifest.revision);
-    stageRevision(plan, saved, input.files);
+    stageRevision(plan, saved, input.files, hooks.beforeRetainedPublish);
     await hooks.afterRevisionStaged?.();
     return finish(plan, saved, authority, hooks);
   });
@@ -277,30 +277,29 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
 
 /** Journal first, then publish all retained bytes by rename. An authorized retry uses
  * the frozen manifest and verifies any bytes already retained before the interruption. */
-function stageRevision(plan: PlanRow, saved: RevisionRow, files: SavePlanInput["files"]): void {
+function stageRevision(plan: PlanRow, saved: RevisionRow, files: SavePlanInput["files"], beforePublish?: () => void): void {
   const manifest = IntentSchema.parse(JSON.parse(saved.intent)).manifest;
   const root = retainedRoot();
   const destination = revisionPath(plan, saved.revision);
-  // The repository queue excludes live stages. Only UUID staging directories are scratch;
-  // published revisions have numeric names and are never candidates for removal.
-  const directory = path.dirname(safePath(root, `${plan.store_path}/manifest.json`));
-  if (existsSync(directory)) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.name)) continue;
-      const orphan = path.dirname(safePath(root, `${plan.store_path}/${entry.name}/manifest.json`));
-      rmSync(orphan, { recursive: true, force: true });
+  withPlanDirectory(root, plan.store_path, (directory) => {
+    // The repository queue excludes live stages. Only UUID staging directories are
+    // scratch; numeric published revisions and symlink entries are never removed.
+    for (const name of directory.names()) {
+      if (/^staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(name)) directory.removeDirectory(name);
     }
-  }
-  const published = readSafe(root, `${destination}/manifest.json`);
-  if (published) { manifestFor(plan, saved); return; }
-  const stage = `${plan.store_path}/staging-${randomUUID()}`;
-  try {
-    for (const file of files) replaceSafe(root, `${stage}/${file.name}`, Buffer.from(file.content), null);
-    replaceSafe(root, `${stage}/manifest.json`, Buffer.from(JSON.stringify(manifest)), null);
-    for (const file of manifest.files) if (digest(readSafe(root, `${stage}/${file.name}`)!) !== file.sha256) throw new PlanStoreError("Staged plan verification failed");
-    safePath(root, `${destination}/manifest.json`);
-    renameSync(path.join(root, stage), path.join(root, destination));
-  } catch (error) { rmSync(path.join(root, stage), { recursive: true, force: true }); throw error; }
+    const published = readSafe(root, `${destination}/manifest.json`);
+    if (published) { manifestFor(plan, saved); return; }
+    const stage = `staging-${randomUUID()}`;
+    try {
+      directory.directory(stage, true, (staging) => {
+        for (const file of files) staging.write(file.name, Buffer.from(file.content));
+        staging.write("manifest.json", Buffer.from(JSON.stringify(manifest)));
+        for (const file of manifest.files) if (digest(staging.read(file.name)!) !== file.sha256) throw new PlanStoreError("Staged plan verification failed");
+      });
+      beforePublish?.();
+      directory.publish(stage, String(saved.revision));
+    } catch (error) { directory.removeDirectory(stage); throw error; }
+  });
 }
 
 /** Startup has no live writer authority. Only an attributed save retry may apply an intent. */

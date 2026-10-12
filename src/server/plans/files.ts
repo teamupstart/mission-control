@@ -1,6 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync, fsyncSync } from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { nativePlanFiles } from "./native.ts";
 import { PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
 
@@ -77,25 +77,90 @@ export function readSafe(root: string, relative: string, limit: number = PLAN_CO
   finally { closeSync(parent); }
 }
 
-/** The temporary, baseline reads, rename, and cleanup all use the same held parent. */
+/** Stable scratch identity lets a retry verify bytes displaced by an interrupted exchange. */
+function replaceAt(parent: number, name: string, bytes: Buffer, expected: string | null, beforeRename?: () => void): void {
+  const native = nativePlanFiles();
+  const desired = digest(bytes);
+  const temporary = `.mission-plan-${digest(JSON.stringify([name, expected, desired]))}.tmp`;
+  const conflict = () => new PlanStoreError(`Operator edit conflict with ${name}; inspect ${name} and ${temporary} and restore the expected bytes before retrying`);
+  const verifyDisplaced = () => {
+    let displaced: Buffer | null = null;
+    try { displaced = readAt(parent, temporary, PLAN_CONTENT_LIMITS.fileBytes); } catch { /* Keep unreadable or non-regular conflicts too. */ }
+    if (!displaced || digest(displaced) !== expected) {
+      // Exchange back, retaining BOTH entries. Even if another writer changed the
+      // new output, rollback moves those bytes to scratch instead of discarding them.
+      try { native.renamePlanEntry(parent, temporary, name, true); } catch { /* Original bytes remain at scratch if rollback cannot complete. */ }
+      throw conflict();
+    }
+  };
+  const current = readAt(parent, name, PLAN_CONTENT_LIMITS.fileBytes);
+  const scratch = readAt(parent, temporary, PLAN_CONTENT_LIMITS.fileBytes);
+  if (current && digest(current) === desired) {
+    if (scratch) {
+      if (expected !== null) verifyDisplaced();
+      else if (digest(scratch) !== desired) throw conflict();
+      native.unlinkPlanEntry(parent, temporary, false);
+    }
+    return;
+  }
+  if ((current ? digest(current) : null) !== expected) throw conflict();
+  if (scratch && digest(scratch) !== desired) throw conflict();
+  if (!scratch) {
+    const fd = native.openPlanEntry(parent, temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+  }
+  const latest = readAt(parent, name, PLAN_CONTENT_LIMITS.fileBytes);
+  if ((latest ? digest(latest) : null) !== expected) throw conflict();
+  beforeRename?.();
+  try { native.renamePlanEntry(parent, temporary, name, expected !== null); }
+  catch (error) {
+    if (["EEXIST", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) throw conflict();
+    throw error;
+  }
+  if (expected !== null) {
+    verifyDisplaced();
+    native.unlinkPlanEntry(parent, temporary, false);
+  }
+}
+
+/** Every operation, including publication and recovery, uses the same held parent. */
 export function replaceSafe(root: string, relative: string, bytes: Buffer, expected: string | null, beforeRename?: () => void): void {
   const parent = openParent(root, relative, true);
-  const native = nativePlanFiles();
-  const name = path.basename(relative);
-  const temporary = `${name}.${randomUUID()}.tmp`;
-  let staged = false;
-  try {
-    const current = readAt(parent, name, PLAN_CONTENT_LIMITS.fileBytes);
-    if ((current ? digest(current) : null) !== expected) throw new PlanStoreError(`Operator edit conflicts with ${relative}; restore the expected bytes before retrying`);
-    const fd = native.openPlanEntry(parent, temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
-    staged = true;
-    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
-    const latest = readAt(parent, name, PLAN_CONTENT_LIMITS.fileBytes);
-    if ((latest ? digest(latest) : null) !== expected) throw new PlanStoreError(`Operator edit conflicts with ${relative}`);
-    beforeRename?.();
-    native.renamePlanEntry(parent, temporary, name);
-  } finally {
-    try { if (staged) native.unlinkPlanEntry(parent, temporary); }
-    finally { closeSync(parent); }
+  try { replaceAt(parent, path.basename(relative), bytes, expected, beforeRename); }
+  finally { closeSync(parent); }
+}
+
+class PlanDirectory {
+  constructor(private readonly fd: number) {}
+  names(): string[] { return nativePlanFiles().readPlanDirectory(this.fd); }
+  read(name: string): Buffer | null { return readAt(this.fd, name, PLAN_CONTENT_LIMITS.fileBytes); }
+  write(name: string, bytes: Buffer): void { replaceAt(this.fd, name, bytes, null); }
+  directory<T>(name: string, create: boolean, action: (directory: PlanDirectory) => T): T {
+    const native = nativePlanFiles();
+    if (create) native.makePlanDirectory(this.fd, name);
+    const fd = native.openPlanEntry(this.fd, name, constants.O_RDONLY | constants.O_DIRECTORY);
+    try { return action(new PlanDirectory(fd)); } finally { closeSync(fd); }
   }
+  publish(source: string, destination: string): void {
+    nativePlanFiles().renamePlanEntry(this.fd, source, destination, false);
+  }
+  removeDirectory(name: string): boolean {
+    try {
+      this.directory(name, false, (directory) => {
+        for (const child of directory.names()) {
+          if (!directory.removeDirectory(child)) nativePlanFiles().unlinkPlanEntry(directory.fd, child, false);
+        }
+      });
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      throw error;
+    }
+    nativePlanFiles().unlinkPlanEntry(this.fd, name, true);
+    return true;
+  }
+}
+
+export function withPlanDirectory<T>(root: string, relative: string, action: (directory: PlanDirectory) => T): T {
+  const fd = openParent(root, `${relative}/manifest.json`, true);
+  try { return action(new PlanDirectory(fd)); } finally { closeSync(fd); }
 }

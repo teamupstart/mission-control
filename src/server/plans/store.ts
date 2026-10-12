@@ -90,7 +90,8 @@ function readyRevisionRow(id: string, revision: number): RevisionRow {
 }
 /** Operator API reads exact durable identities; MCP additionally checks repository ownership. */
 export function readPlanRevision(id: string, revision: number): ManagedPlanRevision {
-  return receipt(manifestFor(row(id), readyRevisionRow(id, revision)));
+  const saved = readyRevisionRow(id, revision);
+  return receipt(manifestFor(row(id), saved));
 }
 export function readPlanFile(id: string, revision: number, name: string): Buffer {
   const { manifest } = readPlanRevision(id, revision);

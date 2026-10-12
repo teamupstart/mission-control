@@ -1,6 +1,13 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
+/** Read a CLI option from either `--flag value` or the SDK's `--flag=value` form. */
+export function argvValue(argv: readonly string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index >= 0) return argv[index + 1];
+  return argv.find((value) => value.startsWith(`${flag}=`))?.slice(flag.length + 1);
+}
+
 /**
  * The records the fake agents have finished writing under `dir`, oldest first.
  *

@@ -916,7 +916,7 @@ server.registerTool("save_plan", {
   inputSchema: SavePlanInputSchema.shape,
 }, async (input) => managedPlanCall("save", input));
 server.registerTool("read_plan", {
-  description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Revisions and local previews survive authoring-worktree cleanup.",
+  description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
   inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
 }, async (input) => managedPlanCall("read", input));
 

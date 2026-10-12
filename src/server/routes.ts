@@ -442,7 +442,7 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
-import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PlanCatalogCursorSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
 import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
 import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
@@ -4905,7 +4905,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       const input = parsed.data.input;
       const authority = planAuthority(registry, session, input.repoSlot);
-      if (!input.planId) return c.json(await listPlans(authority));
+      if (!input.planId) return c.json(await listPlans(authority, input.cursor));
       await authorizePlan(authority, input.planId);
       return c.json(input.file ? { content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") } : readPlanRevision(input.planId, input.revision!));
     } catch (error) { return planFailure(c, error); }
@@ -4915,10 +4915,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "No such session" }, 404);
     try {
       const slot = c.req.query("repoSlot");
+      const cursor = PlanCatalogCursorSchema.optional().safeParse(c.req.query("cursor"));
+      if (!cursor.success) return c.json({ error: "Invalid plan catalog cursor" }, 400);
       const authorities = slot === undefined ? sessionPlanAuthorities(registry, session) : [planAuthority(registry, session, slot)];
-      const revisions = (await Promise.all(authorities.map(listPlans))).flat();
-      authorities.forEach((authority) => authority.assertCurrent?.());
-      return c.json([...new Map(revisions.map((revision) => [revision.manifest.planId, revision])).values()]);
+      return c.json(await listPlans(authorities, cursor.data));
     }
     catch (error) { return planFailure(c, error); }
   });

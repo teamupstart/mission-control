@@ -90,7 +90,13 @@ Every save returns an exact `/?plan=<id>&revision=<n>` preview. Files > **Refres
 plans** lists the latest revisions across the session's primary and attached repositories
 and opens that reader. The session listing API accepts `repoSlot` to narrow discovery;
 omitting it includes all issued slots, with each retained plan listed once. **Previous
-revision** links make every retained older revision reachable from the latest. The reader
+revision** links make every retained older revision reachable from the latest. Catalog
+responses from this API and `read_plan` are `{plans, nextCursor}` with at most 100 plans,
+ordered by slug and plan id. Pass `nextCursor` as `cursor` to continue until it is null.
+Files exposes **Load more managed plans**, preserving loaded pages if a later request fails.
+Cursors are bookmarks within the currently authorized repository scope, not access grants.
+Refreshing starts again at the first page, including new plans inserted before a prior bookmark.
+Exact revision/file reads and save receipts retain their existing shape. The reader
 identifies the revision, source Markdown and pinned Git eligibility. Relative phase links navigate the verified
 bundle. It uses the same sandbox and CSP as Files and Archives. Guarded file endpoints
 serve attachments; the session-file API remains checkout-confined.

@@ -24,7 +24,9 @@ the interactive path below instead of asking in prose.
 ## Always: render the plan as HTML
 
 1. Call `get_plan_context` for the issued repository slot before writing a new plan. Use
-   `read_plan` to discover an existing managed plan and read its exact revision. If registration
+   `read_plan` to discover an existing managed plan and read its exact revision. Catalog reads
+   return `plans` and `nextCursor`; pass that cursor with the same repository slot until it is null.
+   If registration
    or the managed tools are unavailable, report the refusal; do not silently write HTML to Git.
 2. Author `plan.md` and a self-contained static `plan.html` rendering in memory. Markdown is
    authoritative. Inline CSS, SVG, and data images; no scripts or external requests. Keep

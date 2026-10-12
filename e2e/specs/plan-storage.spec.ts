@@ -120,7 +120,7 @@ test("refused preference changes revert and show the daemon error", async ({ das
   await expect(dashboard.getByText("That didn't stick: Stored Skills settings are invalid")).toBeVisible();
 });
 
-test("Files discovers and opens plans saved in an attached repository", async ({ dashboard, daemon }) => {
+test("Files discovers attached plans and pages beyond 100 saved plans", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
@@ -167,4 +167,39 @@ test("Files discovers and opens plans saved in an attached repository", async ({
   await expect(reader).toHaveURL(`${daemon.baseURL}${saved[1]!.preview}`);
   await expect(reader.frameLocator("iframe").getByRole("heading", { name: "Attached repository plan" })).toBeVisible();
   await reader.close();
+  let last: ManagedPlanRevision;
+  for (let i = 0; i < 100; i++) {
+    const response = await fetch(`${daemon.baseURL}/mcp/plans/save`, { method: "POST", headers: { "content-type": "application/json", "x-harness-token": token }, body: JSON.stringify({
+      env: {}, sessionId: session!.id, cwd: session!.cwd, repoSlot: "repo-02", slug: `page-${String(i).padStart(3, "0")}`, requestId: randomUUID(), expectedRevision: 0,
+      files: [{ name: "plan.md", content: `# Catalog plan ${i}` }, { name: "plan.html", content: `<h1>Catalog plan ${i}</h1>` }],
+    }) });
+    expect(response.status, await response.clone().text()).toBe(200);
+    last = await response.json();
+  }
+  await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
+  const catalog = dashboard.getByRole("region", { name: "Managed plans", exact: true });
+  await expect(catalog.getByText("100 saved plans loaded. More available.", { exact: true })).toBeVisible();
+  await expect(catalog.getByRole("link")).toHaveCount(100);
+  await expect(catalog.getByRole("link", { name: "page-099 · revision 1" })).toHaveCount(0);
+  await dashboard.route("**/api/sessions/*/plans?cursor=*", (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Catalog temporarily unavailable" }) }), { times: 1 });
+  const more = catalog.getByRole("button", { name: "Load more managed plans" });
+  await more.click();
+  await expect(catalog.getByRole("alert")).toHaveText("Catalog temporarily unavailable");
+  await expect(catalog.getByRole("link")).toHaveCount(100);
+  await more.click();
+  await expect(catalog.getByText("102 saved plans loaded.", { exact: true })).toBeVisible();
+  await expect(catalog.getByRole("link")).toHaveCount(102);
+  await expect(more).toHaveCount(0);
+  const tail = catalog.getByRole("link", { name: "page-099 · revision 1" });
+  await expect(tail).toHaveAttribute("href", last!.preview);
+  await catalog.getByText("102 saved plans loaded.", { exact: true }).scrollIntoViewIfNeeded();
+  await dashboard.screenshot({ path: `${evidence}catalog-pagination.png` });
+  const tailOpened = dashboard.waitForEvent("popup");
+  await tail.click();
+  const tailReader = await tailOpened;
+  await expect(tailReader.frameLocator("iframe").getByRole("heading", { name: "Catalog plan 99" })).toBeVisible();
+  await tailReader.close();
+  await dashboard.getByRole("button", { name: "Refresh managed plans" }).click();
+  await expect(catalog.getByRole("link")).toHaveCount(100);
+  await expect(more).toBeVisible();
 });

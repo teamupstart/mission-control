@@ -2,7 +2,7 @@ import { mkdirSync, renameSync, lstatSync, realpathSync, existsSync, rmSync, rea
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type PlanManifest, type SavePlanInput, type ManagedPlanRevision } from "@shared/managed-plans.ts";
+import { PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type PlanManifest, type SavePlanInput, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
 import { openDb } from "../db.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveRepoRoot } from "../repos.ts";
@@ -99,10 +99,21 @@ export async function planContext(authority: PlanAuthority) {
   if (problem) throw new PlanStoreError(problem);
   return { ...repository, repoSlot: authority.repoSlot, checkoutRoot: authority.checkout, sourceRoot: "docs/plans", policy: { storage: "repository" as const, commitPlanHtml: getSkillsConfig().commitPlanHtml } };
 }
-export async function listPlans(authority: PlanAuthority): Promise<ManagedPlanRevision[]> {
-  const { repoKey } = await planRepository(authority);
-  const rows = openDb().prepare("SELECT * FROM managed_plans WHERE repo_key = ? AND current_revision > 0 ORDER BY slug LIMIT 100").all(repoKey) as unknown as PlanRow[];
-  return rows.map((plan) => readPlanRevision(plan.id, plan.current_revision));
+export async function listPlans(authority: PlanAuthority | PlanAuthority[], cursor?: string): Promise<ManagedPlanCatalog> {
+  const authorities = Array.isArray(authority) ? authority : [authority];
+  const repoKeys = [...new Set((await Promise.all(authorities.map(planRepository))).map((repo) => repo.repoKey))];
+  authorities.forEach((current) => current.assertCurrent?.());
+  if (!repoKeys.length) return { plans: [], nextCursor: null };
+  const db = openDb();
+  const scope = `repo_key IN (${repoKeys.map(() => "?").join(",")}) AND current_revision > 0`;
+  // Slugs never change; the id orders equal slugs across attached repositories.
+  // A cursor is a bookmark, never a grant to read a repository no longer issued.
+  const after = cursor ? db.prepare(`SELECT slug, id FROM managed_plans WHERE ${scope} AND id = ?`).get(...repoKeys, cursor) as Pick<PlanRow, "slug" | "id"> | undefined : undefined;
+  if (cursor && !after) throw new PlanStoreError("Plan catalog cursor is unavailable in the issued repositories; refresh the catalog", 400);
+  const rows = db.prepare(`SELECT * FROM managed_plans WHERE ${scope}${after ? " AND (slug > ? OR (slug = ? AND id > ?))" : ""} ORDER BY slug, id LIMIT 101`)
+    .all(...repoKeys, ...(after ? [after.slug, after.slug, after.id] : [])) as unknown as PlanRow[];
+  const page = rows.slice(0, 100);
+  return { plans: page.map((plan) => readPlanRevision(plan.id, plan.current_revision)), nextCursor: rows.length > 100 ? page.at(-1)!.id : null };
 }
 export async function authorizePlan(authority: PlanAuthority, id: string): Promise<void> {
   if (row(id).repo_key !== (await planRepository(authority)).repoKey) throw new PlanStoreError("Plan belongs to a different repository", 403);

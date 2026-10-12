@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { managedPlanPreview, type ManagedPlanRevision } from "@shared/managed-plans.ts";
+import { managedPlanPreview, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
 import { HTML_PREVIEW_LINK_MESSAGE, HTML_PREVIEW_SANDBOX, htmlPreviewSource, inlinePreviewStyles } from "../lib/htmlPreview.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -75,17 +75,28 @@ export function ManagedPlanLinks({ sessionId }: { sessionId: string }): React.JS
   const [plans, setPlans] = useState<ManagedPlanRevision[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/plans`, { signal: controller.signal }).then(async (response) => {
+    setLoading(true); setError(null);
+    if (!cursor) { setPlans([]); setNextCursor(null); }
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/plans${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { signal: controller.signal }).then(async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
-      setPlans(body); setError(null);
-    }).catch((e: Error) => { if (!controller.signal.aborted) setError(e.message); });
+      if (controller.signal.aborted) return;
+      const page = body as ManagedPlanCatalog;
+      setPlans((previous) => cursor ? [...new Map([...previous, ...page.plans].map((plan) => [plan.manifest.planId, plan])).values()] : page.plans);
+      setNextCursor(page.nextCursor);
+    }).catch((e: Error) => { if (!controller.signal.aborted) setError(e.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [sessionId, refresh]);
-  return <section aria-label="Managed plans">
-    <Tooltip label="Load the latest saved plan revisions for this session's repositories"><button className="btn" onClick={() => setRefresh((n) => n + 1)}>Refresh managed plans</button></Tooltip>
+  }, [sessionId, refresh, cursor]);
+  return <section aria-label="Managed plans" aria-busy={loading}>
+    <Tooltip label="Load the latest saved plan revisions for this session's repositories"><button className="btn" onClick={() => { setCursor(null); setRefresh((n) => n + 1); }}>Refresh managed plans</button></Tooltip>
+    <p role="status">{loading ? "Loading saved plans…" : `${plans.length} saved plans loaded.${nextCursor ? " More available." : ""}`}</p>
+    {nextCursor && <Tooltip label="Load the next page of saved plans"><button className="btn" disabled={loading} onClick={() => { setCursor(nextCursor); setRefresh((n) => n + 1); }}>Load more managed plans</button></Tooltip>}
     {error && <p role="alert">{error}</p>}
     {plans.map((plan) => <p key={plan.manifest.planId}><Tooltip label="Open this exact saved plan revision in a new tab"><a href={plan.preview} target="_blank" rel="noreferrer">{plan.manifest.slug} · revision {plan.manifest.revision}</a></Tooltip></p>)}
   </section>;

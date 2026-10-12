@@ -16,6 +16,7 @@ requirements against the repository before deciding the phase boundaries.
 ## Managed repository artifacts
 
 Call `get_plan_context` before authoring and `read_plan` for an existing managed revision.
+For catalog discovery, follow `nextCursor` as `cursor` with the same repository slot until null.
 Follow the single `html-plans` procedure: submit complete bounded bundles through `save_plan`,
 including `plan.md`, `plan.html`, `phased-plan.md`, `phased-plan.html`, and each phase's Markdown
 and HTML rendering. Reuse the plan id with its expected revision. Open the returned preview.

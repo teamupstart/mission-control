@@ -8,6 +8,7 @@ export const ManagedPlanPolicySchema = z.object({
 export const PLAN_CONTENT_LIMITS = { files: 64, fileBytes: 1024 * 1024, totalBytes: 8 * 1024 * 1024 } as const;
 export const PlanFileNameSchema = z.string().max(120).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.(md|html|txt|css|svg)$/);
 export const PlanSlotSchema = z.string().regex(/^repo-\d{2,}$/).default("repo-01");
+export const PlanCatalogCursorSchema = z.string().uuid();
 export const PlanContextInputSchema = z.object({ repoSlot: PlanSlotSchema }).strict();
 export const SavePlanInputSchema = z.object({
   repoSlot: PlanSlotSchema,
@@ -22,7 +23,8 @@ export const ReadPlanInputSchema = z.object({
   planId: z.string().uuid().optional(),
   revision: z.number().int().positive().optional(),
   file: PlanFileNameSchema.optional(),
-}).strict().refine((v) => (!v.planId && !v.revision && !v.file) || (v.planId && v.revision), "Read an exact plan and revision, or omit both for the catalog");
+  cursor: PlanCatalogCursorSchema.optional(),
+}).strict().refine((v) => (!v.planId && !v.revision && !v.file) || (v.planId && v.revision && !v.cursor), "Read an exact plan and revision, or omit both for the catalog; cursors are for catalog pages only");
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const PlanManifestSchema = z.object({
   version: z.literal(1),
@@ -48,5 +50,9 @@ export interface ManagedPlanRevision {
   manifest: PlanManifest;
   preview: string;
   requiredPaths: string[];
+}
+export interface ManagedPlanCatalog {
+  plans: ManagedPlanRevision[];
+  nextCursor: string | null;
 }
 export const managedPlanPreview = (id: string, revision: number): string => `/?plan=${id}&revision=${revision}`;

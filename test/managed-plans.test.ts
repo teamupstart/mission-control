@@ -101,7 +101,7 @@ test("linked worktrees share identity, same-name clones are isolated, retained p
   await assert.rejects(authorizePlan(b, saved.manifest.planId), /different repository/);
   git(a.checkout, "worktree", "remove", "--force", checkout);
   assert.match(readPlanFile(saved.manifest.planId, 1, "plan.html").toString(), /A saved plan/);
-  assert.equal((await listPlans(a)).length, 1);
+  assert.equal((await listPlans(a)).plans.length, 1);
   const scope = managedPlanCaptureScopes(a.taskId, a.episodeId)[0]!;
   const jobs = new ArchiveCaptureStore();
   const job = jobs.reserve({ kind: "plan", taskId: a.taskId, sessionId: a.sessionId, episodeId: a.episodeId, producerId: randomUUID(), title: "Durable", question: null, origin: { agent: "codex", model: null, source: null }, repos: [], scope });
@@ -206,7 +206,7 @@ test("ignored Markdown outputs and expired attribution cannot produce a ready sa
   assert.equal(existsSync(join(a.checkout, "docs/plans/ignored")), false);
   const revoked = { ...a, assertCurrent: () => { throw new Error("registration expired"); } };
   await assert.rejects(savePlan(revoked, input("expired")), /registration expired/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
 });
 
 test("a live registry rebind leaves the save incomplete through restart until an authorized retry", async () => {
@@ -230,14 +230,14 @@ test("a live registry rebind leaves the save incomplete through restart until an
     .get(request.requestId) as { plan_id: string; revision: number; status: string };
   assert.equal(revision.status, "staging", "the save reached retained staging before attribution was revoked");
   assert.throws(() => readPlanRevision(revision.plan_id, revision.revision), /incomplete/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   assert.equal(existsSync(join(a.checkout, "docs/plans/revoked-writer")), false);
   closeDb();
   assert.deepEqual(pendingPlanWriteWarnings(), [
     `${revision.plan_id}/${revision.revision}: Plan revision is incomplete; retry its exact save request from a currently registered session`,
   ]);
   assert.throws(() => readPlanRevision(revision.plan_id, revision.revision), /incomplete/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   assert.equal(existsSync(join(a.checkout, "docs/plans/revoked-writer")), false);
   await assert.rejects(savePlan(authority, request), /Plan writer registration changed/);
   const restartedRegistry = new Registry();
@@ -270,7 +270,7 @@ test("an interrupted save cannot replay in a checkout no longer issued to its wr
   registry.applyDiscovery([{ ...discovered, cwd: linked, gitRoot: linked }]);
   assert.equal(currentAuthority().checkout, linked);
   await assert.rejects(savePlan(currentAuthority(), request), /checkout or repository slot.*writer/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   for (const checkout of [a.checkout, linked]) assert.equal(existsSync(join(checkout, "docs/plans/moved-writer")), false);
   registry.applyDiscovery([discovered]);
   // Even the same repository and checkout do not authorize another issued slot.
@@ -324,7 +324,7 @@ test("a save stays incomplete if an earlier checkout output changes during later
     changed = true;
   } }), /no longer matches.*incomplete/);
   assert.equal(changed, true);
-  assert.equal((await listPlans(a))[0]!.manifest.revision, 1);
+  assert.equal((await listPlans(a)).plans[0]!.manifest.revision, 1);
   assert.throws(() => readPlanRevision(first.manifest.planId, 2), /incomplete/);
   assert.equal(readFileSync(phasePath, "utf8"), "operator changed the earlier output");
   await assert.rejects(savePlan(a, update), /Operator edit/);
@@ -399,10 +399,10 @@ test("restart holds interrupted writes for an explicit retry that refuses confli
   const a = repo(), request = input("interrupted");
   await assert.rejects(savePlan(a, request, { afterRevisionStaged: async () => { throw new Error("power loss"); } }), /power loss/);
   assert.throws(() => managedPlanCaptureScopes(a.taskId, a.episodeId), /incomplete/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   closeDb();
   assert.match(pendingPlanWriteWarnings().join(" "), /retry its exact save request/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   assert.equal(existsSync(join(a.checkout, "docs/plans/interrupted")), false);
   const recovered = await savePlan(a, request);
   assert.equal(recovered.manifest.revision, 1);
@@ -426,7 +426,7 @@ async function checkBundleLimit(files: SavePlanInput["files"], rejection?: RegEx
   if (rejection) {
     await assert.rejects(savePlan(a, request), rejection);
     assert.equal(openDb().prepare("SELECT * FROM managed_plan_revisions WHERE request_id = ?").get(request.requestId), undefined, "rejected input creates no revision, ready or otherwise");
-    assert.deepEqual(await listPlans(a), []);
+    assert.deepEqual(await listPlans(a), { plans: [], nextCursor: null });
     assert.equal(existsSync(join(a.checkout, "docs")), false, "rejected input writes no checkout output");
     return;
   }
@@ -510,7 +510,7 @@ test("a failed retained stage retries from its journal; partially applied checko
   mkdirSync(join(context.localStore, ".."), { recursive: true });
   symlinkSync(outside, context.localStore);
   await assert.rejects(savePlan(a, request), /symbolic link/);
-  assert.equal((await listPlans(a)).length, 0);
+  assert.equal((await listPlans(a)).plans.length, 0);
   rmSync(context.localStore);
   const first = await savePlan(a, request);
   const next = { ...input("stage-retry", "Updated atomically"), planId: first.manifest.planId, expectedRevision: 1 };

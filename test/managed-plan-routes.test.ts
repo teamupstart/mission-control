@@ -147,13 +147,13 @@ test("registered sessions save in issued repository slots and read only their ex
     const discover = (query = "") => app.request(`/api/sessions/${id}/plans${query}`, { headers: { host: "127.0.0.1:7317" } });
     const attached = await discover("?repoSlot=repo-02");
     assert.equal(attached.status, 200, await attached.clone().text());
-    assert.deepEqual(await attached.json(), [saved], "Files offers the attached slot's exact saved revision");
-    assert.deepEqual(await (await discover("?repoSlot=repo-01")).json(), []);
+    assert.deepEqual(await attached.json(), { plans: [saved], nextCursor: null }, "Files offers the attached slot's exact saved revision");
+    assert.deepEqual(await (await discover("?repoSlot=repo-01")).json(), { plans: [], nextCursor: null });
     assert.equal((await discover("?repoSlot=repo-99")).status, 403);
     const allSlots = await discover();
     assert.equal(allSlots.status, 200, await allSlots.clone().text());
-    assert.deepEqual(await allSlots.json(), [saved], "the unfiltered Files request includes attached repositories");
-    assert.deepEqual(await (await app.request("/api/sessions/plan-owner-2/plans", { headers: { host: "127.0.0.1:7317" } })).json(), []);
+    assert.deepEqual(await allSlots.json(), { plans: [saved], nextCursor: null }, "the unfiltered Files request includes attached repositories");
+    assert.deepEqual(await (await app.request("/api/sessions/plan-owner-2/plans", { headers: { host: "127.0.0.1:7317" } })).json(), { plans: [], nextCursor: null });
     const read = { planId: saved.manifest.planId, revision: 1, file: "plan.md" };
     assert.equal((await request("read", { input: { ...read, repoSlot: "repo-01" } })).status, 403);
     assert.equal((await request("read", { input: { ...read, repoSlot: "repo-02" } })).status, 200);
@@ -164,5 +164,37 @@ test("registered sessions save in issued repository slots and read only their ex
     assert.equal(attachment.headers.get("Content-Disposition"), "attachment");
     assert.match(attachment.headers.get("Content-Security-Policy")!, /sandbox/);
     assert.equal(await attachment.text(), "<h1>Attached</h1>");
+    const expected = [saved];
+    for (let i = 0; i < 100; i++) {
+      const response = await request("save", { ...payload, requestId: randomUUID(), slug: `page-${String(i).padStart(3, "0")}` });
+      assert.equal(response.status, 200, await response.clone().text());
+      expected.push(await response.json());
+    }
+    // Equal slugs in different repositories straddle the page boundary.
+    const primaryResponse = await request("save", { ...payload, repoSlot: "repo-01", requestId: randomUUID(), slug: "page-098" });
+    assert.equal(primaryResponse.status, 200, await primaryResponse.clone().text());
+    const primary = await primaryResponse.json();
+    expected.push(primary);
+    const firstPage = await (await discover()).json();
+    assert.equal(firstPage.plans.length, 100);
+    assert.equal(firstPage.nextCursor, firstPage.plans.at(-1).manifest.planId);
+    const secondPage = await (await discover(`?cursor=${firstPage.nextCursor}`)).json();
+    assert.equal(secondPage.plans.length, 2);
+    assert.equal(secondPage.nextCursor, null);
+    assert.deepEqual([...firstPage.plans, ...secondPage.plans].map((plan) => plan.manifest.planId).sort(), expected.map((plan) => plan.manifest.planId).sort());
+    const mcpPage = await (await request("read", { input: { repoSlot: "repo-02" } })).json();
+    assert.equal(mcpPage.plans.length, 100);
+    const mcpLast = await (await request("read", { input: { repoSlot: "repo-02", cursor: mcpPage.nextCursor } })).json();
+    assert.equal(mcpLast.plans.length, 1);
+    assert.equal(mcpLast.plans[0].manifest.slug, "page-099");
+    assert.equal(mcpLast.nextCursor, null);
+    const scopedPage = await (await discover("?repoSlot=repo-02")).json();
+    assert.deepEqual(scopedPage, mcpPage);
+    assert.deepEqual(await (await discover(`?repoSlot=repo-02&cursor=${scopedPage.nextCursor}`)).json(), mcpLast);
+    assert.equal((await discover("?cursor=invalid")).status, 400);
+    assert.equal((await discover(`?cursor=${randomUUID()}`)).status, 400);
+    assert.equal((await discover(`?repoSlot=repo-01&cursor=${saved.manifest.planId}`)).status, 400);
+    assert.equal((await request("read", { input: { repoSlot: "repo-02", cursor: primary.manifest.planId } })).status, 400);
+    assert.equal((await request("read", { input: { ...read, repoSlot: "repo-02", cursor: mcpPage.nextCursor } })).status, 400);
   } finally { await tasks.stop(); }
 });

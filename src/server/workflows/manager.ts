@@ -1,3 +1,5 @@
+import type { TaskManager } from "../tasks.ts";
+import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { RawWorkflowContext } from "./context.ts";
@@ -783,7 +785,13 @@ export class WorkflowManager {
     }
   }
 
+  private localPlans: LocalPlanPublication | null = null;
+  localPlanPublication(tasks: TaskManager): LocalPlanPublication {
+    return this.localPlans ??= new LocalPlanPublication(this.registry, this, tasks);
+  }
+
   async stop(): Promise<void> {
+    await this.localPlans?.stop();
     for (const cancel of this.transferWaiters) cancel();
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -6443,6 +6451,7 @@ export class WorkflowManager {
       // The row, not the caller's copy. A repair round is captured from a run object the
       // caller resolved some time ago, and the frozen intent is read here rather than passed
       // in so a resumed capture and a first one review against the same ask.
+      freezeLocalPlanSubmission(this.registry, this, binding, submission);
       const runRow = this.store.getRun(run.id) ?? run;
       /*
        * A run whose frozen basis cannot be read is refused, not quietly reverted.
@@ -6559,6 +6568,7 @@ export class WorkflowManager {
        * criteria exactly as freshly declared ones do.
        */
       await inheritSubmissionEvidence(this.store, submission);
+      verifyLocalPlanEvidence(this.store, submission.id);
       /*
        * Then freeze any claim whose links only became resolvable once that carry landed, and
        * record whatever is still unresolved.

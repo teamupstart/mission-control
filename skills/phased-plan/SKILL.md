@@ -13,27 +13,29 @@ Turn an approved plan into implementation units that separate agents can execute
 Treat the source plan and its recorded human selections as requirements, then verify those
 requirements against the repository before deciding the phase boundaries.
 
-## Managed repository artifacts
+## Managed plan artifacts
 
 Call `get_plan_context` before authoring and `read_plan` for an existing managed revision.
 For catalog discovery, follow `nextCursor` as `cursor` with the same repository slot until null.
 Follow the single `html-plans` procedure: submit complete bounded bundles through `save_plan`,
 including `plan.md`, `plan.html`, `phased-plan.md`, `phased-plan.html`, and each phase's Markdown
 and HTML rendering. Reuse the plan id with its expected revision. Open the returned preview.
-Markdown lands under `docs/plans/<name>/`; HTML is retained locally by default and enters Git
-only under the plan's pinned opt-in. Do not rewrite installed skills or copy excluded HTML
+Repository mode writes Markdown under `docs/plans/<name>/`; HTML enters Git only under the
+plan's pinned opt-in. Local mode retains every file under the returned repository-scoped store,
+with no Git outputs. Local mode overrides the HTML opt-in without changing its saved value. Do not rewrite installed skills or copy excluded HTML
 into committable paths. Unregistered sessions must report the managed-tool refusal.
 
 Only the returned `requiredPaths` belong in the publication checks below. Phase task pointers
 must name Markdown sources. Verify excluded HTML through `read_plan`; it need not resolve in
 the pushed commit. Preserve existing unmanaged tracked layouts when explicitly editing them.
-Saving does not approve or publish a plan. Keep the commit/push-before-scheduling contract and
-the planning-session merge prerequisite. Register current saved Markdown and applicable phase
+Saving does not approve or publish a plan. Repository and mixed code-and-plan work keep the
+commit/push-before-scheduling contract and the planning-session merge prerequisite. Local plan-only
+work instead uses the exact approval and artifact prerequisite below. Register current saved Markdown and applicable phase
 context through `submit_workflow_evidence` before workflow handoff.
 
 ## Establish the source of truth
 
-1. Resolve the source plan to an absolute Markdown path. Prefer the `plan.md` beside a supplied
+1. Resolve the source plan to an exact `read_plan` identity and Markdown filename, or an absolute repository Markdown path. Prefer the `plan.md` beside a supplied
    `plan.html`; the Markdown remains authoritative.
 2. Read the entire source plan, its submitted decision response, and every repository instruction
    file that governs the plan's scope. Incorporate resolved human choices as requirements, not open
@@ -181,6 +183,34 @@ plan without depending on undocumented cleanup.
 
 ## Schedule the implementation tasks
 
+Choose the publication branch from the saved bundle policy and task kind, never from a guessed
+filesystem path or the current global setting.
+
+### Local plan-only scheduling
+
+Save the complete source, index and all phases with their HTML renderings. Obtain explicit final
+approval using `request_plan_decisions({managedPlan: {repoSlot, planId, revision}, ...})`.
+Read that exact revision back: it must be approved, waiting for validation, or already published.
+Validation may still be pending when phases are created. Do not commit or push these artifacts.
+
+For each phase call `create_task` with `planInputs: [{repoKey, planId, revision, files:
+["plan.md", "phased-plan.md", "phase-1-example.md"]}]` and `planPrerequisites:
+[{repoKey, planId, revision}]`. Use the exact names and identities returned by the reader.
+Set `dependsOnCurrentSession: false`; use `dependsOnTaskIds` for direct implementation-phase
+merge dependencies. Attach every plan's owning repository to the receiving task. Keep the goal
+concise; the daemon supplies reader calls for the pinned Markdown, even across sandbox boundaries.
+
+A plan receipt releases only that exact artifact edge. It does not release a preceding phase's
+code merge edge. If this is mixed code-and-plan work, retain `dependsOnCurrentSession: true`
+instead of substituting an artifact edge, even for local plan bytes.
+
+Use the remaining task-intent, repository-scope and graph guidance below, but skip its
+repository-only commit/PR instructions. Report actual returned task ids and direct edges.
+Any missing capability, unavailable daemon or refusal stops dependent creation; preserve and
+report ids already created. Never retry through an older route that strips plan references.
+
+### Repository scheduling
+
 A task carries paths instead of content, so the paths must be real before the task exists. Create
 tasks only after all of the following hold:
 
@@ -221,7 +251,7 @@ promotes whatever detail happens to land at the edges into the requirement.
 Write the `intent` as a short brief - the goal, the pointers, the boundaries, the bar - and never as
 a copy of the phase document. Keep it well under 3000 characters.
 
-Pointers replace content only because a delivery chain makes them resolvable, and closing that chain
+For repository scheduling, pointers replace content only because a delivery chain makes them resolvable, and closing that chain
 is part of this skill's work, not an assumption it may make. The chain has three links: the artifacts
 are committed and pushed before any task is created, every task depends on this planning session, and
 that dependency releases the task only when this session's pull request merges the artifacts to the
@@ -229,7 +259,7 @@ default branch. The gate is what makes concision safe - an unmerged plan leaves 
 backlogged rather than dispatching an agent against paths that do not exist. Verify each link below;
 a broken one means the task must not be created yet.
 
-Schedule before the merge, not after it. Waiting for the merge to create the tasks would also work
+For repository scheduling, schedule before the merge, not after it. Waiting for the merge to create the tasks would also work
 and would even be simpler to verify, but it requires this planning session to still be alive at merge
 time. Scheduling first lets the tasks wait in the backlog and release themselves whenever the human
 merges, which is the behavior this skill is for.
@@ -309,7 +339,19 @@ created. Never fall back to the source repository, drop an attachment, or recrea
 speculatively, because a wrongly scoped or duplicate implementation task is worse than an incomplete
 graph.
 
-## Resolve who owns the planning pull request
+## Resolve local publication or repository PR ownership
+
+For local plan-only work, first refresh `get_plan_publication_context`. A compatible workflow
+owns validation: register the exact complete Markdown bundle through `submit_workflow_evidence`,
+report completion and yield. Automatic bindings start through Foreman; Manual bindings wait for
+submission. The daemon publishes only after the exact approved revision passes that binding's
+submission, then completes through normal task cleanup. No empty PR is required. Paused,
+failed, superseded or missing validation never becomes permission to publish unbound.
+With `owner: "skill"`, call `publish_plan({repoSlot, planId, revision})` after approval and
+scheduling and report its receipt. With `owner: "unavailable"` or a tool failure, stop and report
+the reason. Do not infer approval, drop dependencies or request a human workflow resubmission.
+
+The rest of this section applies to repository publication and mixed code-and-plan work.
 
 After scheduling, call Mission Control's `get_plan_publication_context` tool. It reads the
 calling session's current workflow binding, including a workflow attached after dispatch.
@@ -327,7 +369,7 @@ available, or a task's earlier selection. A workflow without Personas still owns
 - `owner: "unavailable"`, a failed call, or a missing tool: report the exact issue and stop before
   PR work. Do not treat an unknown binding as absent or read Mission Control's SQLite yourself.
 
-The commit-and-push requirement before scheduling applies to both owners. Keep every
+For repository publication, the commit-and-push requirement before scheduling applies to both owners. Keep every
 `dependsOnCurrentSession` edge: neither the planning handoff, workflow success, nor an open PR
 releases those phase tasks. Only the existing publication/merge condition does.
 

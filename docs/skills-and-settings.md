@@ -97,14 +97,17 @@ into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
 **Commit generated HTML plan files** defaults off, including when an older saved Skills
 record lacks the preference. It remains configurable with the master skills switch off.
-New managed plans use `get_plan_context`, `save_plan`, and `read_plan`: Markdown is written
+**Plan storage** defaults to Repository. Local keeps complete plans outside Git and disables
+that checkbox while preserving its value. Both preferences apply only to new plans; new plan
+tasks pin them before dispatch and select Local Plan Validation when appropriate.
+New managed plans use `get_plan_context`, `save_plan`, and `read_plan`: repository Markdown is written
 to the checkout, while complete revision snapshots and HTML previews stay beneath
 `$MISSION_HOME/plans/`. Opt-in adds HTML to the returned Git-required paths. Each plan pins
 its creation policy. Existing tracked plans and installed skill links are unchanged by a
 preference edit, and no reload generation advances. Settings snapshots retain the preference,
 not the local bundles. See [managed plans](managed-plans.md) for limits and recovery.
 
-Phased Plan commits and pushes its Markdown and policy-included HTML before scheduling.
+In repository mode, Phased Plan commits and pushes its Markdown and policy-included HTML before scheduling.
 Policy-excluded HTML is verified in the retained revision. It then reads
 `get_plan_publication_context`: a bound workflow owns the PR and the planning turn ends;
 without a binding, the skill opens and follows the PR itself. Manual bindings wait for manual
@@ -116,7 +119,7 @@ repository keeps the current-repository default. Work implemented only in reposi
 primary; when its plan files remain in source repository A, A is attached and marked context-only so
 the implementing agent can read the published paths without being asked to change A. An inseparable
 A+B phase becomes one multi-repo task with a deliberate primary and opens one pull request per
-repository it actually changes. Every phase still depends on the planning session, so the task
+repository it actually changes. Every repository-mode phase still depends on the planning session, so the task
 cannot launch until the merge publishes those plan paths. A selector or harness-capability refusal
 stops dependent task creation; the procedure reports the unscheduled phase and ids already created
 instead of falling back to A or dropping an attachment.
@@ -524,3 +527,11 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   it is storing. While the config is unreadable the footnote says so and stops naming
   repositories - it cannot see which - but it does not go silent, and it is never invented:
   a page that has never read a config claims nothing.
+
+Local plan-only scheduling saves and explicitly approves the complete immutable bundle, then
+creates phases with typed `planInputs` and exact `planPrerequisites`. Local Plan Validation or
+another review-only workflow validates the frozen approved text; explicit None uses
+`publish_plan`. Publication releases only the matching artifact edge. Code-phase and mixed-task
+merge edges stay blocked until their normal publication condition. Missing tools never permit
+fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
+home separately to retain plan contents and their daemon ledger.

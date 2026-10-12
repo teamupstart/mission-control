@@ -1355,7 +1355,7 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
 }
 
 test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", () => {
-  for (const builtin of BUILTIN_WORKFLOWS) {
+  for (const builtin of BUILTIN_WORKFLOWS.filter((workflow) => workflow.versions.length > 1)) {
     const previous = builtin.versions.at(-2)!;
     const current = builtin.versions.at(-1)!;
     assert.equal(current.version, previous.version + 1);
@@ -1377,4 +1377,16 @@ test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", ()
       assert.deepEqual({ ...graphNode.persona, model: old.persona.model }, old.persona);
     }
   }
+});
+
+
+test("Local Plan Validation is append-only review work with no PR action or completion gate", () => {
+  const local = BUILTIN_WORKFLOWS.find((workflow) => workflow.definition.id === "builtin-workflow:local-plan-validation")!;
+  assert.ok(local);
+  assert.equal(local.versions.length, 1);
+  const current = local.versions[0]!;
+  assert.equal(current.version, 1);
+  assert.equal(current.completionPolicy.kind, "none");
+  assert.equal(current.graph.nodes.some((node) => node.kind === "session_action"), false);
+  assert.equal(current.graph.nodes.filter((node) => node.kind === "persona").length, 4);
 });

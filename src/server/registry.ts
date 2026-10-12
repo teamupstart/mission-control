@@ -3871,6 +3871,7 @@ export class Registry extends EventEmitter {
     const episodeKeys = new Set<string>();
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
+        if (dependency.type === "plan") continue;
         if (dependency.satisfiedAt !== null) continue;
         if (dependency.type === "task") {
           if (dependency.episodeId === null) legacyTaskIds.add(dependency.taskId);
@@ -3918,6 +3919,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.satisfiedAt !== null ||
@@ -3953,6 +3955,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.taskId !== taskId ||
@@ -3992,6 +3995,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.satisfiedAt !== null ||
           dependency.sessionId !== previous.sessionId ||
@@ -4103,6 +4107,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.satisfiedAt !== null ||
@@ -4125,6 +4130,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "task" ||
           dependency.taskId !== taskId ||
@@ -4212,6 +4218,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (dependency.satisfiedAt !== null) return dependency;
         const matchesSession =
           dependency.type === "session" &&
@@ -5264,6 +5271,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
+        if (dependency.type === "plan") continue;
         if (dependency.satisfiedAt !== null) continue;
         if (dependency.type === "session") {
           if (dependency.prUrl) urls.add(dependency.prUrl);
@@ -5382,6 +5390,7 @@ export class Registry extends EventEmitter {
     }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
+        if (dependency.type === "plan") continue;
         if (dependency.satisfiedAt !== null) continue;
         if (dependency.type === "session") {
           if (
@@ -6486,6 +6495,7 @@ export class Registry extends EventEmitter {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.type === "plan") return dependency;
         if (
           dependency.type !== "session" ||
           dependency.sessionId !== session.id ||
@@ -6894,6 +6904,8 @@ export class Registry extends EventEmitter {
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
           workflowId: t.workflowId,
+          planPolicy: t.planPolicy,
+          planInputs: t.planInputs,
           status: t.status,
           outcome: t.outcome,
           outcomeUrl: t.outcomeUrl,

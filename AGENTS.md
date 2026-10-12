@@ -343,7 +343,10 @@ Treat these paths as controlled:
 - The worktree contains no unrelated edits.
 - Requested PR and CI work is complete before reporting completion - for every pull request the task opened, one per repository it changed.
 
-Plans belong in `docs/plans/<name>/plan.md`; a written plan is not an implementation.
+In repository storage mode, plan Markdown belongs at `docs/plans/<name>/plan.md`.
+In local mode, keep the complete plan bundle in Mission Control's repository-scoped local
+plan store, with no checkout files. Follow the [managed-plans guide](docs/managed-plans.md)
+for the pinned storage policy and managed tools. A written plan is not an implementation.
 
 Read `.agents/memory/MEMORY.md` (this repository's agent memory) before starting work, and
 any entry it links that bears on your task.

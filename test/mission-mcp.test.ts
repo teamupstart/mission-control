@@ -248,6 +248,9 @@ test("create_task publishes bounded repository selectors and never falls back to
   );
   assert.match(registration, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
   assert.match(registration, /targetRepository: repository/);
+  assert.match(registration, /pinnedPlans \? "\/mcp\/v3\/tasks"/);
+  assert.match(registration, /planInputs: planInputs \?\? \[\]/);
+  assert.match(registration, /planPrerequisites: planPrerequisites \?\? \[\]/);
   assert.match(registration, /res\.status === 404/);
   assert.match(registration, /no task was created/);
   assert.doesNotMatch(

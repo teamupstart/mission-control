@@ -170,14 +170,27 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         </label>
       </Tooltip>
 
+      <div className="kb-row" data-anchor="skills/plan-storage">
+        <div className="kb-row-text">
+          <label className="kb-row-label" htmlFor="plan-storage">Plan storage</label>
+          <span className="kb-row-desc">New plans use this destination. Local plans stay on this machine outside Git. Existing plans keep their saved policy.</span>
+        </div>
+        <Tooltip label="Choose where new managed plans are kept">
+          <select id="plan-storage" value={view?.planStorage ?? "repository"} disabled={!view}
+            onChange={(event) => void update({ planStorage: event.target.value as "repository" | "local" })}>
+            <option value="repository">Repository</option>
+            <option value="local">Local plan store</option>
+          </select>
+        </Tooltip>
+      </div>
       <div className="kb-row" data-anchor="skills/commit-plan-html">
         <div className="kb-row-text">
           <label className="kb-row-label" htmlFor="commit-plan-html">Commit generated HTML plan files</label>
-          <span className="kb-row-desc">New managed plans commit Markdown by default. HTML is still generated and retained locally for review. Existing plans keep their policy.</span>
+          <span className="kb-row-desc">{view?.planStorage === "local" ? "Local mode keeps the complete bundle outside Git. Your HTML preference is saved for when you return to Repository." : "New managed plans commit Markdown by default. HTML is still generated and retained locally for review. Existing plans keep their policy."}</span>
         </div>
         <Tooltip label="Include rendered HTML in Git for new managed plans; existing plans keep their saved policy">
           <input id="commit-plan-html" type="checkbox" checked={view?.commitPlanHtml ?? false}
-            disabled={!view} onChange={(event) => void update({ commitPlanHtml: event.target.checked })} />
+            disabled={!view || view.planStorage === "local"} onChange={(event) => void update({ commitPlanHtml: event.target.checked })} />
         </Tooltip>
       </div>
 

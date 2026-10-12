@@ -1,3 +1,7 @@
+import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
+import { validatePlanInputs } from "./plans/inputs.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
+import { McpCreateTaskV3Schema, type McpCreateTaskV3 } from "@shared/protocol.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
@@ -575,7 +579,6 @@ import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import {
   getWorkflowPolicy,
-  resolveTaskWorkflowId,
   setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
@@ -1914,6 +1917,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const prepareResume = (session: Session) => {
@@ -4618,20 +4622,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   );
 
   // --- MCP review channel (token-guarded) ---
-  app.post("/mcp/reviews", async (c) => {
+  for (const reviewPath of ["/mcp/reviews", "/mcp/v2/reviews"]) app.post(reviewPath, async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
     const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
-    const review = reviews.create(session.id, kind, title, body, decisions ?? null);
-    return c.json({ id: review.id, sessionId: session.id });
+    try {
+      const target = parsed.data.managedPlan;
+      if (target) {
+        if (reviewPath !== "/mcp/v2/reviews" || kind !== "plan-decisions") return c.json({ error: "Managed final approval requires the versioned plan-decisions route" }, 400);
+        const manager = workflowManager();
+        if (!manager) return c.json({ error: "Workflow authority unavailable" }, 503);
+        const authority = planAuthority(registry, session, target.repoSlot);
+        await authorizePlan(authority, target.planId);
+        const saved = readPlanRevision(target.planId, target.revision);
+        const input = { planId: target.planId, revision: target.revision, repoKey: saved.manifest.repoKey };
+        validatePlanReview(authority, input, manager);
+        const review = reviews.create(session.id, kind, title,
+          `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`,
+          [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision]);
+        bindPlanReview(authority, input, review.id, manager);
+        return c.json({ id: review.id, sessionId: session.id });
+      }
+      const review = reviews.create(session.id, kind, title, body, decisions ?? null);
+      return c.json({ id: review.id, sessionId: session.id });
+    } catch (error) { return planFailure(c, error); }
   });
 
   async function createMcpTask(
     c: Context,
-    data: McpCreateTaskV2,
+    data: McpCreateTaskV2 | McpCreateTaskV3,
     allowShortNames: boolean,
   ) {
     const {
@@ -4654,10 +4676,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
 
+    const planInputs = "planInputs" in data ? data.planInputs : [];
+    const planPrerequisites = "planPrerequisites" in data ? data.planPrerequisites : [];
+    if (planInputs.length || planPrerequisites.length) {
+      const caller = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!caller) return c.json({ error: "Pinned plan inputs require a registered calling session" }, 403);
+      try {
+        const authorities = sessionPlanAuthorities(registry, caller);
+        for (const input of [...planInputs, ...planPrerequisites]) {
+          const grants = await Promise.allSettled(authorities.map((authority) => authorizePlan(authority, input.planId)));
+          if (!grants.some((result) => result.status === "fulfilled")) throw new PlanStoreError("Pinned plan is outside the caller's issued repositories", 403);
+        }
+        validatePlanInputs(planInputs, [prepared.repoRoot, ...prepared.extraRepoRoots]);
+        for (const input of planPrerequisites) {
+          const readiness = localPlans?.readiness(input);
+          if (!readiness || !["approved", "waiting-workflow", "published"].includes(readiness.state)) throw new PlanStoreError(readiness?.reason ?? "Local plan publication authority unavailable");
+          if (!planInputs.some((ref) => ref.planId === input.planId && ref.revision === input.revision && ref.repoKey === input.repoKey)) throw new PlanStoreError("A plan prerequisite must also be an exact Markdown input");
+        }
+        for (const input of planInputs) {
+          const saved = readPlanRevision(input.planId, input.revision);
+          const localEdge = planPrerequisites.some((p) => p.planId === input.planId && p.revision === input.revision && p.repoKey === input.repoKey);
+          if (saved.manifest.policy.storage === "repository" && localEdge) throw new PlanStoreError("Repository plans cannot use a local artifact prerequisite");
+        }
+      } catch (error) { return planFailure(c, error); }
+    }
     const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
       type: "task",
       taskId,
     }));
+    dependencies.push(...planPrerequisites.map((input) => ({ ...input, type: "plan" as const })));
     if (dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(env, sessionId, cwd);
       if (!session) return c.json({ error: "no matching active session" }, 404);
@@ -4675,11 +4722,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         // cannot observe different ship-kind defaults.
         agent: prepared.agent,
         backlog: true,
-        dependencies,
+        dependencies, planInputs,
       });
       return c.json(task);
     } catch (error) {
-      if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       throw error;
     }
   }
@@ -4700,6 +4747,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/mcp/v2/tasks", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpCreateTaskV2Schema);
+    if (!parsed.ok) return parsed.res;
+    return createMcpTask(c, parsed.data, true);
+  });
+
+  app.post("/mcp/v3/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskV3Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true);
   });
@@ -4895,8 +4949,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
     if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
     const { env: _env, sessionId: _sessionId, cwd: _cwd, ...input } = parsed.data;
-    try { return c.json(await savePlan(planAuthority(registry, session, input.repoSlot), input)); }
+    try {
+      const authority = planAuthority(registry, session, input.repoSlot);
+      const context = await planContext(authority);
+      const task = registry.taskForSession(session.id, session.cwd);
+      if (context.policy.storage === "local" && task?.kind === "plan") {
+        const manager = workflowManager();
+        if (!manager) throw new PlanStoreError("Workflow authority unavailable");
+        localPlanAuthorityContext(manager, session.id);
+      }
+      return c.json(await savePlan(authority, input));
+    }
     catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/publish", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanReviewInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session || !localPlans) return c.json({ error: "Registered plan publication authority unavailable" }, 403);
+    try {
+      const authority = planAuthority(registry, session, parsed.data.repoSlot);
+      await authorizePlan(authority, parsed.data.planId);
+      const { manifest } = readPlanRevision(parsed.data.planId, parsed.data.revision);
+      const receipt = await localPlans.publish(authority, { repoKey: manifest.repoKey, planId: manifest.planId, revision: manifest.revision });
+      localPlans.reconcile();
+      return c.json(receipt);
+    } catch (error) { return planFailure(c, error); }
   });
   app.post("/mcp/plans/read", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
@@ -4909,7 +4988,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const authority = planAuthority(registry, session, input.repoSlot);
       if (!input.planId) return c.json(await listPlans(authority, input.cursor));
       await authorizePlan(authority, input.planId);
-      return c.json(input.file ? { content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") } : readPlanRevision(input.planId, input.revision!));
+      if (input.file) return c.json({ content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") });
+      const saved = readPlanRevision(input.planId, input.revision!);
+      return c.json({ ...saved, ...(saved.manifest.policy.storage === "local" && localPlans ? { readiness: localPlans.readiness(saved.manifest) } : {}) });
     } catch (error) { return planFailure(c, error); }
   });
   app.get("/api/sessions/:id/plans", async (c) => {
@@ -4925,7 +5006,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     catch (error) { return planFailure(c, error); }
   });
   app.get("/api/plans/:id/:revision", (c) => {
-    try { return c.json(readPlanRevision(c.req.param("id"), Number(c.req.param("revision")))); }
+    try {
+      const saved = readPlanRevision(c.req.param("id"), Number(c.req.param("revision")));
+      return c.json({ ...saved, ...(saved.manifest.policy.storage === "local" && localPlans ? { readiness: localPlans.readiness(saved.manifest) } : {}) });
+    }
     catch (error) { return planFailure(c, error); }
   });
   app.get("/api/plans/:id/:revision/files/:file", (c) => {
@@ -6624,6 +6708,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return {
       enabled: cfg.enabled,
       commitPlanHtml: cfg.commitPlanHtml,
+      planStorage: cfg.planStorage,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -7731,7 +7816,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId, parsed.data.kind);
     const prepared = await prepareTaskRepositories({
       primary: parsed.data.repoRoot,
       extras: parsed.data.extraRepoRoots,
@@ -7741,6 +7825,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
     const { repoRoot, extraRepoRoots, agent } = prepared;
+    let creationPolicy;
+    try {
+      creationPolicy = tasks.prepareCreationPolicy(parsed.data);
+    } catch (error) {
+      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
+    const { workflowId } = creationPolicy;
     // Resolved HERE rather than left to `TaskManager.create`, because the checks below
     // - the multi-repo capability, the Workflow dispatch block, and the plan-skill block -
     // are all questions about the harness this task will actually get, and an omitted agent
@@ -7770,9 +7862,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
         undefined,
         MANUAL_DISPATCH_TASK_CREATE,
+        creationPolicy,
       );
     } catch (error) {
-      if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
       if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);

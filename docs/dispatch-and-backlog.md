@@ -303,11 +303,17 @@ request is expected, and the conversation is not archived.
 
 **plan** changes what the agent is told, the way scout does, and in the opposite direction. A
 plan task's intent arrives exactly as you wrote it, followed by a contract that hands the work
-to the [HTML Plans skill](skills-and-settings.md): write the plan at `docs/plans/<name>/plan.md`
-with a rendered `plan.html` beside it, ask for the review - and for every open choice in it -
-through `request_plan_decisions` rather than in prose, and end that review with the phased
-implementation follow-up. Choose it and the phases are written beside the plan and scheduled as
-dependency-linked backlog tasks that release when the plan's pull request merges.
+to the [HTML Plans skill](skills-and-settings.md). In repository mode, save Markdown at
+`docs/plans/<name>/plan.md` and generate `plan.html` for review; HTML enters the checkout only
+when the plan's pinned policy opts into HTML publication. In local mode, save the complete
+Markdown and HTML bundle in Mission Control's repository-scoped local plan store, with no
+checkout files. See [managed plans](managed-plans.md#tools-and-storage) for the local path
+and managed tools.
+
+In either mode, ask for the review - and for every open choice in it - through
+`request_plan_decisions` rather than in prose, and end that review with the phased
+implementation follow-up. Choose it and the phases are added to the same bundle and scheduled
+as dependency-linked backlog tasks gated by the saved plan's publication policy.
 
 The contract **points at** that skill rather than restating it, which is the one place plan
 differs from scout in kind and not just in wording. A scout's contract repeats its skill,
@@ -318,7 +324,7 @@ toggle and where to find it, rather than launching an agent that would improvise
 asked for. Backlogging a plan task is always allowed - the check is asked again at the moment
 it launches.
 
-A plan with a bound workflow finishes its approved artifacts and requested scheduling, then
+A repository plan with a bound workflow finishes its approved artifacts and requested scheduling, then
 ends its planning turn before creating a PR. Foreman judges that planning boundary and starts
 the automatic workflow; its PR action owns publication. With no workflow bound, Phased Plan
 creates the PR directly. The skill refreshes ownership with `get_plan_publication_context`;
@@ -1554,3 +1560,18 @@ neither task kind nor completion state. Scout completion checks at least one com
 and every explicit submission in the episode. Other task kinds keep their completion rules,
 while checkout cleanup preserves their explicitly submitted reports. The session’s Scouts
 tab and the archive reader’s source-session filter show the related reports.
+
+### Local plan inputs and publication
+
+All managed task launches and live assignments identify both repository `docs/plans/` and each
+attached repository's local plan store. Structured `planInputs` pin repository key, plan UUID,
+revision and Markdown filenames, independently of the concise human objective. Backlog edits,
+restart and retries retain these inputs. The daemon checks scope, publication and exact bytes
+before checkout changes and again before prompt delivery; missing or corrupt input is a blocker.
+
+A local plan-only task uses final bundle approval and applicable review-only workflow validation,
+then publishes an exact artifact receipt without a PR. Its phases carry a distinct plan
+publication prerequisite plus direct implementation task merge dependencies. Artifact publication
+never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
+using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
+the versioned tool contract, validation compatibility, retention and recovery.

@@ -138,6 +138,7 @@ const worktreesFields = {
 
 const skillsFields = {
   commitPlanHtml: "setting",
+  planStorage: "setting",
   enabled: "setting",
   defaultSkillEnabled: "setting",
   skills: "setting",

@@ -27,7 +27,7 @@ the interactive path below instead of asking in prose.
    `read_plan` to discover an existing managed plan and read its exact revision. Catalog reads
    return `plans` and `nextCursor`; pass that cursor with the same repository slot until it is null.
    If registration
-   or the managed tools are unavailable, report the refusal; do not silently write HTML to Git.
+   or the managed tools are unavailable, report the refusal; do not fall back to writing plans into Git.
 2. Author `plan.md` and a self-contained static `plan.html` rendering in memory. Markdown is
    authoritative. Inline CSS, SVG, and data images; no scripts or external requests. Keep
    headings, tables, and diagrams consistent, support light/dark via `prefers-color-scheme`
@@ -35,8 +35,10 @@ the interactive path below instead of asking in prose.
 3. Call `save_plan` with `repoSlot`, a new UUID `requestId`, a kebab-case `slug`,
    `expectedRevision: 0`, and `files: [{name, content}, ...]`. Each Markdown source needs its
    same-name HTML rendering, including the phased index and phase files. Use flat filenames.
-   The daemon writes `docs/plans/<name>/plan.md`; `docs/plans/<name>/plan.html` is eligible
-   only when the pinned policy includes it. Other review companions remain local.
+   Follow the returned storage policy. Repository mode writes `docs/plans/<name>/plan.md` and other Markdown sources
+   and includes `docs/plans/<name>/plan.html` only under its saved opt-in. Local mode retains the complete bundle beneath
+   the returned repository-scoped store and returns no `requiredPaths`, even if `commitPlanHtml`
+   is true. The saved checkbox value remains available for future repository plans.
 4. For revisions, pass the returned `planId` and `expectedRevision`, all bundle files, and a new
    request UUID. Retry the identical request UUID after an interrupted save. Conflicts require
    reconciling operator edits, never forcing an overwrite. A plan keeps its creation policy.
@@ -44,13 +46,25 @@ the interactive path below instead of asking in prose.
    and its Markdown source. Use `read_plan` for retained text. Excluded HTML remains beneath
    the configured Mission state home, normally `~/.mission-control/plans/`, even after checkout
    cleanup. Do not copy excluded HTML into a normal checkout path or stage it manually.
-6. Save is neither approval nor publication. Commit and verify only returned `requiredPaths`
+6. For final local approval, call `request_plan_decisions` with `managedPlan: {repoSlot,
+   planId, revision}` for the complete final bundle. The daemon adds its explicit final-approval
+   decision and exact preview. Dismissal and choices from an earlier revision are not approval.
+   If phasing or repairs change any file, save the complete new revision and obtain approval again.
+   Save is neither approval nor publication. Commit and verify only returned `requiredPaths`
    when the task's completion handoff permits it. Cite repository Markdown in downstream tasks;
    repository publication still requires the planning PR's merge. Legacy unmanaged tracked
    plans keep their existing layout; edit them explicitly and do not migrate or untrack HTML.
-7. Before workflow handoff, register a gitignored UTF-8 evidence bundle with
+7. Local plan-only tasks use Local Plan Validation, another review-only workflow, or explicit
+   None. PR actions and Inspector completion gates are incompatible. Call
+   `get_plan_publication_context`: with a workflow, register evidence and yield for the selected
+   automatic/manual validation handoff; without one, call `publish_plan` after approval and any
+   requested scheduling. Read the exact revision's `readiness` through `read_plan`. A saved draft
+   or approval alone never releases tasks. Mixed code-and-plan work keeps its normal merge edge.
+8. Before workflow handoff, register a gitignored UTF-8 evidence bundle with
    `submit_workflow_evidence`: the current root Markdown, phase context, decisions, and exact
-   revision identity. A local preview URL alone is not evidence that a Persona can inspect.
+   revision identity. Include every Markdown filename and its exact full saved content, without
+   truncation. A local preview URL alone is not evidence that a Persona can inspect. Tool-less
+   Personas receive the frozen text; incomplete text refuses local workflow publication.
 
 ## Always: offer a phased implementation follow-up
 

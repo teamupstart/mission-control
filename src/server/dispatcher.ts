@@ -1,3 +1,6 @@
+import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
+import { reserveTaskPlans } from "./plans/store.ts";
+import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
@@ -376,6 +379,10 @@ export class Dispatcher {
     });
 
     try {
+      const inputProblem = taskPlanInputProblem(task) ?? (task.kind === "plan" && task.planPolicy?.storage === "local" ? localWorkflowProblem(task.workflowId) : null);
+      if (inputProblem) throw new Error(inputProblem);
+      // Resolve and reserve before provisioning or binding any publication workflow.
+      reserveTaskPlans(task);
       if (task.kind === "pipeline") {
         await this.dispatchPipeline(taskId, task);
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
@@ -604,10 +611,14 @@ export class Dispatcher {
       // something the operator only said once. `standingInstructionsChannel` is the single
       // reading of which case this is, via the mechanism the composer already recorded.
       const standingPrefix = standing.mechanism === "prompt-prefix" ? standing.text : "";
+      const planDiscovery = await taskPlanDiscovery(provisioned);
+      const inputProblemAtDelivery = taskPlanInputProblem(provisioned);
+      if (inputProblemAtDelivery) throw new Error(inputProblemAtDelivery);
       const composeTurnOne = (standingBlock: string) =>
         withTaskKindContract(provisioned, intentWithRepoManifest(provisioned, standingBlock), {
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
+          planDiscovery,
         });
       const intent = composeTurnOne(standingPrefix);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
@@ -942,7 +953,9 @@ export class Dispatcher {
           task.intent,
         );
         try {
-          await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented);
+          const problem = taskPlanInputProblem(provisioned);
+          if (problem) throw new Error(problem);
+          await this.deliverIntent(deliverySession.id, intent, wt.path, instrumented, provisioned);
         } catch (err) {
           // A boundary with no delivery behind it claims the agent saw a task it never
           // received, and a later capture would anchor into a conversation that never
@@ -1062,6 +1075,8 @@ export class Dispatcher {
     if (task.workflowId !== null) {
       throw new Error("a pipeline task cannot hand off to an after-work Workflow");
     }
+    const discovery = await taskPlanDiscovery(task);
+    const pipelineIntent = `${task.intent}\n\n${discovery}`;
     let engineerRunId: string | null = null;
     let engineerCommissionId: string | null = null;
     let engineerLifecycle: PipelineEngineerLifecycle | null = null;
@@ -1073,7 +1088,7 @@ export class Dispatcher {
     try {
       const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
         task.repoRoot,
-        task.intent,
+        pipelineIntent,
       );
       if (!launch.ok) throw new Error(launch.error);
 
@@ -1416,12 +1431,12 @@ export class Dispatcher {
       // reader, and the launch marker has to fingerprint the exact string the driver was
       // given. Recomposing it at the second site is how the two answers drift apart.
       const engineerPrompt = "provider" in launch
-        ? `${engineerCommand} ${task.intent}\n\n` +
+        ? `${engineerCommand} ${pipelineIntent}\n\n` +
           `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
           `Pass that exact id as --engineer-run-id when creating the authoring worktree. ` +
           `After Engineer creates or enters that worktree, call report_pipeline_workspace with ` +
           `its absolute path before editing files there.]`
-        : `${engineerCommand} ${task.intent}\n\n` +
+        : `${engineerCommand} ${pipelineIntent}\n\n` +
           `[Mission Control launch context: the reserved Pipeline run is ${launch.pipelineRun.slug}. ` +
           `If Engineer resumes a different existing run, call adopt_pipeline_run with that run's ` +
           `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
@@ -1459,6 +1474,8 @@ export class Dispatcher {
       let session: Session;
       try {
         this.registry.beginManagedPipelineLaunch(taskId, sessionId, launch.cwd);
+        const problem = taskPlanInputProblem(task);
+        if (problem) throw new Error(problem);
         session = await supervisor.start({
           sessionId,
           agent: task.agent,
@@ -1536,6 +1553,8 @@ export class Dispatcher {
 
     const label = sessionLabel(task.title);
     const shortId = taskId.slice(0, 6);
+    const problem = taskPlanInputProblem(task);
+    if (problem) throw new Error(problem);
     const terminalLaunch = launch;
     const [command, ...args] = terminalLaunch.argv;
     if (!command) throw new Error("the pipeline provider returned no launch command");
@@ -1751,6 +1770,8 @@ export class Dispatcher {
         );
       }
     }
+    const inputProblem = taskPlanInputProblem(task);
+    if (inputProblem) throw new Error(inputProblem);
     const session = await supervisor.start({
       agent: task.agent,
       // The task's own title, unsanitized: `sessionLabel` cuts a name down to a terminal
@@ -1944,6 +1965,7 @@ export class Dispatcher {
     intent: string,
     cwd: string,
     instrumented: boolean,
+    task: Task,
   ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       // Preflight before subscribing. If the process already exited, there will be no
@@ -1962,7 +1984,7 @@ export class Dispatcher {
           session,
           intent,
           undefined,
-          () => this.registry.promptResourceBlockerForSession(session.id),
+          () => taskPlanInputProblem(task) ?? this.registry.promptResourceBlockerForSession(session.id),
         );
       } catch (err) {
         acceptanceAbort?.abort();

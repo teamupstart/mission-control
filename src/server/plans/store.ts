@@ -2,7 +2,8 @@ import { mkdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type PlanManifest, type SavePlanInput, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
+import { ManagedPlanPolicySchema, PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type ManagedPlanPolicy, type PlanManifest, type SavePlanInput, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
+import type { Task } from "@shared/types.ts";
 import { openDb } from "../db.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveRepoRoot } from "../repos.ts";
@@ -15,6 +16,7 @@ export { PlanStoreError } from "./files.ts";
 export interface PlanAuthority {
   sessionId: string; taskId: string | null; episodeId: string | null;
   repoSlot: string; checkout: string; repoRoot: string;
+  policy?: ManagedPlanPolicy | null;
   /** Recheck live attribution after asynchronous Git work, immediately before mutation. */
   assertCurrent?: () => void;
 }
@@ -46,6 +48,11 @@ async function exclusive<T>(key: string, action: () => Promise<T>): Promise<T> {
 export async function planRepository(authority: PlanAuthority): Promise<{ repoKey: string; repoRoot: string; localStore: string }> {
   const repoRoot = await resolveRepoRoot(authority.repoRoot);
   if (!repoRoot) throw new PlanStoreError("The authorized repository is unavailable", 404);
+  return planRepositoryLocation(repoRoot);
+}
+
+/** Task repository preparation has already resolved these canonical owner paths. */
+export function planRepositoryLocation(repoRoot: string) {
   const repoKey = digest(repoRoot);
   const label = path.basename(repoRoot).replace(/[^a-zA-Z0-9_-]/g, "-") || "repository";
   return { repoRoot, repoKey, localStore: path.join(STATE_DIR, "plans", label, repoKey) };
@@ -107,8 +114,46 @@ export async function planContext(authority: PlanAuthority) {
   const repository = await planRepository(authority);
   const problem = skillsConfigProblem();
   if (problem) throw new PlanStoreError(problem);
-  return { ...repository, repoSlot: authority.repoSlot, checkoutRoot: authority.checkout, sourceRoot: "docs/plans", policy: { storage: "repository" as const, commitPlanHtml: getSkillsConfig().commitPlanHtml } };
+  const reservation = authority.taskId ? openDb().prepare("SELECT plan_id, policy FROM managed_plan_reservations WHERE task_id = ? AND repo_key = ?").get(authority.taskId, repository.repoKey) as { plan_id: string; policy: string } | undefined : undefined;
+  return { version: 2, ...repository, repoSlot: authority.repoSlot, checkoutRoot: authority.checkout, sourceRoot: "docs/plans", reservedPlanId: reservation?.plan_id ?? null,
+    policy: reservation ? ManagedPlanPolicySchema.parse(JSON.parse(reservation.policy)) : authority.policy ?? newPlanPolicy() };
 }
+
+export function newPlanPolicy(): ManagedPlanPolicy {
+  const problem = skillsConfigProblem();
+  if (problem) throw new PlanStoreError(problem);
+  const config = getSkillsConfig();
+  return config.planStorage === "local"
+    ? { version: 2, storage: "local", commitPlanHtml: config.commitPlanHtml }
+    : { storage: "repository", commitPlanHtml: config.commitPlanHtml };
+}
+
+/** Pre-policy plan tasks keep Git publication, with the saved HTML choice at first pin. */
+export function planPolicyForTask(task: Pick<Task, "kind" | "planPolicy" | "planPolicyError">): ManagedPlanPolicy | null {
+  if (task.planPolicyError) throw new PlanStoreError(task.planPolicyError);
+  if (task.kind !== "plan") return null;
+  return task.planPolicy ?? { storage: "repository", commitPlanHtml: newPlanPolicy().commitPlanHtml };
+}
+
+/** Identity is reserved before a plan task launches or binds its selected workflow. */
+export function reserveTaskPlan(authority: Pick<PlanAuthority, "taskId" | "repoRoot" | "policy">): void {
+  if (!authority.taskId || !authority.policy) return;
+  const repository = planRepositoryLocation(authority.repoRoot);
+  openDb().prepare("INSERT OR IGNORE INTO managed_plan_reservations VALUES (?, ?, ?, ?)")
+    .run(authority.taskId, repository.repoKey, randomUUID(), JSON.stringify(authority.policy));
+}
+
+/** Launch and assignment explicitly pin identity for every repository before delivery. */
+export function reserveTaskPlans(task: Task): void {
+  const policy = planPolicyForTask(task);
+  if (!policy) return;
+  for (const repoRoot of [task.repoRoot, ...task.extraRepos.map((repo) => repo.repoRoot)]) {
+    reserveTaskPlan({ taskId: task.id, repoRoot, policy });
+  }
+}
+
+export function planRecord(id: string) { return row(id); }
+export function planRevisionRecord(id: string, revision: number) { return readyRevisionRow(id, revision); }
 export async function listPlans(authority: PlanAuthority | PlanAuthority[], cursor?: string): Promise<ManagedPlanCatalog> {
   const authorities = Array.isArray(authority) ? authority : [authority];
   const repoKeys = [...new Set((await Promise.all(authorities.map(planRepository))).map((repo) => repo.repoKey))];
@@ -226,7 +271,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
       const tracked = await run("git", ["-C", authority.checkout, "ls-files", "--", `docs/plans/${input.slug}/`]);
       if (tracked.code !== 0 || tracked.stdout.trim()) throw new PlanStoreError("Existing tracked plans cannot be adopted or migrated by a new-plan save");
       if (existsSync(existing) || (() => { try { return !!lstatSync(existing); } catch { return false; } })()) throw new PlanStoreError("Unmanaged plan already exists. Edit its tracked layout explicitly; migration is not supported");
-      const id = randomUUID();
+      const id = context.reservedPlanId && !db.prepare("SELECT 1 FROM managed_plans WHERE id = ?").get(context.reservedPlanId) ? context.reservedPlanId : randomUUID();
       plan = { id, repo_root: context.repoRoot, repo_key: context.repoKey, store_path: path.relative(STATE_DIR, path.join(context.localStore, id)), slug: input.slug, policy: JSON.stringify(context.policy), current_revision: 0 };
     }
     if (plan.current_revision !== input.expectedRevision) throw new PlanStoreError("Stale expected plan revision");
@@ -237,11 +282,11 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
     const checkoutPrevious = checkoutRevision
       ? checkoutRevision.revision === plan.current_revision ? previous : readPlanRevision(plan.id, checkoutRevision.revision).manifest
       : null;
-    const policy = previous?.policy ?? context.policy;
+    const policy = ManagedPlanPolicySchema.parse(JSON.parse(plan.policy));
     const files = [...input.files].sort((a, b) => a.name.localeCompare(b.name));
     const manifest: PlanManifest = { version: 1, planId: plan.id, repoKey: plan.repo_key, slug: plan.slug, revision: plan.current_revision + 1, policy, createdAt: Date.now(), files: files.map((file) => {
       const source = file.name.endsWith(".html") ? file.name.replace(/\.html$/, ".md") : null;
-      return { name: file.name, bytes: Buffer.byteLength(file.content), sha256: digest(file.content), source, sourceSha256: source ? digest(files.find((f) => f.name === source)!.content) : null, checkoutPath: file.name.endsWith(".md") || (policy.commitPlanHtml && file.name.endsWith(".html")) ? `docs/plans/${plan.slug}/${file.name}` : null };
+      return { name: file.name, bytes: Buffer.byteLength(file.content), sha256: digest(file.content), source, sourceSha256: source ? digest(files.find((f) => f.name === source)!.content) : null, checkoutPath: policy.storage === "repository" && (file.name.endsWith(".md") || (policy.commitPlanHtml && file.name.endsWith(".html"))) ? `docs/plans/${plan.slug}/${file.name}` : null };
     }) };
     if (previous?.files.some((old) => old.checkoutPath && !manifest.files.some((file) => file.checkoutPath === old.checkoutPath))) throw new PlanStoreError("Removing existing checkout outputs requires an explicit migration");
     const intent = manifest.files.filter((f) => f.checkoutPath).map((file) => {
@@ -256,7 +301,7 @@ export async function savePlan(authority: PlanAuthority, request: SavePlanInput,
       if (!unchanged) throw new PlanStoreError(`Operator edit conflicts with ${file.checkoutPath}`);
       return { name: file.name, before };
     });
-    const ignored = await run("git", ["-C", authority.checkout, "check-ignore", "--", ...manifest.files.flatMap((file) => file.checkoutPath ? [file.checkoutPath] : [])]);
+    const ignored = intent.length ? await run("git", ["-C", authority.checkout, "check-ignore", "--", ...manifest.files.flatMap((file) => file.checkoutPath ? [file.checkoutPath] : [])]) : { code: 1, outcomeUnknown: false, overflowed: false, stdout: "" };
     if (ignored.code !== 1 || ignored.outcomeUnknown || ignored.overflowed) {
       throw new PlanStoreError(ignored.code === 0 ? `Required plan outputs are ignored by Git: ${ignored.stdout.trim()}` : "Could not verify Git eligibility of plan outputs");
     }

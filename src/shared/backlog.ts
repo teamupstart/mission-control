@@ -165,7 +165,13 @@ function dependencyState(target: Task): BlockerState {
 
 function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
   const out: BacklogBlocker[] = [];
+  const planProblem = task.planInputError ?? task.planPolicyError;
+  if (planProblem) out.push({ taskId: task.id, title: planProblem, state: "stopped", source: "declared" });
   for (const dependency of task.dependencies) {
+    if (dependency.type === "plan") {
+      if (dependency.satisfiedAt === null) out.push({ taskId: dependency.planId, title: dependency.title, state: "waiting", source: "declared" });
+      continue;
+    }
     if (dependency.satisfiedAt !== null) continue;
     if (dependency.type === "session") {
       out.push({

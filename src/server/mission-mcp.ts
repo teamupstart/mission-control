@@ -66,6 +66,7 @@ export const MISSION_MCP_TOOLS = [
   PLAN_CONTEXT_TOOL,
   PLAN_SAVE_TOOL,
   PLAN_READ_TOOL,
+  "publish_plan",
   "request_input",
   "report_product_feedback",
   "report_product_issue",
@@ -124,7 +125,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
-  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL],
+  plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
   chat: [],
 };
@@ -140,15 +141,16 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
  * same object, `null` included - so every existing ship dispatch's argv stays byte-identical.
  */
 export function kindMissionMcpRequirement(
-  task: Pick<Task, "kind" | "workflowId">,
+  task: Pick<Task, "kind" | "workflowId" | "planInputs">,
   requested: MissionMcpRequirement | null,
   workflowEvidence = false,
 ): MissionMcpRequirement | null {
   const required = KIND_MISSION_MCP_TOOLS[task.kind];
-  if (required.length === 0 && !workflowEvidence) return requested;
+  if (required.length === 0 && !workflowEvidence && !task.planInputs?.length) return requested;
   const tools = new Set<MissionMcpTool>(requested?.tools ?? []);
   for (const tool of required) tools.add(tool);
   if (workflowEvidence) tools.add(SUBMIT_WORKFLOW_EVIDENCE_TOOL);
+  if (task.planInputs?.length) tools.add(PLAN_READ_TOOL);
   return { tools: [...tools] };
 }
 

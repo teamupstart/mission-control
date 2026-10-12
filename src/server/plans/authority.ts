@@ -2,7 +2,7 @@ import type { Registry } from "../registry.ts";
 import type { Session } from "@shared/types.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { scoutRepoSlots } from "../scouts/repos.ts";
-import { PlanStoreError, type PlanAuthority } from "./store.ts";
+import { planPolicyForTask, PlanStoreError, type PlanAuthority } from "./store.ts";
 
 /** Files discovers the same repository slots that the daemon issues to the writer. */
 export function sessionPlanAuthorities(registry: Registry, session: Session): PlanAuthority[] {
@@ -23,7 +23,7 @@ export function planAuthority(registry: Registry, session: Session, slot: string
   const repo = repos.find((r) => r.slot === slot);
   const repoRoot = task ? (slot === "repo-01" ? task.repoRoot : task.extraRepos[repos.findIndex((r) => r.slot === slot) - 1]?.repoRoot) : session.repoRoot;
   if (!repo?.root || !repoRoot) throw new PlanStoreError("Repository slot is not authorized for this session", 403);
-  const authority: PlanAuthority = { sessionId: session.id, taskId: task?.id ?? null, episodeId: episode?.episodeId ?? null, repoSlot: slot, checkout: repo.root, repoRoot };
+  const authority: PlanAuthority = { sessionId: session.id, taskId: task?.id ?? null, episodeId: episode?.episodeId ?? null, repoSlot: slot, checkout: repo.root, repoRoot, policy: task ? planPolicyForTask(task) : null };
   const pid = session.pid;
   const agentSessionId = session.agentSessionId;
   authority.assertCurrent = () => {

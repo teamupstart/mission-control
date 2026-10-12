@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { nativePlanFiles } from "../src/server/plans/native.ts";
 import type { PlanAuthority } from "../src/server/plans/store.ts";
 import { SavePlanInputSchema, type SavePlanInput } from "../src/shared/managed-plans.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
 process.env.MISSION_HOME = join(home, "state");
@@ -52,7 +53,7 @@ test("a pre-feature database upgrades additively and retains existing settings",
     assert.equal(old.prepare("SELECT * FROM managed_plans").all().length, 0);
     assert.equal(old.prepare("SELECT * FROM managed_plan_revisions").all().length, 0);
     upgradeDatabaseToCurrentSchema(old);
-    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
   } finally { old.close(); }
 });
 
@@ -79,6 +80,65 @@ test("defaults stage only Markdown; HTML opt-in pins eligibility without changin
   closeDb();
   assert.equal(getSkillsConfig().commitPlanHtml, true);
   assert.equal(readPlanRevision(next.manifest.planId, 2).manifest.revision, 2);
+});
+
+test("an existing plan task keeps repository publication and pins the saved HTML preference on its first save", async () => {
+  const a = repo();
+  const registry = new Registry();
+  registry.applyDiscovery([{ syntheticId: a.sessionId, agent: "claude", name: "legacy plan", nameSource: "process", cwd: a.checkout, gitBranch: "main", gitRoot: a.checkout, repoRoot: a.repoRoot, pid: 100, tty: null, terminals: [], startedAt: 1 }]);
+  registry.upsertTask(mkTask({ id: a.taskId!, kind: "plan", status: "running", sessionId: a.sessionId, repoRoot: a.repoRoot, worktreePath: a.checkout, planPolicy: null }));
+  applySkillsConfig({ planStorage: "local", commitPlanHtml: true });
+  const currentAuthority = () => planAuthority(registry, registry.getSession(a.sessionId)!, "repo-01");
+  const first = await savePlan(currentAuthority(), input("legacy"));
+  assert.deepEqual(first.manifest.policy, { storage: "repository", commitPlanHtml: true });
+  git(a.checkout, "add", ".");
+  assert.match(git(a.checkout, "diff", "--cached", "--name-only"), /docs\/plans\/legacy\/plan.html/);
+  applySkillsConfig({ commitPlanHtml: false });
+  const next = await savePlan(currentAuthority(), { ...input("legacy", "Updated legacy plan"), planId: first.manifest.planId, expectedRevision: 1 });
+  assert.deepEqual(next.manifest.policy, first.manifest.policy, "later settings cannot change the first saved revision's policy");
+  closeDb();
+  assert.deepEqual(readPlanRevision(first.manifest.planId, 2).manifest.policy, first.manifest.policy);
+});
+
+test("local policy keeps the complete bundle outside Git, pins the saved HTML preference and survives linked checkout removal", async () => {
+  const owner = repo();
+  applySkillsConfig({ commitPlanHtml: true, planStorage: "local" });
+  const before = getSkillsConfig();
+  const checkout = join(home, randomUUID());
+  git(owner.checkout, "worktree", "add", "--detach", checkout);
+  const authority = { ...owner, checkout };
+  const request = input("local-complete");
+  const [saved, retry] = await Promise.all([savePlan(authority, request), savePlan(authority, request)]);
+  assert.deepEqual(saved, retry);
+  assert.deepEqual(saved.manifest.policy, { version: 2, storage: "local", commitPlanHtml: true });
+  assert.deepEqual(saved.requiredPaths, []);
+  git(checkout, "add", ".");
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+  assert.equal(existsSync(join(checkout, "docs/plans")), false);
+  assert.equal((await planContext(owner)).localStore, (await planContext(authority)).localStore);
+  assert.notEqual((await planContext(repo())).localStore, (await planContext(owner)).localStore);
+  applySkillsConfig({ planStorage: "repository" });
+  assert.equal(getSkillsConfig().commitPlanHtml, true);
+  assert.equal(getSkillsConfig().generation, before.generation);
+  const updated = await savePlan(authority, { ...request, requestId: randomUUID(), planId: saved.manifest.planId, expectedRevision: 1 });
+  assert.equal(updated.manifest.policy.storage, "local");
+  git(owner.checkout, "worktree", "remove", checkout);
+  closeDb();
+  for (const file of request.files) assert.equal(readPlanFile(saved.manifest.planId, 1, file.name).toString(), file.content);
+  assert.equal(readPlanRevision(updated.manifest.planId, 2).manifest.policy.storage, "local");
+  assert.equal(managedPlanCaptureScopes(owner.taskId, owner.episodeId)[0]!.managed.revision, 2);
+});
+
+test("an interrupted local save is recovered through the same whole-revision journal", async () => {
+  applySkillsConfig({ planStorage: "local" });
+  const a = repo(), request = input("local-recovery");
+  await assert.rejects(savePlan(a, request, { afterRevisionStaged: async () => { throw new Error("crash after durable bundle"); } }), /crash/);
+  closeDb();
+  assert.equal(pendingPlanWriteWarnings().length, 1);
+  const result = await savePlan(a, request);
+  assert.deepEqual(result.requiredPaths, []);
+  assert.equal(pendingPlanWriteWarnings().length, 0);
+  assert.equal(git(a.checkout, "status", "--porcelain"), "");
 });
 
 test("identical retries converge; concurrent stale updates cannot mix whole revisions", async () => {

@@ -1,3 +1,4 @@
+import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
@@ -171,7 +172,9 @@ let db: DatabaseSync | undefined;
  */
 // 3: bounded telemetry source checkpoints for immutable workflow context and timing.
 // 4: explicit final-completion worktree-return obligations, with no historical backfill.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 5;
+// 5: immutable managed plan bundles and recoverable checkout publication.
+// 6: pinned task plan inputs, local policy, final approval and artifact receipts.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 6;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -349,6 +352,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       agent         TEXT NOT NULL,
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
+      plan_inputs TEXT, plan_policy TEXT,
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       -- May the backlog autopilot schedule this? 1 unless somebody switched it off.
       -- NOT NULL DEFAULT 1 rather than nullable: there is no third state, and a NULL
@@ -766,6 +770,24 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       PRIMARY KEY(plan_id, revision), UNIQUE(request_id)
     );
     CREATE INDEX IF NOT EXISTS idx_managed_plan_task ON managed_plan_revisions(task_id, episode_id);
+    CREATE TABLE IF NOT EXISTS managed_plan_reservations (
+      task_id TEXT NOT NULL, repo_key TEXT NOT NULL, plan_id TEXT NOT NULL UNIQUE,
+      policy TEXT NOT NULL, PRIMARY KEY(task_id, repo_key)
+    );
+    CREATE TABLE IF NOT EXISTS managed_plan_reviews (
+      review_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
+      session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, manifest_hash TEXT NOT NULL,
+      binding_id TEXT, workflow_version_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS managed_plan_validations (
+      submission_id TEXT NOT NULL, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
+      review_id TEXT NOT NULL, binding_id TEXT NOT NULL, workflow_version_id TEXT NOT NULL,
+      manifest_hash TEXT NOT NULL, PRIMARY KEY(submission_id, plan_id)
+    );
+    CREATE TABLE IF NOT EXISTS managed_plan_publications (
+      plan_id TEXT NOT NULL, revision INTEGER NOT NULL, receipt TEXT NOT NULL,
+      PRIMARY KEY(plan_id, revision)
+    );
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -3374,6 +3396,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  addColumn(d, "tasks", "plan_inputs", "TEXT");
+  addColumn(d, "tasks", "plan_policy", "TEXT");
   addColumn(d, "tasks", "workflow_id", "TEXT");
   // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole
   // migration - every task already in an operator's backlog was schedulable before this
@@ -5068,6 +5092,8 @@ interface TaskRow {
   priority: string | null;
   labels: string | null;
   dependencies: string | null;
+  plan_inputs: string | null;
+  plan_policy: string | null;
   enabled: number;
   // `unknown`, not `number | null`: the column is bare INTEGER affinity, so anything a
   // build or a hand edit wrote is what comes back. `rowToTask` validates rather than casts.
@@ -5273,15 +5299,21 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) throw new Error("Invalid dependencies");
     const out: Task["dependencies"] = [];
     const seen = new Set<string>();
     for (const value of parsed) {
-      if (!value || typeof value !== "object") continue;
+      if (!value || typeof value !== "object") throw new Error("Invalid dependency");
       const row = value as Record<string, unknown>;
       const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
       const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
-      if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
+      if (row.type === "plan") {
+        const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
+        out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
+          sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt, satisfiedAt });
+      } else if (row.type !== "task" && row.type !== "session") {
+        throw new Error("Unsupported dependency");
+      } else if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
         const key = `task:${row.taskId}`;
         if (!seen.has(key)) {
           out.push({
@@ -5318,12 +5350,24 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
           });
         }
         seen.add(key);
-      }
+      } else { throw new Error("Invalid dependency"); }
     }
     return out;
   } catch {
-    return [];
+    return [{ type: "session", sessionId: "unsupported-prerequisite", title: "Unsupported or corrupt prerequisite; repair this task",
+      episodeId: null, agentSessionId: null, branch: null, prUrl: null, selectedAt: null, satisfiedAt: null }];
   }
+}
+
+function readTaskPlans(inputs: string | null, policy: string | null): Pick<Task, "planInputs" | "planPolicy" | "planInputError" | "planPolicyError"> {
+  const result: ReturnType<typeof readTaskPlans> = { planInputs: [], planPolicy: null, planInputError: null, planPolicyError: null };
+  try {
+    result.planInputs = TaskPlanInputsSchema.parse(inputs ? JSON.parse(inputs) : []);
+  } catch { result.planInputError = "Stored plan inputs are corrupt or unsupported; repair the task before dispatch"; }
+  try {
+    result.planPolicy = policy ? ManagedPlanPolicySchema.parse(JSON.parse(policy)) : null;
+  } catch { result.planPolicyError = "Stored plan policy is corrupt or unsupported; repair the task before dispatch"; }
+  return result;
 }
 
 /** A stale/newer effort value cannot be trusted as a harness launch option. */
@@ -5368,6 +5412,7 @@ function rowToTask(
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
     dependencies: parseTaskDependencies(r.dependencies),
+    ...readTaskPlans(r.plan_inputs, r.plan_policy),
     // Only an explicit 0 parks a task. A row written by an older build, or one whose
     // column somehow reads NULL, is schedulable - the direction that degrades to the
     // behaviour every install already had rather than to a silently frozen backlog.
@@ -5452,7 +5497,7 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, enabled, backlog_rank,
+         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort,
          workflow_id, source_id, external_id, source_url, repo_root,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
@@ -5462,10 +5507,11 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
+         plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort,
          workflow_id=excluded.workflow_id,
@@ -5497,6 +5543,8 @@ export function upsertTask(t: Task): string[] {
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
       t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
+      t.planInputError ? JSON.stringify({ error: t.planInputError }) : t.planInputs?.length ? JSON.stringify(t.planInputs) : null,
+      t.planPolicyError ? JSON.stringify({ error: t.planPolicyError }) : t.planPolicy ? JSON.stringify(t.planPolicy) : null,
       t.enabled ? 1 : 0,
       t.backlogRank,
       t.model,

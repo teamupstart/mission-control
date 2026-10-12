@@ -8,6 +8,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export function ManagedPlanReader({ id, revision }: { id: string; revision: number }): React.JSX.Element {
   const [plan, setPlan] = useState<ManagedPlanRevision | null>(null);
   const [file, setFile] = useState("plan.html");
+  const [refresh, setRefresh] = useState(0);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -20,7 +21,7 @@ export function ManagedPlanReader({ id, revision }: { id: string; revision: numb
       setPlan(body);
     }).catch((e: Error) => { if (!controller.signal.aborted) setError(e.message); });
     return () => controller.abort();
-  }, [base]);
+  }, [base, refresh]);
   useEffect(() => {
     if (!plan) return;
     const controller = new AbortController();
@@ -54,9 +55,10 @@ export function ManagedPlanReader({ id, revision }: { id: string; revision: numb
     <header>
       <Tooltip label="Return to the Mission Control dashboard"><a href="/">Mission Control</a></Tooltip>
       <h1>{plan?.manifest.slug ?? "Managed plan"}</h1>
-      <p>Revision {revision} · {plan?.manifest.policy.commitPlanHtml ? "Markdown and HTML included in Git" : "Markdown in Git; HTML retained locally"}</p>
+      <p>Revision {revision} · {plan?.manifest.policy.storage === "local" ? "Complete bundle retained locally; no plan files in Git" : plan?.manifest.policy.commitPlanHtml ? "Markdown and HTML included in Git" : "Markdown in Git; HTML retained locally"}</p>
       {plan && revision > 1 && <nav aria-label="Plan revision history"><Tooltip label={`Open the retained plan at revision ${revision - 1}`}><a href={managedPlanPreview(id, revision - 1)}>Previous revision</a></Tooltip></nav>}
-      <p>Saved for review. Publication still requires the planning pull request to merge.</p>
+      <p role="status">{plan?.manifest.policy.storage === "local" ? plan.readiness?.reason ?? "Saved locally. Waiting for final approval and applicable validation." : "Saved for review. Publication still requires the planning pull request to merge."}</p>
+      {plan?.manifest.policy.storage === "local" && <Tooltip label="Read the current approval and publication receipt for this exact revision"><button className="btn" onClick={() => setRefresh((n) => n + 1)}>Refresh publication status</button></Tooltip>}
       {source && <p>Rendering of <Tooltip label="Read the source Markdown saved with this rendering"><button className="btn" onClick={() => setFile(source)}>{source}</button></Tooltip> at this exact revision.</p>}
       <nav aria-label="Plan revision files">{plan?.manifest.files.map((entry) => <Tooltip key={entry.name} label={`Read ${entry.name} from revision ${revision}`}><button className="btn" aria-current={file === entry.name ? "page" : undefined} onClick={() => setFile(entry.name)}>{entry.name}</button></Tooltip>)}</nav>
     </header>

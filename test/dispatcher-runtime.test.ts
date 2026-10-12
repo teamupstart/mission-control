@@ -41,6 +41,7 @@ const { openDb, getForemanInvite } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
 const { HARNESS_CAPABILITIES, resolveSessionRuntime } = await import(
@@ -214,8 +215,11 @@ test("with both toggles on, Claude and Codex dispatch through the supervisor wit
     // contract that terminal dispatch receives.
     assert.equal(
       start.prompt,
-      withTaskKindContract(task, `run ${agent} through the embedded runtime`),
+      withTaskKindContract(task, `run ${agent} through the embedded runtime`, { planDiscovery: await taskPlanDiscovery(task) }),
     );
+    assert.match(start.prompt, /Check both plan locations/);
+    assert.match(start.prompt, /docs\/plans\//);
+    assert.match(start.prompt, /local plans /);
     assert.equal(
       start.acceptedGoalPrompt,
       `run ${agent} through the embedded runtime`,
@@ -458,10 +462,10 @@ test("a plan launch carries the contract into turn one and requires the tools it
   try {
     await new Dispatcher(registry, async () => {}, {
       supervisor,
-      planSkills: () => ({
-        ok: true,
-        commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
-      }),
+      planSkills: () => {
+        assert.ok(openDb().prepare("SELECT plan_id FROM managed_plan_reservations WHERE task_id = ?").get("task-plan-on"), "dispatch reserves the plan before provisioning or workflow binding");
+        return { ok: true, commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } };
+      },
     }).dispatch("task-plan-on");
   } finally {
     if (prior === undefined) delete process.env.MISSION_MCP_SERVER;

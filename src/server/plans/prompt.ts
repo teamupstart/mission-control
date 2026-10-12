@@ -86,7 +86,21 @@ export interface PlanSkillInvocations {
  * keep it short - every line spent explaining how to write a plan is a line arguing with the
  * skill this contract exists to hand the work to.
  */
-export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false): string {
+export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false, storage: "repository" | "local" = "repository"): string {
+  if (storage === "local") {
+    const contract = taskCompletionContract("plan", workflowBound, "local")!;
+    return [PLAN_APPENDIX_MARKER,
+      "This is a local plan-only task. Do not implement the plan. Invoke the static planning skills:",
+      skills.htmlPlans, skills.phasedPlan,
+      "Call get_plan_context and save_plan with the complete Markdown and rendered HTML bundle. Local mode overrides the saved HTML-commit preference. Use read_plan for exact revisions and the returned scoped preview.",
+      "Use request_plan_decisions for open choices. Bind final approval with managedPlan {repoSlot, planId, revision}; the human must explicitly approve the complete final bundle. If phasing or repair changes it, save and approve the new revision.",
+      "Schedule requested phases with create_task planInputs and planPrerequisites naming exact repoKey, planId, revision and Markdown files. Add only direct implementation task merge edges. Local artifact publication never releases those code edges.",
+      "## Local plan completion handoff", ...contract.complete.map((item) => `- ${item}`),
+      `Do not ${deferredImperativeList(contract)} for this local plan-only task.`,
+      workflowBound ? "Finish planning and yield. Foreman starts the selected automatic validation workflow; Manual bindings wait for explicit submission. The daemon publishes after that exact approved revision passes. No empty PR is needed." : "After approval and scheduling, call publish_plan for each exact local revision, report its receipt and task map, then end this turn.",
+      "Saving, previewing, dismissal, or an agent-authored approval string cannot publish. Mixed code-and-plan tasks retain their ordinary shipping workflow and merge prerequisites.",
+    ].join("\n");
+  }
   const lines = [
     PLAN_APPENDIX_MARKER,
     "This is a plan task. The deliverable is a plan a human has read and agreed with - written,",

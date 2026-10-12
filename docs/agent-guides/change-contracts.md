@@ -101,7 +101,12 @@ immutable; settings apply only at creation. Source/rendering digests and bounded
 travel together. Repository publication checks Markdown and policy-included HTML; excluded
 HTML must remain readable and capturable locally. Saving never satisfies task dependencies.
 Do not migrate legacy tracked plans through new-plan defaults. The completion handoff and
-planning PR merge remain publication authority. See [managed plans](../managed-plans.md).
+planning PR merge remain repository publication authority. Local-only plan tasks instead require
+an exact final human approval and successful applicable validation, frozen to the same manifest,
+episode, binding/version and submission. Receipts satisfy only exact plan artifact prerequisites.
+Never reinterpret ordinary task/session merge edges or infer approval from a saved bundle.
+Keep typed inputs through DB, snapshots, edits and both task delivery seams; unknown or corrupt
+prerequisites must block. Local policy disables HTML output eligibility without clearing its setting. See [managed plans](../managed-plans.md).
 
 ## Database changes
 

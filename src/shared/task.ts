@@ -1,4 +1,4 @@
-import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "./builtin-workflow.ts";
+import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -526,6 +526,6 @@ export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
 }
 
 /** Explicit None and workflow choices bypass this default at the caller. */
-export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null): string | null {
-  return KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
+export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null, storage: "repository" | "local" = "repository"): string | null {
+  return kind === "plan" && storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
 }

@@ -187,7 +187,7 @@ export function applySkillsConfig(patch: SkillsConfigPatch, now = Date.now()): S
   }
   const asked = merge(before, patch);
   // Artifact preferences do not reconcile links or advance the reload watermark.
-  if (Object.keys(patch).every((key) => key === "commitPlanHtml")) {
+  if (Object.keys(patch).every((key) => key === "commitPlanHtml" || key === "planStorage")) {
     return { changed: false, linked: [], unlinked: [], blocked: [], problems: [], config: persist(asked, false, now), refused: [] };
   }
   const catalog = readCatalog();

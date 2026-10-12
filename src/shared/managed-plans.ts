@@ -1,10 +1,48 @@
 import { z } from "zod";
 
 /** Versioned independently of publication authority. Phase 2 extends this policy union. */
-export const ManagedPlanPolicySchema = z.object({
+const RepositoryPlanPolicySchema = z.object({
   storage: z.literal("repository"),
   commitPlanHtml: z.boolean(),
 }).strict();
+export const ManagedPlanPolicySchema = z.discriminatedUnion("storage", [
+  RepositoryPlanPolicySchema,
+  z.object({ version: z.literal(2), storage: z.literal("local"), commitPlanHtml: z.boolean() }).strict(),
+]);
+export type ManagedPlanPolicy = z.infer<typeof ManagedPlanPolicySchema>;
+export const PlanIdentitySchema = z.object({
+  repoKey: z.string().regex(/^[a-f0-9]{64}$/),
+  planId: z.string().uuid(),
+  revision: z.number().int().positive(),
+}).strict();
+export type PlanIdentity = z.infer<typeof PlanIdentitySchema>;
+export const TaskPlanInputSchema = PlanIdentitySchema.extend({
+  files: z.array(z.string().max(120).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.md$/)).min(1).max(32),
+}).strict();
+export const TaskPlanInputsSchema = z.array(TaskPlanInputSchema).max(16);
+export type TaskPlanInput = z.infer<typeof TaskPlanInputSchema>;
+export const PlanReviewInputSchema = z.object({
+  repoSlot: z.string().regex(/^repo-\d{2,}$/).default("repo-01"),
+  planId: z.string().uuid(), revision: z.number().int().positive(),
+}).strict();
+export const PLAN_APPROVAL_DECISION = "approve-final-bundle";
+export const PLAN_APPROVAL_OPTION = "approve";
+export const PlanPublicationReceiptSchema = PlanIdentitySchema.extend({
+  version: z.literal(2), storage: z.literal("local"),
+  id: z.string().uuid(), reviewId: z.string().min(1), sessionId: z.string().min(1),
+  taskId: z.string().min(1), episodeId: z.string().nullable(),
+  bindingId: z.string().nullable(), workflowVersionId: z.string().nullable(), submissionId: z.string().nullable(),
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/), publishedAt: z.number().int().positive(),
+}).strict().refine((receipt) => receipt.bindingId === null
+  ? receipt.workflowVersionId === null && receipt.submissionId === null
+  : receipt.workflowVersionId !== null && receipt.submissionId !== null, "Incomplete validation receipt");
+export type PlanPublicationReceipt = z.infer<typeof PlanPublicationReceiptSchema>;
+export interface PlanReadiness {
+  version: 2;
+  state: "saved" | "approved" | "waiting-workflow" | "published" | "blocked";
+  reason: string;
+  receipt: PlanPublicationReceipt | null;
+}
 export const PLAN_CONTENT_LIMITS = { files: 64, fileBytes: 1024 * 1024, totalBytes: 8 * 1024 * 1024 } as const;
 export const PlanFileNameSchema = z.string().max(120).regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.(md|html|txt|css|svg)$/);
 export const PlanSlotSchema = z.string().regex(/^repo-\d{2,}$/).default("repo-01");
@@ -50,6 +88,7 @@ export interface ManagedPlanRevision {
   manifest: PlanManifest;
   preview: string;
   requiredPaths: string[];
+  readiness?: PlanReadiness;
 }
 export interface ManagedPlanCatalog {
   plans: ManagedPlanRevision[];

@@ -57,8 +57,8 @@ function keepPreFieldCommandConsent(blob: unknown): unknown {
   return { ...(blob as Record<string, unknown>), checksEnabled: false };
 }
 
-export function resolveTaskWorkflowId(workflowId: string | null | undefined, kind: TaskKind = "ship"): string | null {
-  return workflowId === undefined ? taskDefaultWorkflowId(kind, getWorkflowPolicy().defaultWorkflowId) : workflowId;
+export function resolveTaskWorkflowId(workflowId: string | null | undefined, kind: TaskKind = "ship", storage: "repository" | "local" = "repository"): string | null {
+  return workflowId === undefined ? taskDefaultWorkflowId(kind, getWorkflowPolicy().defaultWorkflowId, storage) : workflowId;
 }
 
 /**

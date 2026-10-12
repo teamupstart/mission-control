@@ -94,7 +94,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
 /** Both planning skills on, one generation old, catalog healthy. */
 const config: SkillsConfig = {
   enabled: true,
-  commitPlanHtml: false, defaultSkillEnabled: false,
+  commitPlanHtml: false, planStorage: "repository" as const, defaultSkillEnabled: false,
   skills: Object.fromEntries(PLAN_SKILL_IDS.map((id) => [id, true])),
   generation: 3,
   generationAt: 100,
@@ -303,7 +303,7 @@ test("every plan launch requires the tools its prompt names", () => {
   const required = kindMissionMcpRequirement(mkTask(), null);
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan"].sort(),
+    [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan", "publish_plan"].sort(),
   );
 });
 
@@ -311,7 +311,7 @@ test("a plan's requirement is unioned with the caller's, and stays a set", () =>
   const required = kindMissionMcpRequirement(mkTask(), { tools: ["report_status"] });
   assert.deepEqual(
     [...(required?.tools ?? [])].sort(),
-    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan"].sort(),
+    ["report_status", PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, "get_plan_context", "save_plan", "read_plan", "publish_plan"].sort(),
   );
   const again = kindMissionMcpRequirement(mkTask(), required);
   assert.equal(again?.tools.length, required?.tools.length, "a repeat adds nothing");

@@ -1,3 +1,4 @@
+import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -90,8 +91,9 @@ async function createReview(
   title: string,
   body: string,
   decisions?: unknown,
+  managedPlan?: unknown,
 ): Promise<string> {
-  const res = await http("/mcp/reviews", "POST", {
+  const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
     cwd: process.cwd(),
@@ -99,6 +101,7 @@ async function createReview(
     title,
     body,
     decisions,
+    managedPlan,
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { id: string }).id;
@@ -261,6 +264,7 @@ server.registerTool(
     inputSchema: {
       title: z.string().describe("Short title for the plan"),
       plan: z.string().describe("The plan as GitHub-flavored markdown, shown above the decisions"),
+      managedPlan: PlanReviewInputSchema.optional().describe("Bind final-bundle approval to this exact saved plan and revision. The daemon appends an explicit approval decision; use again after any revision change."),
       decisions: z
         .array(
           z.object({
@@ -289,13 +293,13 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
-        .min(1)
-        .describe("The decision points to present"),
+        .default([])
+        .describe("Open choices; empty is allowed for managed final-bundle approval"),
     },
   },
-  async ({ title, plan, decisions }, extra) => {
+  async ({ title, plan, decisions, managedPlan }, extra) => {
     try {
-      const id = await createReview("plan-decisions", title, plan, decisions);
+      const id = await createReview("plan-decisions", title, plan, decisions, managedPlan);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
@@ -340,7 +344,8 @@ server.registerTool(
       "and it can attach additional local repositories to the same task. " +
       "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
-      "prerequisites keep the new task backlogged until their pull requests merge. Repository " +
+      "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
+      "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
       "authority later. Returns the new task id and canonical repository set.",
     inputSchema: {
@@ -379,6 +384,8 @@ server.registerTool(
           "Repositories to attach, each as an absolute local checkout path or unique repository " +
             "directory name",
         ),
+      planInputs: TaskPlanInputsSchema.optional().describe("Exact repository key, plan id, revision and Markdown files for each managed input"),
+      planPrerequisites: z.array(PlanIdentitySchema).max(16).optional().describe("Approved local plan-only artifact prerequisites. Keep implementation task dependencies separately; repository and mixed sources still use dependsOnCurrentSession."),
       dependsOnTaskIds: z
         .array(z.string().min(1))
         .max(50)
@@ -397,10 +404,12 @@ server.registerTool(
     additionalRepositories,
     dependsOnTaskIds,
     dependsOnCurrentSession,
+    planInputs, planPrerequisites,
   }) => {
     try {
       const explicitRepositories =
         repository !== undefined || Boolean(additionalRepositories?.length);
+      const pinnedPlans = planInputs !== undefined || planPrerequisites !== undefined;
       const body = {
         env: ENV,
         sessionId: SESSION_ID,
@@ -412,20 +421,21 @@ server.registerTool(
         dependsOnCurrentSession,
       };
       const res = await http(
-        explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
+        pinnedPlans ? "/mcp/v3/tasks" : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
         "POST",
-        explicitRepositories
+        explicitRepositories || pinnedPlans
           ? {
               ...body,
               targetRepository: repository,
               additionalRepositories: additionalRepositories ?? [],
+              ...(pinnedPlans ? { planInputs: planInputs ?? [], planPrerequisites: planPrerequisites ?? [] } : {}),
             }
           : body,
       );
-      if (explicitRepositories && res.status === 404) {
+      if ((explicitRepositories || pinnedPlans) && res.status === 404) {
         return textResult(
           "Could not create task: this Mission Control daemon does not support repository " +
-            "selectors. Update or restart Mission Control and retry; no task was created.",
+            "selectors or exact plan inputs. Update or restart Mission Control and retry; no task was created.",
           true,
         );
       }
@@ -450,6 +460,7 @@ server.registerTool(
             additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
             dependsOnTaskIds,
             dependsOnCurrentSession,
+            planInputs: planInputs ?? [], planPrerequisites: planPrerequisites ?? [],
           },
           null,
           2,
@@ -915,6 +926,10 @@ server.registerTool("save_plan", {
   description: "Save a complete immutable Markdown and static HTML plan bundle. Use a UUID requestId for retries, expectedRevision 0 for creation, then the returned planId/revision. The daemon pins policy and writes eligible checkout files. Saving does not approve, commit, push or publish. Files are flat bounded UTF-8 content; each Markdown file needs a same-name HTML rendering.",
   inputSchema: SavePlanInputSchema.shape,
 }, async (input) => managedPlanCall("save", input));
+server.registerTool("publish_plan", {
+  description: "Publish an exact approved local plan-only revision. The daemon verifies current human approval, work episode, clean plan-only checkout and successful applicable workflow. No Git or PR is created. Workflow completion also reconciles owed receipts. Mixed/code tasks retain merge publication.",
+  inputSchema: PlanReviewInputSchema.shape,
+}, async (input) => managedPlanCall("publish", input));
 server.registerTool("read_plan", {
   description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
   inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },

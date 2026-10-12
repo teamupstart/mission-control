@@ -1,3 +1,4 @@
+import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
 // that crosses the SSE / HTTP boundary.
@@ -1858,6 +1859,7 @@ export interface SkillRow extends SkillCatalogEntry {
 /** Everything the skills panel draws, in one read. */
 export interface SkillsView {
   commitPlanHtml: boolean;
+  planStorage: "repository" | "local";
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
   enabled: boolean;
   skills: SkillRow[];
@@ -1975,6 +1977,7 @@ export type TaskPriority = "low" | "med" | "high" | "blocker";
  * must therefore remain true without either object being present.
  */
 export type TaskDependency =
+  | (PlanIdentity & { type: "plan"; title: string; selectedAt: number | null; satisfiedAt: number | null; sessionId: null; episodeId: null; agentSessionId: null; branch: null; prUrl: null })
   | {
       type: "task";
       taskId: string;
@@ -2095,6 +2098,13 @@ export interface Task {
   labels: string[];
   /** Operator-declared prerequisites. Unmet entries force this task to stay backlogged. */
   dependencies: TaskDependency[];
+  /** Exact immutable Markdown inputs. Missing on old wire snapshots means empty. */
+  planInputs?: TaskPlanInput[];
+  /** Pinned with plan-task creation, before workflow selection. */
+  planPolicy?: ManagedPlanPolicy | null;
+  planInputError?: string | null;
+  /** Independent policy corruption must not be cleared by replacing plan inputs. */
+  planPolicyError?: string | null;
   /**
    * Where this item sits in the backlog, ascending - the operator's order and the only one.
    *
@@ -2342,6 +2352,8 @@ export interface BacklogPlan {
 
 /** Compact task view denormalized onto a Session card. */
 export interface TaskSummary {
+  planPolicy?: ManagedPlanPolicy | null;
+  planInputs?: TaskPlanInput[];
   id: string;
   title: string;
   /** Complete title for hover/focus help when `title` is the shortened generated fallback. */

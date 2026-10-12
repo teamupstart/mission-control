@@ -1,10 +1,12 @@
-# Managed repository plans
+# Managed plans
 
-Mission Control's daemon saves complete plan revisions. Markdown in
-`docs/plans/<slug>/` is the repository source of truth. Generated HTML stays available
+Mission Control's daemon saves complete plan revisions. Settings > Skills > **Plan storage**
+defaults to repository mode, where Markdown in `docs/plans/<slug>/` is the source of truth.
+Local mode keeps the entire bundle beneath the repository-scoped Mission state store and
+produces no checkout files. Generated HTML stays available
 locally for review and is omitted from Git by default. Settings > Skills > **Commit
 generated HTML plan files** opts new plans into publishing HTML alongside Markdown.
-The checkbox remains configurable when skill installation is off.
+The checkbox remains configurable when skill installation is off, but is disabled in local mode without losing its saved value.
 
 Each plan pins that policy when created. Changing settings does not relocate active
 plans, reinterpret old revisions, delete tracked HTML, or migrate unmanaged plans.
@@ -49,14 +51,14 @@ $MISSION_HOME/plans/<sanitized-repository-name>/<repository-key>/<plan-id>/<revi
 owning repository path resolved by the existing repository resolver. Linked worktrees
 share a namespace; unrelated same-name clones do not. Moving a repository requires
 explicit future mapping. Revisions survive authoring-checkout and task/session removal.
-Settings snapshots contain the HTML preference, not retained plan contents. There is no
+Settings snapshots contain the storage and HTML preferences, not retained plan contents. There is no
 automatic remote backup of excluded previews.
 
 ## Revisions, recovery, and publication
 
 The daemon-only `managed_plans` and `managed_plan_revisions` tables retain attribution,
 pinned policy, current revision, request identity, manifest hash and write intent.
-Schema version 5 adds both tables without changing existing plan files. Manifests use
+Schema version 5 adds both tables without changing existing plan files. Version 6 adds task plan inputs, pinned task policy, reservations, approval mappings, validation mappings and publication receipts. Manifests use
 version 1 and contain a bounded inventory, SHA-256 digests, source-rendering digest pairs,
 and policy-eligible checkout paths. Unknown manifest or policy versions refuse reads.
 
@@ -86,8 +88,8 @@ matching writes; operator conflicts remain incomplete. No cross-filesystem atomi
 claimed, and the service never resets the index or runs Git publication commands.
 
 `ready` means saved, not human-approved or published. The save result's `requiredPaths`
-are Markdown plus opted-in HTML; verify those in the pushed commit when publication is
-authorized. Verify excluded HTML with `read_plan`. Phase tasks continue citing Markdown
+are empty in local mode, or Markdown plus opted-in HTML in repository mode; verify those in the pushed commit when publication is
+authorized. Verify excluded HTML with `read_plan`. Repository phase tasks continue citing Markdown
 paths and depending on the planning session. Only the planning PR's merge releases
 repository publication prerequisites. The existing publication-context contract and
 workflow versions are unchanged.
@@ -152,3 +154,90 @@ route adjustments to carry into the Phase 1 PR description.
 Behavior is covered by `managed-plans.test.ts`, attributed HTTP tests, settings
 upgrade/restore tests, plan capture and MCP handshake tests, and
 `e2e/specs/plan-storage.spec.ts`. Follow [AGENTS.md](../AGENTS.md) for test execution.
+
+## Exact handoff and local publication
+
+`skills.planStorage` is `repository` or `local` and defaults to `repository`. Missing
+`commitPlanHtml` defaults to false. Task creation resolves the pinned plan policy and workflow
+default together; route checks and persistence consume that same pair. Dispatch and live
+assignment explicitly reserve an opaque plan id per canonical repository before launch or reset.
+Discovery only describes locations and exact inputs and never reserves an identity.
+Existing tasks without policy keep repository publication semantics and use the saved HTML
+preference when their first plan policy is pinned. Existing plan
+revisions always use their saved policy, even after settings change. Repository policy retains
+its original shape; local policy is `{version: 2, storage: "local", commitPlanHtml: boolean}`.
+The immutable manifest remains version 1 and all Phase 1 writer and archive checks remain.
+
+`create_task` uses `/mcp/v3/tasks` whenever `planInputs` or `planPrerequisites` are supplied.
+It never retries a version refusal through a legacy route. `planInputs` contains at most 16
+`{repoKey, planId, revision, files}` records, each naming 1 to 32 flat Markdown filenames.
+The repository key, opaque UUID, positive immutable revision and exact files are verified
+against both the caller's issued scope and the receiving task's primary/attached roots.
+Old tasks load empty inputs. Both fresh dispatch and live assignment check them before checkout
+work and again before prompt delivery. Missing, damaged or unpublished inputs refuse dispatch;
+there is no latest-revision fallback. Every managed task receives a short appendix listing
+repository `docs/plans/` and the correctly scoped local store, plus exact `read_plan` calls for
+pinned inputs. A context-only repository must still be attached to read its plan.
+An explicit, validated `planInputs` update, including an empty list, clears corrupt-input
+state and persists the replacement. Unrelated or invalid updates retain the refusal. Input
+repair preserves the pinned policy and cannot clear independent policy corruption.
+Every plan publication prerequisite must retain a matching exact Markdown input, including
+after publication. Remove both together or replace them with a matching pair; clearing only
+the inputs is refused.
+
+For local plan-only work, `request_plan_decisions` takes `managedPlan: {repoSlot, planId,
+revision}` via `/mcp/v2/reviews`. The daemon adds an explicit final-bundle approval choice,
+exact preview and inventory. Human approval binds the full manifest digest, writer episode
+and active workflow binding/version. Dismissal, ordinary decisions, an older revision or a
+new binding do not approve the current bundle. Changes after approval require a new approval.
+
+New local plan tasks default to the appended **Local Plan Validation** workflow. Explicit
+None is allowed; explicit incompatible choices are refused. Compatible workflows have no
+session actions and no Inspector/PR completion policy. Their ordinary Persona/check graph
+must complete. Before capture, the daemon freezes the exact approval/revision mapping on the
+submission and requires retained evidence containing every Markdown filename and its full
+saved text. Register this with `submit_workflow_evidence`; paths alone are insufficient for
+tool-less reviewers. Manual bindings retain manual submission; automatic bindings start via
+Foreman after the planning handoff. Paused, failed, missing and superseded submissions block
+publication. Binding archival invalidates bound approval instead of silently publishing it.
+
+After approval, schedule phases with exact `planInputs` and `planPrerequisites` identities.
+The latter become distinct `type: "plan"` edges. Add `dependsOnTaskIds` for direct code phases;
+do not add an impossible planning-session merge edge for local plan-only work. Without a
+workflow, call `publish_plan` after scheduling. With a workflow, its completion notification
+publishes the approved revision. The daemon verifies every issued checkout is clean and has
+no diff from the task base before either path can publish. Mixed code-and-plan work retains
+its ordinary task/session merge edge even when the plan bytes are local.
+
+A version-2 local publication receipt records its UUID, repository/plan/revision, manifest
+hash, final review, originating session/task/episode, workflow binding/version/submission
+(or null for explicit None), and timestamp. Its durable table has no source-task cascade.
+It releases only matching artifact edges, including after restart or source-task pruning.
+The daemon still verifies retained bytes before dispatch. Ordinary task/session merge edges
+are unchanged, and normal `TaskManager.complete` owns completion and checkout cleanup.
+No local receipt requests a PR or calls broad dependent-task satisfaction.
+
+```mermaid
+flowchart LR
+  Settings -->|new task policy| Task
+  Task -->|issued repository and reserved id| Store[Immutable plan store]
+  Store -->|exact preview| Human[Final human approval]
+  Human --> Validation[Bound workflow or explicit None]
+  Validation --> Receipt[Exact local publication receipt]
+  Receipt --> Artifact[Plan artifact prerequisite]
+  Merge[Implementation PR merge] --> Code[Ordinary task prerequisite]
+  Artifact --> Ready[Receiving task readiness]
+  Code --> Ready
+  Store -->|verify pinned bytes| Ready
+  Ready --> Delivery[Dispatch or assignment discovery appendix]
+  Store --> Archive[Existing archive capture]
+```
+
+Implementation choices relative to the proposed Phase 2 route: policy pins at task creation,
+not first dispatch, so backlog edits and workflow defaults cannot disagree; dispatch still
+reserves plan identity before launch. Local publication listens to the existing workflow
+notifications and session-observation recovery, with shutdown owned by WorkflowManager, rather
+than introducing another polling service. All session actions are excluded from local-only
+validation because they can mutate the checkout or initiate publication; use a ship task for
+such workflows. These choices preserve the original writer, revision, preview and archive
+contracts and should be called out in the implementation PR.

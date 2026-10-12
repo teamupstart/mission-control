@@ -62,6 +62,8 @@ export const MISSION_MCP_TOOLS = [
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
+  "update_task",
+  "delete_task",
   PLAN_PUBLICATION_TOOL,
   "request_input",
   "report_product_feedback",

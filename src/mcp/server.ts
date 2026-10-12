@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ReviewItem } from "@shared/types.ts";
+import type { ReviewItem, Task } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -35,7 +35,7 @@ import { reportProductFeedback, reportProductIssueWithConfirmation } from "./pro
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -329,20 +329,45 @@ server.registerTool(
   },
 );
 
+/** Return persisted configuration so callers can verify pins, clearing, and inheritance. */
+function taskConfiguration(task: Task) {
+  return {
+    id: task.id,
+    title: task.title,
+    intent: task.intent,
+    status: task.status,
+    repository: task.repoRoot,
+    additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
+    kind: task.kind,
+    agent: task.agent,
+    model: task.model,
+    effort: task.effort,
+    workflowId: task.workflowId,
+    enabled: task.enabled,
+    priority: task.priority,
+    labels: task.labels,
+    dependencies: task.dependencies,
+  };
+}
+
 server.registerTool(
   "create_task",
   {
-    title: "Schedule an implementation task",
+    title: "Schedule a backlog task",
     description:
-      "Create one ship task in the Mission Control backlog. It targets the current repository " +
+      "Create one task in the Mission Control backlog without launching it. Ship is the default kind. It targets the current repository " +
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
-      "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
+      "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
+      "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "model/effort follows launch-time defaults. Null workflowId opts out of an after-work workflow. " +
+      "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "prerequisites keep the new task backlogged until their pull requests merge. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id and canonical repository set.",
+      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
     inputSchema: {
+      ...McpTaskConfigurationSchema.shape,
       title: z
         .string()
         .min(1)
@@ -396,6 +421,7 @@ server.registerTool(
     additionalRepositories,
     dependsOnTaskIds,
     dependsOnCurrentSession,
+    ...configuration
   }) => {
     try {
       const explicitRepositories =
@@ -409,9 +435,13 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
+        ...configuration,
       };
+      const path = Object.keys(configuration).length > 0
+        ? "/mcp/v3/tasks"
+        : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
       const res = await http(
-        explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
+        path,
         "POST",
         explicitRepositories
           ? {
@@ -421,10 +451,12 @@ server.registerTool(
             }
           : body,
       );
-      if (explicitRepositories && res.status === 404) {
+      // A missing route is plain text; a daemon refusal (for example, an unknown
+      // dependency session) is JSON and must keep its actual error below.
+      if (path !== "/mcp/tasks" && res.status === 404 && !res.headers.get("content-type")?.includes("application/json")) {
         return textResult(
           "Could not create task: this Mission Control daemon does not support repository " +
-            "selectors. Update or restart Mission Control and retry; no task was created.",
+            "selectors or task configuration. Update or restart Mission Control and retry; no task was created.",
           true,
         );
       }
@@ -432,21 +464,11 @@ server.registerTool(
         return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
       }
 
-      const task = (await res.json()) as {
-        id: string;
-        title: string;
-        status: string;
-        repoRoot: string;
-        extraRepos: Array<{ repoRoot: string }>;
-      };
+      const task = (await res.json()) as Task;
       return textResult(
         JSON.stringify(
           {
-            id: task.id,
-            title: task.title,
-            status: task.status,
-            repository: task.repoRoot,
-            additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
+            ...taskConfiguration(task),
             dependsOnTaskIds,
             dependsOnCurrentSession,
           },
@@ -454,6 +476,63 @@ server.registerTool(
           2,
         ),
       );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "update_task",
+  {
+    title: "Edit a backlog task",
+    description:
+      "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
+      "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "repository, and additionalRepositories. Null model/effort clears the override; changing " +
+      "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
+      "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
+      "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
+      "absolute local checkout path or unique repository directory name. An empty title derives " +
+      "a new title from the intent. Returns the saved task configuration without launching it.",
+    inputSchema: {
+      taskId: z.string().min(1).describe("Id of the backlog task to edit"),
+      ...McpUpdateTaskSchema.shape,
+    },
+  },
+  async ({ taskId, ...patch }) => {
+    try {
+      const res = await http(`/mcp/tasks/${encodeURIComponent(taskId)}/update`, "POST", patch);
+      if (!res.ok) {
+        return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
+      }
+      const result = (await res.json()) as { task: Task };
+      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "delete_task",
+  {
+    title: "Delete a task",
+    description:
+      "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
+      "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
+      "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
+      "the task record remains and the error is returned. Returns the deleted task id.",
+    inputSchema: McpDeleteTaskSchema,
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/delete", "POST", { taskId });
+      if (!res.ok) {
+        return textResult(`Could not delete task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify({ taskId, deleted: true }));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

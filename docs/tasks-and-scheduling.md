@@ -5,6 +5,18 @@ operator, imported by a task source, created from a recurring mission, or commis
 automation. A task may point at the session executing it, but that pointer represents the
 current execution, not its complete history.
 
+MCP backlog creation with explicit task configuration uses `POST /mcp/v3/tasks`; older
+selector-only and current-repository clients retain `/mcp/v2/tasks` and `/mcp/tasks`.
+The MCP `update_task` tool uses the token-guarded `/mcp/tasks/:id/update` route. Its shared
+field schemas and update handler reuse dashboard validation, repository canonicalization,
+workflow selection checks, and `TaskManager.update`. MCP updates additionally require the
+task to remain in the backlog through the final write. These tools create and edit ordinary
+backlog tasks; they do not create recurring-mission schedules or launch agents.
+The MCP `delete_task` tool posts a validated task id to the token-guarded `/mcp/tasks/delete`
+route and delegates to `TaskManager.remove`, the same owner used by dashboard deletion. Active
+tasks are refused, and archive preservation and resource cleanup precede durable removal and
+the existing `task_remove` event.
+
 The [task manager](../src/server/tasks.ts) owns task operations and dispatch integration.
 The [queue manager](../src/server/queue.ts) provides work-queue state. Recurring missions
 are managed through the [schedule manager](../src/server/schedules/manager.ts) and its

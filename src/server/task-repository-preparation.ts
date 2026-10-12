@@ -18,7 +18,7 @@ export interface PrepareTaskRepositoriesInput {
   shortNameSelectors: "none" | "all" | "extras";
 }
 
-async function resolveSelector(selector: string): Promise<
+export async function resolveTaskRepositorySelector(selector: string): Promise<
   | { ok: true; path: string }
   | { ok: false; status: 400 | 409; error: string }
 > {
@@ -68,7 +68,7 @@ export async function prepareTaskRepositories(
       paths.push(selector);
       continue;
     }
-    const resolved = await resolveSelector(selector);
+    const resolved = await resolveTaskRepositorySelector(selector);
     if (!resolved.ok) return resolved;
     paths.push(resolved.path);
   }

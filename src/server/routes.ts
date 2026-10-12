@@ -68,7 +68,11 @@ import {
   McpCreateTaskSchema,
   McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
-  type McpCreateTaskV2,
+  McpCreateTaskV3Schema,
+  type McpCreateTaskV3,
+  McpUpdateTaskSchema,
+  McpDeleteTaskSchema,
+  type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
@@ -516,7 +520,7 @@ import {
   resolveTaskExtraRepoRoots,
   resolveTaskRepoRoot,
 } from "./repos.ts";
-import { prepareTaskRepositories } from "./task-repository-preparation.ts";
+import { prepareTaskRepositories, resolveTaskRepositorySelector } from "./task-repository-preparation.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   readSubmissionImageBody,
@@ -4625,8 +4629,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   async function createMcpTask(
     c: Context,
-    data: McpCreateTaskV2,
+    data: McpCreateTaskV3,
     allowShortNames: boolean,
+    validateWorkflow = false,
   ) {
     const {
       env,
@@ -4635,6 +4640,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       dependsOnTaskIds,
       dependsOnCurrentSession,
     } = data;
+    const kind = data.kind ?? "ship";
     const shortNameSelectors = !allowShortNames
       ? "none"
       : data.targetRepository === undefined
@@ -4643,19 +4649,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const prepared = await prepareTaskRepositories({
       primary: data.targetRepository ?? data.repoRoot,
       extras: data.additionalRepositories,
-      kind: "ship",
+      kind,
+      agent: data.agent,
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
 
-    const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
-      type: "task",
-      taskId,
-    }));
+    const dependencies: TaskDependencyInput[] = [...(data.dependencies ?? [])];
+    for (const taskId of dependsOnTaskIds) dependencies.push({ type: "task", taskId });
     if (dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(env, sessionId, cwd);
-      if (!session) return c.json({ error: "no matching active session" }, 404);
+      if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
       dependencies.push({ type: "session", sessionId: session.id });
+    }
+
+    const workflowId = resolveTaskWorkflowId(data.workflowId, kind);
+    if (validateWorkflow && workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.workflowSelectionBlock(workflowId);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
 
     try {
@@ -4664,16 +4677,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         extraRepoRoots: prepared.extraRepoRoots,
         title: data.title,
         intent: data.intent,
-        kind: "ship",
+        kind,
         // Resolved during repository preparation so the capability check and stored pin
-        // cannot observe different ship-kind defaults.
+        // cannot observe different task-kind defaults.
         agent: prepared.agent,
+        model: data.model ?? undefined,
+        effort: data.effort ?? undefined,
+        workflowId,
+        enabled: data.enabled,
+        priority: data.priority,
+        labels: data.labels,
         backlog: true,
         dependencies,
       });
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
   }
@@ -4696,6 +4716,51 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, McpCreateTaskV2Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true);
+  });
+
+  app.post("/mcp/v3/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskV3Schema);
+    if (!parsed.ok) return parsed.res;
+    return createMcpTask(c, parsed.data, true, true);
+  });
+
+  app.post("/mcp/tasks/:id/update", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpUpdateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const { repository, additionalRepositories, ...patch } = parsed.data;
+    const id = c.req.param("id");
+    const existing = tasks.get(id);
+    if (!existing) return c.json({ error: "no such task" }, 404);
+    if (existing.status !== "backlog") {
+      return c.json({ error: `task is ${existing.status}, not in the backlog` }, 409);
+    }
+    const update: UpdateTask = { ...patch };
+    if (repository !== undefined) {
+      const resolved = await resolveTaskRepositorySelector(repository);
+      if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+      update.repoRoot = resolved.path;
+    }
+    if (additionalRepositories !== undefined) {
+      update.extraRepoRoots = [];
+      for (const selector of additionalRepositories) {
+        const resolved = await resolveTaskRepositorySelector(selector);
+        if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+        update.extraRepoRoots.push(resolved.path);
+      }
+    }
+    const validated = UpdateTaskSchema.safeParse(update);
+    if (!validated.success) return c.json({ error: validated.error.message }, 400);
+    return updateTask(c, id, validated.data, true);
+  });
+
+  app.post("/mcp/tasks/delete", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpDeleteTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.remove(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -7866,8 +7931,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/tasks/:id/update", async (c) => {
     const parsed = await parseBody(c, UpdateTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const patch = parsed.data;
-    const id = c.req.param("id");
+    return updateTask(c, c.req.param("id"), parsed.data);
+  });
+
+  async function updateTask(c: Context, id: string, patch: UpdateTask, backlogOnly = false) {
     const existing = tasks.get(id);
     // Resolved only when the repo actually MOVES. A caller restating the root it was
     // handed is not asking for anything, and re-checking it makes a task uneditable the
@@ -7904,9 +7971,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
     }
-    const r = await tasks.update(id, patch);
+    const r = await tasks.update(id, patch, { backlogOnly });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
-  });
+  }
 
   /**
    * File this backlog task as an item in the external tracker a configured source points

@@ -64,11 +64,15 @@ function retainedRoot(): string {
   mkdirSync(STATE_DIR, { recursive: true });
   return realpathSync(STATE_DIR);
 }
-function manifestFor(plan: PlanRow, saved: RevisionRow): PlanManifest {
+function manifestMetadataFor(plan: PlanRow, saved: RevisionRow): PlanManifest {
   const bytes = readSafe(retainedRoot(), `${revisionPath(plan, saved.revision)}/manifest.json`);
   if (!bytes || digest(bytes) !== saved.manifest_hash) throw new PlanStoreError("Plan manifest is missing or corrupt");
   const manifest = PlanManifestSchema.parse(JSON.parse(bytes.toString("utf8")));
   if (manifest.planId !== plan.id || manifest.repoKey !== plan.repo_key || manifest.revision !== saved.revision || JSON.stringify(manifest.policy) !== plan.policy) throw new PlanStoreError("Plan manifest identity mismatch");
+  return manifest;
+}
+function manifestFor(plan: PlanRow, saved: RevisionRow): PlanManifest {
+  const manifest = manifestMetadataFor(plan, saved);
   for (const file of manifest.files) {
     const body = readSafe(retainedRoot(), `${revisionPath(plan, saved.revision)}/${file.name}`);
     if (!body || body.length !== file.bytes || digest(body) !== file.sha256) throw new PlanStoreError(`Saved plan file is missing or corrupt: ${file.name}`);
@@ -79,11 +83,14 @@ function receipt(manifest: PlanManifest): ManagedPlanRevision {
   return { manifest, preview: managedPlanPreview(manifest.planId, manifest.revision), requiredPaths: manifest.files.flatMap((file) => file.checkoutPath ? [file.checkoutPath] : []) };
 }
 
-/** Operator API reads exact durable identities; MCP additionally checks repository ownership. */
-export function readPlanRevision(id: string, revision: number): ManagedPlanRevision {
+function readyRevisionRow(id: string, revision: number): RevisionRow {
   const saved = revisionRow(id, revision);
   if (saved.status !== "ready") throw new PlanStoreError("Plan revision is incomplete; retry its save request to recover");
-  return receipt(manifestFor(row(id), saved));
+  return saved;
+}
+/** Operator API reads exact durable identities; MCP additionally checks repository ownership. */
+export function readPlanRevision(id: string, revision: number): ManagedPlanRevision {
+  return receipt(manifestFor(row(id), readyRevisionRow(id, revision)));
 }
 export function readPlanFile(id: string, revision: number, name: string): Buffer {
   const { manifest } = readPlanRevision(id, revision);
@@ -113,7 +120,8 @@ export async function listPlans(authority: PlanAuthority | PlanAuthority[], curs
   const rows = db.prepare(`SELECT * FROM managed_plans WHERE ${scope}${after ? " AND (slug > ? OR (slug = ? AND id > ?))" : ""} ORDER BY slug, id LIMIT 101`)
     .all(...repoKeys, ...(after ? [after.slug, after.slug, after.id] : [])) as unknown as PlanRow[];
   const page = rows.slice(0, 100);
-  return { plans: page.map((plan) => readPlanRevision(plan.id, plan.current_revision)), nextCursor: rows.length > 100 ? page.at(-1)!.id : null };
+  // Discovery verifies bounded manifest metadata; opening an exact revision verifies its bytes.
+  return { plans: page.map((plan) => receipt(manifestMetadataFor(plan, readyRevisionRow(plan.id, plan.current_revision)))), nextCursor: rows.length > 100 ? page.at(-1)!.id : null };
 }
 export async function authorizePlan(authority: PlanAuthority, id: string): Promise<void> {
   if (row(id).repo_key !== (await planRepository(authority)).repoKey) throw new PlanStoreError("Plan belongs to a different repository", 403);

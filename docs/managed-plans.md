@@ -96,6 +96,9 @@ ordered by slug and plan id. Pass `nextCursor` as `cursor` to continue until it 
 Files exposes **Load more managed plans**, preserving loaded pages if a later request fails.
 Cursors are bookmarks within the currently authorized repository scope, not access grants.
 Refreshing starts again at the first page, including new plans inserted before a prior bookmark.
+Catalog pages verify each manifest's ledger digest, schema, and identity without reading
+the bundle files. Opening an exact revision or file verifies its retained contents against
+the manifest, so missing or changed bytes still refuse review and archive capture.
 Exact revision/file reads and save receipts retain their existing shape. The reader
 identifies the revision, source Markdown and pinned Git eligibility. Relative phase links navigate the verified
 bundle. It uses the same sandbox and CSP as Files and Archives. Guarded file endpoints

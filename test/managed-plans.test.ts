@@ -90,6 +90,19 @@ test("identical retries converge; concurrent stale updates cannot mix whole revi
   assert.match(readPlanFile(saved.manifest.planId, 2, "plan.md").toString(), /second|third/);
 });
 
+test("catalog pages verify manifest metadata without reading bundle contents; exact reads still reject missing bytes", async () => {
+  const a = repo();
+  const saved = await savePlan(a, input("catalog-metadata"));
+  const root = join((await planContext(a)).localStore, saved.manifest.planId, "1");
+  rmSync(join(root, "plan.html"));
+  assert.deepEqual(await listPlans(a), { plans: [saved], nextCursor: null }, "discovery reads manifests, not the potentially large bundle files");
+  assert.throws(() => readPlanRevision(saved.manifest.planId, 1), /missing or corrupt/);
+  assert.throws(() => readPlanFile(saved.manifest.planId, 1, "plan.md"), /missing or corrupt/);
+  const manifestPath = join(root, "manifest.json");
+  writeFileSync(manifestPath, readFileSync(manifestPath, "utf8") + " ");
+  await assert.rejects(listPlans(a), /manifest is missing or corrupt/, "catalog metadata still requires the ledger's manifest digest");
+});
+
 test("linked worktrees share identity, same-name clones are isolated, retained previews and capture survive checkout removal", async () => {
   const a = repo(), b = repo();
   assert.notEqual((await planContext(a)).repoKey, (await planContext(b)).repoKey);

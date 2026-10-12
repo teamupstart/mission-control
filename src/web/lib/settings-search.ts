@@ -432,6 +432,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("skills"),
   },
   {
+    id: "skills-plan-html",
+    label: "Commit generated HTML plan files",
+    description: "Keep rendered plans locally or include HTML in Git for new managed plans.",
+    category: "skills",
+    anchor: "skills/commit-plan-html",
+    keywords: ["plan", "HTML", "Markdown", "Git", "storage", "preview"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
     id: "skills-catalog",
     label: "Skills catalog",
     description: "Which individual skills every session gets.",

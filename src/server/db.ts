@@ -171,7 +171,7 @@ let db: DatabaseSync | undefined;
  */
 // 3: bounded telemetry source checkpoints for immutable workflow context and timing.
 // 4: explicit final-completion worktree-return obligations, with no historical backfill.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 4;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 5;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -749,6 +749,23 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_session_standing_instructions_age
       ON session_standing_instructions(created_at);
 
+    -- Daemon-owned plans retain attribution without cascading on task/session deletion.
+    CREATE TABLE IF NOT EXISTS managed_plans (
+      id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, repo_key TEXT NOT NULL,
+      store_path TEXT NOT NULL, slug TEXT NOT NULL, policy TEXT NOT NULL,
+      session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, repo_slot TEXT NOT NULL,
+      current_revision INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(repo_key, slug)
+    );
+    CREATE TABLE IF NOT EXISTS managed_plan_revisions (
+      plan_id TEXT NOT NULL REFERENCES managed_plans(id), revision INTEGER NOT NULL,
+      request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+      manifest_hash TEXT NOT NULL, status TEXT NOT NULL,
+      checkout_root TEXT NOT NULL, intent TEXT NOT NULL,
+      session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, repo_slot TEXT NOT NULL,
+      PRIMARY KEY(plan_id, revision), UNIQUE(request_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_managed_plan_task ON managed_plan_revisions(task_id, episode_id);
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL

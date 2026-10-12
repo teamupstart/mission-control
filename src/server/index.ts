@@ -70,6 +70,7 @@ import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled
 import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
 import { reconcileSkills } from "./skills/config.ts";
+import { pendingPlanWriteWarnings } from "./plans/store.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
 import {
@@ -132,6 +133,7 @@ await initializeExecutableEnvironment();
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
 const database = openDb();
+for (const problem of pendingPlanWriteWarnings()) console.warn("Plan write recovery:", problem);
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
 // config edit reaches the next call in both processes.

@@ -186,6 +186,10 @@ export function applySkillsConfig(patch: SkillsConfigPatch, now = Date.now()): S
     return { changed: false, linked: [], unlinked: [], blocked: [], problems: [stored.problem], config: before, refused: [stored.problem] };
   }
   const asked = merge(before, patch);
+  // Artifact preferences do not reconcile links or advance the reload watermark.
+  if (Object.keys(patch).every((key) => key === "commitPlanHtml")) {
+    return { changed: false, linked: [], unlinked: [], blocked: [], problems: [], config: persist(asked, false, now), refused: [] };
+  }
   const catalog = readCatalog();
 
   // Only what the patch actually moves. Everything else is somebody else's problem -

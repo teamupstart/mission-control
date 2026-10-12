@@ -2226,6 +2226,8 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
+  /** Pinned by new managed plans; rendered previews are retained regardless. */
+  commitPlanHtml: z.boolean().default(false),
   /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
   enabled: z.boolean().default(false),
   /** Missing row overrides use this policy. Legacy stored rows default to off. */
@@ -2261,7 +2263,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;

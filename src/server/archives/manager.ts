@@ -39,6 +39,7 @@ import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
 import { ArchiveTitleStore } from "./titles.ts";
 import { discoverPlanCaptureScopes } from "../plans/capture-scopes.ts";
+import { managedPlanCaptureScopes } from "../plans/store.ts";
 import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
@@ -401,7 +402,11 @@ export class ArchiveManager {
     for (const job of this.captureStore.forTask(taskId)) {
       if (job.kind === "plan" && job.episodeId === subject.episodeId) jobs.set(job.operationKey, job);
     }
-    for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
+    try {
+      for (const job of await this.reservePlanJobs(subject)) jobs.set(job.operationKey, job);
+    } catch (error) {
+      return { ok: false, error: `Plan capture could not be reserved: ${String(error)}` };
+    }
 
     for (const job of jobs.values()) {
       const outcome = await this.captureUnlessDeleted(job.operationKey);
@@ -551,6 +556,8 @@ export class ArchiveManager {
   private async reservePlanJobs(subject: ArchiveSubject): Promise<ArchiveCaptureJob[]> {
     const roots = await resolveRoots(subject.repos);
     const discovery = await discoverPlanCaptureScopes(roots);
+    const managed = managedPlanCaptureScopes(subject.taskId, subject.episodeId);
+    discovery.scopes = [...managed, ...discovery.scopes.filter((scope) => !managed.some((m) => m.slot === scope.slot && m.directory === scope.directory))];
     for (const entry of discovery.unreadable) {
       this.log("a plan task's checkout could not report what it changed, so nothing was captured from it", {
         taskId: subject.taskId,
@@ -572,7 +579,7 @@ export class ArchiveManager {
         prompts: null,
         origin: subject.origin,
         repos: subject.repos,
-        scope: { slot: scope.slot, directory: scope.directory },
+        scope: { slot: scope.slot, directory: scope.directory, ...(scope.managed ? { managed: scope.managed } : {}) },
       }),
     );
   }

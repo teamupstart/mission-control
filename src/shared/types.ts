@@ -1857,6 +1857,7 @@ export interface SkillRow extends SkillCatalogEntry {
 
 /** Everything the skills panel draws, in one read. */
 export interface SkillsView {
+  commitPlanHtml: boolean;
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
   enabled: boolean;
   skills: SkillRow[];

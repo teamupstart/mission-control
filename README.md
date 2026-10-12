@@ -159,6 +159,11 @@ instructions reach each harness and runtime. Running sessions keep the instructi
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 
+Managed repository plans publish Markdown by default and retain rendered HTML locally for
+review. Settings > Skills can include HTML in Git for new plans. Existing plans keep their
+policy; repository publication still waits for the planning PR to merge. See
+[managed plans](docs/managed-plans.md).
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 

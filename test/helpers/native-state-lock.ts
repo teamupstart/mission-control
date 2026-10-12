@@ -6,6 +6,7 @@ import {
   validateNativeStateLockBinding,
 } from "../../src/server/state-ownership-native.ts";
 import { validateNativeSymlinkPublicationBinding } from "../../src/server/symlink-publication.ts";
+import { validateNativePlanFilesBinding } from "../../src/server/plans/native.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -29,9 +30,16 @@ const require = createRequire(import.meta.url);
 export function ensureNativeStateLockAddon(): string {
   const addon = nativeStateLockAddonPath();
   try {
-    validateNativeStateLockBinding(require(addon));
-    validateNativeSymlinkPublicationBinding(require(addon));
-    return addon;
+    // dlopen can retain an old addon's exports even after require.cache is cleared.
+    // Probe in a child so an upgrade is rebuilt before this worker ever loads it.
+    const validators = [
+      ["../../src/server/state-ownership-native.ts", "validateNativeStateLockBinding"],
+      ["../../src/server/symlink-publication.ts", "validateNativeSymlinkPublicationBinding"],
+      ["../../src/server/plans/native.ts", "validateNativePlanFilesBinding"],
+    ];
+    const probe = 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
+      + validators.map(([module, name]) => `import { ${name} } from ${JSON.stringify(new URL(module!, import.meta.url).href)}; ${name}(require(${JSON.stringify(addon)}));`).join("\n");
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", probe], { cwd: REPO_ROOT, stdio: "pipe" });
   } catch {
     delete require.cache[addon];
     execFileSync(process.execPath, ["scripts/build-state-lock-native.mjs"], {
@@ -41,5 +49,6 @@ export function ensureNativeStateLockAddon(): string {
   }
   validateNativeStateLockBinding(require(addon));
   validateNativeSymlinkPublicationBinding(require(addon));
+  validateNativePlanFilesBinding(require(addon));
   return addon;
 }

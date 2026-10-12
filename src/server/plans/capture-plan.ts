@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import {
   ARCHIVE_LIMITS,
   ARCHIVE_PRIMARY_REPORT_PATH,
@@ -19,6 +19,8 @@ import {
 } from "../archives/plan.ts";
 import { planCapturedDirectory } from "../archives/report-directory.ts";
 import { planPagePath } from "./capture-scopes.ts";
+import { retainedPlanFiles } from "./store.ts";
+import { STATE_DIR } from "../config.ts";
 
 /**
  * Which files in a plan task's checkout become one plan archive.
@@ -55,6 +57,24 @@ export async function planPlanCapture(
   deps: CapturePlanDeps,
 ): Promise<CapturePlan> {
   const scope = job.scope;
+  if (scope?.managed) {
+    try {
+      const retained = retainedPlanFiles(scope.managed.planId, scope.managed.revision);
+      const retainedRoot = await realpath(STATE_DIR);
+      const files: PlannedFile[] = [];
+      for (const file of retained) {
+        const source = await resolveCheckoutFile(retainedRoot, file.retainedPath);
+        if (!source.ok) throw new Error(`${file.name}: ${source.reason}`);
+        const captured: PlannedFile = { expectedSha256: file.sha256, source: source.path, sourceDev: source.dev, sourceIno: source.ino,
+          archivePath: `${ARCHIVE_REPORT_DIR}/${file.name}`, role: "report_companion", repoSlot: scope.slot,
+          originalPath: `${scope.directory}/${file.name}`, bytes: source.bytes };
+        files.push(captured);
+        if (file.name === PLAN_PAGE_FILENAME) files.push({ ...captured, archivePath: ARCHIVE_PRIMARY_REPORT_PATH, role: "primary_report" });
+      }
+      const problems = limitProblems(files);
+      return problems.length ? { ok: false, problems } : { ok: true, files, missing: [], captureStatus: "complete" };
+    } catch (error) { return { ok: false, problems: [`Registered plan preview is unavailable: ${String(error)}`] }; }
+  }
   if (!scope) {
     // Structural rather than content: a plan job with no scope was never told what to
     // capture, so there is no honest partial to publish - a bundle claiming to preserve "a

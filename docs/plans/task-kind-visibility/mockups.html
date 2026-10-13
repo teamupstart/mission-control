@@ -167,13 +167,13 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--dim);border:1px solid va
   <header class="mk-masthead">
     <p class="mk-eyebrow">Mission Control · mockups · task-kind-visibility</p>
     <h1>Task type, always visible</h1>
-    <p class="mk-lede">Today the conversation header names a task's kind <strong>only when it is not <code>ship</code></strong>: <code>taskPillParts</code> (<code>src/shared/task.ts</code>) treats ship as the silent default, and the kind that does print is a small blue chip in the PATH and BRANCH band. Board cards never show a kind at all. So a ship task, the most common kind, shows nothing anywhere.</p>
+    <p class="mk-lede">Before this change, the conversation header named a task's kind <strong>only when it was not <code>ship</code></strong>: <code>taskPillParts</code> (<code>src/shared/task.ts</code>) treated ship as the silent default, and the kind that did print was a small blue chip in the PATH and BRANCH band. Board cards never showed a kind at all. So a ship task, the most common kind, showed nothing anywhere. The behaviour that shipped is described in <code>docs/ui.md</code>.</p>
     <p class="mk-lede">These mockups make the kind <strong>always shown, ship included</strong>, give each of the six kinds its own icon and colour, and move it out of the PATH and BRANCH band. There are four options for the conversation header (A to D) and four for the board card (1 to 4). Every option prints the kind's word or, for option 4, shows it on hover, so colour is never the only cue. Both surfaces get a setting under <strong>Settings › Display</strong>.</p>
     <div class="mk-legend"><span class="mk-leg" style="--kind:#3dd6c6"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship</b><span>deliver a change</span></span><span class="mk-leg" style="--kind:#ff7b72"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><b>bugfix</b><span>fix a bug</span></span><span class="mk-leg" style="--kind:#79c0ff"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><b>scout</b><span>investigate and report</span></span><span class="mk-leg" style="--kind:#a371f7"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><b>plan</b><span>produce a reviewed plan</span></span><span class="mk-leg" style="--kind:#db61a2"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><b>pipeline</b><span>run a conductor pipeline</span></span><span class="mk-leg" style="--kind:#b4c0cf"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><b>chat</b><span>have an open-ended conversation</span></span></div>
     <p class="mk-callout"><strong>Kind colours are new and are only proposals.</strong> Each kind gets its own hue, chosen to stay clear of the state tones that already colour a card's left edge and the header's status pill. The backlog card's <code>.bl-kind-*</code> colours are left as they are.</p>
   </header>
 
-  <h2 class="mk-part">Today <span>the session from your screenshot, then a scout task for comparison</span></h2>
+  <h2 class="mk-part">Before this change <span>the session from your screenshot, then a scout task for comparison</span></h2>
   <div class="mk-before mk-frame">
     
   <div class="console" style="--kind:#3dd6c6">
@@ -215,7 +215,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--dim);border:1px solid va
       <span class="hd-tool">● FOREMAN · 8</span>
     </nav>
   </div>
-    <p class="mk-cap">ship task: no kind anywhere.</p>
+    <p class="mk-cap">Prior design, ship task: no kind anywhere.</p>
     
   <div class="console" style="--kind:#79c0ff">
     <header class="detail-head">
@@ -256,7 +256,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--dim);border:1px solid va
       <span class="hd-tool">● FOREMAN · 8</span>
     </nav>
   </div>
-    <p class="mk-cap">scout task: a small SCOUT chip in the PATH and BRANCH band, the same blue for every kind. All four options below remove this chip's kind word. The chip itself stays for a task title, an outcome link or a schedule origin.</p>
+    <p class="mk-cap">Prior design, scout task: a small SCOUT chip in the PATH and BRANCH band, the same blue for every kind. All four options below remove this chip's kind word. The chip itself stays for a task title, an outcome link or a schedule origin.</p>
   </div>
 
   <h2 class="mk-part">Conversation header <span>choose one of A, B, C or D</span></h2>

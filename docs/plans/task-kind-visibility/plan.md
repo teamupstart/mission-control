@@ -4,10 +4,11 @@ Rendered mockups: [`mockups.html`](mockups.html).
 
 ## Problem
 
-The conversation header names a task's kind only when it is not `ship`. `taskPillParts`
-(`src/shared/task.ts`) treats `ship` as the silent default, and the kind that does print is a
-small blue chip in the PATH and BRANCH band, the same colour for every kind. Board cards never
-show a kind. So a `ship` task, the most common kind, shows its kind nowhere.
+Before this change, the conversation header named a task's kind only when it was not `ship`.
+`taskPillParts` (`src/shared/task.ts`) treated `ship` as the silent default, and the kind that
+did print was a small blue chip in the PATH and BRANCH band, the same colour for every kind.
+Board cards never showed a kind. So a `ship` task, the most common kind, showed its kind
+nowhere. The behaviour that shipped is described in [`docs/ui.md`](../../ui.md).
 
 ## Change
 

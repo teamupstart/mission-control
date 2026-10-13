@@ -40,6 +40,7 @@ Object.defineProperty(globalThis, "fetch", {
 const { ConsoleDetail } = await import("../src/web/components/layouts/ConsoleDetail.tsx");
 const { SessionTile } = await import("../src/web/components/layouts/SessionTile.tsx");
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
+const { TaskKindIcon } = await import("../src/web/components/TaskKindMark.tsx");
 const { DISPLAY_CHOICES } = await import("../src/web/lib/board-card.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES, UI_CONFIG_DEFAULTS } = await import(
@@ -139,6 +140,19 @@ test("the tile style keeps the agent dot, riding the tile's corner", async () =>
   const mark = region(html, 'class="tk-mark tk-tile"', 'class="detail-title"');
   assert.ok(mark.includes('class="agent-dot"'), "the tile dropped which harness this is");
   assert.ok(mark.includes('role="img"') && mark.includes('aria-label="ship task"'));
+});
+
+test("every kind draws its own icon, so no two kinds share a glyph", () => {
+  // The rendered SVG, not the source record: a refactor that pointed every kind at one glyph
+  // would still compile against `Record<TaskKind, ...>`, and would leave the colour and word
+  // tests green while every mark looked the same.
+  const glyphs = TASK_KINDS.map((kind) =>
+    renderToStaticMarkup(createElement(TaskKindIcon, { kind })).replace(/^<svg[^>]*>|<\/svg>$/g, ""),
+  );
+  for (const [i, glyph] of glyphs.entries()) {
+    assert.match(glyph, /<(path|circle|rect)\b/, `${TASK_KINDS[i]} draws no glyph at all`);
+  }
+  assert.equal(new Set(glyphs).size, TASK_KINDS.length, "two kinds draw the same icon");
 });
 
 test("every kind is marked in its own colour, with its own word", async () => {

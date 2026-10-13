@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Task type, always visible · mockups</title>
+<style>
+:root{color-scheme:dark;--bg:#0a0c0f;--bg-2:#0e1116;--panel:#14181e;--panel-2:#171c23;--border:#232a33;--border-soft:#1b2129;--fg:#e7ebf1;--muted:#939eae;--dim:#7c8798;--working:#4a9eff;--idle:#35c08a;--attention:#f6a733;--danger:#f85149;--exited:#707a88;--neutral:#8b94a3;--select:#35c08a;--purple:#a371f7;--cost:var(--purple);--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.28);--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+code{font-family:var(--mono);font-size:.88em;color:var(--fg);background:var(--bg-2);border:1px solid var(--border-soft);border-radius:4px;padding:1px 4px}
+.k-ico{flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---- document chrome (mk-) ---- */
+.mk-page{max-width:1440px;margin:0 auto;padding:40px 32px 120px}
+.mk-masthead{border-bottom:1px solid var(--border);padding-bottom:26px;margin-bottom:34px}
+.mk-eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 10px}
+.mk-masthead h1{margin:0 0 12px;font-size:27px;letter-spacing:-.015em}
+.mk-lede{margin:0 0 10px;max-width:92ch;color:var(--muted);font-size:14.5px}
+.mk-lede strong{color:var(--fg)}
+.mk-part{margin:56px 0 18px;font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg);border-top:1px solid var(--border);padding-top:22px}
+.mk-part span{color:var(--dim);letter-spacing:.04em;text-transform:none;font-size:13px;margin-left:10px}
+.mk-opt{margin:0 0 60px}
+.mk-opt-head{display:flex;align-items:baseline;gap:12px;border-left:3px solid var(--working);padding-left:14px;margin-bottom:6px}
+.mk-opt-head h2{margin:0;font-size:20px;letter-spacing:-.01em}
+.mk-letter{font-family:var(--mono);color:var(--working);font-size:18px}
+.mk-tag{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:2px 9px}
+.mk-opt-lede{margin:0 0 18px 17px;max-width:96ch;color:var(--muted);font-size:13.5px}
+.mk-opt-lede strong{color:var(--fg)}
+.mk-sub{margin:20px 0 10px 17px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.mk-frame{margin-left:17px}
+.mk-pc{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:16px 0 0 17px;max-width:1000px}
+.mk-pc ul{margin:0;padding:0;list-style:none;font-size:12.5px;color:var(--muted)}
+.mk-pc li{padding:3px 0 3px 20px;position:relative}
+.mk-pros li::before{content:"+";position:absolute;left:4px;color:var(--idle);font-weight:700}
+.mk-cons li::before{content:"−";position:absolute;left:4px;color:var(--attention);font-weight:700}
+.mk-legend{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 6px}
+.mk-leg{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid color-mix(in oklab,var(--kind) 30%,var(--border));border-radius:9px;background:color-mix(in oklab,var(--kind) 7%,var(--panel));font-size:12px;color:var(--muted)}
+.mk-leg b{color:var(--kind);text-transform:uppercase;letter-spacing:.06em;font-size:11px}
+.mk-leg .k-ico{color:var(--kind)}
+.mk-callout{margin:14px 0 0;max-width:92ch;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--attention);border-radius:8px;background:var(--panel);color:var(--muted);font-size:13px}
+.mk-callout strong{color:var(--fg)}
+.mk-before{display:grid;gap:14px}
+.mk-cap{font-size:11.5px;color:var(--dim);margin:6px 0 0}
+
+/* ---- console header reproduction (class names match src/web/styles.css) ---- */
+.console{background:var(--bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;max-width:1400px}
+.detail-head{display:flex;align-items:center;gap:10px;padding:14px 22px 12px;border-bottom:1px solid var(--border-soft);font-size:12px}
+.agent-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--agent-accent,var(--idle));box-shadow:0 0 8px color-mix(in oklab,var(--agent-accent,var(--idle)) 60%,transparent)}
+.detail-title{display:flex;flex-direction:column;gap:2px;flex:1000 1 0;min-width:14ch;max-width:max-content}
+.detail-title-line{display:flex;align-items:center;gap:8px;min-width:0}
+.detail-title h2{margin:0;font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-title .goal{display:block;width:0;min-width:100%;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-head-spacer{flex:1}
+.hd-sdk{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:1px 7px;flex:none}
+.hd-edit{color:var(--dim);flex:none}
+.hd-wf{font-size:11.5px;color:#ff8a80;border:1px solid color-mix(in oklab,var(--danger) 45%,var(--border));background:color-mix(in oklab,var(--danger) 10%,transparent);border-radius:999px;padding:2px 9px;flex:none}
+.hd-state{font-size:11.5px;color:var(--working);background:color-mix(in oklab,var(--working) 14%,transparent);border-radius:999px;padding:2px 9px;flex:none;font-weight:600}
+.hd-mode{font-size:11px;color:var(--working);border:1px solid color-mix(in oklab,var(--working) 32%,var(--border-soft));border-radius:6px;padding:3px 7px;flex:none}
+.hd-model{font-size:11.5px;font-weight:650;flex:none}
+.hd-effort{font-size:11px;color:#ff8a80;border:1px solid color-mix(in oklab,var(--danger) 35%,var(--border));border-radius:6px;padding:2px 7px;flex:none}
+.hd-ctx,.rt-ctx{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);flex:none}
+.hd-ctx i,.rt-ctx i{display:block;width:34px;height:4px;border-radius:4px;background:var(--border)}
+.hd-ctx b,.rt-ctx b{display:block;height:100%;border-radius:4px;background:var(--idle)}
+.hd-cost{font-size:11.5px;color:#ff8a80;border:1px solid color-mix(in oklab,var(--danger) 45%,var(--border));border-radius:6px;padding:2px 7px;font-weight:600;flex:none}
+.detail-sub{display:flex;align-items:center;gap:14px;margin:0;padding:10px 22px;border-bottom:1px solid var(--border-soft);background:color-mix(in oklab,var(--bg-2) 55%,transparent)}
+.detail-sub .kv{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:11.5px}
+.detail-sub dt{flex:none;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--dim)}
+.detail-sub dd{margin:0;color:var(--muted);font-family:var(--mono);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-sub .branch{color:var(--idle)}
+.task-chip{display:flex;align-items:center;gap:8px;padding:5px 9px;font-size:12px;background:color-mix(in oklab,var(--working) 7%,var(--panel-2));border:1px solid var(--border-soft);border-left:2px solid var(--working);border-radius:8px}
+.task-kind{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:640;color:var(--working);background:color-mix(in oklab,var(--working) 15%,transparent);padding:2px 6px;border-radius:5px}
+.detail-tabs{display:flex;align-items:center;gap:2px;padding:0 22px;border-bottom:1px solid var(--border-soft)}
+.detail-tab{position:relative;display:inline-flex;align-items:center;gap:6px;padding:10px 13px;font-size:12.5px;font-weight:600;white-space:nowrap;color:var(--muted)}
+.detail-tab.on{color:var(--fg)}
+.detail-tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;border-radius:2px;background:var(--working)}
+kbd{font-family:var(--mono);font-size:9.5px;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:0 4px;line-height:15px;background:var(--bg-2)}
+.hd-tool{font-size:11.5px;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:3px 9px;margin-left:4px;white-space:nowrap}
+.hd-tool.on{color:var(--fg);background:color-mix(in oklab,var(--working) 18%,var(--panel));border-color:color-mix(in oklab,var(--working) 40%,var(--border))}
+
+/* ---- header option A: eyebrow ---- */
+.k-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:10px;line-height:14px;letter-spacing:.09em;text-transform:uppercase;color:var(--kind)}
+.k-eyebrow b{font-weight:700}
+.k-eyebrow-why{color:var(--dim);letter-spacing:.02em;text-transform:none;font-size:11px}
+
+/* ---- header option B: title badge ---- */
+.k-badge{flex:none;display:inline-flex;align-items:center;gap:5px;padding:2px 8px 2px 6px;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--kind);background:color-mix(in oklab,var(--kind) 16%,var(--panel));border:1px solid color-mix(in oklab,var(--kind) 45%,var(--border));border-radius:6px}
+
+/* ---- header option C: kind tile + accent edge ---- */
+.console.k-edge .detail-head{box-shadow:inset 3px 0 0 var(--kind);background:linear-gradient(90deg,color-mix(in oklab,var(--kind) 7%,transparent),transparent 40%)}
+.k-tile{position:relative;flex:none;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:48px;height:42px;color:var(--kind);background:color-mix(in oklab,var(--kind) 14%,var(--panel));border:1px solid color-mix(in oklab,var(--kind) 42%,var(--border));border-radius:10px}
+.k-tile-word{font-size:8.5px;font-weight:750;letter-spacing:.06em;text-transform:uppercase;line-height:1}
+.k-tile-agent{position:absolute;right:-3px;bottom:-3px;width:10px;height:10px;border:2px solid var(--bg)}
+
+/* ---- header option D: tab-strip anchor ---- */
+.k-anchor{flex:none;align-self:center;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;font-size:12px;font-weight:650;color:var(--kind);background:color-mix(in oklab,var(--kind) 12%,var(--panel));border:1px solid color-mix(in oklab,var(--kind) 38%,var(--border));border-radius:7px}
+.k-anchor-rule{flex:none;width:1px;height:18px;background:var(--border);margin:0 8px 0 10px}
+
+/* ---- board tile reproduction ---- */
+.rack{display:flex;flex-wrap:wrap;gap:16px;margin-left:17px;align-items:flex-start}
+.rack.tabs{row-gap:24px;padding-top:10px}
+.col{width:300px;padding:10px;border-radius:12px;background:var(--bg-2);border:1px solid var(--border-soft)}
+.col-head{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin:2px 4px 10px;display:flex;justify-content:space-between}
+.col .tile+.tile{margin-top:10px}
+.col.tabs .tile+.tile{margin-top:20px}
+.col.tabs .col-head{margin-bottom:20px}
+.tile{position:relative;display:flex;flex-direction:column;gap:7px;width:100%;padding:10px 11px 9px 13px;color:var(--fg);background:linear-gradient(var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)}
+.tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:10px 0 0 10px;background:var(--tone-color,var(--neutral))}
+.tile-head{display:flex;align-items:center;gap:8px;min-width:0}
+.tile-name{flex:1;min-width:0;font-size:12.5px;font-weight:640;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile-goal{font-size:11.5px;line-height:1.4;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tile-marks{display:flex;gap:5px;flex-wrap:wrap}
+.tile-flag{padding:1px 6px;font-size:10px;font-weight:650;border-radius:999px;border:1px solid var(--border);color:var(--muted);background:var(--bg-2)}
+.tf-pr{color:var(--idle);border-color:color-mix(in oklab,var(--idle) 40%,var(--border))}
+.tf-review{color:var(--attention);border-color:color-mix(in oklab,var(--attention) 40%,var(--border))}
+.tf-decision{color:var(--attention);border-color:color-mix(in oklab,var(--attention) 40%,var(--border))}
+.tile-runtime-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.rt-chip{font-size:11px;color:var(--muted);border:1px solid var(--border-soft);border-radius:6px;padding:1px 6px}
+.cost-chip{font-size:11px;color:var(--cost);border:1px solid color-mix(in oklab,var(--cost) 32%,var(--border-soft));background:color-mix(in oklab,var(--cost) 12%,var(--panel-2));border-radius:6px;padding:1px 6px;font-weight:550}
+.tile-foot{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--dim)}
+.tile-branch{flex:1;min-width:0;font-family:var(--mono);color:color-mix(in oklab,var(--idle) 75%,var(--dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kb{flex:none}
+
+/* ---- card option 1: chip beside the name ---- */
+.k-chip{flex:none;display:inline-flex;align-items:center;gap:4px;padding:1px 6px 1px 5px;font-size:9.5px;font-weight:720;letter-spacing:.06em;text-transform:uppercase;color:var(--kind);background:color-mix(in oklab,var(--kind) 14%,transparent);border:1px solid color-mix(in oklab,var(--kind) 38%,var(--border));border-radius:5px}
+
+/* ---- card option 2: tab on the top edge ---- */
+.k-tab{position:absolute;top:-10px;left:14px;display:inline-flex;align-items:center;gap:4px;padding:1px 8px 1px 6px;font-size:9.5px;font-weight:720;letter-spacing:.07em;text-transform:uppercase;line-height:16px;color:var(--kind);background:color-mix(in oklab,var(--kind) 16%,var(--panel));border:1px solid color-mix(in oklab,var(--kind) 50%,var(--border));border-radius:6px}
+.k-tab-static{position:static}
+
+/* ---- card option 3: band across the top ---- */
+.k-band{display:flex;align-items:center;gap:6px;margin:-10px -11px 1px -13px;padding:4px 11px 4px 13px;font-size:10px;color:var(--kind);background:color-mix(in oklab,var(--kind) 13%,var(--panel));border-bottom:1px solid color-mix(in oklab,var(--kind) 30%,var(--border));border-radius:10px 10px 0 0}
+.k-band b{font-weight:740;letter-spacing:.08em;text-transform:uppercase}
+.k-band-why{color:var(--dim);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k-band-static{margin:0;border-radius:8px;border:1px solid color-mix(in oklab,var(--kind) 30%,var(--border));width:230px}
+
+/* ---- card option 4: medallion ---- */
+.k-medal{position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;color:var(--kind);background:color-mix(in oklab,var(--kind) 16%,var(--panel));border:1px solid color-mix(in oklab,var(--kind) 50%,var(--border))}
+.k-medal-agent{position:absolute;right:-3px;bottom:-3px;width:8px;height:8px;border:1.5px solid var(--panel);box-shadow:none}
+
+/* ---- strips ---- */
+.k-strip{display:flex;flex-wrap:wrap;gap:12px 18px;margin:0 0 0 17px;padding:14px 16px;border:1px dashed var(--border);border-radius:10px;background:var(--bg-2);max-width:1400px}
+.k-cell{display:inline-flex;align-items:center;gap:8px}
+.k-cell-label{font-size:11px;color:var(--dim)}
+
+/* ---- settings mock ---- */
+.st-wrap{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:18px;margin-left:17px;max-width:1400px}
+.st-panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 22px}
+.st-panel h3{margin:0 0 4px;font-size:16px}
+.st-panel h4{margin:16px 0 4px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.st-alt h4{margin-top:0}
+.st-blurb{margin:0 0 10px;color:var(--dim);font-size:12px}
+.st-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-top:1px solid var(--border-soft)}
+.st-label{display:flex;flex-direction:column;gap:2px;font-size:13px}
+.st-label span{font-size:11.5px;color:var(--dim)}
+.st-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex:none}
+.st-opt{font-size:11.5px;color:var(--muted);padding:5px 10px;border-left:1px solid var(--border)}
+.st-opt:first-child{border-left:0}
+.st-opt.on{color:var(--fg);background:color-mix(in oklab,var(--select) 22%,var(--panel-2))}
+.st-note{margin:10px 0 0;font-size:11.5px;color:var(--dim);font-style:italic}
+.st-switch{flex:none;width:32px;height:18px;border-radius:999px;background:color-mix(in oklab,var(--select) 55%,var(--panel-2));position:relative}
+.st-switch i{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:var(--fg)}
+</style>
+</head>
+<body>
+<main class="mk-page">
+  <header class="mk-masthead">
+    <p class="mk-eyebrow">Mission Control · mockups · task-kind-visibility</p>
+    <h1>Task type, always visible</h1>
+    <p class="mk-lede">Today the conversation header names a task's kind <strong>only when it is not <code>ship</code></strong>: <code>taskPillParts</code> (<code>src/shared/task.ts</code>) treats ship as the silent default, and the kind that does print is a small blue chip in the PATH and BRANCH band. Board cards never show a kind at all. So a ship task, the most common kind, shows nothing anywhere.</p>
+    <p class="mk-lede">These mockups make the kind <strong>always shown, ship included</strong>, give each of the six kinds its own icon and colour, and move it out of the PATH and BRANCH band. There are four options for the conversation header (A to D) and four for the board card (1 to 4). Every option prints the kind's word or, for option 4, shows it on hover, so colour is never the only cue. Both surfaces get a setting under <strong>Settings › Display</strong>.</p>
+    <div class="mk-legend"><span class="mk-leg" style="--kind:#3dd6c6"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship</b><span>deliver a change</span></span><span class="mk-leg" style="--kind:#ff7b72"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><b>bugfix</b><span>fix a bug</span></span><span class="mk-leg" style="--kind:#79c0ff"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><b>scout</b><span>investigate and report</span></span><span class="mk-leg" style="--kind:#a371f7"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><b>plan</b><span>produce a reviewed plan</span></span><span class="mk-leg" style="--kind:#db61a2"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><b>pipeline</b><span>run a conductor pipeline</span></span><span class="mk-leg" style="--kind:#b4c0cf"><svg class="k-ico" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><b>chat</b><span>have an open-ended conversation</span></span></div>
+    <p class="mk-callout"><strong>Kind colours are new and are only proposals.</strong> Each kind gets its own hue, chosen to stay clear of the state tones that already colour a card's left edge and the header's status pill. The backlog card's <code>.bl-kind-*</code> colours are left as they are.</p>
+  </header>
+
+  <h2 class="mk-part">Today <span>the session from your screenshot, then a scout task for comparison</span></h2>
+  <div class="mk-before mk-frame">
+    
+  <div class="console" style="--kind:#3dd6c6">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        
+        <div class="detail-title-line"><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      
+    </dl>
+    <nav class="detail-tabs">
+      
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div>
+    <p class="mk-cap">ship task: no kind anywhere.</p>
+    
+  <div class="console" style="--kind:#79c0ff">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        
+        <div class="detail-title-line"><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      <div class="task-chip"><span class="task-kind">scout</span></div>
+    </dl>
+    <nav class="detail-tabs">
+      
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div>
+    <p class="mk-cap">scout task: a small SCOUT chip in the PATH and BRANCH band, the same blue for every kind. All four options below remove this chip's kind word. The chip itself stays for a task title, an outcome link or a schedule origin.</p>
+  </div>
+
+  <h2 class="mk-part">Conversation header <span>choose one of A, B, C or D</span></h2>
+  
+  <section class="mk-opt" id="header-A">
+    <div class="mk-opt-head"><span class="mk-letter">A</span><h2>Eyebrow over the title</h2><span class="mk-tag">quietest</span></div>
+    <p class="mk-opt-lede">A one-line kicker above the session name: <strong>icon, KIND TASK, and the kind's purpose</strong> from <code>TASK_KIND_INFO</code>. It reads like a section label, so it never competes with the status pills, and it is the only option that says what the kind <em>means</em> as well as what it is called.</p>
+    <div class="mk-frame">
+  <div class="console" style="--kind:#3dd6c6">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <span class="k-eyebrow" style="--kind:#3dd6c6"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship task</b><span class="k-eyebrow-why">· deliver a change</span></span>
+        <div class="detail-title-line"><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      
+    </dl>
+    <nav class="detail-tabs">
+      
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div></div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-eyebrow" style="--kind:#3dd6c6"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship task</b><span class="k-eyebrow-why">· deliver a change</span></span></span><span class="k-cell"><span class="k-eyebrow" style="--kind:#ff7b72"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><b>bugfix task</b><span class="k-eyebrow-why">· fix a bug</span></span></span><span class="k-cell"><span class="k-eyebrow" style="--kind:#79c0ff"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><b>scout task</b><span class="k-eyebrow-why">· investigate and report</span></span></span><span class="k-cell"><span class="k-eyebrow" style="--kind:#a371f7"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><b>plan task</b><span class="k-eyebrow-why">· produce a reviewed plan</span></span></span><span class="k-cell"><span class="k-eyebrow" style="--kind:#db61a2"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><b>pipeline task</b><span class="k-eyebrow-why">· run a conductor pipeline</span></span></span><span class="k-cell"><span class="k-eyebrow" style="--kind:#b4c0cf"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><b>chat task</b><span class="k-eyebrow-why">· have an open-ended conversation</span></span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>Explains itself: “ship task · deliver a change”</li><li>No horizontal cost; the title keeps its full width</li><li>Quiet enough to be on for every session</li></ul><ul class="mk-cons"><li>Adds about 14px of header height</li><li>Smallest type of the four, so it is read rather than glanced at</li></ul></div>
+  </section>
+  <section class="mk-opt" id="header-B">
+    <div class="mk-opt-head"><span class="mk-letter">B</span><h2>Badge leading the title</h2><span class="mk-tag">issue-tracker style</span></div>
+    <p class="mk-opt-lede">A filled, colour-coded badge sits <strong>inline before the session name</strong>, the way an issue tracker prefixes an issue with its type. It is read in the same eye movement as the name and adds no height.</p>
+    <div class="mk-frame">
+  <div class="console" style="--kind:#3dd6c6">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        
+        <div class="detail-title-line"><span class="k-badge" style="--kind:#3dd6c6" title="ship task - deliver a change"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      
+    </dl>
+    <nav class="detail-tabs">
+      
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div></div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-badge" style="--kind:#3dd6c6"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span></span><span class="k-cell"><span class="k-badge" style="--kind:#ff7b72"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg>bugfix</span></span><span class="k-cell"><span class="k-badge" style="--kind:#79c0ff"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg>scout</span></span><span class="k-cell"><span class="k-badge" style="--kind:#a371f7"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg>plan</span></span><span class="k-cell"><span class="k-badge" style="--kind:#db61a2"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg>pipeline</span></span><span class="k-cell"><span class="k-badge" style="--kind:#b4c0cf"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg>chat</span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>Read together with the name, in one glance</li><li>Zero added height</li><li>Familiar pattern from Linear, Jira and GitHub</li></ul><ul class="mk-cons"><li>Costs 50 to 80px of title width on a narrow pane</li><li>One more pill in a row that already has several</li></ul></div>
+  </section>
+  <section class="mk-opt" id="header-C">
+    <div class="mk-opt-head"><span class="mk-letter">C</span><h2>Kind tile and accent edge</h2><span class="mk-tag">most visible</span></div>
+    <p class="mk-opt-lede">The agent dot grows into a <strong>48px kind tile</strong>: the kind's icon with its word underneath, and the agent's dot riding its corner. The header's left edge takes the kind's colour, so a pane is identifiable from across the room before any text is read.</p>
+    <div class="mk-frame">
+  <div class="console k-edge" style="--kind:#3dd6c6">
+    <header class="detail-head">
+      <span class="k-tile" style="--kind:#3dd6c6" title="ship task - deliver a change"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span class="k-tile-word">ship</span><span class="agent-dot k-tile-agent"></span></span>
+      <div class="detail-title">
+        
+        <div class="detail-title-line"><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      
+    </dl>
+    <nav class="detail-tabs">
+      
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div></div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-tile" style="--kind:#3dd6c6"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span class="k-tile-word">ship</span><span class="agent-dot k-tile-agent"></span></span></span><span class="k-cell"><span class="k-tile" style="--kind:#ff7b72"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><span class="k-tile-word">bugfix</span><span class="agent-dot k-tile-agent"></span></span></span><span class="k-cell"><span class="k-tile" style="--kind:#79c0ff"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><span class="k-tile-word">scout</span><span class="agent-dot k-tile-agent"></span></span></span><span class="k-cell"><span class="k-tile" style="--kind:#a371f7"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><span class="k-tile-word">plan</span><span class="agent-dot k-tile-agent"></span></span></span><span class="k-cell"><span class="k-tile" style="--kind:#db61a2"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><span class="k-tile-word">pipeline</span><span class="agent-dot k-tile-agent"></span></span></span><span class="k-cell"><span class="k-tile" style="--kind:#b4c0cf"><svg class="k-ico" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><span class="k-tile-word">chat</span><span class="agent-dot k-tile-agent"></span></span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>Unmissable; identifiable without reading</li><li>The agent dot is kept, not lost</li><li>Gives the header a strong left anchor</li></ul><ul class="mk-cons"><li>Biggest visual change to the header</li><li>The coloured edge is one more colour channel beside state tone</li></ul></div>
+  </section>
+  <section class="mk-opt" id="header-D">
+    <div class="mk-opt-head"><span class="mk-letter">D</span><h2>Anchor on the tab strip</h2><span class="mk-tag">toolbar</span></div>
+    <p class="mk-opt-lede">The kind becomes the <strong>first item of the tab strip</strong>, a labelled chip with a divider before Conversation. It says what kind of task every tab beneath it belongs to, and it leaves the identity row exactly as it is today.</p>
+    <div class="mk-frame">
+  <div class="console" style="--kind:#3dd6c6">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        
+        <div class="detail-title-line"><h2>Add Configurable Plan Storage Locations</h2></div>
+        <span class="goal">Add a default-on plan commit setting, support stashing plans for future t…</span>
+      </div>
+      <span class="hd-sdk">✦ Agent SDK</span>
+      <span class="hd-edit">✎</span>
+      <span class="hd-wf">⌁Workflow blocked</span>
+      <span class="hd-state">● working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-mode">approve ▾</span>
+      <span class="hd-model">GPT-6 Astra ▾</span>
+      <span class="hd-effort">✦ xhigh ▾</span>
+      <span class="hd-ctx"><i><b style="width:54%"></b></i>54%</span>
+      <span class="hd-cost">≈$44.87</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/09c156f2-5d83-46a5-97f2-eb9c7227dc46</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⌥ harness/add-a-setting-that-allows-a-user-09c156</dd></div>
+      
+    </dl>
+    <nav class="detail-tabs">
+      <span class="k-anchor" style="--kind:#3dd6c6" title="deliver a change"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span>Ship task</span></span><span class="k-anchor-rule"></span>
+      <span class="detail-tab on"><kbd>g</kbd>Conversation</span>
+      <span class="detail-tab"><kbd>q</kbd>Work queue</span>
+      <span class="detail-tab"><kbd>y</kbd>Workflows</span>
+      <span class="detail-tab"><kbd>⇧Y</kbd>Scouts</span>
+      <span class="detail-tab"><kbd>⇧D</kbd>Diff</span>
+      <span class="detail-tab"><kbd>⇧F</kbd>Files</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hd-tool on">▤ Terminal view</span>
+      <span class="hd-tool">≻_ Terminal ▾</span>
+      <span class="hd-tool">◆ Codex ▾</span>
+      <span class="hd-tool">● FOREMAN · 8</span>
+    </nav>
+  </div></div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-anchor" style="--kind:#3dd6c6"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span>Ship task</span></span></span><span class="k-cell"><span class="k-anchor" style="--kind:#ff7b72"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><span>Bugfix task</span></span></span><span class="k-cell"><span class="k-anchor" style="--kind:#79c0ff"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><span>Scout task</span></span></span><span class="k-cell"><span class="k-anchor" style="--kind:#a371f7"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><span>Plan task</span></span></span><span class="k-cell"><span class="k-anchor" style="--kind:#db61a2"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><span>Pipeline task</span></span></span><span class="k-cell"><span class="k-anchor" style="--kind:#b4c0cf"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><span>Chat task</span></span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>Identity row is untouched</li><li>Visible from every tab, as context for all of them</li><li>Plenty of room for the full word</li></ul><ul class="mk-cons"><li>One row away from the session name</li><li>Competes for width with the tab strip's own fit ladder on narrow panes</li></ul></div>
+  </section>
+
+  <h2 class="mk-part">Board card <span>choose one of 1, 2, 3 or 4</span></h2>
+  
+  <section class="mk-opt" id="card-1">
+    <div class="mk-opt-head"><span class="mk-letter">1</span><h2>Chip beside the name</h2><span class="mk-tag">compact</span></div>
+    <p class="mk-opt-lede">A small colour-coded chip with the kind's icon and word sits <strong>in the tile head, right after the agent dot</strong>. The same vocabulary as the tile's other flags, promoted to the first thing in the card.</p>
+    <div class="rack">
+      <div class="col"><div class="col-head"><span>Working</span><span>2</span></div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#3dd6c6">
+      
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="k-chip" style="--kind:#3dd6c6" title="ship task - deliver a change"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span><span class="tile-name">Add Configurable Plan Storage Locations</span><kbd class="kb">⌘1</kbd></span>
+      <span class="tile-goal">Add a default-on plan commit setting, support stashing plans for future tasks</span>
+      <span class="tile-marks"><span class="tile-flag tf-pr">PR #1170</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:54%"></b></i>54%</span>
+        <span class="cost-chip">≈$12.40</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/add-a-setting-that-allows…</span><span class="tile-seen">now</span></span>
+    </div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#a371f7">
+      
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="k-chip" style="--kind:#a371f7" title="plan task - produce a reviewed plan"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg>plan</span><span class="tile-name">Plan: durable workflow evidence</span><kbd class="kb">⌘4</kbd></span>
+      <span class="tile-goal">Write a reviewed plan for keeping registered evidence across daemon restarts</span>
+      <span class="tile-marks"><span class="tile-flag">2 queued</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:68%"></b></i>68%</span>
+        <span class="cost-chip">≈$7.05</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/plan-durable-workflow-e…</span><span class="tile-seen">1m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Needs you</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--attention);--kind:#ff7b72">
+      
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="k-chip" style="--kind:#ff7b72" title="bugfix task - fix a bug"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg>bugfix</span><span class="tile-name">Cost chip stale after compaction</span><kbd class="kb">⌘2</kbd></span>
+      <span class="tile-goal">The cost chip keeps the pre-compaction estimate until the next turn lands</span>
+      <span class="tile-marks"><span class="tile-flag tf-decision">◆ decision</span><span class="tile-flag tf-review">review</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Sonnet 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:31%"></b></i>31%</span>
+        <span class="cost-chip">≈$3.18</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/cost-chip-stale-after-co…</span><span class="tile-seen">4m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Idle</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--idle);--kind:#79c0ff">
+      
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#9aa7ff"></span><span class="k-chip" style="--kind:#79c0ff" title="scout task - investigate and report"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg>scout</span><span class="tile-name">Why does the Electron build double-sign?</span><kbd class="kb">⌘3</kbd></span>
+      <span class="tile-goal">Trace every signing call in the packaging path and report where the second one comes from</span>
+      
+      <span class="tile-runtime-line">
+        <span class="rt-chip">GPT-6 Astra</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:12%"></b></i>12%</span>
+        <span class="cost-chip">≈$0.92</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/why-does-the-electron-b…</span><span class="tile-seen">11m ago</span></span>
+    </div></div>
+    </div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-chip" style="--kind:#3dd6c6"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span></span><span class="k-cell"><span class="k-chip" style="--kind:#ff7b72"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg>bugfix</span></span><span class="k-cell"><span class="k-chip" style="--kind:#79c0ff"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg>scout</span></span><span class="k-cell"><span class="k-chip" style="--kind:#a371f7"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg>plan</span></span><span class="k-cell"><span class="k-chip" style="--kind:#db61a2"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg>pipeline</span></span><span class="k-cell"><span class="k-chip" style="--kind:#b4c0cf"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg>chat</span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>No added height</li><li>First thing read on the card</li><li>Matches the existing flag style</li></ul><ul class="mk-cons"><li>Takes 45 to 70px from the name, which already ellipsizes</li><li>Smallest of the four at board distance</li></ul></div>
+  </section>
+  <section class="mk-opt" id="card-2">
+    <div class="mk-opt-head"><span class="mk-letter">2</span><h2>Tab on the top edge</h2><span class="mk-tag">file-folder</span></div>
+    <p class="mk-opt-lede">The kind is a <strong>labelled tab sitting on the card's top border</strong>, like a folder tab. It uses no row inside the card and no width from the name, and a column of them reads as a list of kinds down its left side.</p>
+    <div class="rack tabs">
+      <div class="col tabs"><div class="col-head"><span>Working</span><span>2</span></div>
+    <div class="tile has-tab" style="--tone-color:var(--working);--kind:#3dd6c6">
+      <span class="k-tab" style="--kind:#3dd6c6" title="ship task - deliver a change"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Add Configurable Plan Storage Locations</span><kbd class="kb">⌘1</kbd></span>
+      <span class="tile-goal">Add a default-on plan commit setting, support stashing plans for future tasks</span>
+      <span class="tile-marks"><span class="tile-flag tf-pr">PR #1170</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:54%"></b></i>54%</span>
+        <span class="cost-chip">≈$12.40</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/add-a-setting-that-allows…</span><span class="tile-seen">now</span></span>
+    </div>
+    <div class="tile has-tab" style="--tone-color:var(--working);--kind:#a371f7">
+      <span class="k-tab" style="--kind:#a371f7" title="plan task - produce a reviewed plan"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg>plan</span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Plan: durable workflow evidence</span><kbd class="kb">⌘4</kbd></span>
+      <span class="tile-goal">Write a reviewed plan for keeping registered evidence across daemon restarts</span>
+      <span class="tile-marks"><span class="tile-flag">2 queued</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:68%"></b></i>68%</span>
+        <span class="cost-chip">≈$7.05</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/plan-durable-workflow-e…</span><span class="tile-seen">1m ago</span></span>
+    </div></div>
+      <div class="col tabs"><div class="col-head"><span>Needs you</span><span>1</span></div>
+    <div class="tile has-tab" style="--tone-color:var(--attention);--kind:#ff7b72">
+      <span class="k-tab" style="--kind:#ff7b72" title="bugfix task - fix a bug"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg>bugfix</span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Cost chip stale after compaction</span><kbd class="kb">⌘2</kbd></span>
+      <span class="tile-goal">The cost chip keeps the pre-compaction estimate until the next turn lands</span>
+      <span class="tile-marks"><span class="tile-flag tf-decision">◆ decision</span><span class="tile-flag tf-review">review</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Sonnet 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:31%"></b></i>31%</span>
+        <span class="cost-chip">≈$3.18</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/cost-chip-stale-after-co…</span><span class="tile-seen">4m ago</span></span>
+    </div></div>
+      <div class="col tabs"><div class="col-head"><span>Idle</span><span>1</span></div>
+    <div class="tile has-tab" style="--tone-color:var(--idle);--kind:#79c0ff">
+      <span class="k-tab" style="--kind:#79c0ff" title="scout task - investigate and report"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg>scout</span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#9aa7ff"></span><span class="tile-name">Why does the Electron build double-sign?</span><kbd class="kb">⌘3</kbd></span>
+      <span class="tile-goal">Trace every signing call in the packaging path and report where the second one comes from</span>
+      
+      <span class="tile-runtime-line">
+        <span class="rt-chip">GPT-6 Astra</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:12%"></b></i>12%</span>
+        <span class="cost-chip">≈$0.92</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/why-does-the-electron-b…</span><span class="tile-seen">11m ago</span></span>
+    </div></div>
+    </div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#3dd6c6"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg>ship</span></span><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#ff7b72"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg>bugfix</span></span><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#79c0ff"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg>scout</span></span><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#a371f7"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg>plan</span></span><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#db61a2"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg>pipeline</span></span><span class="k-cell k-cell-tab"><span class="k-tab k-tab-static" style="--kind:#b4c0cf"><svg class="k-ico" width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg>chat</span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>No height or width taken from the card's content</li><li>Scans down a column as a neat list</li><li>Name keeps its full width</li></ul><ul class="mk-cons"><li>Needs about 8px more gap between cards</li><li>Overlaps the column header if a card is dragged to the top</li></ul></div>
+  </section>
+  <section class="mk-opt" id="card-3">
+    <div class="mk-opt-head"><span class="mk-letter">3</span><h2>Kind band across the top</h2><span class="mk-tag">most visible</span></div>
+    <p class="mk-opt-lede">A <strong>tinted band across the top of the card</strong> carrying the icon, the kind, and its purpose. The tile's left edge keeps its state colour, so kind (top) and state (left) are two separate axes that never fight.</p>
+    <div class="rack">
+      <div class="col"><div class="col-head"><span>Working</span><span>2</span></div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#3dd6c6">
+      <span class="k-band" style="--kind:#3dd6c6"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship</b><span class="k-band-why">deliver a change</span></span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Add Configurable Plan Storage Locations</span><kbd class="kb">⌘1</kbd></span>
+      <span class="tile-goal">Add a default-on plan commit setting, support stashing plans for future tasks</span>
+      <span class="tile-marks"><span class="tile-flag tf-pr">PR #1170</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:54%"></b></i>54%</span>
+        <span class="cost-chip">≈$12.40</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/add-a-setting-that-allows…</span><span class="tile-seen">now</span></span>
+    </div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#a371f7">
+      <span class="k-band" style="--kind:#a371f7"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><b>plan</b><span class="k-band-why">produce a reviewed plan</span></span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Plan: durable workflow evidence</span><kbd class="kb">⌘4</kbd></span>
+      <span class="tile-goal">Write a reviewed plan for keeping registered evidence across daemon restarts</span>
+      <span class="tile-marks"><span class="tile-flag">2 queued</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:68%"></b></i>68%</span>
+        <span class="cost-chip">≈$7.05</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/plan-durable-workflow-e…</span><span class="tile-seen">1m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Needs you</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--attention);--kind:#ff7b72">
+      <span class="k-band" style="--kind:#ff7b72"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><b>bugfix</b><span class="k-band-why">fix a bug</span></span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#d97757"></span><span class="tile-name">Cost chip stale after compaction</span><kbd class="kb">⌘2</kbd></span>
+      <span class="tile-goal">The cost chip keeps the pre-compaction estimate until the next turn lands</span>
+      <span class="tile-marks"><span class="tile-flag tf-decision">◆ decision</span><span class="tile-flag tf-review">review</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Sonnet 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:31%"></b></i>31%</span>
+        <span class="cost-chip">≈$3.18</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/cost-chip-stale-after-co…</span><span class="tile-seen">4m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Idle</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--idle);--kind:#79c0ff">
+      <span class="k-band" style="--kind:#79c0ff"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><b>scout</b><span class="k-band-why">investigate and report</span></span>
+      <span class="tile-head"><span class="agent-dot" style="--agent-accent:#9aa7ff"></span><span class="tile-name">Why does the Electron build double-sign?</span><kbd class="kb">⌘3</kbd></span>
+      <span class="tile-goal">Trace every signing call in the packaging path and report where the second one comes from</span>
+      
+      <span class="tile-runtime-line">
+        <span class="rt-chip">GPT-6 Astra</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:12%"></b></i>12%</span>
+        <span class="cost-chip">≈$0.92</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/why-does-the-electron-b…</span><span class="tile-seen">11m ago</span></span>
+    </div></div>
+    </div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#3dd6c6"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><b>ship</b><span class="k-band-why">deliver a change</span></span></span><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#ff7b72"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><b>bugfix</b><span class="k-band-why">fix a bug</span></span></span><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#79c0ff"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><b>scout</b><span class="k-band-why">investigate and report</span></span></span><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#a371f7"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><b>plan</b><span class="k-band-why">produce a reviewed plan</span></span></span><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#db61a2"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><b>pipeline</b><span class="k-band-why">run a conductor pipeline</span></span></span><span class="k-cell k-cell-wide"><span class="k-band k-band-static" style="--kind:#b4c0cf"><svg class="k-ico" width="11" height="11" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><b>chat</b><span class="k-band-why">have an open-ended conversation</span></span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>Most obvious at board distance</li><li>Says what the kind means, not just its name</li><li>Kind and state live on different edges</li></ul><ul class="mk-cons"><li>Adds about 20px to every card</li><li>Fewer cards fit in a column without scrolling</li></ul></div>
+  </section>
+  <section class="mk-opt" id="card-4">
+    <div class="mk-opt-head"><span class="mk-letter">4</span><h2>Kind medallion replaces the dot</h2><span class="mk-tag">icon-first</span></div>
+    <p class="mk-opt-lede">The agent dot becomes a <strong>round kind medallion</strong> with the agent's dot riding its corner. Icon-only on the card, with the word on hover. It is the smallest change, and it relies on the six icons being learned.</p>
+    <div class="rack">
+      <div class="col"><div class="col-head"><span>Working</span><span>2</span></div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#3dd6c6">
+      
+      <span class="tile-head"><span class="k-medal" style="--kind:#3dd6c6" title="ship task - deliver a change"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="tile-name">Add Configurable Plan Storage Locations</span><kbd class="kb">⌘1</kbd></span>
+      <span class="tile-goal">Add a default-on plan commit setting, support stashing plans for future tasks</span>
+      <span class="tile-marks"><span class="tile-flag tf-pr">PR #1170</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:54%"></b></i>54%</span>
+        <span class="cost-chip">≈$12.40</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/add-a-setting-that-allows…</span><span class="tile-seen">now</span></span>
+    </div>
+    <div class="tile" style="--tone-color:var(--working);--kind:#a371f7">
+      
+      <span class="tile-head"><span class="k-medal" style="--kind:#a371f7" title="plan task - produce a reviewed plan"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="tile-name">Plan: durable workflow evidence</span><kbd class="kb">⌘4</kbd></span>
+      <span class="tile-goal">Write a reviewed plan for keeping registered evidence across daemon restarts</span>
+      <span class="tile-marks"><span class="tile-flag">2 queued</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Opus 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:68%"></b></i>68%</span>
+        <span class="cost-chip">≈$7.05</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/plan-durable-workflow-e…</span><span class="tile-seen">1m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Needs you</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--attention);--kind:#ff7b72">
+      
+      <span class="tile-head"><span class="k-medal" style="--kind:#ff7b72" title="bugfix task - fix a bug"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="tile-name">Cost chip stale after compaction</span><kbd class="kb">⌘2</kbd></span>
+      <span class="tile-goal">The cost chip keeps the pre-compaction estimate until the next turn lands</span>
+      <span class="tile-marks"><span class="tile-flag tf-decision">◆ decision</span><span class="tile-flag tf-review">review</span></span>
+      <span class="tile-runtime-line">
+        <span class="rt-chip">Sonnet 5.5</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:31%"></b></i>31%</span>
+        <span class="cost-chip">≈$3.18</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/cost-chip-stale-after-co…</span><span class="tile-seen">4m ago</span></span>
+    </div></div>
+      <div class="col"><div class="col-head"><span>Idle</span><span>1</span></div>
+    <div class="tile" style="--tone-color:var(--idle);--kind:#79c0ff">
+      
+      <span class="tile-head"><span class="k-medal" style="--kind:#79c0ff" title="scout task - investigate and report"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#9aa7ff"></span></span><span class="tile-name">Why does the Electron build double-sign?</span><kbd class="kb">⌘3</kbd></span>
+      <span class="tile-goal">Trace every signing call in the packaging path and report where the second one comes from</span>
+      
+      <span class="tile-runtime-line">
+        <span class="rt-chip">GPT-6 Astra</span>
+        <span class="rt-chip">high ▾</span>
+        <span class="rt-ctx"><i><b style="width:12%"></b></i>12%</span>
+        <span class="cost-chip">≈$0.92</span>
+      </span>
+      <span class="tile-foot"><span class="tile-branch">harness/why-does-the-electron-b…</span><span class="tile-seen">11m ago</span></span>
+    </div></div>
+    </div>
+    <p class="mk-sub">The same treatment for every kind</p>
+    <div class="k-strip"><span class="k-cell"><span class="k-medal" style="--kind:#3dd6c6"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">ship</span></span><span class="k-cell"><span class="k-medal" style="--kind:#ff7b72"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="6" height="8.5" rx="3"/><path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">bugfix</span></span><span class="k-cell"><span class="k-medal" style="--kind:#79c0ff"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.1 10.1 3.4 3.4"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">scout</span></span><span class="k-cell"><span class="k-medal" style="--kind:#a371f7"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 4h7M6.5 8h7M6.5 12h7"/><path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7"/><circle cx="3.4" cy="12" r=".9"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">plan</span></span><span class="k-cell"><span class="k-medal" style="--kind:#db61a2"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.4" cy="8" r="1.7"/><circle cx="12.6" cy="3.8" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">pipeline</span></span><span class="k-cell"><span class="k-medal" style="--kind:#b4c0cf"><svg class="k-ico" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z"/></svg><span class="agent-dot k-medal-agent" style="--agent-accent:#d97757"></span></span><span class="k-cell-label">chat</span></span></div>
+    <div class="mk-pc"><ul class="mk-pros"><li>No height and almost no width</li><li>The agent identity is kept</li><li>Calmest board of the four</li></ul><ul class="mk-cons"><li>Icon-only: the word is on hover, not printed</li><li>Needs the icons learned before it is fast</li></ul></div>
+  </section>
+
+  <h2 class="mk-part">Settings › Display <span>where both choices become settings</span></h2>
+  <div class="st-wrap">
+  <div class="st-panel">
+    <h3>Display</h3>
+    <p class="st-blurb">What a session draws about itself. Changes apply everywhere at once.</p>
+    <h4>Task type</h4>
+    <p class="st-blurb">Every task names its kind - ship, bugfix, scout, plan, pipeline or chat. Choose where it is shown and how loudly.</p>
+    
+  <div class="st-row">
+    <div class="st-label"><b>Conversation header</b><span>Shown on every task session, including ship.</span></div>
+    <div class="st-seg" role="radiogroup"><span class="st-opt">Eyebrow</span><span class="st-opt on">Title badge</span><span class="st-opt">Kind tile</span><span class="st-opt">Tab strip</span><span class="st-opt">Off</span></div>
+  </div>
+    
+  <div class="st-row">
+    <div class="st-label"><b>Board card</b><span>Shown on every card that came from a task.</span></div>
+    <div class="st-seg" role="radiogroup"><span class="st-opt">Name chip</span><span class="st-opt">Edge tab</span><span class="st-opt on">Top band</span><span class="st-opt">Medallion</span><span class="st-opt">Off</span></div>
+  </div>
+    <p class="st-note">Selected values here are illustrative. The defaults become whichever options you choose below.</p>
+  </div>
+  <div class="st-panel st-alt">
+    <h4>Alternative: one toggle per surface</h4>
+    <p class="st-blurb">Ship only the two styles you choose, each with an on/off switch, instead of offering all four as a picker.</p>
+    <div class="st-row"><div class="st-label"><b>Task type in the conversation header</b><span>Shown on every task session.</span></div><span class="st-switch on"><i></i></span></div>
+    <div class="st-row"><div class="st-label"><b>Task type on board cards</b><span>Shown on every card that came from a task.</span></div><span class="st-switch on"><i></i></span></div>
+  </div></div>
+</main>
+</body>
+</html>

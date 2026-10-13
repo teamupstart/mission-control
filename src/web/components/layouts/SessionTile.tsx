@@ -5,7 +5,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
-import { useDisplayItems } from "../../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
@@ -27,6 +27,7 @@ import { EffortPicker } from "../EffortPicker.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
+import { TaskKindMark } from "../TaskKindMark.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
@@ -265,6 +266,13 @@ export function SessionTile({
    */
   const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;
 
+  // The task's kind, in the operator's chosen style, for every kind - `ship` included. A
+  // session with no task, or the style set to `off`, draws none.
+  const kindStyle = useDisplayChoice("taskKindCard");
+  const taskKind = session.task?.kind ?? null;
+  const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  const agentDot = <AgentDot agent={session.agent} />;
+
   return (
     <div
       ref={setTileRef}
@@ -276,7 +284,7 @@ export function SessionTile({
         workflowVisiblyExpanded ? " workflow-expanded" : ""
       }${
         isTourTask ? " mc-tour-task" : ""
-      }`}
+      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}`}
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();
@@ -334,8 +342,20 @@ export function SessionTile({
         />
       </Tooltip>
 
+      {/* The folder tab rides the tile's top border (absolutely placed), and the band is the
+          tile's first row; both come before the head so the head reads under them. */}
+      {kindMark === "tab" && <TaskKindMark kind={taskKind!} variant="tab" />}
+      {kindMark === "band" && <TaskKindMark kind={taskKind!} variant="band" />}
+
       <span className="tile-head">
-        <AgentDot agent={session.agent} />
+        {kindMark === "medallion" ? (
+          <TaskKindMark kind={taskKind!} variant="medallion">
+            {agentDot}
+          </TaskKindMark>
+        ) : (
+          agentDot
+        )}
+        {kindMark === "chip" && <TaskKindMark kind={taskKind!} variant="chip" />}
         <Tooltip label={`Open ${openName}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>

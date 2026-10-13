@@ -244,6 +244,8 @@ const uiFields = {
   layout: "setting",
   conversationView: "setting",
   lineDensity: "setting",
+  taskKindHeader: "setting",
+  taskKindCard: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",

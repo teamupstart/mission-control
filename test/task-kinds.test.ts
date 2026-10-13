@@ -158,11 +158,18 @@ test("only chat is excluded from backlog-producing surfaces", () => {
   );
 });
 
+test("every kind has its own colour, so no two marks can be mistaken for each other", () => {
+  const accents = TASK_KINDS.map((kind) => TASK_KIND_INFO[kind].accent);
+  for (const accent of accents) assert.match(accent, /^#[0-9a-f]{6}$/);
+  assert.equal(new Set(accents).size, TASK_KINDS.length);
+});
+
 test("chat has the approved conversational copy", () => {
   assert.deepEqual(TASK_KIND_INFO.chat, {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
+    accent: "#b4c0cf",
   });
   assert.deepEqual(TASK_KIND_BEHAVIOR.chat, {
     repoAvailability: "workspace",

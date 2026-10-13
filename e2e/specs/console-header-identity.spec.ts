@@ -18,8 +18,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * - The permission mode leads `mode · model · context · cost` in the header, and the footer
  *   has given it up rather than keeping a second copy.
- * - The task pill draws a kind badge only for a `scout`, drops the title the session's own
- *   name already carries, and is not drawn at all once it has neither.
+ * - The task pill carries no kind (every kind, `ship` included, is badged beside the name
+ *   instead), drops the title the session's own name already carries, and is not drawn at
+ *   all once it has nothing left to host.
  * - The objective reads under that name instead of in a band of its own above the transcript,
  *   clipped to one line so a full-length one cannot cost the header a second row.
  *
@@ -198,7 +199,7 @@ test("the permission mode leads the header cluster and the footer has given it u
   await shot(head, "header-cluster", "the console header reads mode -> model -> cost");
 });
 
-test("the kind badge is a scout's alone, and the pill stops repeating the session's name", async ({
+test("every kind is badged beside the name, and the pill stops repeating the session's name", async ({
   dashboard,
   daemon,
 }) => {
@@ -211,20 +212,22 @@ test("the kind badge is a scout's alone, and the pill stops repeating the sessio
   const rows = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row");
   await expect(rows).toHaveCount(2);
 
-  // The scout's detail pill has something to say, so it is drawn and says it. It does NOT
-  // repeat the session's name, which is the heading directly above it.
+  // The scout's kind is badged on the name's own line, and the pill does not repeat the
+  // session's name, which is the heading right beside that badge - so it has nothing left.
   const scoutDetail = await openDetail(dashboard, daemon, SCOUT.title);
-  await expect(scoutDetail.locator(".task-chip .task-kind")).toHaveText("scout");
-  await expect(scoutDetail.locator(".task-chip")).not.toContainText(SCOUT.title);
+  await expect(scoutDetail.locator(".detail-title-line").getByText("scout", { exact: true })).toBeVisible();
+  await expect(scoutDetail.locator(".task-chip")).toHaveCount(0);
   await shot(
-    dashboard.locator("main.console"),
+    scoutDetail,
     "scout-kind-in-console",
     "the scout detail badges its kind without repeating its name",
   );
 
-  // The ship session's pill has nothing left: `ship` is what every task is, and its title
-  // is already the heading. So there is no bar at all rather than an empty one.
+  // The ship session is badged too: a kind printed only when it was not the default left
+  // the most common kind printed nowhere. Its pill has nothing left either, so there is no
+  // bar at all rather than an empty one.
   const shipDetail = await openDetail(dashboard, daemon, SHIP.title);
+  await expect(shipDetail.locator(".detail-title-line").getByText("ship", { exact: true })).toBeVisible();
   await expect(shipDetail.locator(".task-chip")).toHaveCount(0);
 
 });

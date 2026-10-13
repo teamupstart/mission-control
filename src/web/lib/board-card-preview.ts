@@ -64,7 +64,25 @@ export function previewSession(now: number): Session {
     lastSeen: 0,
     lastActivity: now - 42_000,
     pendingReviews: 0,
-    task: null,
+    // A task, so the Task type picker governs something the preview can draw. Named after
+    // the session the way a dispatch names one, so the card's task pill stays silent and
+    // the kind mark is the only thing the task adds.
+    task: {
+      id: "board-card-preview-task",
+      title: "Fix the parser",
+      fullTitle: "Fix the parser",
+      kind: "ship",
+      workflowId: null,
+      status: "running",
+      outcome: null,
+      outcomeUrl: null,
+      pipelineRun: null,
+      scheduleId: null,
+      scheduleOccurrenceId: null,
+      scheduledFor: null,
+      ensemble: null,
+      repoPrs: [],
+    },
     prUrl: null,
     prNumber: null,
     prState: null,

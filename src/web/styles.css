@@ -10083,26 +10083,6 @@ mark.find-hit.is-current {
   border-radius: 8px;
   min-width: 0;
 }
-/* Deliberately ONE rule for every kind, where the backlog card's `.bl-kind-*` gives each
-   its own colour. `taskPillParts` draws `plan` here as well as `scout`, so the two chips
-   share this blue - which is legible, because this chip prints the kind's WORD in
-   uppercase and colour carries no per-kind meaning at this surface. Splitting it was
-   tried and reverted: it changes the rendered markup of the SCOUT chip, and the change
-   that added `plan` is not allowed to move what a scout renders. Worth revisiting only
-   alongside the fact that ship is green on a backlog card and blue in the roundup panel
-   today - these two surfaces already disagree about kind colour, and making one kind
-   agree across both would leave it the odd one out rather than fix anything. */
-.task-kind {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 640;
-  color: var(--working);
-  background: color-mix(in oklab, var(--working) 15%, transparent);
-  padding: 2px 6px;
-  border-radius: 5px;
-}
 .task-title {
   color: var(--fg);
   overflow: hidden;
@@ -10190,19 +10170,11 @@ mark.find-hit.is-current {
 .report-repos {
   color: var(--muted);
 }
-.task-dispatching .task-kind {
-  color: var(--attention);
-  background: color-mix(in oklab, var(--attention) 15%, transparent);
-}
 .task-dispatching .task-status {
   color: var(--attention);
 }
 .task-failed {
   border-left-color: #e5534b;
-}
-.task-failed .task-kind {
-  color: #e5877f;
-  background: color-mix(in oklab, #e5534b 15%, transparent);
 }
 .task-failed .task-status {
   color: #e5877f;
@@ -10214,7 +10186,7 @@ mark.find-hit.is-current {
 /* ---- task triage marks (priority + labels) ----
    Both are OPTIONAL on a task and both render nothing when unset, so these rules only
    ever fire on a task somebody actually triaged. Deliberately sized to sit inline next
-   to `.task-kind` without out-shouting it: the kind says what the task IS, priority
+   to a task's kind mark without out-shouting it: the kind says what the task IS, priority
    says how loud it is, and only `blocker` gets to be red. Drawn by `PriorityChip` /
    `LabelChips` in session-bits.tsx, which the board's backlog card, the roundup panel
    and the dispatch form all share. */
@@ -26284,7 +26256,9 @@ span.line-run-prov {
    the sessions that carry it. Inverted, a new chip is covered on the day it lands, and opting
    one OUT is a deliberate edit to this list rather than an omission.
    What stays, and why each one:
-     - `.agent-dot` and `.detail-title`, which are the session's identity;
+     - `.agent-dot` and `.detail-title`, which are the session's identity, and `.tk-tile`, a
+       fixed 48px that takes the agent dot's place (riding its corner) under the Kind tile
+       task-type style;
      - `.badge`, which is the review button and is never shed at any rung;
      - `.workflow-bind-chip`, at its mark from rung 2 - the console detail is the ONLY
        surface that offers it, so hiding it removes the affordance rather than moving it;
@@ -26296,7 +26270,7 @@ span.line-run-prov {
    Everything on that list is either the session's identity or a fixed width, so past this
    rung the header's requirement no longer depends on what the session is carrying at all.
    That is what makes the fit provable rather than measured per fixture. */
-.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
+.detail-head[data-rung~="7"] > *:not(.agent-dot):not(.tk-tile):not(.detail-title):not(.badge):not(.workflow-bind-chip):not(.si-session-chip):not(.detail-head-spacer):not(.tt-desc) {
   display: none;
 }
 
@@ -29238,6 +29212,199 @@ span.line-run-prov {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* ---- task kind marks (`TaskKindMark`) ----
+   One rule per STYLE and none per kind: the kind's colour arrives inline as `--kind` from
+   `TASK_KIND_INFO`, the way a harness's arrives as `--agent-accent`. Every style but the
+   medallion prints the kind's word, so colour is never the only cue. The operator picks
+   one header style and one card style in Settings > Display. */
+.tk-mark {
+  --kind: var(--neutral);
+  color: var(--kind);
+}
+.tk-icon {
+  flex: none;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tk-why {
+  color: var(--dim);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tk-badge {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--kind) 16%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--kind) 45%, var(--border));
+  border-radius: 6px;
+}
+.tk-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.tk-eyebrow b {
+  flex: none;
+  font-weight: 700;
+}
+.tk-eyebrow .tk-why {
+  font-size: 11px;
+}
+.detail-head.tk-edge {
+  box-shadow: inset 3px 0 0 var(--kind);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--kind) 7%, transparent), transparent 40%);
+}
+.tk-tile {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 48px;
+  height: 42px;
+  background: color-mix(in oklab, var(--kind) 14%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--kind) 42%, var(--border));
+  border-radius: 10px;
+}
+.tk-word {
+  font-size: 8.5px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tk-tile .agent-dot,
+.tk-medallion .agent-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  box-shadow: none;
+}
+.tk-tile .agent-dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg);
+}
+/* `align-self` for the reason every non-tab control in the tab strip sets it: the row
+   stretches so a tab's underline meets its border. */
+.tk-tabs {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 10px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  background: color-mix(in oklab, var(--kind) 12%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--kind) 38%, var(--border));
+  border-radius: 7px;
+}
+/* The tab is absolutely placed, so it takes no row and no width from the name; the tile
+   gives back the height it overhangs as margin, which is also what keeps the first card's
+   tab inside its scrolling column. */
+.tile.has-kind-tab {
+  margin-top: 9px;
+}
+.tk-tab {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 6px;
+  font-size: 9.5px;
+  font-weight: 720;
+  line-height: 16px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--kind) 16%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--kind) 50%, var(--border));
+  border-radius: 6px;
+}
+.tk-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 5px;
+  font-size: 9.5px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--kind) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--kind) 38%, var(--border));
+  border-radius: 5px;
+}
+/* Bled to the tile's edges. The tile's state stripe is positioned, so it still paints
+   over the band's left end: kind on top, state on the left. */
+.tk-band {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: -10px -11px 1px -13px;
+  padding: 4px 11px 4px 13px;
+  font-size: 10px;
+  background: color-mix(in oklab, var(--kind) 13%, var(--panel));
+  border-bottom: 1px solid color-mix(in oklab, var(--kind) 30%, var(--border));
+  border-radius: 9px 9px 0 0;
+}
+.tk-band b {
+  flex: none;
+  font-weight: 740;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.tk-band .tk-why {
+  font-size: 10.5px;
+}
+.tk-medallion {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: color-mix(in oklab, var(--kind) 16%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--kind) 50%, var(--border));
+  border-radius: 50%;
+}
+.tk-medallion .agent-dot {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--panel);
+}
+
 /* ---- board tile: workflow disclosure (D′) ----
    The compact state is a cropped rung of the full ladder, not a second progress diagram.
    It owns pointer interaction inside the otherwise-clickable tile: the preview opens the exact
@@ -30156,6 +30323,59 @@ span.line-run-prov {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* ---- Display style choices (Settings -> Display) ----
+   A style picked from a fixed set, beside the checklist's show/hide items. Segmented, so
+   every style's name is visible at once and compared by reading rather than by opening. */
+.display-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.display-choice-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.display-choice-option {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 1px solid var(--border);
+  cursor: pointer;
+}
+.display-choice-option:first-child {
+  border-left: 0;
+}
+.display-choice-option:hover {
+  color: var(--fg);
+}
+.display-choice-option.is-on {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 18%, var(--panel-2));
+}
+/* The radio stays in the accessibility tree and in the tab order; only its circle goes,
+   because the segment's own fill is what says which one is chosen. */
+.display-choice-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+.display-choice-option:has(input:focus-visible) {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
 }
 
 /* ---- Board card (Settings -> Display) ----

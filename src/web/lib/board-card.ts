@@ -1,4 +1,6 @@
 import { useCallback } from "react";
+import { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
+import type { TaskKindCardStyle, TaskKindHeaderStyle } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -319,4 +321,106 @@ export function setDisplayItemShown(
       ? [...hidden]
       : [...hidden, id];
   void updateUiConfig({ hiddenDisplayItems: next });
+}
+
+/**
+ * The Display choices that are a STYLE rather than a show/hide switch.
+ *
+ * Kept beside `DISPLAY_ITEMS` and keyed by the same groups, so the panel renders each one in
+ * the section for the surface it governs, but a separate list: an item is one boolean in
+ * `hiddenDisplayItems`, while a choice is its own `UiConfig` key holding one of a fixed set of
+ * values, `off` among them. Folding these into the item list would make "hidden" a sixth
+ * style of a five-way choice and leave two places that can each turn the mark off.
+ *
+ * Each option's copy is a `Record` over the persisted style list, so a style added to
+ * `TASK_KIND_*_STYLES` does not compile until it says how it is offered.
+ */
+export interface DisplayChoiceOption<V extends string> {
+  id: V;
+  label: string;
+  description: string;
+}
+
+const TASK_KIND_HEADER_COPY: Record<TaskKindHeaderStyle, Omit<DisplayChoiceOption<TaskKindHeaderStyle>, "id">> = {
+  badge: {
+    label: "Title badge",
+    description: "A colour-coded badge leading the session's name, read in the same glance as the name.",
+  },
+  eyebrow: {
+    label: "Eyebrow",
+    description: "A small line above the name that also says what the kind is for. Adds a line of height.",
+  },
+  tile: {
+    label: "Kind tile",
+    description: "The agent dot grows into a tile with the kind's icon and word, and the header's left edge takes the kind's colour.",
+  },
+  tabs: {
+    label: "Tab strip",
+    description: "The first item of the tab strip, leaving the row with the name exactly as it was.",
+  },
+  off: {
+    label: "Off",
+    description: "The console does not say what kind of task this is.",
+  },
+};
+
+const TASK_KIND_CARD_COPY: Record<TaskKindCardStyle, Omit<DisplayChoiceOption<TaskKindCardStyle>, "id">> = {
+  tab: {
+    label: "Edge tab",
+    description: "A tab on the card's top border, like a folder tab. Takes no room inside the card.",
+  },
+  chip: {
+    label: "Name chip",
+    description: "A chip beside the session's name. Takes some width from the name.",
+  },
+  band: {
+    label: "Top band",
+    description: "A tinted band across the top of the card that also says what the kind is for. Makes each card taller.",
+  },
+  medallion: {
+    label: "Medallion",
+    description: "The agent dot becomes the kind's icon. The word is on hover.",
+  },
+  off: {
+    label: "Off",
+    description: "Cards do not say what kind of task they are.",
+  },
+};
+
+export type DisplayChoiceKey = "taskKindHeader" | "taskKindCard";
+
+export interface DisplayChoice {
+  key: DisplayChoiceKey;
+  group: DisplayItemGroup;
+  label: string;
+  description: string;
+  options: readonly DisplayChoiceOption<string>[];
+}
+
+export const DISPLAY_CHOICES: readonly DisplayChoice[] = [
+  {
+    key: "taskKindCard",
+    group: "card",
+    label: "Task type",
+    description:
+      "How a card marks what kind of task it came from - ship, bugfix, scout, plan, pipeline or chat. Every kind is marked, ship included.",
+    options: TASK_KIND_CARD_STYLES.map((id) => ({ id, ...TASK_KIND_CARD_COPY[id] })),
+  },
+  {
+    key: "taskKindHeader",
+    group: "conversation",
+    label: "Task type",
+    description:
+      "How the console marks what kind of task a session is working on. Every kind is marked, ship included.",
+    options: TASK_KIND_HEADER_STYLES.map((id) => ({ id, ...TASK_KIND_HEADER_COPY[id] })),
+  },
+];
+
+/** The operator's current style for one choice, read live like `useDisplayItems`. */
+export function useDisplayChoice<K extends DisplayChoiceKey>(key: K): ReturnType<typeof useUiConfig>[K] {
+  return useUiConfig()[key];
+}
+
+export function setDisplayChoice(key: DisplayChoiceKey, value: string): void {
+  void updateUiConfig({ [key]: value });
 }

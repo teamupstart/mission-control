@@ -1,11 +1,14 @@
 import { useMemo } from "react";
 
 import {
+  DISPLAY_CHOICES,
   DISPLAY_GROUP_COPY,
   DISPLAY_ITEMS,
   DISPLAY_ITEM_GROUPS,
   isDisplayItemShown,
+  setDisplayChoice,
   setDisplayItemShown,
+  type DisplayChoice,
   type DisplayItemGroup,
 } from "../lib/board-card.ts";
 import {
@@ -53,6 +56,47 @@ function usePreviewSession(): ReturnType<typeof previewSession> {
   return useMemo(() => previewSession(Date.now()), []);
 }
 
+/**
+ * One style choice, as a segmented radio group: every option is visible at once, so the
+ * operator compares the styles by name rather than opening a menu to find them. The
+ * preview beside the checklist is the real tile, so picking a card style moves it.
+ */
+function ChoicePicker({ choice }: { choice: DisplayChoice }): React.JSX.Element {
+  const value = useUiConfig()[choice.key];
+  const name = `display-choice-${choice.key}`;
+  return (
+    <div className="display-choice">
+      <span className="settings-toggle-text">
+        <span className="settings-toggle-label">{choice.label}</span>
+        <span className="settings-toggle-desc">{choice.description}</span>
+      </span>
+      {/* Named with its section as well as its label: both surfaces offer a "Task type", and
+          two radio groups announcing the same name - each with an "Off" - could not be told
+          apart by anyone not looking at the headings above them. */}
+      <div
+        className="display-choice-options"
+        role="radiogroup"
+        aria-label={`${DISPLAY_GROUP_COPY[choice.group].heading}: ${choice.label}`}
+      >
+        {choice.options.map((option) => (
+          <Tooltip key={option.id} label={option.description}>
+            <label className={`display-choice-option${value === option.id ? " is-on" : ""}`}>
+              <input
+                type="radio"
+                name={name}
+                value={option.id}
+                checked={value === option.id}
+                onChange={() => setDisplayChoice(choice.key, option.id)}
+              />
+              {option.label}
+            </label>
+          </Tooltip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ItemSection({
   group,
   hidden,
@@ -77,6 +121,9 @@ function ItemSection({
     <>
       {showHeading && <h4 className="settings-subhead">{copy.heading}</h4>}
       <p className="settings-hint settings-blurb">{copy.blurb}</p>
+      {DISPLAY_CHOICES.filter((choice) => choice.group === group).map((choice) => (
+        <ChoicePicker key={choice.key} choice={choice} />
+      ))}
       {items.map((item) => {
         const on = isDisplayItemShown(hidden, item.id);
         return (

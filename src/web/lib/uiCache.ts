@@ -3,9 +3,18 @@ import {
   LAYOUT_MODES,
   LINE_DENSITIES,
   seedHiddenDisplayItems,
+  TASK_KIND_CARD_STYLES,
+  TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
-import type { ConversationView, LayoutMode, LineDensity, UiConfig } from "@shared/protocol.ts";
+import type {
+  ConversationView,
+  LayoutMode,
+  LineDensity,
+  TaskKindCardStyle,
+  TaskKindHeaderStyle,
+  UiConfig,
+} from "@shared/protocol.ts";
 
 /**
  * The synchronous first-paint cache for the dashboard's preferences, and the ONLY module
@@ -104,11 +113,25 @@ function parseLineDensity(raw: string | undefined): LineDensity {
     : UI_CONFIG_DEFAULTS.lineDensity;
 }
 
+function parseTaskKindHeader(raw: string | undefined): TaskKindHeaderStyle {
+  return (TASK_KIND_HEADER_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as TaskKindHeaderStyle)
+    : UI_CONFIG_DEFAULTS.taskKindHeader;
+}
+
+function parseTaskKindCard(raw: string | undefined): TaskKindCardStyle {
+  return (TASK_KIND_CARD_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as TaskKindCardStyle)
+    : UI_CONFIG_DEFAULTS.taskKindCard;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
+    taskKindCard: parseTaskKindCard(raw?.taskKindCard),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,

@@ -231,6 +231,11 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "cmd 1",
       "command 1",
       "number keys",
+      // The Task type picker. Not the kinds' own names: a list of them here would be a
+      // second copy of `TASK_KINDS` (`test/task-kinds.test.ts`).
+      "task type",
+      "task kind",
+      "kind",
     ],
     kind: "jump",
     backup: backupDomains("ui"),
@@ -244,7 +249,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "conversation-header",
     label: "Conversation header",
     description:
-      "Choose whether the console states a session's working directory and branch above its conversation.",
+      "Choose how the console marks a task's kind, and whether it states a session's working directory and branch above its conversation.",
     category: "display",
     anchor: "display/board-card",
     keywords: [
@@ -259,6 +264,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "band",
       "hide",
       "show",
+      "task type",
+      "task kind",
+      "kind",
+      "badge",
     ],
     kind: "jump",
     backup: backupDomains("ui"),

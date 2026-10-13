@@ -326,14 +326,12 @@ test("a session with no branch keeps its band for the path alone", async () => {
 
 test("a speaking task chip keeps the band even with both cells hidden", async () => {
   // F4's other half, and the reason the guard asks the container rather than the cells. A
-  // scout task's kind is the only place that fact appears in the console.
-  const html = await renderHiding(
-    BOTH_OFF,
-    silentTaskSession({ task: mkTaskSummary({ kind: "scout", title: "Fix the parser" }) }),
-  );
+  // session re-assigned to a task its name does not carry has only this chip to say what it
+  // is now executing.
+  const html = await renderHiding(BOTH_OFF, silentTaskSession({ name: "agent-1" }));
   const sub = band(html);
   assert.ok(sub, "the band collapsed and took the task chip with it");
-  assert.match(sub, /class="task-kind"/);
+  assert.match(sub, /class="task-title"/);
 });
 
 test("a task's pull requests keep the band even with both cells hidden", async () => {

@@ -1,0 +1,209 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+/**
+ * A task's kind, marked on both surfaces in the style the operator chose.
+ *
+ * The kind used to print only when it was not `ship`, and only in the console's PATH and
+ * BRANCH band, so the most common kind was printed nowhere and no Board card said what kind
+ * of task it was. Every kind is now marked - `ship` included - by `TaskKindMark`, in one of
+ * four styles per surface or `off` (Settings > Display; mockups in
+ * `docs/plans/task-kind-visibility/mockups.html`).
+ *
+ * `createElement` rather than JSX because the runner's glob only matches .test.ts.
+ */
+
+// A fake `localStorage` and a fetch that accepts, installed BEFORE the modules below are
+// imported, for the reason `board-card-items.test.ts` gives: `updateUiConfig` reverts its
+// optimistic commit when the daemon refuses, so without an accepting fetch every style set
+// here would land and then silently undo itself.
+const store = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  },
+});
+Object.defineProperty(globalThis, "fetch", {
+  configurable: true,
+  value: async () =>
+    new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+});
+
+const { ConsoleDetail } = await import("../src/web/components/layouts/ConsoleDetail.tsx");
+const { SessionTile } = await import("../src/web/components/layouts/SessionTile.tsx");
+const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
+const { DISPLAY_CHOICES } = await import("../src/web/lib/board-card.ts");
+const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES, UI_CONFIG_DEFAULTS } = await import(
+  "../src/shared/protocol.ts"
+);
+const { TASK_KIND_INFO } = await import("../src/shared/task.ts");
+const { TASK_KINDS } = await import("../src/shared/types.ts");
+const { mkSession, mkTaskSummary } = await import("./helpers/session-fixture.ts");
+const { mkSessionView } = await import("./helpers/session-view.ts");
+
+type Session = ReturnType<typeof mkSession>;
+type HeaderStyle = (typeof TASK_KIND_HEADER_STYLES)[number];
+type CardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
+
+/** A dispatched ship task, named after its task the way a dispatch names it. */
+function shipSession(over: Partial<Session> = {}): Session {
+  const task = mkTaskSummary({ kind: "ship" });
+  return mkSession({ name: task.title, task, ...over });
+}
+
+async function withStyles<T>(
+  styles: { header?: HeaderStyle; card?: CardStyle },
+  fn: () => T,
+): Promise<T> {
+  await updateUiConfig({
+    taskKindHeader: styles.header ?? UI_CONFIG_DEFAULTS.taskKindHeader,
+    taskKindCard: styles.card ?? UI_CONFIG_DEFAULTS.taskKindCard,
+  });
+  try {
+    return fn();
+  } finally {
+    await updateUiConfig({
+      taskKindHeader: UI_CONFIG_DEFAULTS.taskKindHeader,
+      taskKindCard: UI_CONFIG_DEFAULTS.taskKindCard,
+    });
+  }
+}
+
+function detail(session: Session): string {
+  return renderToStaticMarkup(createElement(ConsoleDetail, { session, view: mkSessionView(session) }));
+}
+
+function tile(session: Session): string {
+  return renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+      onDropConfirm: () => {},
+    }),
+  );
+}
+
+/** The markup between an element's opening tag (found by `marker`) and the next `until`. */
+function region(html: string, marker: string, until: string): string {
+  const start = html.indexOf(marker);
+  assert.ok(start >= 0, `no ${marker} in the render`);
+  return html.slice(start, html.indexOf(until, start + marker.length));
+}
+
+test("the shipped styles are the ones chosen from the mockups", () => {
+  assert.equal(UI_CONFIG_DEFAULTS.taskKindHeader, "badge");
+  assert.equal(UI_CONFIG_DEFAULTS.taskKindCard, "tab");
+});
+
+test("a ship task is marked in the console header by default, as a badge on the name's line", async () => {
+  const html = await withStyles({}, () => detail(shipSession()));
+  const line = region(html, 'class="detail-title-line"', "</h2>");
+  assert.match(line, /class="tk-mark tk-badge"[^>]*>.*?<\/svg>ship<\/span>/);
+  assert.ok(line.indexOf("tk-badge") < line.indexOf("<h2"), "the badge does not lead the name");
+});
+
+test("each header style puts the mark in its own place, and only there", async () => {
+  const where: Record<Exclude<HeaderStyle, "off">, [string, string]> = {
+    badge: ['class="detail-title-line"', "</h2>"],
+    eyebrow: ['class="detail-title"', 'class="detail-title-line"'],
+    tile: ['class="detail-head tk-edge"', 'class="detail-title"'],
+    tabs: ['class="detail-tabs"', "<button"],
+  };
+  for (const style of TASK_KIND_HEADER_STYLES) {
+    const html = await withStyles({ header: style }, () => detail(shipSession()));
+    const marks = html.match(/class="tk-mark /g) ?? [];
+    if (style === "off") {
+      assert.equal(marks.length, 0, "off still marks the kind");
+      continue;
+    }
+    assert.equal(marks.length, 1, `${style} marks the kind ${marks.length} times`);
+    const [from, to] = where[style];
+    assert.ok(region(html, from, to).includes(`tk-mark tk-${style}`), `${style} is not where it belongs`);
+  }
+});
+
+test("the tile style keeps the agent dot, riding the tile's corner", async () => {
+  const html = await withStyles({ header: "tile" }, () => detail(shipSession()));
+  const mark = region(html, 'class="tk-mark tk-tile"', 'class="detail-title"');
+  assert.ok(mark.includes('class="agent-dot"'), "the tile dropped which harness this is");
+  assert.ok(mark.includes('role="img"') && mark.includes('aria-label="ship task"'));
+});
+
+test("every kind is marked in its own colour, with its own word", async () => {
+  for (const kind of TASK_KINDS) {
+    const task = mkTaskSummary({ kind });
+    const html = await withStyles({}, () => detail(mkSession({ name: task.title, task })));
+    const badge = region(html, 'class="tk-mark tk-badge"', "</span>");
+    assert.ok(badge.includes(`--kind:${TASK_KIND_INFO[kind].accent}`), `${kind} is not in its colour`);
+    assert.match(html, new RegExp(`</svg>${TASK_KIND_INFO[kind].label}</span>`));
+  }
+});
+
+test("a session with no task draws no kind on either surface", async () => {
+  const session = mkSession({ task: null });
+  assert.ok(!(await withStyles({}, () => detail(session))).includes("tk-mark"));
+  assert.ok(!(await withStyles({}, () => tile(session))).includes("tk-mark"));
+});
+
+test("a ship card is marked by default with a tab on its top edge", async () => {
+  const html = await withStyles({}, () => tile(shipSession()));
+  assert.match(html, /class="tile [^"]*has-kind-tab/);
+  assert.match(html, /class="tk-mark tk-tab"[^>]*>.*?<\/svg>ship<\/span>/);
+  assert.ok(html.indexOf("tk-tab") < html.indexOf('class="tile-head"'), "the tab is not first");
+});
+
+test("each card style puts the mark in its own place, and only there", async () => {
+  for (const style of TASK_KIND_CARD_STYLES) {
+    const html = await withStyles({ card: style }, () => tile(shipSession()));
+    const marks = html.match(/class="tk-mark /g) ?? [];
+    if (style === "off") {
+      assert.equal(marks.length, 0, "off still marks the kind");
+      assert.ok(!html.includes("has-kind-tab"));
+      continue;
+    }
+    assert.equal(marks.length, 1, `${style} marks the kind ${marks.length} times`);
+    const head = region(html, 'class="tile-head"', 'class="tile-name"');
+    const inHead = head.includes(`tk-mark tk-${style}`);
+    assert.equal(inHead, style === "chip" || style === "medallion", `${style} is in the wrong row`);
+  }
+});
+
+test("the medallion keeps the agent dot and names the kind it only draws", async () => {
+  const html = await withStyles({ card: "medallion" }, () => tile(shipSession()));
+  const mark = region(html, 'class="tk-mark tk-medallion"', 'class="tile-name"');
+  assert.ok(mark.includes('class="agent-dot"'));
+  assert.ok(mark.includes('aria-label="ship task"'));
+});
+
+test("the Display panel offers every style for both surfaces, and the card preview follows the card's", async () => {
+  for (const choice of DISPLAY_CHOICES) {
+    const styles = choice.key === "taskKindHeader" ? TASK_KIND_HEADER_STYLES : TASK_KIND_CARD_STYLES;
+    assert.deepEqual(choice.options.map((o) => o.id), [...styles]);
+  }
+  const panel = await withStyles({}, () => renderToStaticMarkup(createElement(BoardCardPanel)));
+  for (const choice of DISPLAY_CHOICES) {
+    for (const option of choice.options) {
+      assert.ok(panel.includes(`>${option.label}</label>`), `the panel does not offer ${option.label}`);
+    }
+  }
+  assert.match(panel, /name="display-choice-taskKindCard" checked="" value="tab"/);
+  assert.match(panel, /name="display-choice-taskKindHeader" checked="" value="badge"/);
+  assert.ok(panel.includes("tk-mark tk-tab"), "the preview card is not marked with the default tab");
+
+  const banded = await withStyles({ card: "band" }, () =>
+    renderToStaticMarkup(createElement(BoardCardPanel)),
+  );
+  assert.ok(banded.includes("tk-mark tk-band") && !banded.includes("tk-mark tk-tab"));
+});

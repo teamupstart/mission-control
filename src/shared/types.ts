@@ -1911,9 +1911,8 @@ export type TaskKind = (typeof TASK_KINDS)[number];
  * contract that the comment above states is a thing the compiler carries: reordering the
  * tuple moves this with it instead of leaving a literal behind that silently disagrees.
  *
- * Two surfaces read it as a value rather than as a default they hardcode - the task pill,
- * which draws every kind EXCEPT the one you get by not choosing, and the task row read
- * (`server/db.ts`), which degrades a kind this build has never heard of to it.
+ * The task row read (`server/db.ts`) reads it as a value rather than as a default it
+ * hardcodes, and degrades a kind this build has never heard of to it.
  */
 export const DEFAULT_TASK_KIND = TASK_KINDS[0];
 

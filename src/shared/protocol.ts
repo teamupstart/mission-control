@@ -3145,6 +3145,31 @@ export const LineDensitySchema = z.enum(LINE_DENSITIES);
 export type LineDensity = (typeof LINE_DENSITIES)[number];
 
 /**
+ * How the console's conversation header marks a task session's kind (`TaskKindMark`).
+ *
+ * Every kind is marked, `ship` included, because a kind printed only when it is not the
+ * default left the most common kind printed nowhere. `badge` leads the session's name, which
+ * is read in the same glance as the name and costs the header no height; the other three are
+ * the alternatives the operator weighed (`docs/plans/task-kind-visibility/mockups.html`), and
+ * `off` draws nothing.
+ *
+ * Persisted on operators' machines, so append-only: a member may be added, never renamed.
+ * The order is the picker's order, and the default is not necessarily first.
+ */
+export const TASK_KIND_HEADER_STYLES = ["badge", "eyebrow", "tile", "tabs", "off"] as const;
+export const TaskKindHeaderStyleSchema = z.enum(TASK_KIND_HEADER_STYLES);
+export type TaskKindHeaderStyle = (typeof TASK_KIND_HEADER_STYLES)[number];
+
+/**
+ * How a Board card marks its task's kind (`TaskKindMark`). `tab` sits on the card's top
+ * border like a folder tab, so it takes no row inside the card and no width from the name.
+ * Append-only for the reason `TASK_KIND_HEADER_STYLES` is.
+ */
+export const TASK_KIND_CARD_STYLES = ["tab", "chip", "band", "medallion", "off"] as const;
+export const TaskKindCardStyleSchema = z.enum(TASK_KIND_CARD_STYLES);
+export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -3311,6 +3336,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  taskKindHeader: "badge",
+  taskKindCard: "tab",
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
@@ -3405,6 +3432,8 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
+  taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon

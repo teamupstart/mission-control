@@ -10,7 +10,7 @@ import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "./built
 // Kind is not optional; every task names one registered launch contract, and `ship` is the
 // default.
 
-import { DEFAULT_TASK_KIND, TASK_KINDS } from "./types.ts";
+import { TASK_KINDS } from "./types.ts";
 import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
 
 /**
@@ -57,6 +57,15 @@ export interface TaskKindInfo {
    * Kept parallel across the kinds - verb, then object - because these are read as a list.
    */
   purpose: string;
+  /**
+   * The kind's own colour, as a CSS colour value. Applied inline as `--kind` wherever a
+   * surface marks the kind (`TaskKindMark`), the way a harness's brand colour arrives as
+   * `--agent-accent`, so a new kind does not compile until it has one and `styles.css` needs
+   * no per-kind rule. Chosen to stay clear of the state tones that already colour a card's
+   * left edge and the header's status pill; the kind's word is always printed beside it, so
+   * colour is never the only cue.
+   */
+  accent: string;
   afterWorkHint?: string;
 }
 
@@ -65,33 +74,39 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     label: "ship",
     blurb: "Deliver a change, as a pull request.",
     purpose: "deliver a change",
+    accent: "#3dd6c6",
   },
   bugfix: {
     label: "bugfix",
     blurb: "Fix a bug, with Bug Fix Review before the pull request.",
     purpose: "fix a bug",
+    accent: "#ff7b72",
     afterWorkHint: "Bug Fix Review checks the cause, regression proof, and code risk.",
   },
   scout: {
     label: "scout",
     blurb: "Investigate and report. No diff, so no after-work.",
     purpose: "investigate and report",
+    accent: "#79c0ff",
   },
   plan: {
     label: "plan",
     blurb: "Produce a reviewed plan with Plan Validation, and optionally schedule the work.",
     purpose: "produce a reviewed plan",
+    accent: "#a371f7",
     afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
   },
   pipeline: {
     label: "pipeline",
     blurb: "Start conductor's SDLC pipeline. Conductor owns its worktree and PR; no after-work.",
     purpose: "run a conductor pipeline",
+    accent: "#db61a2",
   },
   chat: {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
+    accent: "#b4c0cf",
   },
 };
 
@@ -431,79 +446,57 @@ export function byBacklogRank(a: BacklogRanked, b: BacklogRanked): number {
 /** What a session's task pill has left to say once the constants and duplicates are dropped. */
 export interface TaskPillParts {
   /**
-   * The kind badge, or null when the kind is the one every writer defaults to. Absence
-   * means `ship` unambiguously: `kind` is `NOT NULL`, so the pill only exists when there
-   * is a task, and a task always has a kind.
+   * The task's title, or null when the session is already named after it. Kept rather than
+   * dropped because a session re-assigned to a later task keeps the first task's title as its
+   * name, and the pill is then the only place the task now executing appears.
    */
-  kind: TaskKind | null;
-  /** The task's title, or null when the session's own name already carries it. */
   title: string | null;
   /**
-   * True when nothing the pill hosts on EVERY surface has anything to say - no kind
-   * badge, no title, no outcome and no schedule origin.
+   * True when nothing the pill hosts on EVERY surface has anything to say - no title, no
+   * outcome and no schedule origin.
    *
    * The pill is not an empty frame: it has a background, a border and a tone-coloured
    * left edge, so drawing one with nothing in it is a bar of chrome that says less than
-   * nothing. That is the common case now that the two text parts above went conditional -
-   * an ordinary running `ship` task on a session named after it - so the reduction is not
-   * finished until the container goes with them.
+   * nothing. That is the common case - an ordinary running task on a session named after
+   * it - so the reduction is not finished until the container goes with the text.
    *
-   * A surface that draws something of its OWN inside the pill has to say so: the card
-   * adds a `dispatching…` / `failed` word that the console detail does not, and it ORs
-   * that in at the point it draws it rather than being asserted here.
+   * The task's KIND is deliberately not an operand any more. It used to be drawn here for
+   * every kind but `ship`, which left the most common kind printed nowhere at all. It is now
+   * drawn for every kind, `ship` included, by `TaskKindMark` beside the session's own name,
+   * where the operator chooses its style (`taskKindHeader` in Settings > Display). Drawing
+   * it here as well would say it twice.
    *
    * `repoPrs` is deliberately NOT one of the operands, and it is the one a reader will
    * reach for. A multi-repo task's per-repo pull-request list is a SIBLING row, not
    * pill content - it is a separate row precisely because it is as wide as the repo
    * count while the pill's outcome link is pinned right - and it gates itself on being
-   * non-empty. Folding it in here would draw a pill with nothing in it above that row,
-   * which was measured in a browser: the pill hugs its content on a card, so an empty
-   * one is a 14px stub rather than a bar, and the row reads better with nothing above it
-   * than with that. The row is self-describing (each chip names its repo and its PR
-   * state) and it still sits under the session's own title.
+   * non-empty. Folding it in here would draw a pill with nothing in it above that row.
    */
   silent: boolean;
 }
 
 /** A session with no task at all: nothing to draw, and no pill either. */
-const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
+const NO_PILL: TaskPillParts = { title: null, silent: true };
 
 /**
  * What the task pill should draw for a session.
- *
- * Both parts are usually silent, and for different reasons. Every automated writer
- * defaults to `ship` - the MCP `create_task` tool cannot produce anything else - so a
- * badge rendered unconditionally reads `SHIP` in almost every session, is not
- * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
- * and repeats the chip on the Board tile you clicked through. Only a kind somebody deliberately
- * chose says anything, so `ship` is the silent one and every other kind is drawn.
- *
- * Written as "not the default" rather than as a list of the kinds that are drawn, so a
- * new kind is offered on the same reasoning without an edit here. The reasoning is
- * about `ship` being what you get by not choosing, which is a property of `ship`.
  *
  * The title is a duplicate because `dispatcher.ts` names a dispatched session after its
  * task, so the pill usually repeats the `h2` two rows above it. It is NOT always a
  * duplicate, which is why this is a comparison rather than a deletion: a session
  * re-assigned to a later task keeps the first task's title as its name, and the pill is
  * then the only place the task now executing appears (`test/task-multi-session.test.ts`).
- *
- * Shared rather than inlined at each call site because a session is drawn by four
- * components: the Console detail and the Board tile both render this pill, and a rule applied
- * to one of them would look right in one layout and wrong in the other.
  */
 export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPillParts {
   const task = session.task;
   if (!task) return NO_PILL;
-  const kind = task.kind === DEFAULT_TASK_KIND ? null : task.kind;
   const title = task.title === session.name ? null : task.title;
   return {
-    kind,
     title,
     // `scheduleId` rather than a call into `ScheduleOriginChip`: this module is browser-safe
     // shared logic and cannot import a component, and the chip's own gate is that one field
     // (`scheduleProvenance`). `task-pill.test.ts` pins the two answering together.
-    silent: !kind && !title && !task.outcome && !task.scheduleId,
+    silent: !title && !task.outcome && !task.scheduleId,
   };
 }
 

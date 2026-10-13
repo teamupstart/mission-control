@@ -287,6 +287,12 @@ a card is still on it, and the one genuinely new item, the **worktree**, starts 
 on and the card prints the checkout's directory name with the full path on hover, which is a
 fact the console detail used to be the only place to read.
 
+The same panel holds two **Task type** pickers, one under **Board card** and one under
+**Conversation header**. Every task is marked with its kind, `ship` included, and these choose
+how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
+medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
+the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a
 category holding a single checkbox sat as a visual equal of the one that merges pull

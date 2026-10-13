@@ -46,6 +46,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // Pinned here because this one line decides the Line's band height for every profile
   // that has never touched the control.
   assert.equal(config.lineDensity, "condensed");
+  // A task's kind is marked on both surfaces out of the box, in the styles the operator
+  // chose from the mockups: a badge before the console's title, a tab on the card's edge.
+  assert.equal(config.taskKindHeader, "badge");
+  assert.equal(config.taskKindCard, "tab");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.keybindingHints, true);
@@ -65,6 +69,9 @@ test("a written cache round-trips", () => {
     layout: "console",
     conversationView: "chat",
     lineDensity: "expanded",
+    // Off on both, so neither round-trips by falling back to its default.
+    taskKindHeader: "off",
+    taskKindCard: "off",
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
@@ -93,6 +100,8 @@ test("a written cache round-trips", () => {
   assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
+  assert.equal(config.taskKindHeader, "off");
+  assert.equal(config.taskKindCard, "off");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
@@ -175,6 +184,16 @@ test("a density this build does not ship reads as the shipped one", () => {
   // real. It falls to the shipped default, which is a strip you can see.
   store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
   assert.equal(readCache().lineDensity, "condensed");
+});
+
+test("a task-kind style this build does not ship reads as the shipped one", () => {
+  // A hand-edit, or a style from a later build, must not be painted or PUT back as real.
+  store.set(
+    "mission-control.ui",
+    JSON.stringify({ taskKindHeader: "neon", taskKindCard: "ribbon" }),
+  );
+  assert.equal(readCache().taskKindHeader, "badge");
+  assert.equal(readCache().taskKindCard, "tab");
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

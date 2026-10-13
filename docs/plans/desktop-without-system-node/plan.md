@@ -1,6 +1,6 @@
 # Desktop installation and updates without system Node
 
-Status: draft for comment MC-7c4e.1. Planning only; implementation and task scheduling are not approved by this document.
+Status: approved direction for phased planning. On 2026-10-13 the operator requested: "use phased plan skill to fully plan and schedule the work". This authorizes the phase plans and dependency-linked backlog tasks. This planning session does not implement the application or provision release credentials. See [the implementation index](phased-plan.md) for the executable task boundaries.
 
 ## Outcome and scope
 
@@ -12,7 +12,7 @@ Preserve user/system/custom destinations, explicit installation scope, managed i
 
 ## Verified baseline
 
-Inspection is of checkout ce218d2d, not a claim about newer main.
+The original investigation used ce218d2d. Phasing rechecked the implementation at b8d3260e and compared main through 4b9ea92e; the intervening changes do not alter the update/install runtime owners. Implementing phases must refresh against their merged prerequisites.
 
 | Existing owner | Verified behavior | Required change |
 | --- | --- | --- |
@@ -66,7 +66,7 @@ Revalidate the candidate identity, receipt/destination identity and helper proto
 
 Reuse the existing same-filesystem staging and rename replacement, receipt backup, narrow administrator authorization and failed-update retention. Preserve legacy system-to-user relocation and its integration repair journal. Privilege applies only to the authorized bundle swap, not network access or general helper execution.
 
-Success must include a bounded readiness acknowledgement from the expected new app identity and state home. Do not infer success solely from the OS accepting a launch request. If the new app fails before readiness, stop the exact attempt-owned process, restore the old bundle and receipt, and relaunch the prior app. Preserve recovery material if rollback itself fails.
+Success must include a bounded readiness acknowledgement from the expected new app identity and state home. Do not infer success solely from the OS accepting a launch request. If the new app fails before readiness and before state commitment, stop the exact attempt-owned process, restore the old bundle and exact receipt bytes, and relaunch the prior app. Preserve the existing relocation receipt-commit boundary: after commitment, do not automatically launch an older app against possibly migrated data. A post-state rollback requires verified compatibility or an explicitly reviewed daemon-owned recovery strategy. Preserve recovery material if rollback itself fails.
 
 Coordinate readiness with database ownership and migrations: prove rollback compatibility for the release before distribution. An older app cannot safely resume against an incompatible migrated database merely because its bundle was restored. Where compatibility cannot be guaranteed, a release needs an explicit recovery strategy before it is eligible for automatic distribution.
 
@@ -102,17 +102,17 @@ Node and build tools remain on the CI/developer side. Operator machines consume 
 
 ## Implementation sequence and acceptance gates
 
-These are dependent work packages for this proposal, not scheduled Mission Control tasks.
+The detailed, audited merge units are in [phased-plan.md](phased-plan.md). The operator authorized scheduling these phases on 2026-10-13.
 
-| Order | Deliverable and primary owners | Exit gate |
+| Phase | Deliverable | Direct prerequisite |
 | --- | --- | --- |
-| 1 | Freeze artifact, helper and receipt protocols; prove the helper snapshot; exercise signing on macOS | Signed copied runtime survives parent exit and simulated bundle replacement with host Node/npm traps; signing prerequisites resolved before publication |
-| 2 | Produce stable and commit-addressed alpha assets in existing release/CI owners | Exact source/version/architecture agreement; signed and notarized app; complete manifest-last asset set; incomplete sets never advertised |
-| 3 | Add binary download/staging and the shared staged install operation in updater/helper owners | No source checkout or compilation; cancel, corrupted data, missing assets and wrong identity leave current install usable |
-| 4 | Wire detached apply, receipt migration, recovery and Node-free first/legacy installation | Fresh install, update, rollback and legacy relocation succeed with no system Node; existing scope and state preserved |
-| 5 | Align Mission-owned integrations, Setup, user docs and distribution rollout | Browser and packaged acceptance matrix passes; every Mission-owned runtime use audited; external tool warnings remain feature-scoped |
+| 1 | Bundled detached installation, receipt compatibility and recovery contracts | Planning-session publication |
+| 2 | Signed stable and exact-SHA alpha distribution | Phase 1 |
+| 3 | Node-free bootstrap, legacy replacement and DMG enrollment | Phase 2 |
+| 4 | Binary desktop updates and progress/recovery UI | Phase 3 |
+| 5 | Mission-owned integrations, honest Setup and completed Node-free journey | Phase 4 |
 
-Publish the binary installation route before enabling mass transition. Keep the previous known-good signed release available for recovery. Do not change CI/release production settings, publish assets, provision credentials or schedule tasks as part of this planning comment.
+Every phase also depends directly on this planning session's publication. This plan keeps the five original work packages but moves the working binary installation route ahead of mass updater transition. Signing proof belongs with the distribution phase; the helper phase proves its local lifetime before a signed distribution build exists. Publication of assets and credential provisioning are future implementation work, never actions of this planning turn.
 
 ## Verification matrix
 

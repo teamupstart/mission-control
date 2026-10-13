@@ -153,11 +153,20 @@ export function TaskKindMark({
       );
       break;
     case "badge":
+      // The word in its own span so the header's last rung can shed it to a mark the way the
+      // ladder sheds every other word: visually hidden, still the badge's accessible text.
+      mark = (
+        <span className={className} style={style}>
+          <TaskKindIcon kind={kind} size={11} />
+          <span className="tk-label">{info.label}</span>
+        </span>
+      );
+      break;
     case "tab":
     case "chip":
       mark = (
         <span className={className} style={style}>
-          <TaskKindIcon kind={kind} size={variant === "badge" ? 11 : 10} />
+          <TaskKindIcon kind={kind} size={10} />
           {info.label}
         </span>
       );

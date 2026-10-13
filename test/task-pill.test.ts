@@ -150,7 +150,7 @@ test("every kind, ship included, is marked once in the shared detail and never i
     const html = detail(mkSession({ name: "agent-1", task: mkTaskSummary({ kind }) }));
     const marks = html.match(/class="tk-mark tk-badge"/g) ?? [];
     assert.equal(marks.length, 1, `the ${kind} task is not marked exactly once`);
-    assert.match(html, new RegExp(`class="tk-mark tk-badge"[^>]*>.*?</svg>${kind}</span>`));
+    assert.match(html, new RegExp(`class="tk-mark tk-badge"[^>]*>.*?</svg><span class="tk-label">${kind}</span>`));
     const chip = html.slice(html.indexOf('class="task-chip'));
     assert.ok(!chip.slice(0, chip.indexOf("</div>")).includes("tk-mark"), `the ${kind} pill draws a kind`);
   }

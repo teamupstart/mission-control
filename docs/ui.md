@@ -850,8 +850,9 @@ available:
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline or chat - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
-  card's **Medallion**, which shows the icon alone and gives the word on hover; elsewhere
-  colour is never the only cue. By default the console badges the kind before the session's
+  card's **Medallion**, which shows the icon alone and gives the word on hover. The console
+  badge does the same only on a pane too narrow for anything else, where every other header
+  control has already been reduced to its mark. By default the console badges the kind before the session's
   name, on the name's own line, and a Board card carries it on a tab sitting on the card's
   top edge, which takes no room inside the card. Hover either one for what the kind is for.
   The style for each surface, or Off, is a

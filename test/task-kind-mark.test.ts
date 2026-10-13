@@ -110,7 +110,7 @@ test("the shipped styles are the ones chosen from the mockups", () => {
 test("a ship task is marked in the console header by default, as a badge on the name's line", async () => {
   const html = await withStyles({}, () => detail(shipSession()));
   const line = region(html, 'class="detail-title-line"', "</h2>");
-  assert.match(line, /class="tk-mark tk-badge"[^>]*>.*?<\/svg>ship<\/span>/);
+  assert.match(line, /class="tk-mark tk-badge"[^>]*>.*?<\/svg><span class="tk-label">ship<\/span>/);
   assert.ok(line.indexOf("tk-badge") < line.indexOf("<h2"), "the badge does not lead the name");
 });
 
@@ -147,7 +147,7 @@ test("every kind is marked in its own colour, with its own word", async () => {
     const html = await withStyles({}, () => detail(mkSession({ name: task.title, task })));
     const badge = region(html, 'class="tk-mark tk-badge"', "</span>");
     assert.ok(badge.includes(`--kind:${TASK_KIND_INFO[kind].accent}`), `${kind} is not in its colour`);
-    assert.match(html, new RegExp(`</svg>${TASK_KIND_INFO[kind].label}</span>`));
+    assert.match(html, new RegExp(`</svg><span class="tk-label">${TASK_KIND_INFO[kind].label}</span>`));
   }
 });
 

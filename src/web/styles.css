@@ -29249,6 +29249,34 @@ span.line-run-prov {
   text-overflow: ellipsis;
   min-width: 0;
 }
+/* The identity block's 14ch floor assumes the name and its source pill are all that share
+   its first line. The badge is `flex: none`, so near the wrap point it would take its width
+   out of that floor and squeeze the name to nothing. So a badge raises the floor by the
+   widest badge plus its gap (PIPELINE measures 87px), leaving the name at least the room it
+   had before. A fixed amount, not `min-content`: a nowrap title's min-content is its whole
+   text, and a floor that grew with the name would spend the header's rungs on a long one. */
+.detail-title:has(> .detail-title-line > .tk-badge) {
+  min-width: calc(14ch + 96px);
+}
+/* The last rung, where every other control has already been reduced to its mark: the badge
+   keeps its icon and colour and sheds its word the same way (visually hidden, so it is still
+   the badge's accessible text and hover still names it). Its floor shrinks to the 25px mark
+   and its gap, which is what keeps a 400px pane on one row. */
+.detail-head[data-rung~="7"] .tk-badge .tk-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.detail-head[data-rung~="7"] .tk-badge {
+  padding: 2px 6px;
+}
+.detail-head[data-rung~="7"] .detail-title:has(> .detail-title-line > .tk-badge) {
+  min-width: calc(14ch + 34px);
+}
 .tk-badge {
   flex: none;
   align-self: center;

@@ -115,8 +115,9 @@ test("a ship task is badged before its name in the console, and the path band no
   for (const [task, kind] of [[SHIP, "ship"], [SCOUT, "scout"]] as const) {
     const detail = await openDetail(dashboard, task.title);
     const head = detail.locator("header.detail-head");
-    const badge = head.locator(".detail-title-line").getByText(kind, { exact: true });
+    const badge = head.locator(".detail-title-line .tk-badge");
     await expect(badge, `the ${kind} task is not badged`).toBeVisible();
+    await expect(badge).toHaveText(kind);
 
     // Before the name, on the name's own line: the badge and the name are read in one glance.
     const badgeBox = (await badge.boundingBox())!;

@@ -144,6 +144,54 @@ test("a ship task is badged before its name in the console, and the path band no
   }
 });
 
+test("at the header's last rung the badge keeps its icon, and its word stays readable to assistive tech", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Rung 7 is where every other header control has already been reduced to its mark, and the
+  // badge sheds its word the same way. The task type has to survive that: still drawn as the
+  // kind's icon and colour, still the badge's text for a screen reader, still named on hover.
+  await dispatch(daemon, SHIP, "ship");
+  await live(daemon, SHIP);
+  await useUi(dashboard, daemon, { layout: "console" });
+  const detail = await openDetail(dashboard, SHIP.title);
+  const head = detail.locator("header.detail-head");
+  const badge = head.locator(".detail-title-line .tk-badge");
+  await expect(badge).toBeVisible();
+
+  // Narrow the window until the header's fit reaches its last rung. Below ~560px the rail
+  // drops out and the pane takes the whole window, so this is reached well before 360px.
+  let width = 640;
+  for (; width >= 360; width -= 20) {
+    await dashboard.setViewportSize({ width, height: 900 });
+    await dashboard.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+    );
+    if (((await head.getAttribute("data-rung")) ?? "").split(" ").includes("7")) break;
+  }
+  await expect(head, "the header never reached its last rung").toHaveAttribute("data-rung", /(^| )7( |$)/);
+
+  // Measured in one read, because a shed word keeps a 1x1 box that Playwright counts as visible.
+  const drawn = await badge.evaluate((el) => ({
+    badge: el.getBoundingClientRect().width,
+    icon: el.querySelector(".tk-icon")!.getBoundingClientRect().width,
+    word: el.querySelector(".tk-label")!.getBoundingClientRect().width,
+    name: el.closest(".detail-title-line")!.querySelector("h2")!.getBoundingClientRect().width,
+  }));
+  expect(drawn.icon, "the kind's icon is not drawn").toBeGreaterThan(2);
+  expect(drawn.word, "the word was not shed to a mark").toBeLessThanOrEqual(1);
+  expect(drawn.badge, "the badge did not narrow to its icon").toBeLessThan(40);
+  expect(drawn.name, "the session's name was squeezed out beside the badge").toBeGreaterThan(2);
+
+  // Still the task type for anyone not reading the colour: the word is the badge's text, the
+  // purpose its accessible description, and hovering it says both.
+  await expect(badge).toHaveText("ship");
+  await expect(badge).toHaveAccessibleDescription(/^ship task - deliver a change$/);
+  await badge.hover();
+  await expect(dashboard.locator(".tooltip")).toContainText("ship task - deliver a change");
+  await shot(head, "console-badge-last-rung", `at ${width}px the header is on rung 7 and the SHIP badge is its icon`);
+});
+
 test("every Board card carries its kind on a tab on its top edge", async ({ dashboard, daemon }) => {
   await dispatch(daemon, SHIP, "ship");
   await dispatch(daemon, SCOUT, "scout");

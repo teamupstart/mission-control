@@ -72,8 +72,11 @@ export interface TaskKindInfo {
    * surface marks the kind (`TaskKindMark`), the way a harness's brand colour arrives as
    * `--agent-accent`, so a new kind does not compile until it has one and `styles.css` needs
    * no per-kind rule. Chosen to stay clear of the state tones that already colour a card's
-   * left edge and the header's status pill; the kind's word is always printed beside it, so
-   * colour is never the only cue.
+   * left edge and the header's status pill. Colour is never the only cue: the kind's icon is
+   * always drawn with it, and the word is printed too except in two places. The card's
+   * `medallion` style is icon-only and names the kind on hover and as its accessible name, and
+   * the header badge sheds its word at the narrowest width, where the word stays the badge's
+   * accessible text and hover still names the kind.
    */
   accent: string;
   /**

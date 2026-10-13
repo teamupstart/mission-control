@@ -248,9 +248,13 @@ export class LocalPlanPublication {
       sessionId: authority.sessionId, taskId: task.id, episodeId: authority.episodeId,
       bindingId: approved.binding_id, workflowVersionId: approved.workflow_version_id, submissionId,
       manifestHash: approved.manifest_hash, publishedAt: Date.now() };
-    openDb().prepare("INSERT INTO managed_plan_publications VALUES (?, ?, ?)").run(input.planId, input.revision, JSON.stringify(receipt));
-    this.release(receipt);
-    return receipt;
+    openDb().prepare("INSERT INTO managed_plan_publications VALUES (?, ?, ?) ON CONFLICT(plan_id, revision) DO NOTHING")
+      .run(input.planId, input.revision, JSON.stringify(receipt));
+    // The durable winner owns both the response and edge timestamp, including a contended insert.
+    const published = episodeReceipt(authority, input);
+    if (!published) throw new PlanStoreError("Publication receipt was not retained");
+    this.release(published);
+    return published;
   }
 
   private release(receipt: PlanPublicationReceipt): void {

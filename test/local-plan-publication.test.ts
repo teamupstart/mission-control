@@ -280,6 +280,40 @@ test("final approval follows resolution time, fails closed on ties and ignores n
   assert.equal((await f.service.publish(f.authority, f.input)).reviewId, renewed);
 });
 
+for (const insertContended of [false, true]) test(`concurrent publication returns one durable receipt (insert contention: ${insertContended})`, async (t) => {
+  const f = await fixture(); await f.review();
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Concurrent publication", intent: "Consume one exact receipt", backlog: true, workflowId: null,
+    planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }, { type: "task", taskId: f.task.id }] });
+  const winnerId = randomUUID();
+  if (insertContended) {
+    const db = openDb(), prepare = db.prepare.bind(db);
+    let injected = false;
+    t.mock.method(db, "prepare", (sql: string) => {
+      const statement = prepare(sql);
+      if (sql.startsWith("INSERT INTO managed_plan_publications") && !injected) {
+        injected = true;
+        const run = statement.run.bind(statement);
+        t.mock.method(statement, "run", (...args: Parameters<typeof statement.run>) => {
+          // Deterministically insert the competing winner after the receipt read, at the SQL boundary.
+          const winner = { ...JSON.parse(String(args[2])), id: winnerId, publishedAt: 123 };
+          prepare("INSERT INTO managed_plan_publications VALUES (?, ?, ?)").run(f.input.planId, f.input.revision, JSON.stringify(winner));
+          return run(...args);
+        });
+      }
+      return statement;
+    });
+  }
+  const receipts = await Promise.all(Array.from({ length: 4 }, () => f.service.publish(f.authority, f.input)));
+  const stored = publicationReceipt(f.input)!;
+  for (const receipt of receipts) assert.deepEqual(receipt, stored);
+  if (insertContended) assert.equal(stored.id, winnerId, "return the SQL winner, never an unpersisted receipt");
+  const count = openDb().prepare("SELECT count(*) AS n FROM managed_plan_publications WHERE plan_id = ? AND revision = ?").get(f.input.planId, f.input.revision);
+  assert.equal(count!.n, 1);
+  const edges = f.tasks.get(dependent.id)!.dependencies;
+  assert.equal(edges[0]!.satisfiedAt, stored.publishedAt, "release with the persisted receipt timestamp");
+  assert.equal(edges[1]!.satisfiedAt, null);
+});
+
 test("explicit final approval publishes an exact local receipt, survives restart and pruning, and leaves code merge edges blocked", async () => {
   const f = await fixture();
   await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);

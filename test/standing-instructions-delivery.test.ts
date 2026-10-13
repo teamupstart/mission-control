@@ -49,6 +49,7 @@ const { openDb, getStandingInstructions, insertStandingInstructions } = await im
 );
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { standingInstructionsView, updateStandingInstructions } = await import(
   "../src/server/instructions/config.ts"
@@ -301,11 +302,13 @@ test("a repository with NO standing instructions dispatches a byte-identical pro
     intent,
   });
 
-  // The prompt is exactly what this task's composition produced before this feature existed:
-  // no heading, no separator, not a single extra newline.
+  // No standing-instruction heading, separator or extra newline is added to the normal
+  // task contract, including its repository-scoped plan discovery.
   assert.equal(
     baseline.prompt,
-    withTaskKindContract(registryTask(baseline, "guard-none"), intent),
+    withTaskKindContract(registryTask(baseline, "guard-none"), intent, {
+      planDiscovery: await taskPlanDiscovery(registryTask(baseline, "guard-none")),
+    }),
   );
   assert.equal(baseline.argv.includes("--append-system-prompt"), false);
   // And nothing was recorded about a delivery that did not happen.
@@ -322,7 +325,9 @@ test("a repository with NO standing instructions dispatches a byte-identical pro
   });
   assert.deepEqual(withRules.argv, [...baseline.argv, "--append-system-prompt", BLOCK]);
   // Exactly once: the pair HAS a channel, so turn one is untouched.
-  assert.equal(withRules.prompt, baseline.prompt);
+  assert.equal(withRules.prompt, withTaskKindContract(registryTask(withRules, "guard-some"), intent, {
+    planDiscovery: await taskPlanDiscovery(registryTask(withRules, "guard-some")),
+  }));
 });
 
 // ---- delivery, per pair ----
@@ -860,12 +865,17 @@ test("Pi standing instructions move out of turn one without changing the empty l
   const intent = "THE-OPERATOR-REQUEST";
   const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-none", intent });
   assert.deepEqual(baseline.argv, ["--session-id", baseline.argv[1],
-    withTaskKindContract(registryTask(baseline, "pi-none"), intent)]);
+    withTaskKindContract(registryTask(baseline, "pi-none"), intent, {
+      planDiscovery: await taskPlanDiscovery(registryTask(baseline, "pi-none")),
+    })]);
   assert.equal(baseline.registry.standingInstructionsFor(baseline.sessionId), null);
   setRule(repo, RULE);
   const run = await terminalDispatch({ agent: "pi", repo, taskId: "pi-rule", intent });
-  assert.deepEqual(run.argv, ["--append-system-prompt", BLOCK, "--session-id", run.argv[3], baseline.prompt]);
-  assert.equal(run.prompt, baseline.prompt);
+  const expectedPrompt = withTaskKindContract(registryTask(run, "pi-rule"), intent, {
+    planDiscovery: await taskPlanDiscovery(registryTask(run, "pi-rule")),
+  });
+  assert.deepEqual(run.argv, ["--append-system-prompt", BLOCK, "--session-id", run.argv[3], expectedPrompt]);
+  assert.equal(run.prompt, expectedPrompt);
   assert.equal(run.prompt.includes(RULE), false);
   const snapshot = run.registry.standingInstructionsFor(run.sessionId);
   assert.equal(snapshot?.mechanism, "pi-append-system-prompt");

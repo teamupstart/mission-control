@@ -3716,9 +3716,8 @@ export class TaskManager {
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
       dependencies,
-      planInputs: patch.planInputs ?? t.planInputs ?? [],
-      planInputError: patch.planInputs === undefined ? t.planInputError : null,
-      planPolicy,
+      ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
+      ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.

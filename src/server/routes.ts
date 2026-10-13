@@ -4622,7 +4622,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   );
 
   // --- MCP review channel (token-guarded) ---
-  for (const reviewPath of ["/mcp/reviews", "/mcp/v2/reviews"]) app.post(reviewPath, async (c) => {
+  async function createMcpReview(c: Context, managedPlans: boolean) {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
@@ -4632,7 +4632,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       const target = parsed.data.managedPlan;
       if (target) {
-        if (reviewPath !== "/mcp/v2/reviews" || kind !== "plan-decisions") return c.json({ error: "Managed final approval requires the versioned plan-decisions route" }, 400);
+        if (!managedPlans || kind !== "plan-decisions") return c.json({ error: "Managed final approval requires the versioned plan-decisions route" }, 400);
         const manager = workflowManager();
         if (!manager) return c.json({ error: "Workflow authority unavailable" }, 503);
         const authority = planAuthority(registry, session, target.repoSlot);
@@ -4649,7 +4649,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const review = reviews.create(session.id, kind, title, body, decisions ?? null);
       return c.json({ id: review.id, sessionId: session.id });
     } catch (error) { return planFailure(c, error); }
-  });
+  }
+  app.post("/mcp/reviews", (c) => createMcpReview(c, false));
+  app.post("/mcp/v2/reviews", (c) => createMcpReview(c, true));
 
   async function createMcpTask(
     c: Context,

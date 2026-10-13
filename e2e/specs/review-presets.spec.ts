@@ -13,7 +13,7 @@ for (const [name, judges] of [
   test(`${name} exposes its agreed review stages`, async ({ dashboard, daemon }) => {
     await dashboard.setViewportSize({ width: 1440, height: 1000 });
     await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-    await dashboard.getByRole("button", { name: new RegExp(name) }).click();
+    await dashboard.getByRole("button", { name: new RegExp(`^${name} built-in`) }).click();
     const pipeline = dashboard.locator(".wf-pipeline-strip");
     await expect(pipeline.locator(".wf-pipeline-reviewer-name")).toHaveText(name === "Plan Validation"
       ? [...judges, "Session actionPull Request"]

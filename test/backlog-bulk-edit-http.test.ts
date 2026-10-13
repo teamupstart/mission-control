@@ -32,10 +32,11 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 /**
- * The one method of the workflow manager the bulk route asks: whether a workflow may be
- * chosen. `published` is the only selectable one, as if every other id were a draft.
+ * The bulk route asks whether a workflow may be chosen. `published` is the only selectable
+ * one, as if every other id were a draft. No local publication service is needed here.
  */
 const workflowStub = {
+  localPlanPublication: () => null,
   workflowSelectionBlock: (workflowId: string) =>
     workflowId === "published" ? null : { message: "Choose a workflow with a published version" },
 } as unknown as WorkflowManager;

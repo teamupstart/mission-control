@@ -47,6 +47,7 @@ const { attributeTranscript } = await import("../src/server/transcript-attributi
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
+const { taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
 const { withMemoryPointer } = await import("../src/shared/memory.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -846,12 +847,13 @@ test("Pi fingerprints the memory-pointer prefixed text it actually launched with
   const marker = run.registry.launchTurnFor(run.sessionId!);
   assert.ok(marker, "a Pi dispatch still records its launch presentation");
   assert.equal(marker!.displayText, intent);
+  const planDiscovery = await taskPlanDiscovery(run.registry.getTask("task-pi")!);
   assert.notEqual(
     marker!.fingerprint,
     launchTextFingerprint(withTaskKindContract(
       run.registry.getTask("task-pi")!,
       intent,
-      { planSkills: null, workflowEvidence: false },
+      { planSkills: null, workflowEvidence: false, planDiscovery },
     )),
     "the pointer really did change the delivered text, so this test can tell the two apart",
   );
@@ -860,7 +862,7 @@ test("Pi fingerprints the memory-pointer prefixed text it actually launched with
     launchTextFingerprint(withMemoryPointer(withTaskKindContract(
       run.registry.getTask("task-pi")!,
       intent,
-      { planSkills: null, workflowEvidence: false },
+      { planSkills: null, workflowEvidence: false, planDiscovery },
     ))),
     "and the fingerprint is of the pointer-prefixed text Pi was launched with",
   );

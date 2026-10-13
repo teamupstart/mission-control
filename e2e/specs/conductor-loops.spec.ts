@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execPath } from "node:process";
 
 import type { Locator, Page } from "@playwright/test";
@@ -378,13 +378,17 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     .poll(() => codexPrompts(daemon)[0], {
       message: "the SDK host should receive the direct Engineer command as turn one",
     })
-    .toBe(
-      `$engineer - run this skill now. ${intent}\n\n` +
+    .toContain(
       `[Pipeline Engineer lifecycle context: the provider reserved Engineer run ${engineerRunId}. ` +
       "Pass that exact id as --engineer-run-id when creating the authoring worktree. " +
       "After Engineer creates or enters that worktree, call report_pipeline_workspace with " +
       "its absolute path before editing files there.]",
     );
+  const launchPrompt = codexPrompts(daemon)[0]!;
+  expect(launchPrompt.split("\n\n")[0]).toBe(`$engineer - run this skill now. ${intent}`);
+  expect(launchPrompt).toContain("## Plan inputs and discovery");
+  expect(launchPrompt).toContain(`repository plans ${join(daemon.repo, "docs/plans/")}`);
+  expect(launchPrompt).toContain(`local plans ${join(daemon.home, "plans", basename(daemon.repo))}/`);
 
   // Engineer authors the spec outside the host's fixed SDK cwd. This is the real shape
   // behind the regression: the interactive session remains in the main checkout while the

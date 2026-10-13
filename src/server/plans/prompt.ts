@@ -4,7 +4,7 @@ import {
 } from "@shared/plans.ts";
 import type { Task } from "@shared/types.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "./tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL } from "./tools.ts";
 
 /**
  * The delivery contract every plan task gets - which POINTS AT the planning skills instead
@@ -97,8 +97,10 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
     "   rendered and put in front of a person, and nothing here repeats it - so read it rather",
     "   than working from what you already believe a good plan looks like. On this harness:",
     `   ${skills.htmlPlans}`,
-    `2. The plan belongs in this checkout at \`${PLAN_SOURCE_PATH_SHAPE}\`, with its rendered`,
-    `   \`${PLAN_PAGE_FILENAME}\` beside it, where \`<name>\` is a short kebab-case name for the work.`,
+    `2. Call ${PLAN_CONTEXT_TOOL}, then ${PLAN_SAVE_TOOL} with complete Markdown and static HTML content.`,
+    `   The daemon writes \`${PLAN_SOURCE_PATH_SHAPE}\` and retains \`${PLAN_PAGE_FILENAME}\` locally`,
+    `   unless this plan's pinned policy includes HTML in Git. Use ${PLAN_READ_TOOL} for exact revisions,`,
+    "   review the returned preview URL, and publish only returned requiredPaths. Saving is not publication.",
     `3. Ask for the review, and for every open choice in it, with the \`${PLAN_DECISIONS_TOOL}\``,
     "   tool rather than in prose. It blocks until the human answers, which is what holds the",
     "   refinement open. A dismissal ends the work; it is never read back as a selection.",

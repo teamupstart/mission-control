@@ -25,11 +25,10 @@ export type OrganizationId = (typeof ORGANIZATION_IDS)[number];
 /**
  * How far an organization's managed telemetry lane has rolled out.
  *
- * `pilot`: the lane is configured on every recognized Mac and sends only from Macs whose
- * person enrolled through `POST /api/telemetry/organization/pilot`. Append-only; the
- * default-on stage is a later phase's addition.
+ * `pilot`: the lane sends only from Macs whose person enrolled through the pilot route.
+ * `default-on`: the managed lane sends from every recognized Mac.
  */
-export const ORGANIZATION_ROLLOUTS = ["pilot"] as const;
+export const ORGANIZATION_ROLLOUTS = ["pilot", "default-on"] as const;
 export type OrganizationRollout = (typeof ORGANIZATION_ROLLOUTS)[number];
 
 /**
@@ -51,7 +50,7 @@ export const TelemetryOrganizationRecordSchema = z.object({
     product: TelemetryDestinationSchema,
     enabled: z.boolean(),
   }),
-  /** When this Mac joined the pilot, or null. Product analytics sends exactly when this is set. */
+  /** When this Mac joined the pilot, or null. Consulted only during a pilot rollout. */
   pilotEnrolledAt: z.number().int().nullable().default(null),
   /** Whether the lane is on because the rollout turned it on. Always false during `pilot`. */
   enabledByDefault: z.boolean().default(false),
@@ -68,6 +67,8 @@ export const TelemetryOrganizationPilotRequestSchema = z
 export type TelemetryOrganizationPilotRequest = z.infer<
   typeof TelemetryOrganizationPilotRequestSchema
 >;
+
+export const TelemetryOrganizationNoticeRequestSchema = z.object({}).strict();
 
 /**
  * A recognized organization, as Settings > Telemetry renders it.

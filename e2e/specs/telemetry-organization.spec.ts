@@ -12,8 +12,8 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  * The organization is forced with `MISSION_ORGANIZATION=upstart` onto a collector this spec
  * runs on loopback - the only way the daemon will honour a force - so nothing here can reach
  * Upstart's real gateway. What this proves that the unit layer cannot: the panel a person
- * sees is view-only, the daemon refuses the write that view-only implies, and pilot enrollment
- * reaches the collector in the Datadog-ready shape the preset names.
+ * sees is view-only, the daemon refuses the write that view-only implies, and the default-on
+ * lane reaches the collector in the Datadog-ready shape the preset names.
  */
 
 const EVIDENCE = artifactsDir("telemetry-organization");
@@ -92,6 +92,17 @@ const test = base.extend<{ collector: Collector }>({
       MISSION_ORGANIZATION_ENDPOINT: collector.endpoint,
     });
   },
+});
+
+base("an unmanaged installation does not show the notice or enable product telemetry", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/`);
+  await expect(dashboard.getByRole("status", { name: "Upstart telemetry notice" })).toHaveCount(0);
+  const response = await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`);
+  expect(response.ok()).toBe(true);
+  const settings = await response.json() as { config: { enabled: boolean; product: { enabled: boolean } }; organization: unknown };
+  expect(settings.organization ?? null).toBeNull();
+  expect(settings.config.enabled).toBe(false);
+  expect(settings.config.product.enabled).toBe(false);
 });
 
 // ---- a minimal OTLP metrics reader: resource attributes, metric names, sum temporality ----
@@ -181,7 +192,42 @@ async function shoot(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/telemetry-organization/${name}.png`);
 }
 
-test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and sends once enrolled", async ({
+test("the default-on notice appears once and its dismissal survives a daemon restart", async ({ dashboard, daemon }) => {
+  await dashboard.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        (window as Window & { testEventSource?: EventSource }).testEventSource = this;
+      }
+    };
+  });
+  await dashboard.reload();
+  const notice = dashboard.getByRole("status", { name: "Upstart telemetry notice" });
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Mission Control usage telemetry is on for this Upstart-managed Mac.");
+  await expect(notice).toContainText("Upstart manages this setting.");
+  await expect(notice.getByRole("link", { name: "View telemetry" })).toHaveAttribute("href", "#/settings/telemetry");
+  await shoot(dashboard, "00-default-on-notice");
+  await dashboard.route("**/api/telemetry/organization/notice", (route) => route.abort());
+  await notice.getByRole("button", { name: "Dismiss managed telemetry notice" }).click();
+  await expect(notice.getByRole("alert")).toBeVisible();
+  await expect(notice.getByRole("button", { name: "Dismiss managed telemetry notice" })).toBeEnabled();
+  await dashboard.unroute("**/api/telemetry/organization/notice");
+  await dashboard.evaluate(() => {
+    const stream = (window as Window & { testEventSource?: EventSource }).testEventSource;
+    if (!stream) throw new Error("the dashboard event stream was not created");
+    stream.close();
+  });
+  await notice.getByRole("button", { name: "Dismiss managed telemetry notice" }).click();
+  await expect(notice).toHaveCount(0);
+  await daemon.crash();
+  await daemon.restart();
+  await dashboard.reload();
+  await expect(notice).toHaveCount(0);
+});
+
+test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and sends by default", async ({
   dashboard,
   daemon,
   collector,
@@ -189,14 +235,14 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
   const panel = dashboard.locator("section.settings-section").filter({ hasText: "Managed by Upstart" });
 
-  // The block, its evidence and the not-yet-enrolled state.
+  // The block, its evidence and the default-on state.
   await expect(panel.getByText("Managed by Upstart", { exact: true })).toBeVisible();
   await expect(
     panel.getByText(
       `MISSION_ORGANIZATION forces Upstart on this daemon, sending to a collector on this machine (${collector.endpoint}).`,
     ),
   ).toBeVisible();
-  await expect(panel.getByText("Not enrolled in the pilot on this Mac", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Sending to Upstart's Datadog", { exact: true })).toBeVisible();
 
   // The effective configuration, read-only.
   const configuration = panel.getByLabel("Managed telemetry configuration");
@@ -214,14 +260,14 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   await expect(panel.getByRole("combobox")).toHaveCount(0);
   await expect(panel.getByRole("button", { name: /save/i })).toHaveCount(0);
   await expect(panel.getByRole("button", { name: /discard|clear|reset|remove/i })).toHaveCount(0);
-  // What stays: Re-check, and Test connection (disabled until the lane is exporting).
+  // What stays: Re-check and Test connection.
   await expect(
     panel.getByRole("button", { name: "Check again whether Upstart manages this Mac" }),
   ).toBeEnabled();
   await expect(
     panel.getByRole("button", { name: "Test the connection to Upstart's Datadog" }),
-  ).toBeDisabled();
-  await shoot(dashboard, "01-managed-not-enrolled");
+  ).toBeEnabled();
+  await shoot(dashboard, "01-managed-default-on");
 
   // The daemon refuses the write the view-only panel implies.
   const refused = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
@@ -233,18 +279,18 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
     managedBy: "upstart",
   });
 
-  // Pilot enrollment through the documented API call.
-  const joined = await dashboard.request.post(
+  // The retired pilot route cannot switch the managed lane off.
+  const retired = await dashboard.request.post(
     `${daemon.baseURL}/api/telemetry/organization/pilot`,
-    { data: { enrolled: true } },
+    { data: { enrolled: false } },
   );
-  expect(joined.ok()).toBe(true);
+  expect(retired.status()).toBe(409);
   await expect(panel.getByText("Sending to Upstart's Datadog", { exact: true })).toBeVisible();
   await expect(
     panel.getByRole("button", { name: "Test the connection to Upstart's Datadog" }),
   ).toBeEnabled();
 
-  // Enrollment survives a restart: the record re-asserts the pilot invariant at start. The
+  // Default-on survives a restart: the record re-asserts the rollout at start. The
   // restart is also the daemon's own first counted fact under the managed lane -
   // `mission.daemon.starts` - so the export below carries a real delta counter, not only
   // health gauges.
@@ -277,7 +323,7 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   const sums = sumsIn(decoded);
   // OTLP's AggregationTemporality: 1 is DELTA.
   expect(sums.every((metric) => metric.sumTemporality === 1)).toBe(true);
-  await shoot(dashboard, "02-enrolled-sending");
+  await shoot(dashboard, "02-default-on-sending");
 
   // A Cloudflare-shaped refusal reads as waiting for the Upstart network, not as a failure.
   // The restart queues a fresh `mission.daemon.starts` fact, so the next drain is certain to
@@ -312,18 +358,13 @@ test("a managed Mac shows Upstart's telemetry view-only, refuses edits, and send
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
 });
 
-test("an enrolled managed lane does not claim to be sending before its live status arrives", async ({
+test("a managed lane does not claim to be sending before its live status arrives", async ({
   dashboard,
   daemon,
 }) => {
-  const joined = await dashboard.request.post(
-    `${daemon.baseURL}/api/telemetry/organization/pilot`,
-    { data: { enrolled: true } },
-  );
-  expect(joined.ok()).toBe(true);
   // The stored configuration loads over HTTP; the live queue summary rides the event stream.
   // Holding the stream back leaves exactly the window where the panel knows the Mac is
-  // enrolled but not whether anything is being sent.
+  // on by default but not whether anything is being sent.
   await dashboard.route("**/events", (route) => route.abort());
   await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
   await dashboard.reload();
@@ -349,11 +390,6 @@ test("a managed lane the daemon paused says it stopped sending, and offers Try a
   collector.unauthorized();
   await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
   const panel = dashboard.locator("section.settings-section").filter({ hasText: "Managed by Upstart" });
-  const joined = await dashboard.request.post(
-    `${daemon.baseURL}/api/telemetry/organization/pilot`,
-    { data: { enrolled: true } },
-  );
-  expect(joined.ok()).toBe(true);
 
   // The collector rejects the credential, so the daemon pauses the destination. The state line
   // must not keep claiming the lane is sending.
@@ -379,11 +415,6 @@ test("a Mac that left Upstart stays locked until its withdrawal is written, then
   dashboard,
   daemon,
 }) => {
-  const joined = await dashboard.request.post(
-    `${daemon.baseURL}/api/telemetry/organization/pilot`,
-    { data: { enrolled: true } },
-  );
-  expect(joined.ok()).toBe(true);
 
   // The Mac leaves Upstart's management while its database refuses the telemetry write a
   // withdrawal needs - a full or locked disk.

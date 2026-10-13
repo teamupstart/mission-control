@@ -717,6 +717,7 @@ function sameTelemetrySummary(
   if (a === undefined || b === undefined) return a === b;
   if (
     a.enabled !== b.enabled ||
+    a.organizationNotice?.label !== b.organizationNotice?.label ||
     a.configRevision !== b.configRevision ||
     a.productEnrollment !== b.productEnrollment ||
     a.usedBytes !== b.usedBytes ||

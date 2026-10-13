@@ -102,6 +102,7 @@ function optimistic(view: SkillsView, patch: SkillsConfigPatch): SkillsView {
   return {
     ...view,
     enabled: patch.enabled ?? view.enabled,
+    commitPlanHtml: patch.commitPlanHtml ?? view.commitPlanHtml,
     skills: view.skills.map((s) => ({ ...s, enabled: patch.skills?.[s.id] ?? s.enabled })),
   };
 }

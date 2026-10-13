@@ -43,7 +43,7 @@ const { reconcileSkillLinks, uninstallSkillLinks, desiredSkillIds, skillDrift, s
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function mkCfg(over: Partial<SkillsConfig> = {}): SkillsConfig {
-  return { enabled: true, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0, ...over };
+  return { enabled: true, commitPlanHtml: false, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0, ...over };
 }
 
 function mkSkill(id: string): SkillCatalogEntry {
@@ -276,8 +276,8 @@ test("catalog default enables parsed rows, preserves explicit off, and skips mal
     problems: ["skills/alpha/SKILL.md could not be parsed"],
   });
   assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true }), unparsed)], ["beta"]);
-  assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true, skills: { beta: false } }), CATALOG)], ["alpha"]);
-  assert.deepEqual([...desiredSkillIds(mkCfg({ defaultSkillEnabled: true, skills: { alpha: true } }), unparsed)], ["alpha", "beta"]);
+  assert.deepEqual([...desiredSkillIds(mkCfg({ commitPlanHtml: false, defaultSkillEnabled: true, skills: { beta: false } }), CATALOG)], ["alpha"]);
+  assert.deepEqual([...desiredSkillIds(mkCfg({ commitPlanHtml: false, defaultSkillEnabled: true, skills: { alpha: true } }), unparsed)], ["alpha", "beta"]);
 });
 
 test("THE regression: a skill we can't PARSE is still desired, and stays linked", () => {

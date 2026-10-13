@@ -152,6 +152,7 @@ const MAX_REPORTED_PROBLEMS = 20;
 export function validateStaticReportHtml(
   html: string,
   relativeTargets: ReadonlySet<string> | null = null,
+  selfContained = false,
 ): ArchiveHtmlValidation {
   const problems: ArchiveHtmlProblem[] = [];
   const seen = new Set<string>();
@@ -191,7 +192,7 @@ export function validateStaticReportHtml(
         continue;
       }
       if (name === "style") {
-        for (const problem of cssProblems(attr.value, relativeTargets)) add(problem.code, problem.message);
+        for (const problem of cssProblems(attr.value, relativeTargets, selfContained)) add(problem.code, problem.message);
         continue;
       }
       if (!URL_ATTRIBUTES.has(name)) continue;
@@ -200,12 +201,13 @@ export function validateStaticReportHtml(
           linkTarget: LINK_TARGET_ATTRIBUTES.has(name),
           clickable: isClickableDestination(tag, name),
           relativeTargets,
+          selfContained,
         });
         if (problem) add(problem.code, problem.message);
       }
     }
     if (tag === "style") {
-      for (const problem of cssProblems(textOf(node), relativeTargets)) add(problem.code, problem.message);
+      for (const problem of cssProblems(textOf(node), relativeTargets, selfContained)) add(problem.code, problem.message);
     }
     return true;
   });
@@ -381,6 +383,7 @@ interface UrlContext {
   /** `<a href>` or `<area href>`: the one place an external `http(s)` reference is allowed. */
   clickable: boolean;
   relativeTargets: ReadonlySet<string> | null;
+  selfContained?: boolean;
 }
 
 /**
@@ -431,6 +434,7 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
     }
     return null;
   }
+  if (context.selfContained && !context.clickable) return { code: "relative_resource", message: "managed plan resources must be inline; only navigation may use relative links" };
   const resolved = resolveInsideReport(value);
   if (!resolved) {
     return { code: "escaping_link", message: "a relative link leaves the report directory" };
@@ -501,13 +505,13 @@ function resolveInsideReport(raw: string): string | null {
  * Comments are skipped so a commented-out `url()` is not reported, and so a `/* *\/` cannot
  * hide one either.
  */
-function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null): ArchiveHtmlProblem[] {
+function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, selfContained = false): ArchiveHtmlProblem[] {
   const problems: ArchiveHtmlProblem[] = [];
   const check = (value: string): void => {
     // Every reference a stylesheet carries is fetched when the page opens, however it is
     // spelled, so CSS is entirely a fetching slot and the navigational allowance never
     // reaches it.
-    const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets });
+    const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets, selfContained });
     if (problem) problems.push(problem);
   };
 

@@ -95,7 +95,7 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
     "the plan's Markdown and rendered HTML are complete and consistent",
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
-    "artifacts referenced by phase tasks are committed and pushed, with exact paths verified before scheduling, and every phase task depends on the planning session",
+    "Markdown artifacts referenced by phase tasks and policy-included HTML are committed and pushed, with exact paths verified before scheduling; policy-excluded HTML is verified in its retained revision, and every phase task depends on the planning session",
     "the verification the planning work requires has been run",
     "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
   ],

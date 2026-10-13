@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 92 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 94 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>92</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>94</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -670,6 +670,13 @@ LIMIT 20;
               </div>
             </details>
 
+            <details class="family">
+              <summary><strong>Managed plans (durable ledger)</strong><span>2 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>managed_plans</code><p>Stable plan identity, canonical owning repository, pinned policy, retained store path, originating session/task/work episode and current ready revision. Retained independently of task and session deletion.</p></div>
+                <div class="table-row"><code>managed_plan_revisions</code><p>Immutable revision references, manifest digests, idempotency identities and recoverable checkout write intents. Staging is incomplete; ready means saved, never approved or published.</p></div>
+              </div>
+            </details>
             <details class="family">
               <summary><strong>Archives (disposable index)</strong><span>6 tables</span></summary>
               <div class="table-list">

@@ -686,7 +686,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dirs: string[] =
  */
 export function uninstallSkillLinks(dirs: string[] = skillsDirs()): ReconcileResult {
   return reconcileSkillLinks(
-    { enabled: false, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0 },
+    { enabled: false, commitPlanHtml: false, defaultSkillEnabled: false, skills: {}, generation: 0, generationAt: 0 },
     { readable: true, skills: [], present: new Set(), problems: [] },
     dirs,
   );

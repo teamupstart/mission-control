@@ -46,7 +46,7 @@ function mkRow(over: Partial<SkillRow> = {}): SkillRow {
 }
 
 function mkView(over: Partial<SkillsView> = {}): SkillsView {
-  return { enabled: true, skills: [mkRow()], pending: 0, problems: [], ...over };
+  return { commitPlanHtml: false, enabled: true, skills: [mkRow()], pending: 0, problems: [], ...over };
 }
 
 function render(over: Partial<SkillsState> = {}): string {

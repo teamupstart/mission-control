@@ -95,7 +95,17 @@ one-shot task, even when that work crosses application layers. The HTML Plans re
 this as its final selectable follow-up; choosing it passes the approved plan and submitted decisions
 into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
-Phased Plan commits and pushes its artifacts before scheduling. It then reads
+**Commit generated HTML plan files** defaults off, including when an older saved Skills
+record lacks the preference. It remains configurable with the master skills switch off.
+New managed plans use `get_plan_context`, `save_plan`, and `read_plan`: Markdown is written
+to the checkout, while complete revision snapshots and HTML previews stay beneath
+`$MISSION_HOME/plans/`. Opt-in adds HTML to the returned Git-required paths. Each plan pins
+its creation policy. Existing tracked plans and installed skill links are unchanged by a
+preference edit, and no reload generation advances. Settings snapshots retain the preference,
+not the local bundles. See [managed plans](managed-plans.md) for limits and recovery.
+
+Phased Plan commits and pushes its Markdown and policy-included HTML before scheduling.
+Policy-excluded HTML is verified in the retained revision. It then reads
 `get_plan_publication_context`: a bound workflow owns the PR and the planning turn ends;
 without a binding, the skill opens and follows the PR itself. Manual bindings wait for manual
 submission. Missing tools, unreadable context, pending bindings, and paused bindings do not

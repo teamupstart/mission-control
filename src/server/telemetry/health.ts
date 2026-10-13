@@ -26,6 +26,8 @@ import {
   peekTelemetryIdentity,
   telemetryProductEnrollment,
 } from "./config.ts";
+import { currentOrganization } from "../environment/organization.ts";
+import { telemetryOrganizationRecord } from "./organization.ts";
 import {
   deliveryCounts,
   getDestination,
@@ -149,9 +151,17 @@ export function telemetryHealthResponse(now = Date.now()): object {
 export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSummary {
   const config = getTelemetryConfig();
   const productEnrollment = telemetryProductEnrollment();
+  const organization = currentOrganization();
+  const record = organization === null ? null : telemetryOrganizationRecord();
+  const organizationNotice = organization !== null && !organization.withdrawing &&
+    record?.organization === organization.entry.id && record.enabledByDefault &&
+    record.noticeAcknowledgedAt === null && profileIsExporting(config, "product")
+      ? { label: organization.entry.label }
+      : null;
   if (peekTelemetryIdentity() === null) {
     return {
       enabled: config.enabled,
+      organizationNotice,
       configRevision: config.revision,
       productEnrollment,
       usedBytes: 0,
@@ -211,6 +221,7 @@ export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSum
     });
     return {
       enabled: config.enabled,
+      organizationNotice,
       configRevision: config.revision,
       productEnrollment,
       usedBytes: usedBytes(d),
@@ -225,8 +236,10 @@ export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSum
 export function telemetrySettingsSummaryResponse(now = Date.now()): TelemetrySettingsSummary {
   const summary = telemetrySettingsSummary(now);
   if (hasStoredTelemetryConfig()) return summary;
+  const { organizationNotice, ...legacy } = summary;
+  void organizationNotice;
   return {
-    ...summary,
+    ...legacy,
     profiles: summary.profiles.map((profile) => {
       const { waitingForNetwork, waitingSince, latePointsSent, ...legacy } = profile;
       void waitingForNetwork;

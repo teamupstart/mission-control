@@ -454,6 +454,9 @@ async function declaredMcpTools() {
       PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
       PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
       PLAN_PUBLICATION_TOOL: "src/server/plans/tools.ts",
+      PLAN_CONTEXT_TOOL: "src/server/plans/tools.ts",
+      PLAN_SAVE_TOOL: "src/server/plans/tools.ts",
+      PLAN_READ_TOOL: "src/server/plans/tools.ts",
     }[ref[1]];
     if (!from) {
       fail(`MISSION_MCP_TOOLS names ${ref[1]}, which this smoke does not know how to resolve`);

@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { recordsIn } from "../fixtures/records.ts";
+import { argvValue, recordsIn } from "../fixtures/records.ts";
 
 /**
  * INVESTIGATION SPEC - reproduces the reported "per-harness model changes are not taken
@@ -284,7 +284,7 @@ test("a model changed in Settings reaches the very next dispatch's command line"
 
   const session = read().find(isDispatchedSession);
   expect(
-    session?.argv[session.argv.indexOf("--model") + 1],
+    argvValue(session?.argv ?? [], "--model"),
     "the dispatch should run on the model saved moments earlier, with no daemon restart",
   ).toBe("claude-sonnet-5");
 });

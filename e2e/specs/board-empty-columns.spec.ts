@@ -84,6 +84,12 @@ async function dispatch(page: Page, daemon: DaemonHandle, goal: string): Promise
     .selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+      runtime: string;
+    }[];
+    return sessions.filter((session) => session.runtime === "sdk").length;
+  }, { message: "the dispatched SDK session should appear before its hooks are posted", timeout: 60_000 }).toBe(1);
 }
 
 /** The one SDK session this spec dispatched: its checkout is what binds a hook to it. */

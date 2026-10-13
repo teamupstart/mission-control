@@ -68,7 +68,11 @@ import {
   McpCreateTaskSchema,
   McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
-  type McpCreateTaskV2,
+  McpCreateTaskV3Schema,
+  type McpCreateTaskV3,
+  McpUpdateTaskSchema,
+  McpDeleteTaskSchema,
+  type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
   McpProductIssuePreviewRequestSchema,
@@ -402,6 +406,7 @@ import {
 } from "@shared/telemetry-ingress.ts";
 import {
   admitBrowserTelemetry,
+  acknowledgeOrganizationNotice,
   telemetryCycle,
   observeEffortSelected,
   observeKillRequested,
@@ -420,6 +425,7 @@ import {
 } from "./telemetry/index.ts";
 import { currentOrganization } from "./environment/organization.ts";
 import {
+  TelemetryOrganizationNoticeRequestSchema,
   TelemetryOrganizationPilotRequestSchema,
   managedTelemetryRefusal,
 } from "@shared/organizations.ts";
@@ -442,6 +448,9 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { skillEnabled } from "@shared/skills.ts";
 import { applySkillsConfig, getSkillsConfig, skillsConfigProblem } from "./skills/config.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema, PlanCatalogCursorSchema, PLAN_CONTENT_LIMITS } from "@shared/managed-plans.ts";
+import { planAuthority, sessionPlanAuthorities } from "./plans/authority.ts";
+import { planContext, savePlan, readPlanRevision, readPlanFile, listPlans, authorizePlan, PlanStoreError } from "./plans/store.ts";
 import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -514,7 +523,7 @@ import {
   resolveTaskExtraRepoRoots,
   resolveTaskRepoRoot,
 } from "./repos.ts";
-import { prepareTaskRepositories } from "./task-repository-preparation.ts";
+import { prepareTaskRepositories, resolveTaskRepositorySelector } from "./task-repository-preparation.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   readSubmissionImageBody,
@@ -613,6 +622,9 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/** JSON escapes can expand each content byte to six bytes. Keep the decoded content
+ * limit in the writer, with 1 MiB of transport headroom for filenames and attribution. */
+const MANAGED_PLAN_BODY_MAX_BYTES = PLAN_CONTENT_LIMITS.totalBytes * JSON_UTF8_MAX_BYTES_PER_CHAR + 1024 * 1024;
 /**
  * The semantic schema counts JavaScript code units, while this stream guard counts raw request
  * bytes. A caller may legally spell each code unit as a six-byte `\uXXXX` escape, so the guard
@@ -4623,8 +4635,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   async function createMcpTask(
     c: Context,
-    data: McpCreateTaskV2,
+    data: McpCreateTaskV3,
     allowShortNames: boolean,
+    validateWorkflow = false,
   ) {
     const {
       env,
@@ -4633,6 +4646,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       dependsOnTaskIds,
       dependsOnCurrentSession,
     } = data;
+    const kind = data.kind ?? "ship";
     const shortNameSelectors = !allowShortNames
       ? "none"
       : data.targetRepository === undefined
@@ -4641,19 +4655,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const prepared = await prepareTaskRepositories({
       primary: data.targetRepository ?? data.repoRoot,
       extras: data.additionalRepositories,
-      kind: "ship",
+      kind,
+      agent: data.agent,
       shortNameSelectors,
     });
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
 
-    const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
-      type: "task",
-      taskId,
-    }));
+    const dependencies: TaskDependencyInput[] = [...(data.dependencies ?? [])];
+    for (const taskId of dependsOnTaskIds) dependencies.push({ type: "task", taskId });
     if (dependsOnCurrentSession) {
       const session = registry.findSessionByEnv(env, sessionId, cwd);
-      if (!session) return c.json({ error: "no matching active session" }, 404);
+      if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
       dependencies.push({ type: "session", sessionId: session.id });
+    }
+
+    const workflowId = resolveTaskWorkflowId(data.workflowId, kind);
+    if (validateWorkflow && workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.workflowSelectionBlock(workflowId);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
 
     try {
@@ -4662,16 +4683,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         extraRepoRoots: prepared.extraRepoRoots,
         title: data.title,
         intent: data.intent,
-        kind: "ship",
+        kind,
         // Resolved during repository preparation so the capability check and stored pin
-        // cannot observe different ship-kind defaults.
+        // cannot observe different task-kind defaults.
         agent: prepared.agent,
+        model: data.model ?? undefined,
+        effort: data.effort ?? undefined,
+        workflowId,
+        enabled: data.enabled,
+        priority: data.priority,
+        labels: data.labels,
         backlog: true,
         dependencies,
       });
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
       throw error;
     }
   }
@@ -4694,6 +4722,51 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, McpCreateTaskV2Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true);
+  });
+
+  app.post("/mcp/v3/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskV3Schema);
+    if (!parsed.ok) return parsed.res;
+    return createMcpTask(c, parsed.data, true, true);
+  });
+
+  app.post("/mcp/tasks/:id/update", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpUpdateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const { repository, additionalRepositories, ...patch } = parsed.data;
+    const id = c.req.param("id");
+    const existing = tasks.get(id);
+    if (!existing) return c.json({ error: "no such task" }, 404);
+    if (existing.status !== "backlog") {
+      return c.json({ error: `task is ${existing.status}, not in the backlog` }, 409);
+    }
+    const update: UpdateTask = { ...patch };
+    if (repository !== undefined) {
+      const resolved = await resolveTaskRepositorySelector(repository);
+      if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+      update.repoRoot = resolved.path;
+    }
+    if (additionalRepositories !== undefined) {
+      update.extraRepoRoots = [];
+      for (const selector of additionalRepositories) {
+        const resolved = await resolveTaskRepositorySelector(selector);
+        if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+        update.extraRepoRoots.push(resolved.path);
+      }
+    }
+    const validated = UpdateTaskSchema.safeParse(update);
+    if (!validated.success) return c.json({ error: validated.error.message }, 400);
+    return updateTask(c, id, validated.data, true);
+  });
+
+  app.post("/mcp/tasks/delete", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpDeleteTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.remove(parsed.data.taskId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/mcp/retros/no-change", async (c) => {
@@ -4868,6 +4941,63 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
     if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
     return c.json(manager.planPublicationContext(session.id));
+  });
+
+  const planFailure = (c: Context, error: unknown) => c.json({ error: error instanceof Error ? error.message : "Plan operation failed" }, error instanceof PlanStoreError ? error.status : 409);
+  app.post("/mcp/plans/context", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanContextInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session; launch or register this session first" }, 403);
+    try { return c.json(await planContext(planAuthority(registry, session, parsed.data.repoSlot))); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/save", bodyLimit({ maxSize: MANAGED_PLAN_BODY_MAX_BYTES, onError: (c) => c.json({ error: "Plan request is too large" }, 413) }), async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.merge(SavePlanInputSchema));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    const { env: _env, sessionId: _sessionId, cwd: _cwd, ...input } = parsed.data;
+    try { return c.json(await savePlan(planAuthority(registry, session, input.repoSlot), input)); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.post("/mcp/plans/read", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpPlanPublicationSchema.extend({ input: ReadPlanInputSchema }));
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session) return c.json({ error: "Managed plans require a registered Mission Control session" }, 403);
+    try {
+      const input = parsed.data.input;
+      const authority = planAuthority(registry, session, input.repoSlot);
+      if (!input.planId) return c.json(await listPlans(authority, input.cursor));
+      await authorizePlan(authority, input.planId);
+      return c.json(input.file ? { content: readPlanFile(input.planId, input.revision!, input.file).toString("utf8") } : readPlanRevision(input.planId, input.revision!));
+    } catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/sessions/:id/plans", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "No such session" }, 404);
+    try {
+      const slot = c.req.query("repoSlot");
+      const cursor = PlanCatalogCursorSchema.optional().safeParse(c.req.query("cursor"));
+      if (!cursor.success) return c.json({ error: "Invalid plan catalog cursor" }, 400);
+      const authorities = slot === undefined ? sessionPlanAuthorities(registry, session) : [planAuthority(registry, session, slot)];
+      return c.json(await listPlans(authorities, cursor.data));
+    }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision", (c) => {
+    try { return c.json(readPlanRevision(c.req.param("id"), Number(c.req.param("revision")))); }
+    catch (error) { return planFailure(c, error); }
+  });
+  app.get("/api/plans/:id/:revision/files/:file", (c) => {
+    try {
+      const bytes = readPlanFile(c.req.param("id"), Number(c.req.param("revision")), c.req.param("file"));
+      return c.body(new Uint8Array(bytes), 200, { "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "no-store" });
+    } catch (error) { return planFailure(c, error); }
   });
 
   app.post("/mcp/workflow-evidence", bodyLimit({
@@ -6558,6 +6688,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const catalog = readCatalog();
     return {
       enabled: cfg.enabled,
+      commitPlanHtml: cfg.commitPlanHtml,
       skills: catalog.skills.map((s) => ({ ...s, enabled: skillEnabled(cfg, s.id) })),
       pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
@@ -7466,6 +7597,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(telemetryStatus());
   });
 
+  app.post("/api/telemetry/organization/notice", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, TelemetryOrganizationNoticeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await whileOrganizationSettled(() => acknowledgeOrganizationNotice());
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    if (result.changed) publishSettingsStatus(registry);
+    return c.json({ acknowledged: true });
+  });
+
   // Detect the managing organization again and apply what it finds - managed, unchanged, or
   // withdrawn - then answer the status the panel renders.
   app.post("/api/telemetry/organization/recheck", async (c) => {
@@ -7619,17 +7760,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (parsed.data.id === "pi-integration") {
       // JSON requires a CORS preflight. No cross-origin CORS permission is granted;
       // validate Origin too, while allowing the dashboard's loopback Vite proxy.
-      const origin = c.req.header("origin");
-      let trustedOrigin = !origin;
-      if (origin) {
-        try {
-          const url = new URL(origin);
-          trustedOrigin = url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
-        } catch { trustedOrigin = false; }
-      }
-      if (!trustedOrigin || c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-        return c.json({ error: "forbidden" }, 403);
-      }
+      if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
       const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
       return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
@@ -7864,8 +7995,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/tasks/:id/update", async (c) => {
     const parsed = await parseBody(c, UpdateTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const patch = parsed.data;
-    const id = c.req.param("id");
+    return updateTask(c, c.req.param("id"), parsed.data);
+  });
+
+  async function updateTask(c: Context, id: string, patch: UpdateTask, backlogOnly = false) {
     const existing = tasks.get(id);
     // Resolved only when the repo actually MOVES. A caller restating the root it was
     // handed is not asking for anything, and re-checking it makes a task uneditable the
@@ -7902,9 +8035,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
     }
-    const r = await tasks.update(id, patch);
+    const r = await tasks.update(id, patch, { backlogOnly });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
-  });
+  }
 
   /**
    * File this backlog task as an item in the external tracker a configured source points
@@ -8348,6 +8481,21 @@ export function hostIsLoopback(host: string | undefined): boolean {
   // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
   const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+/** Guard browser-write routes that accept an otherwise empty JSON object. */
+function trustedLoopbackJsonRequest(c: Context): boolean {
+  if (c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return false;
+  }
+  const origin = c.req.header("origin");
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    return url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 

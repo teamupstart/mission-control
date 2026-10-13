@@ -93,6 +93,16 @@ but neither a source comment nor a file-level exemption can grant that boundary.
 must be absolute entries in `FIXED_OS_EXECUTABLES`; a command that can vary by installation does
 not belong there.
 
+## Managed plan changes
+
+Keep `managed-plans.ts`, daemon plan storage, attributed MCP schemas, required launch tools,
+settings projections and backup classification in agreement. Manifests are versioned and
+immutable; settings apply only at creation. Source/rendering digests and bounded inventory
+travel together. Repository publication checks Markdown and policy-included HTML; excluded
+HTML must remain readable and capturable locally. Saving never satisfies task dependencies.
+Do not migrate legacy tracked plans through new-plan defaults. The completion handoff and
+planning PR merge remain publication authority. See [managed plans](../managed-plans.md).
+
 ## Database changes
 
 For a new column on an existing table:

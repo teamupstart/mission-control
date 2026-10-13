@@ -21,9 +21,11 @@ const { environmentName, getTelemetryConfig, setTelemetryConfig, telemetryStatus
 );
 const { runDeliveryPass } = await import("../src/server/telemetry/delivery.ts");
 const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
+const { telemetrySettingsSummary } = await import("../src/server/telemetry/health.ts");
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const {
   applyOrganization,
+  acknowledgeOrganizationNotice,
   recheckOrganization,
   setPilotEnrollment,
   telemetryOrganizationRecord,
@@ -80,6 +82,7 @@ async function manage(): Promise<void> {
 }
 
 beforeEach(async () => {
+  ORGANIZATIONS.upstart.rollout = "pilot";
   const d = openDb();
   for (const table of TABLES) d.exec(`DELETE FROM ${table}`);
   d.exec("DELETE FROM app_config");
@@ -88,6 +91,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await refreshOrganization(deps(false));
+  ORGANIZATIONS.upstart.rollout = "default-on";
 });
 
 after(() => {
@@ -797,6 +801,110 @@ test("the pilot route enrolls through the apply path and answers 409 when unmana
   assert.equal(joined.status, 200);
   assert.equal((joined.body.organization as { pilotEnrolled: boolean }).pilotEnrolled, true);
   assertPreset(true);
+});
+
+test("default-on starts exporting on a newly managed Mac and restores its previous state on withdrawal", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  const configured = setTelemetryConfig({ enabled: false, product: { enabled: false, endpoint: ORIGINAL } });
+  assert.ok(configured.ok);
+  const before = getTelemetryConfig();
+  await manage();
+  assertPreset(true);
+  assert.equal(getTelemetryConfig().enabled, true);
+  assert.deepEqual(telemetryOrganizationRecord()?.previous, { product: before.product, enabled: false });
+  assert.equal(telemetryOrganizationRecord()?.enabledByDefault, true);
+  assert.equal(telemetryOrganizationRecord()?.pilotEnrolledAt, null);
+
+  const net = collectors();
+  captureStart(3_100);
+  assert.ok(runProjectionPass(3_101).batches > 0);
+  assert.ok((await runDeliveryPass({ fetch: net.fetch, now: () => 3_102 })).accepted > 0);
+  assert.ok(net.to(`${GATEWAY}/v1/metrics`).length > 0);
+
+  await recheckOrganization(deps(false));
+  assert.deepEqual(getTelemetryConfig().product, before.product);
+  assert.equal(getTelemetryConfig().enabled, false);
+  assert.equal(telemetryOrganizationRecord(), null);
+});
+
+test("default-on fences batches queued for a previous collector", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  assert.ok(setTelemetryConfig({ enabled: true, product: { enabled: true, endpoint: ORIGINAL } }).ok);
+  captureStart(10);
+  assert.ok(runProjectionPass(11).batches > 0);
+  assert.ok(queuedProductBatches() > 0);
+
+  await manage();
+  const net = collectors();
+  await runDeliveryPass({ fetch: net.fetch, now: () => 1_001 });
+  assert.deepEqual(net.to(ORIGINAL), []);
+  assert.deepEqual(net.to(GATEWAY), [], "old batches cannot be redirected to the managed gateway");
+
+  captureStart(1_010);
+  assert.ok(runProjectionPass(1_011).batches > 0);
+  assert.ok((await runDeliveryPass({ fetch: net.fetch, now: () => 1_012 })).accepted > 0);
+  assert.ok(net.to(`${GATEWAY}/v1/metrics`).length > 0);
+});
+
+test("default-on upgrades a pilot record without changing the saved prior state", async () => {
+  await manage();
+  const before = telemetryOrganizationRecord()?.previous;
+  assertPreset(false);
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  await manage();
+  assertPreset(true);
+  assert.equal(getTelemetryConfig().enabled, true);
+  assert.deepEqual(telemetryOrganizationRecord()?.previous, before);
+  assert.equal(telemetryOrganizationRecord()?.enabledByDefault, true);
+  assert.equal(setPilotEnrollment(false).ok, false);
+  const refused = await send("/api/telemetry/organization/pilot", "POST", { enrolled: false });
+  assert.equal(refused.status, 409);
+});
+
+test("the default-on notice is acknowledged once and persists across reapplication", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  assert.equal((await send("/api/telemetry/organization/notice", "POST", {})).status, 409);
+  await manage();
+  assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, null);
+  assert.deepEqual(telemetrySettingsSummary().organizationNotice, { label: "Upstart" });
+  const revision = getTelemetryConfig().revision;
+  const first = await send("/api/telemetry/organization/notice", "POST", {});
+  assert.equal(first.status, 200);
+  assert.equal(getTelemetryConfig().revision, revision, "acknowledgement does not change telemetry consent");
+  assert.equal(telemetrySettingsSummary().organizationNotice, null);
+  const acknowledgedAt = telemetryOrganizationRecord()?.noticeAcknowledgedAt;
+  assert.ok(acknowledgedAt);
+  assert.deepEqual(acknowledgeOrganizationNotice(acknowledgedAt + 1), { ok: true, changed: false });
+  await manage();
+  assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, acknowledgedAt);
+});
+
+test("cross-origin and non-JSON requests cannot acknowledge the managed notice", async () => {
+  ORGANIZATIONS.upstart.rollout = "default-on";
+  await manage();
+  const invalidHeaders: Array<Record<string, string>> = [
+    { origin: "https://example.com", "content-type": "text/plain" },
+    { origin: "https://example.com", "content-type": "application/json" },
+    { origin: "null", "content-type": "application/json" },
+    { "content-type": "text/plain" },
+  ];
+  for (const headers of invalidHeaders) {
+    const response = await app().request("/api/telemetry/organization/notice", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", ...headers },
+      body: "{}",
+    });
+    assert.equal(response.status, 403);
+    assert.equal(telemetryOrganizationRecord()?.noticeAcknowledgedAt, null);
+  }
+  for (const origin of ["http://127.0.0.1:7317", "http://localhost:5173", "http://[::1]:7317"]) {
+    const accepted = await app().request("/api/telemetry/organization/notice", {
+      method: "POST",
+      headers: { ...HEADERS, origin },
+      body: "{}",
+    });
+    assert.equal(accepted.status, 200, origin);
+  }
 });
 
 test("re-check under the test runner detects nothing and withdraws a forced organization", async () => {

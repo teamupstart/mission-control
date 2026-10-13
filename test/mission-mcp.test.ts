@@ -255,8 +255,9 @@ test("create_task publishes bounded repository selectors and never falls back to
     /res\.status === 404[\s\S]*http\("\/mcp\/tasks"/,
     "a selector-bearing call must not be retried after an old daemon's 404",
   );
-  assert.match(registration, /repository: task\.repoRoot/);
-  assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
+  assert.match(registration, /taskConfiguration\(task\)/);
+  assert.match(source, /repository: task\.repoRoot/);
+  assert.match(source, /additionalRepositories: task\.extraRepos\.map/);
 });
 
 test("product issue registration requires public confirmation and bounded attachment ids", () => {

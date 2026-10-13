@@ -4,6 +4,7 @@ import { unwrapEnvelope } from "./llm/structured.ts";
 import { locateExecutable } from "./executables/locator.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
 import { validateLlmImages } from "./llm/images.ts";
+import { claudeProviderFailure } from "./llm/provider-failure.ts";
 import {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
@@ -152,6 +153,22 @@ export interface ClaudeRunOptions {
 
 type ClaudeOutputFormat = "json" | "stream-json";
 
+function providerFailureFromOutput(stdout: string, format: ClaudeOutputFormat): Error | null {
+  const frames = format === "stream-json" ? stdout.trim().split("\n").reverse() : [stdout];
+  for (const frame of frames) {
+    try {
+      const parsed: unknown = JSON.parse(frame);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const failure = claudeProviderFailure(parsed as Record<string, unknown>);
+        if (failure) return failure;
+      }
+    } catch {
+      // A partial or non-JSON CLI response provides no provider-origin evidence.
+    }
+  }
+  return null;
+}
+
 async function runClaudeRaw(
   prompt: string,
   opts: ClaudeRunOptions,
@@ -289,7 +306,9 @@ async function runClaudeRaw(
     });
     child.on("close", (code) => {
       if (!done()) return;
-      if (code === 0) resolve(out);
+      const providerFailure = providerFailureFromOutput(out, outputFormat);
+      if (providerFailure) reject(providerFailure);
+      else if (code === 0) resolve(out);
       else reject(new Error(`claude exited ${code}: ${err.slice(0, 300)}`));
     });
     // `child.on("error")` above is the ChildProcess's (spawn failures); stdin is a

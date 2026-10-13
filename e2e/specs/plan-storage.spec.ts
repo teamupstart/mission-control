@@ -204,17 +204,60 @@ test("Files discovers attached plans and pages beyond 100 saved plans", async ({
   await expect(more).toBeVisible();
 });
 
+test("queued plan preference saves retain confirmed values after refusal and accept the next edit", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/skills`);
+  const html = dashboard.getByRole("checkbox", { name: "Commit generated HTML plan files" });
+  const storage = dashboard.getByRole("combobox", { name: "Plan storage", exact: true });
+  await dashboard.route("**/api/skills/config", async (route) => {
+    const patch = route.request().postDataJSON();
+    if (patch.planStorage === "local") {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "fixture save refusal" }) });
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await route.continue();
+    }
+  });
+  await html.check();
+  await storage.selectOption("local");
+  await expect(dashboard.getByText("That didn't stick: fixture save refusal")).toBeVisible();
+  await expect(storage).toHaveValue("repository");
+  await expect(html).toBeEnabled(); await expect(html).toBeChecked();
+  const confirmed = await (await fetch(`${daemon.baseURL}/api/skills`)).json();
+  expect(confirmed.planStorage).toBe("repository"); expect(confirmed.commitPlanHtml).toBe(true);
+  await dashboard.unroute("**/api/skills/config");
+  const saved = dashboard.waitForResponse((response) => response.url().endsWith("/api/skills/config") && response.request().method() === "PUT");
+  await storage.selectOption("local");
+  expect((await saved).ok()).toBe(true);
+  await expect(dashboard.getByText("That didn't stick: fixture save refusal")).toBeHidden();
+  await expect(storage).toHaveValue("local");
+  await expect(html).toBeDisabled(); await expect(html).toBeChecked();
+});
+
 test("local plans preserve preferences, require final human approval and release only their artifact prerequisite", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/skills`);
   const html = dashboard.getByRole("checkbox", { name: "Commit generated HTML plan files" });
   await html.check();
   const storage = dashboard.getByRole("combobox", { name: "Plan storage", exact: true });
+  const initialSave = dashboard.waitForResponse((response) => response.url().endsWith("/api/skills/config")
+    && response.request().method() === "PUT" && response.request().postDataJSON().planStorage === "local");
   await storage.selectOption("local");
   await expect(html).toBeDisabled(); await expect(html).toBeChecked();
+  expect((await initialSave).ok()).toBe(true);
   await daemon.crash(); await daemon.restart(); await dashboard.reload();
   await expect(storage).toHaveValue("local"); await expect(html).toBeChecked(); await expect(html).toBeDisabled();
+  // A slow earlier save must not overwrite the operator's later Local choice.
+  await dashboard.route("**/api/skills/config", async (route) => {
+    if (route.request().postDataJSON().planStorage === "repository") await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.continue();
+  });
+  const savedPolicy = (policy: string) => dashboard.waitForResponse((response) => response.url().endsWith("/api/skills/config")
+    && response.request().method() === "PUT" && response.request().postDataJSON().planStorage === policy);
+  const repositorySaved = savedPolicy("repository"), localSaved = savedPolicy("local");
   await storage.selectOption("repository"); await expect(html).toBeEnabled(); await expect(html).toBeChecked();
   await storage.selectOption("local");
+  for (const response of await Promise.all([repositorySaved, localSaved])) expect(response.ok()).toBe(true);
+  expect((await (await fetch(`${daemon.baseURL}/api/skills`)).json()).planStorage).toBe("local");
+  await expect(storage).toHaveValue("local"); await expect(html).toBeDisabled(); await expect(html).toBeChecked();
   mkdirSync(evidence, { recursive: true }); await dashboard.setViewportSize({ width: 1440, height: 1000 });
   await dashboard.screenshot({ path: `${evidence}local-settings.png` });
   const enable = await fetch(`${daemon.baseURL}/api/skills/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true, skills: { "html-plans": true, "phased-plan": true } }) });

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
 import type { PlanDecision, Task } from "@shared/types.ts";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
 import { openDb, loadHumanResolvedReviews } from "../db.ts";
 import type { Registry } from "../registry.ts";
@@ -10,7 +11,7 @@ import { WorkflowStore } from "../workflows/store.ts";
 import { run } from "../util/exec.ts";
 import { planRecord, planRevisionRecord, readPlanRevision, readPlanFile, PlanStoreError, type PlanAuthority } from "./store.ts";
 import { publicationReceipt } from "./inputs.ts";
-import { planAuthority } from "./authority.ts";
+import { planAuthority, taskPlanAuthority } from "./authority.ts";
 
 interface ApprovalRow {
   review_id: string; plan_id: string; revision: number; session_id: string; task_id: string | null;
@@ -41,10 +42,13 @@ export function localWorkflowProblem(workflowId: string | null, store = new Work
 }
 
 export function localPlanAuthorityContext(workflows: WorkflowManager, sessionId: string) {
-  const context = workflows.planPublicationContext(sessionId);
+  return compatibleContext(workflows.store, workflows.planPublicationContext(sessionId));
+}
+
+function compatibleContext(store: WorkflowStore, context: PlanPublicationContext) {
   if (context.owner === "unavailable") throw new PlanStoreError(context.reason);
   if (context.owner === "workflow") {
-    const version = workflows.store.getWorkflowVersionById(context.workflowVersionId);
+    const version = store.getWorkflowVersionById(context.workflowVersionId);
     if (!version || !localWorkflowCompatible(version)) throw new PlanStoreError("The bound workflow requires publication actions incompatible with a local-only plan. Bind Local Plan Validation or another review-only workflow explicitly.");
   }
   return context;
@@ -58,6 +62,7 @@ function exactWriter(authority: PlanAuthority, input: PlanIdentity): void {
   if (plan.repo_key !== input.repoKey || plan.current_revision !== input.revision) throw new PlanStoreError("The reviewed plan revision is stale; save and approve the current final bundle");
   if (openDb().prepare("SELECT 1 FROM managed_plan_revisions WHERE plan_id = ? AND status != 'ready'").get(input.planId)) throw new PlanStoreError("A newer plan save is incomplete");
   if (saved.session_id !== authority.sessionId || saved.task_id !== authority.taskId || saved.episode_id !== authority.episodeId) throw new PlanStoreError("Plan revision belongs to a different work episode");
+  if (plan.repo_root !== authority.repoRoot || saved.repo_slot !== authority.repoSlot || saved.checkout_root !== authority.checkout) throw new PlanStoreError("Plan revision belongs to a different repository scope");
 }
 
 export function validatePlanReview(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): void {
@@ -75,9 +80,8 @@ export function bindPlanReview(authority: PlanAuthority, input: PlanIdentity, re
       context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null);
 }
 
-function approval(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): ApprovalRow {
+function approval(authority: PlanAuthority, input: PlanIdentity, context: ReturnType<typeof compatibleContext>): ApprovalRow {
   exactWriter(authority, input);
-  const context = localPlanAuthorityContext(workflows, authority.sessionId);
   const candidates = openDb().prepare(`SELECT * FROM managed_plan_reviews WHERE plan_id = ? AND revision = ?
     AND session_id = ? AND task_id IS ? AND episode_id IS ? AND binding_id IS ? AND workflow_version_id IS ?`)
     .all(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
@@ -96,11 +100,21 @@ function approval(authority: PlanAuthority, input: PlanIdentity, workflows: Work
   return approved;
 }
 
-function authoredPlans(registry: Registry, sessionId: string): Array<PlanIdentity & { repoSlot: string }> {
-  const task = registry.taskForSession(sessionId, registry.getSession(sessionId)?.cwd ?? null);
-  const episode = registry.workEpisodeForSession(sessionId);
+function matchingValidation(input: PlanIdentity, approved: ApprovalRow, submissionId: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM managed_plan_validations WHERE submission_id = ? AND plan_id = ?
+    AND revision = ? AND review_id = ? AND binding_id IS ? AND workflow_version_id IS ? AND manifest_hash = ?`)
+    .get(submissionId, input.planId, input.revision, approved.review_id, approved.binding_id, approved.workflow_version_id, approved.manifest_hash));
+}
+
+function episodeReceipt(authority: PlanAuthority, input: PlanIdentity): PlanPublicationReceipt | null {
+  const receipt = publicationReceipt(input);
+  if (receipt && (receipt.taskId !== authority.taskId || receipt.sessionId !== authority.sessionId || receipt.episodeId !== authority.episodeId)) throw new PlanStoreError("Publication receipt belongs to a different work episode");
+  return receipt;
+}
+
+function authoredPlans(authority: Pick<PlanAuthority, "sessionId" | "taskId" | "episodeId">): Array<PlanIdentity & { repoSlot: string }> {
   const rows = openDb().prepare(`SELECT p.id, p.repo_key, p.current_revision, r.repo_slot FROM managed_plans p JOIN managed_plan_revisions r ON r.plan_id = p.id AND r.revision = p.current_revision
-    WHERE r.session_id = ? AND r.task_id IS ? AND r.episode_id IS ? AND r.status = 'ready'`).all(sessionId, task?.id ?? null, episode?.episodeId ?? null) as unknown as { id: string; repo_key: string; current_revision: number; repo_slot: string }[];
+    WHERE r.session_id = ? AND r.task_id IS ? AND r.episode_id IS ? AND r.status = 'ready'`).all(authority.sessionId, authority.taskId, authority.episodeId) as unknown as { id: string; repo_key: string; current_revision: number; repo_slot: string }[];
   return rows.filter((r) => readPlanRevision(r.id, r.current_revision).manifest.policy.storage === "local")
     .map((r) => ({ planId: r.id, repoKey: r.repo_key, revision: r.current_revision, repoSlot: r.repo_slot }));
 }
@@ -111,11 +125,11 @@ export function freezeLocalPlanSubmission(registry: Registry, workflows: Workflo
   const session = registry.getSession(binding.sessionId);
   const task = registry.taskForSession(binding.sessionId, session?.cwd ?? null);
   if (!session || task?.kind !== "plan" || task.planPolicy?.storage !== "local") return;
-  const plans = authoredPlans(registry, session.id);
+  const plans = authoredPlans(planAuthority(registry, session, "repo-01"));
   if (!plans.length) throw new PlanStoreError("Save and approve the complete local plan before submitting validation");
   for (const { repoSlot, ...input } of plans) {
     const authority = planAuthority(registry, session, repoSlot);
-    const approved = approval(authority, input, workflows);
+    const approved = approval(authority, input, localPlanAuthorityContext(workflows, authority.sessionId));
     if (approved.binding_id !== binding.id || approved.workflow_version_id !== binding.workflowVersionId) throw new PlanStoreError("Plan approval does not match this exact workflow binding/version");
     const existing = openDb().prepare("SELECT revision, review_id, manifest_hash FROM managed_plan_validations WHERE submission_id = ? AND plan_id = ?").get(submission.id, input.planId) as { revision: number; review_id: string; manifest_hash: string } | undefined;
     if (existing && (existing.revision !== input.revision || existing.review_id !== approved.review_id || existing.manifest_hash !== approved.manifest_hash)) throw new PlanStoreError("This workflow submission pins an older plan revision; submit the newly approved bundle as a new round");
@@ -148,6 +162,30 @@ async function assertPlanOnly(task: Task): Promise<void> {
   }
 }
 
+/** A recorded outcome or frozen review, not session liveness, owns this task's remaining work. */
+export function localPlanRecoveryPending(registry: Registry, task: Task, store = new WorkflowStore(), bindingId?: string): boolean {
+  if (task.kind !== "plan" || task.planPolicy?.storage !== "local" || task.status !== "running") return false;
+  try {
+    const authority = taskPlanAuthority(registry, task.id, "repo-01");
+    const episode = registry.workEpisodeForTask(task.id)!;
+    const binding = store.activeBindingForNote(episode.agentSessionId || episode.sessionId);
+    if (bindingId && binding?.id !== bindingId) return false;
+    return authoredPlans(authority).some(({ repoSlot, ...input }) => {
+      const scoped = taskPlanAuthority(registry, task.id, repoSlot);
+      exactWriter(scoped, input);
+      if (episodeReceipt(scoped, input)) return true;
+      if (!binding) return false;
+      const context = compatibleContext(store, { owner: "workflow", bindingId: binding.id, workflowVersionId: binding.workflowVersionId, triggerMode: binding.triggerMode });
+      const approved = approval(scoped, input, context);
+      const run = store.latestRunForBinding(binding.id);
+      const submission = run ? store.latestSubmission(run.id) : null;
+      if (!run || !["running", "completed"].includes(run.status) || !submission
+        || !["running", "completed"].includes(submission.status) || !submission.evidenceFingerprint) return false;
+      return matchingValidation(input, approved, submission.id);
+    });
+  } catch { return false; }
+}
+
 /** Existing Workflow notifications and startup observation drive recovery. No polling owner. */
 export class LocalPlanPublication {
   private inFlight = new Map<string, Promise<void>>();
@@ -176,7 +214,7 @@ export class LocalPlanPublication {
       const saved = planRevisionRecord(input.planId, input.revision);
       const session = this.registry.getSession(saved.session_id);
       if (!session) return { version: 2, state: "saved", reason: "Saved locally. Publication needs the originating work episode, final approval and applicable validation.", receipt: null };
-      const approved = approval(planAuthority(this.registry, session, saved.repo_slot), input, this.workflows);
+      const approved = approval(planAuthority(this.registry, session, saved.repo_slot), input, localPlanAuthorityContext(this.workflows, session.id));
       const run = approved.binding_id ? this.workflows.store.latestRunForBinding(approved.binding_id) : null;
       return { version: 2, state: approved.binding_id ? "waiting-workflow" : "approved", reason: approved.binding_id
         ? `Final bundle approved; waiting for the exact workflow submission to pass${run ? ` (current run: ${run.status})` : ""}.`
@@ -185,23 +223,26 @@ export class LocalPlanPublication {
   }
 
   async publish(authority: PlanAuthority, input: PlanIdentity): Promise<PlanPublicationReceipt> {
+    return this.publishRevision(authority, input, () => localPlanAuthorityContext(this.workflows, authority.sessionId));
+  }
+
+  private async publishRevision(authority: PlanAuthority, input: PlanIdentity, resolveContext: () => ReturnType<typeof compatibleContext>): Promise<PlanPublicationReceipt> {
     const task = authority.taskId ? this.registry.getTask(authority.taskId) : null;
     if (!task) throw new PlanStoreError("Local-only publication requires a managed plan task; mixed or taskless work keeps its merge publication boundary");
     await assertPlanOnly(task);
-    const approved = approval(authority, input, this.workflows);
+    const context = resolveContext();
+    const approved = approval(authority, input, context);
     if (readPlanRevision(input.planId, input.revision).manifest.policy.storage !== "local") throw new PlanStoreError("Repository plans publish through their normal merge boundary");
-    const context = localPlanAuthorityContext(this.workflows, authority.sessionId);
     let submissionId: string | null = null;
     if (context.owner === "workflow") {
       const run = this.workflows.store.latestRunForBinding(context.bindingId);
       const submission = run ? this.workflows.store.latestSubmission(run.id) : null;
-      const validation = submission ? openDb().prepare("SELECT * FROM managed_plan_validations WHERE submission_id = ? AND plan_id = ?").get(submission.id, input.planId) as unknown as ApprovalRow | undefined : undefined;
-      if (!run || run.status !== "completed" || !submission || submission.status !== "completed" || !submission.evidenceFingerprint || !validation || validation.revision !== input.revision || validation.review_id !== approved.review_id || validation.manifest_hash !== approved.manifest_hash || validation.binding_id !== context.bindingId || validation.workflow_version_id !== context.workflowVersionId) throw new PlanStoreError("Waiting for successful validation of this exact approved revision, binding and submission");
+      if (!run || run.status !== "completed" || !submission || submission.status !== "completed" || !submission.evidenceFingerprint || !matchingValidation(input, approved, submission.id)) throw new PlanStoreError("Waiting for successful validation of this exact approved revision, binding and submission");
       verifyLocalPlanEvidence(this.workflows.store, submission.id);
       submissionId = submission.id;
     }
     authority.assertCurrent?.();
-    const existing = publicationReceipt(input);
+    const existing = episodeReceipt(authority, input);
     if (existing) return existing;
     const receipt: PlanPublicationReceipt = { ...input, version: 2, storage: "local", id: randomUUID(), reviewId: approved.review_id,
       sessionId: authority.sessionId, taskId: task.id, episodeId: authority.episodeId,
@@ -239,16 +280,28 @@ export class LocalPlanPublication {
       } catch { /* Corrupt receipts remain blocked at dispatch and in the reader. */ }
     }
     for (const task of this.registry.listTasks()) {
-      if (task.kind !== "plan" || task.planPolicy?.storage !== "local" || !task.sessionId || !["running", "review"].includes(task.status) || this.inFlight.has(task.id)) continue;
-      const session = this.registry.getSession(task.sessionId);
-      if (!session || session.state === "exited") continue;
+      if (task.kind !== "plan" || task.planPolicy?.storage !== "local" || task.status !== "running" || this.inFlight.has(task.id)) continue;
       const pending = (async () => {
-        const plans = authoredPlans(this.registry, session.id);
+        const authority = taskPlanAuthority(this.registry, task.id, "repo-01");
+        const plans = authoredPlans(authority);
         if (!plans.length) return;
-        // Unbound plans publish explicitly after scheduling; review alone never completes a task.
-        const context = localPlanAuthorityContext(this.workflows, session.id);
-        if (context.owner !== "workflow" && plans.some((p) => !publicationReceipt(p))) return;
-        for (const { repoSlot, ...input } of plans) await this.publish(planAuthority(this.registry, session, repoSlot), input);
+        const resolveContext = () => compatibleContext(this.workflows.store, this.workflows.taskPlanPublicationContext(task.id));
+        // Decide before any I/O: an unbound draft has no automatic publication obligation.
+        if (plans.some((input) => !publicationReceipt(input)) && resolveContext().owner !== "workflow") return;
+        await assertPlanOnly(task);
+        for (const { repoSlot, ...input } of plans) {
+          const scoped = taskPlanAuthority(this.registry, task.id, repoSlot);
+          exactWriter(scoped, input);
+          const receipt = episodeReceipt(scoped, input);
+          if (receipt) {
+            this.release(receipt);
+            continue;
+          }
+          // Unbound plans still require explicit publication; approval alone never completes one.
+          if (resolveContext().owner !== "workflow") return;
+          await this.publishRevision(scoped, input, resolveContext);
+        }
+        authority.assertCurrent?.();
         await this.tasks.complete(task.id, "Published approved local plan bundle", undefined, false);
       })().catch(() => { /* Readiness exposes the exact refusal; retry on the next owner notification. */ }).finally(() => this.inFlight.delete(task.id));
       this.inFlight.set(task.id, pending);

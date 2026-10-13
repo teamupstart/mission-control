@@ -1,6 +1,6 @@
 import { newPlanPolicy, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
-import { localWorkflowProblem } from "./plans/publication.ts";
+import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
 import { dependencyInputKey } from "@shared/task-bulk.ts";
 import { transferForTask } from "./session-transfers/store.ts";
@@ -2359,6 +2359,8 @@ export class TaskManager {
    */
   private agentWentAway(t: Task): void {
     if (transferForTask(t.id)) return;
+    // Frozen local validation or its receipt still owns completion after the author leaves.
+    if (localPlanRecoveryPending(this.registry, t)) return;
     this.autoCompleted.delete(t.id);
     if (providerOwnsTaskCompletion(t.kind)) {
       if (isActiveTask(t.status)) this.pipelineHostWentAway(t);
@@ -6182,6 +6184,8 @@ export class TaskManager {
       return;
     }
     t = currentAfterProbe;
+    // Startup must preserve the same durable publication obligation as live eviction.
+    if (localPlanRecoveryPending(this.registry, t)) return;
     const settledStatus = t.status === "done" || t.status === "cancelled" ? t.status : "failed";
     const settledError =
       t.status === "done" || t.status === "cancelled"

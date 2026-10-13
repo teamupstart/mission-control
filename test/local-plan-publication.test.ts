@@ -76,6 +76,115 @@ async function restart(f: Awaited<ReturnType<typeof fixture>>) {
   f.rebindApp(f.workflows);
 }
 
+function frozenValidation(f: Awaited<ReturnType<typeof fixture>>) {
+  const runId = randomUUID(), subId = randomUUID();
+  const { submission } = f.workflows.store.createInitialSubmission({ id: runId, binding: f.binding!, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: Date.now() }, { id: subId, triggerSource: "manual", triggerKey: subId, context: {}, evidence: {}, now: Date.now() });
+  freezeLocalPlanSubmission(f.registry, f.workflows, f.binding!, submission);
+  const content = f.files.filter((file) => file.name.endsWith(".md")).map((file) => `${file.name}\n${file.content}`).join("\n\n");
+  f.workflows.store.finalizeSubmissionTextArtifacts(subId, [{ id: randomUUID(), stagingId: randomUUID(), ordinal: 0, displayName: "Final bundle", caption: "Exact Markdown for validation", repositoryScope: "repo-01", mimeType: "text/plain", bytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex"), content, createdAt: Date.now() }]);
+  f.workflows.store.updateSubmissionCapture(subId, { context: {}, evidence: {}, fingerprint: "a".repeat(64), status: "running" });
+  f.workflows.store.setRunState(runId, "running", "persona_review", null);
+  return { runId, subId };
+}
+
+test("local publication recovers when the author exits during validation", async (t) => {
+  const f = await fixture(true); await f.review();
+  const { runId, subId } = frozenValidation(f);
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "After exited author", intent: "Consume exact plan", backlog: true, workflowId: null,
+    planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }, { type: "task", taskId: f.task.id }] });
+  t.mock.method(f.workflows.engine, "start", () => {});
+  f.workflows.start();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  f.registry.applyDiscovery([]);
+  assert.equal(f.registry.getSession(f.id)?.state, "exited");
+  t.mock.timers.tick(10_000);
+  assert.equal(f.registry.getSession(f.id), undefined, "the real eviction path removed the author");
+  assert.equal(f.tasks.get(f.task.id)?.status, "running");
+  assert.equal(f.workflows.store.getBinding(f.binding!.id)?.state, "active");
+  t.mock.timers.reset();
+  f.service.reconcile();
+  assert.equal(publicationReceipt(f.input), null, "exit cannot substitute for validation");
+  f.workflows.store.setSubmissionState(subId, "completed");
+  f.workflows.store.setRunState(runId, "completed", "complete", null);
+  f.registry.upsertWorkflowRun(f.workflows.store.runSummary(runId)!);
+  await f.service.stop();
+  const receipt = publicationReceipt(f.input);
+  assert.ok(receipt, "the workflow notification publishes without a live author");
+  assert.equal(receipt.submissionId, subId);
+  assert.equal(f.tasks.get(f.task.id)?.status, "done");
+  assert.equal(f.tasks.get(dependent.id)!.dependencies[0]!.satisfiedAt, receipt.publishedAt);
+  assert.equal(f.tasks.get(dependent.id)!.dependencies[1]!.satisfiedAt, null);
+});
+
+for (const mode of ["validation pending", "unbound receipt", "workflow receipt"]) test(`local publication recovers from durable task state after restart (${mode})`, async (t) => {
+  const f = await fixture(mode !== "unbound receipt"); await f.review();
+  const validation = f.binding ? frozenValidation(f) : null;
+  if (mode === "workflow receipt") {
+    f.workflows.store.setSubmissionState(validation!.subId, "completed");
+    f.workflows.store.setRunState(validation!.runId, "completed", "complete", null);
+  }
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Durable consumer", intent: "Consume exact plan", backlog: true, workflowId: null,
+    planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }, { type: "task", taskId: f.task.id }] });
+  const receipt = mode !== "validation pending" ? await f.service.publish(f.authority, f.input) : null;
+  if (receipt) f.registry.upsertTask({ ...dependent, dependencies: dependent.dependencies.map((edge) => ({ ...edge, satisfiedAt: null })) });
+  await f.workflows.stop(); await f.tasks.stop(); closeDb();
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const complete = t.mock.method(tasks, "complete");
+  const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
+  managers.push(workflows);
+  // The fixture supplies exact durable validation outcomes; never launch model reviewers.
+  t.mock.method(workflows.engine, "start", () => {});
+  const service = workflows.localPlanPublication(tasks);
+  workflows.start();
+  registry.applyDiscovery([]);
+  assert.equal(registry.getSession(f.id), undefined);
+  if (mode === "validation pending") {
+    assert.equal(workflows.store.getBinding(f.binding!.id)?.state, "active", "frozen local validation outlives its author");
+    assert.equal(tasks.get(f.task.id)?.status, "running", "task ownership survives the empty startup discovery");
+    assert.equal(publicationReceipt(f.input), null);
+    workflows.store.setSubmissionState(validation!.subId, "completed");
+    workflows.store.setRunState(validation!.runId, "completed", "complete", null);
+    registry.upsertWorkflowRun(workflows.store.runSummary(validation!.runId)!);
+  }
+  service.reconcile(); // Duplicate startup/notification signals share the same completion.
+  await service.stop();
+  const recovered = publicationReceipt(f.input)!;
+  assert.ok(recovered);
+  if (receipt) assert.deepEqual(recovered, receipt, "completion recovery reuses the exact receipt");
+  assert.equal(tasks.get(f.task.id)?.status, "done");
+  assert.equal(complete.mock.calls.filter((call) => call.arguments[0] === f.task.id).length, 1);
+  assert.equal(tasks.get(dependent.id)!.dependencies[0]!.satisfiedAt, recovered.publishedAt);
+  assert.equal(tasks.get(dependent.id)!.dependencies[1]!.satisfiedAt, null);
+});
+
+for (const changed of ["cancelled", "new episode", "revoked approval", "paused workflow", "failed workflow", "code changes"] as const) {
+  test(`exited local author cannot publish after ${changed}`, async () => {
+    const f = await fixture(true);
+    const reviewId = await f.review();
+    const { runId, subId } = frozenValidation(f);
+    f.workflows.store.setSubmissionState(subId, "completed");
+    f.workflows.store.setRunState(runId, changed === "failed workflow" ? "failed" : "completed", changed === "failed workflow" ? "failed_outcome" : "complete", null);
+    const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Refused recovery", intent: "Wait for valid publication", backlog: true, workflowId: null,
+      planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }] });
+    if (changed === "cancelled") f.registry.upsertTask({ ...f.task, status: "cancelled" });
+    if (changed === "new episode") f.registry.resetWorkEpisode(f.id);
+    if (changed === "revoked approval") {
+      const rejection = await f.review("revise");
+      openDb().prepare("UPDATE reviews SET resolved_at = 1 WHERE id = ?").run(reviewId);
+      openDb().prepare("UPDATE reviews SET resolved_at = 2 WHERE id = ?").run(rejection);
+    }
+    if (changed === "paused workflow") f.workflows.store.updateBinding(f.binding!.id, { state: "paused" });
+    if (changed === "code changes") writeFileSync(join(f.repo, "code.ts"), "export const code = true;");
+    f.registry.applyDiscovery([]);
+    f.service.reconcile();
+    await f.service.stop();
+    assert.equal(publicationReceipt(f.input), null);
+    assert.notEqual(f.tasks.get(f.task.id)?.status, "done");
+    assert.equal(f.tasks.get(dependent.id)!.dependencies[0]!.satisfiedAt, null);
+  });
+}
+
 test("plan inputs cannot reuse a satisfied merge dependency from an earlier source episode", async () => {
   const f = await fixture(false, "ship");
   const oldEpisode = f.authority.episodeId;

@@ -224,6 +224,13 @@ The daemon still verifies retained bytes before dispatch. Ordinary task/session 
 are unchanged, and normal `TaskManager.complete` owns completion and checkout cleanup.
 No local receipt requests a PR or calls broad dependent-task satisfaction.
 
+An approved, frozen review-only validation can outlive its authoring session. The daemon
+retains that workflow and task obligation using the recorded task episode; startup recovery
+does not require a live agent. Publication still checks the current approval, binding,
+submission, retained bytes and clean checkouts. A receipt already written before interruption
+is reused to release its exact artifact edges and finish through `TaskManager.complete`.
+Cancellation, a replaced episode, and paused or failed validation cannot authorize a new receipt.
+
 ```mermaid
 flowchart LR
   Settings -->|new task policy| Task

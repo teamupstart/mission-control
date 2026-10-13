@@ -184,12 +184,19 @@ repair preserves the pinned policy and cannot clear independent policy corruptio
 Every plan publication prerequisite must retain a matching exact Markdown input, including
 after publication. Remove both together or replace them with a matching pair; clearing only
 the inputs is refused.
+Repository and mixed-work inputs must match the originating task/session's exact work
+episode. An earlier episode's merged dependency cannot authorize a later episode's revision;
+creation, updates and delivery all enforce this pairing.
 
 For local plan-only work, `request_plan_decisions` takes `managedPlan: {repoSlot, planId,
 revision}` via `/mcp/v2/reviews`. The daemon adds an explicit final-bundle approval choice,
 exact preview and inventory. Human approval binds the full manifest digest, writer episode
 and active workflow binding/version. Dismissal, ordinary decisions, an older revision or a
 new binding do not approve the current bundle. Changes after approval require a new approval.
+The latest human resolution for that revision, writer episode and binding controls approval.
+A later **Needs revision** answer or dismissal blocks publication until another approval;
+conflicting resolutions at the same timestamp also block. Renewed approval needs its own
+workflow validation when a workflow is bound.
 
 New local plan tasks default to the appended **Local Plan Validation** workflow. Explicit
 None is allowed; explicit incompatible choices are refused. Compatible workflows have no

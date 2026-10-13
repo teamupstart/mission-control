@@ -37,9 +37,9 @@ export function validatePlanInputDependencies(task: Pick<Task, "dependencies" | 
     if (publicationReceipt(input)) continue;
     const edge = task.dependencies.find((edge) => edge.type === "plan"
       ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision
-      : edge.type === "task" ? edge.taskId === saved.task_id
+      : edge.type === "task" ? edge.taskId === saved.task_id && edge.episodeId === saved.episode_id
         : saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
-    if (!edge) throw new PlanStoreError("Pinned plan input needs its exact local artifact prerequisite or originating task/session merge dependency");
+    if (!edge) throw new PlanStoreError("Pinned plan input needs its exact local artifact prerequisite or originating task/session work episode merge dependency");
     if (requirePublished && (edge.type === "plan" || edge.satisfiedAt === null)) throw new PlanStoreError(`Plan ${input.planId} revision ${input.revision} is waiting for its publication prerequisite`);
   }
 }

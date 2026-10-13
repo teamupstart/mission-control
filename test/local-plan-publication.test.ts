@@ -45,7 +45,9 @@ async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
   const personas = new PersonaManager(registry), workflows = new WorkflowManager(registry, personas.store);
   managers.push(workflows);
   const tasks = new TaskManager(registry), reviews = new ReviewManager(registry);
-  const app = buildApp({ registry, workflows, personas, tasks, reviews, queues: new QueueManager(registry) });
+  const appOptions = { registry, workflows, personas, tasks, reviews, queues: new QueueManager(registry) };
+  let app = buildApp(appOptions);
+  const rebindApp = (workflows: InstanceType<typeof WorkflowManager>) => { app = buildApp({ ...appOptions, workflows }); };
   const binding = workflow ? workflows.store.insertBinding({ id: randomUUID(), workflowVersionId: builtinWorkflowVersionId("local-plan-validation", 1), noteKey: noteKeyFor(session), sessionId: id, sessionAgent: "claude", sessionName: id, sessionCwd: repo, sessionRepoRoot: repo, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() }) : null;
   const authority = planAuthority(registry, session, "repo-01");
   // Mixed task storage is independently selected; it never gains plan-only publication rights.
@@ -55,14 +57,14 @@ async function fixture(workflow = false, kind: "plan" | "ship" = "plan") {
   const input: PlanIdentity = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: 1 };
   const service = workflows.localPlanPublication(tasks);
   const post = (path: string, body: object) => app.request(path, { method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify({ env: {}, sessionId: id, cwd: repo, ...body }) });
-  const review = async (action: "answer" | "dismiss" = "answer", revision = 1) => {
+  const review = async (action: "answer" | "dismiss" | "revise" = "answer", revision = 1) => {
     const res = await post("/mcp/v2/reviews", { kind: "plan-decisions", title: "Approve bundle", body: "Inspect complete Markdown and HTML", managedPlan: { repoSlot: "repo-01", planId: input.planId, revision } });
     assert.equal(res.status, 200, await res.clone().text());
     const { id: reviewId } = await res.json() as { id: string };
-    reviews.resolve(reviewId, action, null, "human", action === "answer" ? [{ decisionId: "approve-final-bundle", selected: ["approve"], other: null }] : null);
+    reviews.resolve(reviewId, action === "revise" ? "answer" : action, null, "human", action !== "dismiss" ? [{ decisionId: "approve-final-bundle", selected: [action === "revise" ? "revise" : "approve"], other: null }] : null);
     return reviewId;
   };
-  return { id, repo, registry, workflows, tasks, task, session, authority, saved, input, service, post, review, binding, files };
+  return { id, repo, registry, workflows, tasks, task, session, authority, saved, input, service, post, review, reviews, binding, files, rebindApp };
 }
 
 async function restart(f: Awaited<ReturnType<typeof fixture>>) {
@@ -71,7 +73,103 @@ async function restart(f: Awaited<ReturnType<typeof fixture>>) {
   f.workflows = new WorkflowManager(f.registry, new PersonaManager(f.registry).store);
   managers.push(f.workflows);
   f.service = f.workflows.localPlanPublication(f.tasks);
+  f.rebindApp(f.workflows);
 }
+
+test("plan inputs cannot reuse a satisfied merge dependency from an earlier source episode", async () => {
+  const f = await fixture(false, "ship");
+  const oldEpisode = f.authority.episodeId;
+  assert.ok(oldEpisode);
+  const input = { ...f.input, files: ["plan.md", "phase-1.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Pinned merge", intent: "Read this episode", backlog: true, workflowId: null,
+    planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] });
+  assert.equal(dependent.dependencies[0]!.episodeId, oldEpisode);
+  f.registry.upsertTask({ ...dependent, dependencies: dependent.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) });
+  assert.equal(taskPlanInputProblem(f.tasks.get(dependent.id)!), null);
+
+  f.registry.resetWorkEpisode(f.id);
+  f.registry.upsertTask({ ...f.task, status: "running" });
+  f.registry.bindTaskToWorkEpisode(f.task.id, f.id);
+  const authority = planAuthority(f.registry, f.registry.getSession(f.id)!, "repo-01");
+  assert.notEqual(authority.episodeId, oldEpisode);
+  await savePlan(authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files: f.files });
+  const nextInput = { ...input, revision: 2 };
+  const refused = await f.tasks.update(dependent.id, { planInputs: [nextInput] });
+  assert.equal(refused.ok, false, "an earlier merged episode cannot authorize a newer episode's revision");
+  assert.match(refused.error!, /originating.*episode/);
+  assert.deepEqual(f.tasks.get(dependent.id)!.planInputs, [input]);
+
+  // Stored inputs from before this guard must fail at both delivery boundaries too.
+  f.registry.upsertTask({ ...f.tasks.get(dependent.id)!, planInputs: [nextInput] });
+  const reloaded = loadActiveTasks().find((task) => task.id === dependent.id)!;
+  assert.equal(reloaded.dependencies[0]!.episodeId, oldEpisode);
+  assert.notEqual(reloaded.dependencies[0]!.satisfiedAt, null);
+  assert.match(taskPlanInputProblem(reloaded)!, /originating.*episode/);
+  for (const result of [await f.tasks.dispatch(dependent.id), await f.tasks.assign(dependent.id, f.id)]) {
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /originating.*episode/);
+  }
+  const current = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Current episode", intent: "Wait for its merge", backlog: true, workflowId: null,
+    planInputs: [nextInput], dependencies: [{ type: "task", taskId: f.task.id }] });
+  assert.equal(current.dependencies[0]!.episodeId, authority.episodeId);
+  assert.match(taskPlanInputProblem(current)!, /waiting/);
+  assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
+  assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
+    planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] }), /originating.*episode/);
+});
+
+for (const workflow of [false, true]) for (const action of ["revise", "dismiss"] as const) {
+  test(`later human ${action} revokes final approval (${workflow ? "bound workflow" : "no workflow"})`, async () => {
+    const f = await fixture(workflow);
+    const firstApproval = await f.review();
+    const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Await final approval", intent: "Read approved inputs", backlog: true, workflowId: null,
+      planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }] });
+    const originalEdges = dependent.dependencies;
+    const rejected = await f.review(action);
+    // Pin distinct resolution times so this regression does not depend on clock granularity.
+    openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(1, firstApproval);
+    openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(2, rejected);
+    await restart(f);
+    assert.equal(f.service.readiness(f.input).state, "blocked");
+    await assert.rejects(f.service.publish(f.authority, f.input), /explicit human approval/);
+    assert.equal(publicationReceipt(f.input), null);
+    assert.deepEqual(f.tasks.get(dependent.id)!.dependencies, originalEdges);
+    assert.deepEqual(loadActiveTasks().find((task) => task.id === dependent.id)!.dependencies, originalEdges);
+
+    const newApproval = await f.review();
+    assert.equal(f.service.readiness(f.input).state, workflow ? "waiting-workflow" : "approved");
+    if (workflow) {
+      await assert.rejects(f.service.publish(f.authority, f.input), /successful validation/);
+      const id = randomUUID();
+      const { submission } = f.workflows.store.createInitialSubmission({ id, binding: f.binding!, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: id, now: Date.now() }, { id: randomUUID(), triggerSource: "manual", triggerKey: id, context: {}, evidence: {}, now: Date.now() });
+      freezeLocalPlanSubmission(f.registry, f.workflows, f.binding!, submission);
+      const validation = openDb().prepare("SELECT review_id FROM managed_plan_validations WHERE submission_id = ?").get(submission.id) as { review_id: string };
+      assert.equal(validation.review_id, newApproval);
+      assert.equal(publicationReceipt(f.input), null, "renewed approval still needs workflow validation");
+    } else {
+      assert.equal((await f.service.publish(f.authority, f.input)).reviewId, newApproval);
+    }
+  });
+}
+
+test("final approval follows resolution time, fails closed on ties and ignores non-human answers", async () => {
+  const f = await fixture();
+  const pending = await f.post("/mcp/v2/reviews", { kind: "plan-decisions", title: "Earlier question answered last", body: "Inspect complete bundle", managedPlan: { repoSlot: "repo-01", planId: f.input.planId, revision: 1 } });
+  assert.equal(pending.status, 200);
+  const { id } = await pending.json() as { id: string };
+  const approved = await f.review();
+  f.reviews.resolve(id, "answer", null, "human", [{ decisionId: "approve-final-bundle", selected: ["revise"], other: null }]);
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(1, approved);
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(2, id);
+  assert.equal(f.service.readiness(f.input).state, "blocked", "the later answer wins even on an older question");
+  openDb().prepare("UPDATE reviews SET resolved_at = ? WHERE id = ?").run(2, approved);
+  assert.equal(f.service.readiness(f.input).state, "blocked", "conflicting answers at the same millisecond cannot authorize publication");
+  const renewed = await f.review();
+  const nonHuman = await f.post("/mcp/v2/reviews", { kind: "plan-decisions", title: "Non-human resolution", body: "Inspect complete bundle", managedPlan: { repoSlot: "repo-01", planId: f.input.planId, revision: 1 } });
+  const { id: nonHumanId } = await nonHuman.json() as { id: string };
+  f.reviews.resolve(nonHumanId, "dismiss", null, "foreman");
+  assert.equal((await f.service.publish(f.authority, f.input)).reviewId, renewed);
+});
 
 test("explicit final approval publishes an exact local receipt, survives restart and pruning, and leaves code merge edges blocked", async () => {
   const f = await fixture();

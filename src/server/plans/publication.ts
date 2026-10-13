@@ -78,15 +78,20 @@ export function bindPlanReview(authority: PlanAuthority, input: PlanIdentity, re
 function approval(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): ApprovalRow {
   exactWriter(authority, input);
   const context = localPlanAuthorityContext(workflows, authority.sessionId);
-  const candidates = openDb().prepare("SELECT * FROM managed_plan_reviews WHERE plan_id = ? AND revision = ?").all(input.planId, input.revision) as unknown as ApprovalRow[];
-  const reviews = loadHumanResolvedReviews(authority.sessionId);
-  const approved = candidates.find((candidate) => {
-    if (candidate.session_id !== authority.sessionId || candidate.task_id !== authority.taskId || candidate.episode_id !== authority.episodeId) return false;
-    if (candidate.binding_id !== (context.owner === "workflow" ? context.bindingId : null) || candidate.workflow_version_id !== (context.owner === "workflow" ? context.workflowVersionId : null)) return false;
-    const review = reviews.find((r) => r.id === candidate.review_id);
-    return review?.status === "answered" && review.resolvedBy === "human" && review.selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other);
-  });
-  if (!approved) throw new PlanStoreError("Waiting for explicit human approval of this complete final bundle and current workflow binding; dismissal or ordinary decisions are not approval");
+  const candidates = openDb().prepare(`SELECT * FROM managed_plan_reviews WHERE plan_id = ? AND revision = ?
+    AND session_id = ? AND task_id IS ? AND episode_id IS ? AND binding_id IS ? AND workflow_version_id IS ?`)
+    .all(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
+      context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null) as unknown as ApprovalRow[];
+  // Human resolutions are ordered oldest first. Choose the latest matching resolution
+  // before checking its answer, so an earlier approval cannot survive a later refusal.
+  const reviews = loadHumanResolvedReviews(authority.sessionId).filter((review) => candidates.some((candidate) => candidate.review_id === review.id));
+  const latest = reviews.at(-1);
+  // Millisecond timestamps cannot order simultaneous conflicting answers. Fail closed.
+  if (!latest || !reviews.filter((review) => review.resolvedAt === latest.resolvedAt).every((review) =>
+    review.status === "answered" && review.selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other))) {
+    throw new PlanStoreError("Waiting for explicit human approval of this complete final bundle and current workflow binding; dismissal or ordinary decisions are not approval");
+  }
+  const approved = candidates.find((candidate) => candidate.review_id === latest.id)!;
   if (approved.manifest_hash !== planRevisionRecord(input.planId, input.revision).manifest_hash) throw new PlanStoreError("Approved plan manifest changed");
   return approved;
 }

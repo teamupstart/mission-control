@@ -1994,19 +1994,39 @@ The MCP tools are:
   options (radios / checkboxes) and **block** until the human submits their choices or
   dismisses that decision set without an answer
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
-- `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
-  dependsOnCurrentSession?)` - add a ship task to the backlog with the default
-  agent/model/effort, returning its id and canonical repository set so later tasks can carry
-  durable dependency edges. Omit the selectors to keep the calling repository as primary.
+- `create_task(title, intent, ...)` - add a task to the backlog without launching it,
+  returning its id, saved configuration, and canonical repository set so later tasks can carry
+  durable dependency edges. Optional `agent`, `model`, `effort`, `kind`, `workflowId`, `enabled`,
+  `priority`, `labels`, and `dependencies` use the same configuration rules as the backlog editor.
+  Kind defaults to Ship; an omitted agent uses that kind's default. Omitted or null model and
+  effort follow launch-time defaults. An omitted workflow uses the kind or machine default;
+  explicit null opts out. Set `enabled: false` to park the task outside backlog autopilot.
+  Use `dependsOnTaskIds` and `dependsOnCurrentSession` for the existing dependency shortcuts,
+  or `dependencies` with `{type: "task", taskId}` / `{type: "session", sessionId}` entries.
+  The combined dependency inputs are limited to 50. Omit `repository` and
+  `additionalRepositories` to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory
   name; `repository` changes the primary and `additionalRepositories` attaches the rest. A linked
   worktree resolves to the **repo that owns it**, including an absolute path outside the configured
   workspace scan - see [A task's repo is the repo, not the
   worktree](dispatch-and-backlog.md#a-tasks-repo-is-the-repo-not-the-worktree). Ambiguous names
-  are refused with their canonical candidates. Selector-bearing calls use the atomic versioned
-  creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
-  fields. This validation proves local Git identity only: ordinary push and pull-request operations
+  are refused with their canonical candidates. Selector-bearing and configuration-bearing calls
+  use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
+  ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `update_task(taskId, ...)` - edit a task still in the backlog, using the same configuration
+  fields and repository selectors as creation, plus `title` and `intent`. Only supplied fields
+  change. Null `model` or `effort` restores inheritance; changing `agent` clears either override
+  unless the same call supplies a replacement. Null `priority` clears it and null `workflowId`
+  opts out of the workflow. `labels`, `dependencies`, and `additionalRepositories` replace their
+  saved arrays; `[]` clears them. Use `dependencies`, rather than the creation-only shortcuts,
+  to edit prerequisites. An empty title derives a new one from the intent. Invalid edits,
+  dependency cycles, and edits to tasks that have left the backlog are refused. The tool returns
+  the saved configuration and never launches the task.
+- `delete_task(taskId)` - delete one backlog or finished task using the dashboard's deletion
+  rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
+  cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
+  reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

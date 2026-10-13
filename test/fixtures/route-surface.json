@@ -309,6 +309,8 @@
   "POST /mcp/scouts/submit": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/status": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/tasks/:id/update": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/tasks/delete": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v2/reviews": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v2/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v3/tasks": "401 {\"error\":\"unauthorized\"}",

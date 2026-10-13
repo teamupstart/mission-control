@@ -15,7 +15,7 @@ import { containsMarkup } from "./helpers/markup.ts";
  * The task pill, reduced to what it can actually tell a reader.
  *
  * Two of its three parts were usually saying nothing. Every automated writer defaults to
- * `ship` and the MCP `create_task` tool cannot produce anything else - so the badge read
+ * `ship` unless the caller explicitly selects another kind, so the badge read
  * `SHIP` in almost every session, uncoloured and frozen from the moment the task left the
  * backlog. The title was a duplicate of the `h2` two rows above it, because a dispatched
  * session is named after its task.

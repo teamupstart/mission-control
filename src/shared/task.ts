@@ -472,7 +472,7 @@ const NO_PILL: TaskPillParts = { kind: null, title: null, silent: true };
  * What the task pill should draw for a session.
  *
  * Both parts are usually silent, and for different reasons. Every automated writer
- * defaults to `ship` - the MCP `create_task` tool cannot produce anything else - so a
+ * defaults to `ship` unless the caller explicitly selects another kind, so a
  * badge rendered unconditionally reads `SHIP` in almost every session, is not
  * colour-differentiated in the console header, is frozen once the task leaves `backlog`,
  * and repeats the chip on the Board tile you clicked through. Only a kind somebody deliberately

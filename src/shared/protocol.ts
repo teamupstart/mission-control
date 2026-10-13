@@ -792,7 +792,7 @@ export const McpPlanPublicationSchema = z.object({
 }).strict();
 
 /**
- * MCP `create_task`: create a backlogged implementation task and optionally bind it
+ * MCP `create_task`: create a backlog task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same
  * pane/session/cwd evidence as the review channel; the MCP child never guesses a
  * Mission Control session id.
@@ -816,11 +816,6 @@ export const McpCreateTaskV2Schema = McpCreateTaskBaseSchema.extend({
     .default([]),
 }).refine(mcpTaskDependenciesAreBounded, mcpTaskDependencyRefinement);
 export type McpCreateTaskV2 = z.infer<typeof McpCreateTaskV2Schema>;
-export const McpCreateTaskV3Schema = McpCreateTaskV2Schema.innerType().extend({
-  planInputs: TaskPlanInputsSchema.default([]),
-  planPrerequisites: z.array(PlanIdentitySchema).max(16).default([]),
-}).strict().refine((v) => v.dependsOnTaskIds.length + Number(v.dependsOnCurrentSession) + v.planPrerequisites.length <= 50, mcpTaskDependencyRefinement);
-export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 
 /** The MCP tool exposes only the provider slug; its launch capability carries identity. */
 export const McpAdoptPipelineRunSchema = z.object({
@@ -1315,7 +1310,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * patch "disable" a task whose agent is already running, and answer 200 to a caller
  * who would reasonably read that as having paused something.
  */
-export const UpdateTaskSchema = z
+const UpdateTaskFieldsSchema = z
   .object({
     repoRoot: z.string().min(1).optional(),
     /**
@@ -1342,13 +1337,52 @@ export const UpdateTaskSchema = z
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
-  })
+  });
+
+export const UpdateTaskSchema = UpdateTaskFieldsSchema
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
+/** MCP and dashboard task configuration use the same field validators. */
+export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
+  repoRoot: true,
+  extraRepoRoots: true,
+  title: true,
+  intent: true,
+  planInputs: true,
+}).strict();
+
+/** A separate route prevents older daemons from silently dropping task overrides. */
+export const McpCreateTaskV3Schema = McpCreateTaskBaseSchema.extend({
+  ...McpTaskConfigurationSchema.shape,
+  targetRepository: z.string().trim().min(1).optional(),
+  additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).default([]),
+  planInputs: TaskPlanInputsSchema.default([]),
+  planPrerequisites: z.array(PlanIdentitySchema).max(16).default([]),
+}).strict().refine(
+  (o) => o.dependsOnTaskIds.length + (o.dependsOnCurrentSession ? 1 : 0)
+    + (o.dependencies?.length ?? 0) + o.planPrerequisites.length <= MAX_TASK_DEPENDENCIES,
+  mcpTaskDependencyRefinement,
+);
+export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
+
+export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
+  repoRoot: true,
+  extraRepoRoots: true,
+  planInputs: true,
+}).extend({
+  repository: z.string().trim().min(1).optional(),
+  additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+}).strict();
+
+/** MCP deletes one task through the existing lifecycle and cleanup owner. */
+export const McpDeleteTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of the task to delete"),
+}).strict();
 
 /**
  * How many backlog tasks one bulk request may name. Generous for a hand-made selection and

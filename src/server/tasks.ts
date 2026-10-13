@@ -3559,9 +3559,25 @@ export class TaskManager {
    * model writes the whole row back when it lands, so an edit applied before it would be
    * silently reverted a beat later, in front of an operator who watched their text go in.
    */
-  async update(id: string, patch: UpdateTask): Promise<Ok & { task?: Task }> {
+  async update(
+    id: string,
+    patch: UpdateTask,
+    options: { backlogOnly?: boolean } = {},
+  ): Promise<Ok & { task?: Task }> {
     const prepared = await this.prepareUpdate(id, patch);
     if (!prepared.ok) return prepared;
+    // Preparation can await titling or tool availability. MCP edits must still name the
+    // same shelved row at the write boundary, including annotation-only edits.
+    if (options.backlogOnly) {
+      const current = this.registry.getTask(id);
+      if (!current) return { ok: false, error: "no such task" };
+      if (current.status !== "backlog") {
+        return { ok: false, error: `task is ${current.status}, not in the backlog` };
+      }
+      if (current !== prepared.base) {
+        return { ok: false, error: "task changed while preparing the update; retry" };
+      }
+    }
     this.registry.upsertTask(prepared.task);
     return { ok: true, task: prepared.task };
   }

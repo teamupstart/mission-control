@@ -597,6 +597,9 @@ readable afterwards rather than a single row overwritten four times.
 
 ### Edit a shelved task
 
+For agents creating, editing, or deleting tasks, see the
+[MCP tool reference](sessions.md#review-channel-mcp).
+
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](ui.md#layout-console-or-board-in-settings)'s backlog column, by its name in the
 [Roundup](attention-and-alerts.md#roundup) panel, or by its title in the Line's

@@ -248,7 +248,7 @@ test("create_task publishes bounded repository selectors and never falls back to
   );
   assert.match(registration, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
   assert.match(registration, /targetRepository: repository/);
-  assert.match(registration, /pinnedPlans \? "\/mcp\/v3\/tasks"/);
+  assert.match(registration, /pinnedPlans \|\| Object\.keys\(configuration\)\.length > 0\s*\? "\/mcp\/v3\/tasks"/);
   assert.match(registration, /planInputs: planInputs \?\? \[\]/);
   assert.match(registration, /planPrerequisites: planPrerequisites \?\? \[\]/);
   assert.match(registration, /res\.status === 404/);
@@ -258,8 +258,9 @@ test("create_task publishes bounded repository selectors and never falls back to
     /res\.status === 404[\s\S]*http\("\/mcp\/tasks"/,
     "a selector-bearing call must not be retried after an old daemon's 404",
   );
-  assert.match(registration, /repository: task\.repoRoot/);
-  assert.match(registration, /additionalRepositories: task\.extraRepos\.map/);
+  assert.match(registration, /taskConfiguration\(task\)/);
+  assert.match(source, /repository: task\.repoRoot/);
+  assert.match(source, /additionalRepositories: task\.extraRepos\.map/);
 });
 
 test("product issue registration requires public confirmation and bounded attachment ids", () => {

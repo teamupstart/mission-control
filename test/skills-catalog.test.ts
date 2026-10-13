@@ -340,8 +340,7 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(tool, /explicitRepositories \? "\/mcp\/v2\/tasks" : "\/mcp\/tasks"/);
   assert.match(tool, /res\.status === 404/);
   assert.doesNotMatch(tool, /404[\s\S]*http\("\/mcp\/tasks"/, "selectors never retry legacy");
-  assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
-  assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
+  assert.match(tool, /McpTaskConfigurationSchema\.shape/, "task overrides share the dashboard validators");
 });
 
 // The published task's own `intent` is verified end to end in `phased-plan-task-intent.test.ts`,

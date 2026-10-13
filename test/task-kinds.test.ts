@@ -170,6 +170,7 @@ test("chat has the approved conversational copy", () => {
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
     accent: "#b4c0cf",
+    icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   });
   assert.deepEqual(TASK_KIND_BEHAVIOR.chat, {
     repoAvailability: "workspace",

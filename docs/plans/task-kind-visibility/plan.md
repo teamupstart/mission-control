@@ -50,5 +50,5 @@ Chosen by the operator from the mockups:
 - **Follow-up:** implemented in the same task, not phased.
 
 Every style ships, so the other three per surface remain available. The kind's colour lives on
-`TASK_KIND_INFO.accent`; its glyph lives in `TaskKindMark`. Both are `Record<TaskKind, ...>`, so a
-new kind does not compile without them. The backlog card's `.bl-kind-*` colours are unchanged.
+`TASK_KIND_INFO.accent` and its icon on `TASK_KIND_INFO.icon`, beside it. `TASK_KIND_INFO` is a
+`Record<TaskKind, ...>`, so a new kind does not compile without both. The backlog card's `.bl-kind-*` colours are unchanged.

@@ -34,6 +34,16 @@ import type { Session, Task, TaskKind, TaskPriority } from "./types.ts";
  * `label` is lowercase because it is the option's own text and these are jargon, not
  * proper nouns; it reads as the word the task carries, not as a heading.
  */
+/**
+ * One stroke of a kind's icon, on a 16-unit grid and drawn in `currentColor`. Plain data rather
+ * than markup because this module is browser-safe shared logic with no React in it; the web's
+ * `TaskKindIcon` turns each shape into its SVG element.
+ */
+export type TaskKindIconShape =
+  | { shape: "path"; d: string }
+  | { shape: "circle"; cx: number; cy: number; r: number }
+  | { shape: "rect"; x: number; y: number; width: number; height: number; rx: number };
+
 export interface TaskKindInfo {
   /** The option's text. */
   label: string;
@@ -66,6 +76,11 @@ export interface TaskKindInfo {
    * colour is never the only cue.
    */
   accent: string;
+  /**
+   * The kind's icon, declared here beside its colour so a new kind does not compile until it
+   * has both. Every kind's icon is different (`test/task-kind-mark.test.ts` renders them).
+   */
+  icon: readonly TaskKindIconShape[];
   afterWorkHint?: string;
 }
 
@@ -75,12 +90,17 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Deliver a change, as a pull request.",
     purpose: "deliver a change",
     accent: "#3dd6c6",
+    icon: [{ shape: "path", d: "M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5" }],
   },
   bugfix: {
     label: "bugfix",
     blurb: "Fix a bug, with Bug Fix Review before the pull request.",
     purpose: "fix a bug",
     accent: "#ff7b72",
+    icon: [
+      { shape: "rect", x: 5, y: 5, width: 6, height: 8.5, rx: 3 },
+      { shape: "path", d: "M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8" },
+    ],
     afterWorkHint: "Bug Fix Review checks the cause, regression proof, and code risk.",
   },
   scout: {
@@ -88,12 +108,21 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Investigate and report. No diff, so no after-work.",
     purpose: "investigate and report",
     accent: "#79c0ff",
+    icon: [
+      { shape: "circle", cx: 7, cy: 7, r: 4.2 },
+      { shape: "path", d: "m10.1 10.1 3.4 3.4" },
+    ],
   },
   plan: {
     label: "plan",
     blurb: "Produce a reviewed plan with Plan Validation, and optionally schedule the work.",
     purpose: "produce a reviewed plan",
     accent: "#a371f7",
+    icon: [
+      { shape: "path", d: "M6.5 4h7M6.5 8h7M6.5 12h7" },
+      { shape: "path", d: "m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7" },
+      { shape: "circle", cx: 3.4, cy: 12, r: 0.9 },
+    ],
     afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
   },
   pipeline: {
@@ -101,12 +130,19 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Start conductor's SDLC pipeline. Conductor owns its worktree and PR; no after-work.",
     purpose: "run a conductor pipeline",
     accent: "#db61a2",
+    icon: [
+      { shape: "circle", cx: 3.4, cy: 8, r: 1.7 },
+      { shape: "circle", cx: 12.6, cy: 3.8, r: 1.7 },
+      { shape: "circle", cx: 12.6, cy: 12.2, r: 1.7 },
+      { shape: "path", d: "M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6" },
+    ],
   },
   chat: {
     label: "chat",
     blurb: "Talk with an agent without a planned artifact. No after-work.",
     purpose: "have an open-ended conversation",
     accent: "#b4c0cf",
+    icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   },
 };
 

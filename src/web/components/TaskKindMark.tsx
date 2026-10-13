@@ -1,53 +1,30 @@
 import type { CSSProperties, ReactNode } from "react";
 
 import { TASK_KIND_INFO } from "@shared/task.ts";
+import type { TaskKindIconShape } from "@shared/task.ts";
 import type { TaskKind } from "@shared/types.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
-/**
- * Each kind's glyph, on a 16-unit grid and stroked in `currentColor`.
- *
- * A `Record` over the persisted kind list, so a new kind does not compile until it has a
- * glyph - the same gate `TASK_KIND_INFO` puts on its word and its colour.
- */
-const KIND_GLYPHS: Record<TaskKind, ReactNode> = {
-  ship: <path d="M8 10.5V2.5M4.6 5.9 8 2.5l3.4 3.4M3 9.5v3.5h10V9.5" />,
-  bugfix: (
-    <>
-      <rect x="5" y="5" width="6" height="8.5" rx="3" />
-      <path d="M8 7v6.5M5 9H2.5M11 9h2.5M5 12l-2 1.3M11 12l2 1.3M6 5.4 4.4 3.6M10 5.4l1.6-1.8" />
-    </>
-  ),
-  scout: (
-    <>
-      <circle cx="7" cy="7" r="4.2" />
-      <path d="m10.1 10.1 3.4 3.4" />
-    </>
-  ),
-  plan: (
-    <>
-      <path d="M6.5 4h7M6.5 8h7M6.5 12h7" />
-      <path d="m2.2 4 .9.9L4.6 3.2M2.2 8l.9.9 1.5-1.7" />
-      <circle cx="3.4" cy="12" r=".9" />
-    </>
-  ),
-  pipeline: (
-    <>
-      <circle cx="3.4" cy="8" r="1.7" />
-      <circle cx="12.6" cy="3.8" r="1.7" />
-      <circle cx="12.6" cy="12.2" r="1.7" />
-      <path d="M5.1 8h2.4l3.4-3.6M7.5 8l3.4 3.6" />
-    </>
-  ),
-  chat: <path d="M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" />,
-};
+/** One shape of a kind's icon (`TASK_KIND_INFO[kind].icon`) as its SVG element. */
+function IconShape({ shape }: { shape: TaskKindIconShape }): React.JSX.Element {
+  switch (shape.shape) {
+    case "path":
+      return <path d={shape.d} />;
+    case "circle":
+      return <circle cx={shape.cx} cy={shape.cy} r={shape.r} />;
+    case "rect":
+      return <rect x={shape.x} y={shape.y} width={shape.width} height={shape.height} rx={shape.rx} />;
+  }
+}
 
 export function TaskKindIcon({ kind, size = 12 }: { kind: TaskKind; size?: number }): React.JSX.Element {
   // Width and height on the element, not only in CSS: an inline `<svg>` with a viewBox and
   // no size resolves to the width of its line.
   return (
     <svg className="tk-icon" width={size} height={size} viewBox="0 0 16 16" aria-hidden>
-      {KIND_GLYPHS[kind]}
+      {TASK_KIND_INFO[kind].icon.map((shape, i) => (
+        <IconShape key={i} shape={shape} />
+      ))}
     </svg>
   );
 }

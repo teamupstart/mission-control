@@ -172,6 +172,23 @@ test("a session with no task draws no kind on either surface", async () => {
   assert.ok(!(await withStyles({}, () => tile(session))).includes("tk-mark"));
 });
 
+test("every kind's card carries its own word, icon and colour on its top-edge tab", async () => {
+  // All six kinds, not just the two the browser spec dispatches: a card that dropped or
+  // mislabelled bugfix, plan, pipeline or chat would otherwise pass. The icon is compared
+  // with the kind's own rendered icon, so a tab drawing another kind's glyph fails too.
+  for (const kind of TASK_KINDS) {
+    const task = mkTaskSummary({ kind });
+    const html = await withStyles({}, () => tile(mkSession({ name: task.title, task })));
+    const tab = region(html, 'class="tk-mark tk-tab"', "</span>");
+    const info = TASK_KIND_INFO[kind];
+    assert.ok(tab.includes(`--kind:${info.accent}`), `the ${kind} tab is not in its colour`);
+    const icon = renderToStaticMarkup(createElement(TaskKindIcon, { kind, size: 10 }));
+    assert.ok(tab.includes(icon), `the ${kind} tab does not draw the ${kind} icon`);
+    assert.match(tab, new RegExp(`</svg>${info.label}$`), `the ${kind} tab does not say ${info.label}`);
+    assert.equal((html.match(/class="tk-mark /g) ?? []).length, 1, `the ${kind} card is marked more than once`);
+  }
+});
+
 test("a ship card is marked by default with a tab on its top edge", async () => {
   const html = await withStyles({}, () => tile(shipSession()));
   assert.match(html, /class="tile [^"]*has-kind-tab/);

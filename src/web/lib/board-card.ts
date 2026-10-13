@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
-import type { TaskKindCardStyle, TaskKindHeaderStyle } from "@shared/protocol.ts";
+import type { TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
@@ -387,17 +387,29 @@ const TASK_KIND_CARD_COPY: Record<TaskKindCardStyle, Omit<DisplayChoiceOption<Ta
   },
 };
 
-export type DisplayChoiceKey = "taskKindHeader" | "taskKindCard";
+/**
+ * Each choice's `UiConfig` key with the values that key stores, so a key and its styles travel
+ * together: the board card's key accepts only card styles, and the header's only header styles.
+ */
+export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard">;
+export type DisplayChoiceKey = keyof DisplayChoiceValues;
 
-export interface DisplayChoice {
-  key: DisplayChoiceKey;
+export interface DisplayChoice<K extends DisplayChoiceKey = DisplayChoiceKey> {
+  key: K;
   group: DisplayItemGroup;
   label: string;
   description: string;
-  options: readonly DisplayChoiceOption<string>[];
+  options: readonly DisplayChoiceOption<DisplayChoiceValues[K]>[];
 }
 
-export const DISPLAY_CHOICES: readonly DisplayChoice[] = [
+/**
+ * One entry per key, each typed to that key. Not `DisplayChoice<DisplayChoiceKey>`: that would
+ * let an entry pair the card's key with a header style, and the picker would then submit a
+ * preference the daemon refuses.
+ */
+export type AnyDisplayChoice = { [K in DisplayChoiceKey]: DisplayChoice<K> }[DisplayChoiceKey];
+
+export const DISPLAY_CHOICES: readonly AnyDisplayChoice[] = [
   {
     key: "taskKindCard",
     group: "card",
@@ -421,6 +433,8 @@ export function useDisplayChoice<K extends DisplayChoiceKey>(key: K): ReturnType
   return useUiConfig()[key];
 }
 
-export function setDisplayChoice(key: DisplayChoiceKey, value: string): void {
-  void updateUiConfig({ [key]: value });
+export function setDisplayChoice<K extends DisplayChoiceKey>(key: K, value: DisplayChoiceValues[K]): void {
+  // A computed key widens to an index signature, so the patch is re-narrowed to the one key
+  // it holds; the signature above is what keeps the value paired with that key.
+  void updateUiConfig({ [key]: value } as Pick<DisplayChoiceValues, K>);
 }

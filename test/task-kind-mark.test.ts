@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { AnyDisplayChoice, DisplayChoice } from "../src/web/lib/board-card.ts";
 
 /**
  * A task's kind, marked on both surfaces in the style the operator chose.
@@ -41,7 +42,7 @@ const { ConsoleDetail } = await import("../src/web/components/layouts/ConsoleDet
 const { SessionTile } = await import("../src/web/components/layouts/SessionTile.tsx");
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { TaskKindIcon } = await import("../src/web/components/TaskKindMark.tsx");
-const { DISPLAY_CHOICES } = await import("../src/web/lib/board-card.ts");
+const { DISPLAY_CHOICES, setDisplayChoice } = await import("../src/web/lib/board-card.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES, UI_CONFIG_DEFAULTS } = await import(
   "../src/shared/protocol.ts"
@@ -199,6 +200,33 @@ test("the medallion keeps the agent dot and names the kind it only draws", async
   const mark = region(html, 'class="tk-mark tk-medallion"', 'class="tile-name"');
   assert.ok(mark.includes('class="agent-dot"'));
   assert.ok(mark.includes('aria-label="ship task"'));
+});
+
+test("a display choice accepts only its own surface's styles, at compile time", () => {
+  // Checked by `npm run typecheck`, which covers this file: each line below must FAIL to
+  // compile, and `@ts-expect-error` turns a line that starts compiling into an error. That is
+  // what stops a future edit pairing the card's key with a header style, which the picker would
+  // then submit as a preference the daemon refuses. Never called, so nothing is written.
+  const misuse = (): void => {
+    // @ts-expect-error - "badge" is a conversation-header style, not a board-card one
+    setDisplayChoice("taskKindCard", "badge");
+    // @ts-expect-error - "tab" is a board-card style, not a conversation-header one
+    setDisplayChoice("taskKindHeader", "tab");
+  };
+  // @ts-expect-error - a card choice cannot offer a header style
+  const crossed: DisplayChoice<"taskKindCard"> = { key: "taskKindCard", group: "card", label: "", description: "", options: [{ id: "eyebrow", label: "", description: "" }] };
+  // @ts-expect-error - nor can a registry entry pair the two
+  const entry: AnyDisplayChoice = { key: "taskKindHeader", group: "conversation", label: "", description: "", options: [{ id: "medallion", label: "", description: "" }] };
+  // The correct pairings compile, and the registry holds exactly them.
+  const fine = (): void => {
+    setDisplayChoice("taskKindCard", "band");
+    setDisplayChoice("taskKindHeader", "eyebrow");
+  };
+  void [misuse, crossed, entry, fine];
+  assert.deepEqual(
+    DISPLAY_CHOICES.map((choice) => choice.key).sort(),
+    ["taskKindCard", "taskKindHeader"],
+  );
 });
 
 test("the Display panel offers every style for both surfaces, and the card preview follows the card's", async () => {

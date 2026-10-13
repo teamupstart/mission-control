@@ -9,6 +9,7 @@ import {
   setDisplayChoice,
   setDisplayItemShown,
   type DisplayChoice,
+  type DisplayChoiceKey,
   type DisplayItemGroup,
 } from "../lib/board-card.ts";
 import {
@@ -61,7 +62,11 @@ function usePreviewSession(): ReturnType<typeof previewSession> {
  * operator compares the styles by name rather than opening a menu to find them. The
  * preview beside the checklist is the real tile, so picking a card style moves it.
  */
-function ChoicePicker({ choice }: { choice: DisplayChoice }): React.JSX.Element {
+function ChoicePicker<K extends DisplayChoiceKey>({
+  choice,
+}: {
+  choice: DisplayChoice<K>;
+}): React.JSX.Element {
   const value = useUiConfig()[choice.key];
   const name = `display-choice-${choice.key}`;
   return (

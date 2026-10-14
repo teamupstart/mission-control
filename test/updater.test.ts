@@ -183,6 +183,7 @@ test("the detached updater carries its narrowly scoped bundle-swap support modul
     ),
     [
       "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/mac-app-lifecycle.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/update-lock.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/install-migration.mjs",
@@ -232,6 +233,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     runtime: async () => ({ ok: true, node: "/opt/homebrew/bin/node", env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" } }),
     helperSource: () => "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
     stateDirectory: () => "/tmp/mission-state",
+    launchPreflight: async () => {},
     handoff: async (args) => {
       handoffs.push(args);
       events.push("handoff");
@@ -295,8 +297,10 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       error: async (message) => {
         events.push(`error-dialog:${message}`);
       },
-      outcome: async (value) => {
+      outcome: async (value, delivery) => {
         events.push(`outcome:${value.result}`);
+        delivery.delivered();
+        delivery.acknowledged();
       },
     },
     ...over,
@@ -971,7 +975,7 @@ test("a prior outcome is surfaced once and retained in the in-memory snapshot", 
   });
   await f.controller.start();
   assert.equal(f.controller.getSnapshot().lastOutcome?.result, "failure");
-  assert.deepEqual(f.events, ["outcome:failure"]);
+  assert.deepEqual(f.events, ["outcome:failure", "log:update outcome delivered; awaiting operator acknowledgment"]);
   f.controller.stop();
 
   const next = fixture();
@@ -1758,4 +1762,65 @@ test('completed migration does not hide the next ordinary update offer or ready 
   assert.equal(f.controller.getSnapshot().migration, undefined);
   assert.equal(await f.controller.install(), true);
   assert.equal(f.handoffs[0]?.migration, undefined);
+});
+
+test("launch preflight prevents a helper handoff and quit and surfaces the exact remediation", async () => {
+  const message = "Launchd job com.mission-control.recovery-20260918: launchctl bootout 'gui/501/com.mission-control.recovery-20260918'";
+  const f = fixture({launchPreflight: async () => { throw new Error(message); }});
+  await f.controller.start();
+  await f.controller.check(false);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(await f.controller.install(), false);
+  assert.equal(f.handoffs.length, 0);
+  assert.ok(!f.events.includes("quit"));
+  assert.ok(f.events.includes(`error-dialog:${message}`));
+  f.controller.stop();
+});
+
+test("verified success survives renderer delivery and an unanswered relaunch until acknowledged", async () => {
+  const f = fixture();
+  f.setOutcome({result: "success", targetVersion: "1.2.4", recordedAt: "2026-08-19T13:30:00.000Z", launchVerified: true});
+  let finish!: () => void;
+  f.port.dialogs.outcome = async (_outcome, delivery) => {
+    delivery.delivered();
+    await new Promise<void>((resolve) => { finish = resolve; });
+  };
+  const starting = f.controller.start();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal((await f.port.readOutcome())?.result, "success");
+  assert.equal(f.controller.getSnapshot().lastOutcome?.result, "success");
+  finish();
+  await starting;
+  f.controller.stop();
+  // A renderer detach or process exit is not an answer. The next controller must
+  // read the same durable outcome and show it again, even after verified delivery.
+  const successor = new UpdateController(f.port);
+  let replayed = false;
+  f.port.dialogs.outcome = async (outcome, delivery) => {
+    replayed = true;
+    assert.equal(outcome.result, "success");
+    delivery.delivered();
+    assert.equal((await f.port.readOutcome())?.result, "success");
+    delivery.acknowledged();
+  };
+  await successor.start();
+  assert.equal(replayed, true);
+  assert.equal(await f.port.readOutcome(), null);
+  successor.stop();
+});
+
+test("a failed, undelivered or legacy unverified outcome survives timeout and renderer loss until acknowledged", async () => {
+  for (const result of ["failure", "success"] as const) {
+    const f = fixture();
+    f.setOutcome(result === "failure"
+      ? {result, targetVersion: "1.2.4", recordedAt: "2026-08-19T13:30:00.000Z", message: "failed"}
+      : {result, targetVersion: "1.2.4", recordedAt: "2026-08-19T13:30:00.000Z"});
+    f.port.dialogs.outcome = async (_outcome, delivery) => { delivery.delivered(); };
+    await f.controller.start();
+    assert.equal((await f.port.readOutcome())?.result, result);
+    f.port.dialogs.outcome = async (_outcome, delivery) => { delivery.acknowledged(); };
+    await f.controller.start();
+    assert.equal(await f.port.readOutcome(), null);
+    f.controller.stop();
+  }
 });

@@ -11,6 +11,8 @@
 // from an older app takes, and it is the reason the timeout below is still measured in
 // three quarters of an hour.
 
+import { randomBytes } from "node:crypto";
+import { assertSafeAppLaunch, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -218,6 +220,7 @@ export function realApplyOperations(
   installTimeoutMs = INSTALL_TIMEOUT_MS,
   stagedInstallTimeoutMs = STAGED_INSTALL_TIMEOUT_MS,
 ) {
+  const mac = realMacAppOps(dirname(logPath));
   const log = (line) => {
     try {
       appendFileSync(logPath, `${new Date().toISOString()} ${sanitizeDiagnostic(line)}\n`, {
@@ -229,6 +232,11 @@ export function realApplyOperations(
     }
   };
   return {
+    preflight: (bundle) => assertSafeAppLaunch(bundle, mac),
+    waitForBundle: (bundle) => waitForBundleExit(bundle, mac),
+    prepareLaunch: (bundle) => prepareAppLaunch(bundle, mac),
+    verifyLaunch: (bundle, nonce) => verifyAppLaunch(bundle, nonce, mac),
+    stopLaunch: (bundle, nonce) => stopAttemptLaunch(bundle, nonce, mac),
     exists: existsSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     move: renameSync,
@@ -327,8 +335,8 @@ export function realApplyOperations(
     bundleVersion: (path) => bundleShortVersion(path),
     bundleCommit: bundleSourceCommit,
     lock: realHelperLockOperations(),
-    launch: (appPath) => {
-      const result = spawnSync("open", [appPath], { encoding: "utf8" });
+    launch: (appPath, nonce) => {
+      const result = spawnSync("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: 5000 });
       if (result.error) throw result.error;
       if (result.status !== 0) {
         throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
@@ -351,7 +359,18 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     // from MCP env settings in a second, unbounded temp handoff after it is consumed.
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");
     if (resolve(args.migrationPlan) === privateManifest) rmSync(privateManifest, {force: true});
-    const result = await runMigration(plan, migrationRuntimePorts(handoff));
+    const migration = migrationRuntimePorts(handoff);
+    const waitForSource = migration.waitForParent;
+    migration.waitForParent = async () => {
+      await ops.preflight(plan.source);
+      await ops.preflight(plan.target);
+      await waitForSource();
+      await ops.waitForBundle(plan.source);
+      await ops.waitForBundle(plan.target);
+      await ops.preflight(plan.source);
+      await ops.preflight(plan.target);
+    };
+    const result = await runMigration(plan, migration);
     if (result.error) ops.log(`migration: ${result.diagnostic ?? result.error}`);
     return {ok: result.committed, message: result.error ?? null};
   }
@@ -368,6 +387,9 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   let hadReceipt = false;
   let keepTemporaryBackup = false;
   let heldEntry = null;
+  let launchAttempted = false;
+  let swapAttempted = false;
+  const launchNonce = randomBytes(16).toString("hex");
 
   const record = (outcome) => writeOutcome(outcomePath, outcome);
   /**
@@ -392,7 +414,21 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   };
   const fail = async (reason) => {
     let message = sanitizeDiagnostic(reason instanceof Error ? reason.message : reason);
-    if (backupReady) {
+    // A live executable must never be replaced, including on rollback. Only a process
+    // carrying our nonce can be stopped. Otherwise preserve the backup for manual recovery.
+    let recoverySafe = true;
+    if (swapAttempted) {
+      try {
+        if (launchAttempted) await ops.stopLaunch(args.appPath, launchNonce);
+        await ops.waitForBundle(args.appPath);
+        await ops.preflight(args.appPath);
+      } catch (error) {
+        recoverySafe = false;
+        message += `. Automatic rollback paused: ${sanitizeDiagnostic(error?.message ?? error)}`;
+      }
+    }
+    if (backupReady && !recoverySafe) keepTemporaryBackup = !retainFailure();
+    if (backupReady && recoverySafe && swapAttempted) {
       const kept = retainFailure();
       // Durable retention could not be created, so the temp directory becomes the retention:
       // the `finally` below is skipped and the backup survives where it already is. Strictly
@@ -440,7 +476,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       ops.log(`could not record update failure: ${outcomeError?.message ?? outcomeError}`);
     }
     try {
-      ops.launch(args.appPath);
+      // A preflight refusal must not start the racing launcher it just diagnosed.
+      if (swapAttempted && recoverySafe) {
+        await ops.prepareLaunch(args.appPath);
+        await ops.preflight(args.appPath);
+        await ops.launch(args.appPath);
+      }
     } catch (launchError) {
       ops.log(`could not relaunch the working app: ${launchError?.message ?? launchError}`);
     }
@@ -479,13 +520,21 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     } catch (error) {
       ops.log(`could not clear the retained failure directory: ${error?.message ?? error}`);
     }
+    await ops.preflight(args.appPath);
     await ops.waitForParent(args.parentPid);
+    await ops.waitForBundle(args.appPath);
+    await ops.preflight(args.appPath);
     if (!ops.exists(args.appPath)) throw new Error("the installed app is missing before the update");
     ops.copy(args.appPath, backupApp);
     hadReceipt = ops.exists(receiptPath);
     if (hadReceipt) ops.copy(receiptPath, backupReceipt);
     backupReady = true;
 
+    // The backup copy can take time. Do not treat the earlier process inventory as
+    // proof that the bundle is still unused at the install boundary.
+    await ops.waitForBundle(args.appPath);
+    await ops.preflight(args.appPath);
+    swapAttempted = true;
     ops.install(
       process.execPath,
       join(args.sourceClone, "scripts", "install-app.mjs"),
@@ -497,12 +546,23 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     if (alpha && ops.bundleCommit?.(args.appPath) !== args.targetTag) {
       throw new Error("The installed app does not match the requested main commit.");
     }
-    record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
-    try {
-      ops.launch(args.appPath);
-    } catch (error) {
-      return await fail(error);
+    await ops.prepareLaunch(args.appPath);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await ops.preflight(args.appPath);
+      launchAttempted = true;
+      await ops.launch(args.appPath, launchNonce);
+      try {
+        await ops.verifyLaunch(args.appPath, launchNonce);
+        break;
+      } catch (error) {
+        ops.log(`launch attempt ${attempt + 1} failed: ${error?.message ?? error}`);
+        if (attempt === 1) throw error;
+        await ops.stopLaunch(args.appPath, launchNonce);
+        await ops.waitForBundle(args.appPath);
+        await ops.prepareLaunch(args.appPath);
+      }
     }
+    record({ result: "success", targetVersion, recordedAt: ops.nowIso(), launchVerified: true });
     return { ok: true, message: null };
   } catch (error) {
     return await fail(error);
@@ -518,6 +578,8 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     try {
       // Every exit path except one: a failure that could not file its backup anywhere durable
       // keeps it here instead. Its home is a temp directory, so the OS still reclaims it.
+      try { ops.remove(launchAckPath(args.stateDirectory, launchNonce)); }
+      catch (error) { ops.log(`could not remove launch acknowledgment: ${error?.message ?? error}`); }
       if (!keepTemporaryBackup) ops.remove(tempDirectory);
     } finally {
       // A helper killed before reaching here leaves its entry behind, which the next helper

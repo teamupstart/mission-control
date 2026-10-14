@@ -119,6 +119,11 @@ function operations(
   let firstLaunch = true;
   const locks = new Map<string, string>();
   const ops = {
+    preflight: async (_bundle: string) => {},
+    waitForBundle: async (_bundle: string) => {},
+    prepareLaunch: async (_bundle: string) => {},
+    verifyLaunch: async (_bundle: string, _nonce: string) => {},
+    stopLaunch: async (_bundle: string, _nonce: string) => {},
     exists: (path: string) => !path.includes("rollback-") && !path.includes("failed-"),
     remove: (path: string) => actions.push(`remove:${path}`),
     move: (from: string, to: string) => actions.push(`move:${from}->${to}`),
@@ -1179,4 +1184,109 @@ test('migration helper argv rejects incomplete tuples and duplicate arguments wi
   assert.match(parseArgs([...base, '--source-app', '/Applications/Mission Control.app']).problem!, /complete/);
   assert.match(parseArgs([...base, '--app-path', '/other']).problem!, /invalid/);
   assert.equal(parseArgs([...base, '--source-app', '/Applications/Mission Control.app', '--target-app', '/Users/Fixture/Applications/Mission Control.app', '--migration-plan', '/private/plan.json', '--staged-bundle', '/build/app', '--staged-revision', 'pinned']).problem, null);
+});
+
+test("launch conflicts refuse the swap and never relaunch or remove the user's job", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-preflight-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.preflight = async () => { throw new Error("Launchd job com.mission-control.recovery-20260918: launchctl bootout 'gui/501/com.mission-control.recovery-20260918'"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((action) => /^(install|launch|restore):/.test(action)));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "failure");
+  assert.match(outcome.message, /launchctl bootout 'gui\/501\/com.mission-control.recovery-20260918'/);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("the bundle exit and registration barriers precede relaunch, and only verified launch records success", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-verified-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.waitForBundle = async () => { f.actions.push("bundle-exit"); };
+  f.ops.prepareLaunch = async () => { f.actions.push("lsregister-and-old-exit"); };
+  f.ops.verifyLaunch = async () => {
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+    assert.ok(f.actions.includes("bundle-exit"));
+    assert.ok(f.actions.includes("lsregister-and-old-exit"));
+    assert.ok(f.actions.indexOf("bundle-exit") < f.actions.findIndex((a) => a.startsWith("install:")));
+    assert.ok(f.actions.indexOf("lsregister-and-old-exit") < f.actions.findIndex((a) => a.startsWith("launch:")));
+    f.actions.push("verified");
+  };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, true);
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).launchVerified, true);
+});
+
+test("an unregistered launch is stopped safely, retried once, then failed and rolled back", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-unverified-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => { verifications++; throw new Error("LaunchServices launch could not be verified"); };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.equal(verifications, 2);
+  assert.equal(f.actions.filter((a) => a === "stop-attempt").length, 2);
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "failure");
+  assert.ok(f.actions.some((a) => a.startsWith("restore:")));
+});
+
+test("a verified second launch records success after one cleanup without rolling back", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-retry-success-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => {
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+    if (++verifications === 1) throw new Error("LaunchServices launch could not be verified");
+  };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  assert.deepEqual(await runApplyUpdate(args(state), f.ops), {ok: true, message: null});
+  assert.equal(verifications, 2);
+  assert.deepEqual(f.actions.filter((action) => action === "stop-attempt" || action.startsWith("launch:")), [
+    `launch:${args(state).appPath}`, "stop-attempt", `launch:${args(state).appPath}`,
+  ]);
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "success");
+  assert.equal(outcome.launchVerified, true);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("rollback retains the backup instead of replacing a bundle with an unowned live process", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-unowned-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.verifyLaunch = async () => { throw new Error("unverified"); };
+  f.ops.stopLaunch = async () => { throw new Error("outside this attempt"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((a) => a.startsWith("restore:")));
+  assert.ok(f.actions.some((a) => a.endsWith(RETAINED_FAILURE_DIR_NAME) && a.startsWith("copy:")));
+});
+
+
+test("a process appearing during the backup prevents both installation and rollback over that live bundle", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-late-process-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let barriers = 0;
+  f.ops.waitForBundle = async () => {
+    if (++barriers === 2) throw new Error("bundle process 123 is still running");
+  };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.equal(barriers, 2);
+  assert.ok(!f.actions.some((a) => /^(install|restore|launch):/.test(a)));
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "failure");
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("a stale LaunchServices registration prevents launching the replacement or restored bundle", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-stale-registration-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.prepareLaunch = async () => { throw new Error("LaunchServices still lists an old instance"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((a) => a.startsWith("launch:")));
+  assert.ok(f.actions.some((a) => a.startsWith("restore:")));
+  assert.match(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).message, /LaunchServices/);
 });

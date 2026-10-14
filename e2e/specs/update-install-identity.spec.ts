@@ -52,6 +52,7 @@ test("a copy that is not the installed app says so, and update copy names no fix
   expect(identity.state).toBe("redirect");
 
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: true,
     arch: "arm64",
     currentVersion: () => "1.2.3",

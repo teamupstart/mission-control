@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld("missionDesktop", {
       ipcRenderer.send("mission:update-dialog-ready");
       return () => ipcRenderer.removeListener("mission:update-dialog", listener);
     },
+    receivedDialog: (id: string): void => { ipcRenderer.send("mission:update-dialog-received", id); },
     answerDialog: (id: string, choice: UpdateDialogChoice): void => {
       ipcRenderer.send("mission:update-dialog-choice", { id, choice });
     },

@@ -140,6 +140,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
     "mission:update-dialog",
     "mission:update-dialog-ready",
     "mission:update-dialog-choice",
+    "mission:update-dialog-received",
   ];
 
   assert.deepEqual(
@@ -167,8 +168,8 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       // hold of the channel name - must not be able to answer a question on the operator's
       // behalf, and "install the update now" is one of the answers.
       mainGatesDialogChannelsOnTheDashboard:
-        (main.match(/ipcMain\.on\(["']mission:update-dialog-[^"']+["']/g) ?? []).length === 2 &&
-        ["mission:update-dialog-ready", "mission:update-dialog-choice"].every((channel) =>
+        (main.match(/ipcMain\.on\(["']mission:update-dialog-[^"']+["']/g) ?? []).length === 3 &&
+        ["mission:update-dialog-ready", "mission:update-dialog-choice", "mission:update-dialog-received"].every((channel) =>
           new RegExp(
             `ipcMain\\.on\\("${channel}"[\\s\\S]{0,220}?event\\.sender !== getMainWindow\\(\\)\\?\\.webContents\\) return;`,
           ).test(updateHandlers),
@@ -189,7 +190,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
-          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,onState,onDialog,answerDialog" &&
+          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,onState,onDialog,receivedDialog,answerDialog" &&
         [
           ["getState", "mission:update-get-state"],
           ["check", "mission:update-check"],

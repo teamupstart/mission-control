@@ -14,6 +14,7 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
   await writeFile(npm, `#!/usr/bin/env node\nconsole.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
   const message = "This update requires Node.js 24 or newer (found 22.0.0). Install or select Node.js 24+, then choose Check again. Mission Control will keep running.";
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: true,
     arch: "arm64",
     currentVersion: () => "1.2.3",

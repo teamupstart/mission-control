@@ -7,6 +7,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { realHelperLockOperations, parseClaimEntryName, parseStagingEntryName, HELPER_LOCK_DIR_NAME } from "../../scripts/update-lock.mjs";
 import { stateDir } from "../shared/harness-runtime.mjs";
 import type { UpdateApplyOutcome } from "../shared/update.ts";
 
@@ -61,6 +63,7 @@ export function readUpdateOutcome(path = updateOutcomePath()): UpdateApplyOutcom
     if (record.result === "in-progress" || record.result === "success") {
       return {
         result: record.result,
+        ...(record.result === "success" && record.launchVerified === true ? {launchVerified: true} : {}),
         targetVersion: record.targetVersion,
         recordedAt: record.recordedAt,
       };
@@ -78,6 +81,35 @@ export function consumeUpdateOutcome(path = updateOutcomePath()): UpdateApplyOut
   return outcome;
 }
 
-export function clearUpdateOutcome(path = updateOutcomePath()): void {
+export function clearUpdateOutcome(path = updateOutcomePath(), expected?: UpdateApplyOutcome): void {
+  if (expected) {
+    const current = readUpdateOutcome(path);
+    if (!current || current.result !== expected.result || current.targetVersion !== expected.targetVersion || current.recordedAt !== expected.recordedAt ||
+      (current.result === "failure" && expected.result === "failure" && current.message !== expected.message)) return;
+  }
   rmSync(path, { force: true });
+}
+
+/** The freshly opened app starts before its helper can publish the verified outcome. */
+export async function readSettledUpdateOutcome(directory: string): Promise<UpdateApplyOutcome | null> {
+  const path = updateOutcomePath(directory);
+  const lock = realHelperLockOperations();
+  const lockDirectory = join(directory, HELPER_LOCK_DIR_NAME);
+  const deadline = Date.now() + 90_000;
+  const active = (): boolean => {
+    try {
+      return lock.list(lockDirectory).some((name) => {
+        const entry = parseClaimEntryName(name) ?? parseStagingEntryName(name);
+        return entry !== null && lock.isLive({...entry, identity: lock.readEntry(lockDirectory, name)?.identity ?? null});
+      });
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ENOENT";
+    }
+  };
+  while (active()) {
+    // Never turn a live helper's pending verification into an interrupted-update failure.
+    if (Date.now() >= deadline) return null;
+    await delay(250);
+  }
+  return readUpdateOutcome(path);
 }

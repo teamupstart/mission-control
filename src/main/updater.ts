@@ -1,3 +1,4 @@
+import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
 import { prepareMigration, keepSystemInstallation, readMigrationJournal, atomicMigrationJson, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { processIdentity } from "../../scripts/update-lock.mjs";
@@ -29,7 +30,7 @@ import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
-import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
+import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { checkUpdateRuntime, type UpdateRuntime } from "./update-runtime.ts";
 import {
   stageUpdateBuild,
@@ -67,6 +68,11 @@ export interface MainCommitInfo {
   committedAt: string;
 }
 
+export interface OutcomeDelivery {
+  delivered(): void;
+  acknowledged(): void;
+}
+
 export interface UpdateDialogs {
   available(release: {
     currentVersion: string;
@@ -81,7 +87,7 @@ export interface UpdateDialogs {
   ready(version: string, migration?: UpdateMigration): Promise<"install" | "defer" | "system">;
   applying(version: string): Promise<void>;
   error(message: string): Promise<void>;
-  outcome(outcome: UpdateApplyOutcome): Promise<void>;
+  outcome(outcome: UpdateApplyOutcome, delivery: OutcomeDelivery): Promise<void>;
 }
 
 /** One coherent reading of what is installed and whether this process may update it. */
@@ -170,6 +176,7 @@ export interface UpdaterPort {
   runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
   helperSource(): string;
   stateDirectory(): string;
+  launchPreflight(appPath: string): Promise<void>;
   handoff(args: HelperHandoff): Promise<void>;
   stage(request: UpdateStageRequest): Promise<StageOutcome>;
   /** What is at a staged bundle's path now, so a caller can tell it is still the same build. */
@@ -180,8 +187,8 @@ export interface UpdaterPort {
   migrationStatus?(): UpdateMigration | undefined;
   repairMigration?(): Promise<void>;
   requestQuit(): void;
-  readOutcome(): UpdateApplyOutcome | null;
-  clearOutcome(): void;
+  readOutcome(): UpdateApplyOutcome | null | Promise<UpdateApplyOutcome | null>;
+  clearOutcome(expected: UpdateApplyOutcome): void;
   now(): number;
   random(): number;
   log(line: string): void;
@@ -613,13 +620,14 @@ export class UpdateController {
       return;
     }
 
-    let lastOutcome = this.port.readOutcome();
+    const storedOutcome = await this.port.readOutcome();
+    let lastOutcome = storedOutcome;
     if (lastOutcome?.result === "in-progress") {
       lastOutcome = {
         result: "failure",
         targetVersion: lastOutcome.targetVersion,
         recordedAt: lastOutcome.recordedAt,
-        message: "The previous update did not finish. The existing app was left in place.",
+        message: "The previous update did not finish. Check the update log before retrying.",
       };
     }
     const disable = (reason: string) => this.publish({ phase: "disabled", reason, lastOutcome });
@@ -637,8 +645,19 @@ export class UpdateController {
 
     if (lastOutcome) {
       try {
-        await this.port.dialogs.outcome(lastOutcome);
-        this.port.clearOutcome();
+        const notice = lastOutcome;
+        const clear = () => {
+          try { this.port.clearOutcome(storedOutcome!); }
+          catch (error) { this.port.log(`could not retire update outcome: ${String(error)}`); }
+        };
+        await this.port.dialogs.outcome(notice, {
+          delivered: () => {
+            // Delivery proves only that the renderer ran once. It may hang before
+            // an answer, so preserve the notice across relaunch until acknowledged.
+            this.port.log("update outcome delivered; awaiting operator acknowledgment");
+          },
+          acknowledged: clear,
+        });
       } catch (error) {
         this.port.log(`could not show the previous update outcome: ${String(error)}`);
       }
@@ -1157,6 +1176,12 @@ export class UpdateController {
     try {
       const runtime = await this.port.runtime(this.receipt!.sourceClone, !stagedBundle);
       if (!runtime.ok) throw new UpdateError(runtime.message);
+      try {
+        await this.port.launchPreflight(this.receipt!.appPath);
+        if (this.migration) await this.port.launchPreflight(this.migration.target);
+      } catch (error) {
+        throw new UpdateError(error instanceof Error ? error.message : "Could not verify macOS launch state.");
+      }
       await this.port.handoff({
         node: runtime.node,
         env: runtime.env,
@@ -1337,6 +1362,7 @@ export function createDefaultUpdaterPort(options: {
     runtime: checkUpdateRuntime,
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
+    launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
       spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
     stage: async (request) => {
@@ -1367,8 +1393,8 @@ export function createDefaultUpdaterPort(options: {
       };
     },
     requestQuit: options.requestQuit,
-    readOutcome: () => readUpdateOutcome(updateOutcomePath(options.stateDirectory)),
-    clearOutcome: () => clearUpdateOutcome(updateOutcomePath(options.stateDirectory)),
+    readOutcome: () => readSettledUpdateOutcome(options.stateDirectory),
+    clearOutcome: (expected) => clearUpdateOutcome(updateOutcomePath(options.stateDirectory), expected),
     now: Date.now,
     random: Math.random,
     log,

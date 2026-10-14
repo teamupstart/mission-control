@@ -53,6 +53,7 @@ files:
   # Keep the detached helper and its dependency graph as plain files with asar disabled.
   # The bundle-swap module owns the narrowly scoped in-place macOS authorization prompt.
   - scripts/apply-update.mjs
+  - scripts/mac-app-lifecycle.mjs
   - scripts/app-bundle-swap.mjs
   - scripts/update-lock.mjs
   - scripts/install-migration.mjs

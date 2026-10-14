@@ -2,6 +2,7 @@
 // the helper's static imports must survive both source-clone and app replacement.
 export const UPDATE_HELPER_FILES = [
   "scripts/apply-update.mjs",
+  "scripts/mac-app-lifecycle.mjs",
   "scripts/app-bundle-swap.mjs",
   "scripts/update-lock.mjs",
   "scripts/install-migration.mjs",

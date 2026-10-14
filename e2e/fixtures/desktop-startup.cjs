@@ -2,7 +2,8 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("node:path");
 
-const [origin, windowModule, profile, scenario] = process.argv.slice(2);
+const [origin, windowModule, profile, scenario, warning, healthModule] = process.argv.slice(2);
+process.env.MISSION_HOME = path.dirname(profile);
 process.env.MISSION_PORT = new URL(origin).port;
 delete process.env.MISSION_DEV_SERVER_URL;
 app.setPath("userData", profile);
@@ -45,7 +46,8 @@ app.whenReady().then(() => {
   }));
   ipcMain.handle("mission:card-jump-keys", () => undefined);
   ipcMain.handle("mission:version", () => "1.25.0");
-  createWindow(path.join(process.cwd(), "dist/preload/index.cjs"));
+  const window = createWindow(path.join(process.cwd(), "dist/preload/index.cjs"), warning ?? null);
+  if (healthModule) require(healthModule).observeUpdateLaunch(window.webContents, "/fixture/Mission Control.app", path.dirname(profile), ["--mission-update-launch", "a".repeat(32)]);
 });
 app.on("window-all-closed", () => app.quit());
 // The fixture imports window.ts without index.ts, which normally owns before-quit.

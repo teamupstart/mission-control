@@ -48,6 +48,11 @@ export interface HelperLockOps {
 }
 
 export interface ApplyOperations {
+  preflight(bundle: string): Promise<void>;
+  waitForBundle(bundle: string): Promise<void>;
+  prepareLaunch(bundle: string): Promise<void>;
+  verifyLaunch(bundle: string, nonce: string): Promise<void>;
+  stopLaunch(bundle: string, nonce: string): Promise<void>;
   exists(path: string): boolean;
   remove(path: string): void;
   move(from: string, to: string): void;
@@ -66,7 +71,7 @@ export interface ApplyOperations {
   bundleVersion(path: string): string | null;
   bundleCommit?(path: string): string | null;
   lock: HelperLockOps;
-  launch(appPath: string): void;
+  launch(appPath: string, nonce?: string): void | Promise<void>;
   log(line: string): void;
 }
 

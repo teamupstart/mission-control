@@ -29,6 +29,7 @@ import { WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 export const UPDATE_DIALOG_HOST_TIMEOUT_MS = WINDOW_STARTUP_TIMEOUT_MS + 5_000;
 
 export interface UpdateDialogPort {
+  log?(line: string): void;
   /** Is there a loaded, visible dashboard that can draw a modal right now? */
   canPresent(): boolean;
   /**
@@ -43,7 +44,14 @@ export interface UpdateDialogPort {
   delay(ms: number, fn: () => void): () => void;
 }
 
+export interface DialogDelivery {
+  delivered?(): void;
+  acknowledged?(): void;
+}
+
 interface Pending {
+  delivery: DialogDelivery;
+  received: boolean;
   id: string;
   content: UpdateDialogContent;
   settle(choice: UpdateDialogChoice): void;
@@ -81,7 +89,7 @@ export class UpdateDialogPresenter {
     const waking = [...this.waiting];
     this.waiting.clear();
     for (const wake of waking) wake();
-    for (const entry of this.pending.values()) this.port.send({ ...entry.content, id: entry.id });
+    for (const entry of this.pending.values()) this.send({ ...entry.content, id: entry.id });
   }
 
   /**
@@ -105,8 +113,25 @@ export class UpdateDialogPresenter {
     const entry = this.pending.get(id);
     if (!entry) return;
     if (!entry.content.actions.some((action) => action.choice === choice)) return;
+    this.port.log?.(`update dialog answer id=${id} kind=${entry.content.kind} choice=${choice}`);
     this.pending.delete(id);
+    entry.delivery.acknowledged?.();
     entry.settle(choice);
+  }
+
+  received(id: unknown): void {
+    if (typeof id !== "string") return;
+    const entry = this.pending.get(id);
+    if (!entry || entry.received) return;
+    entry.received = true;
+    this.port.log?.(`update dialog delivered id=${id} kind=${entry.content.kind}`);
+    entry.delivery.delivered?.();
+  }
+
+  private send(request: UpdateDialogRequest): boolean {
+    const sent = this.port.send(request);
+    this.port.log?.(`update dialog send id=${request.id} kind=${request.kind} sent=${sent}`);
+    return sent;
   }
 
   /** How many questions are still awaiting an answer. */
@@ -114,7 +139,7 @@ export class UpdateDialogPresenter {
     return this.pending.size;
   }
 
-  async present(content: UpdateDialogContent): Promise<UpdateDialogChoice> {
+  async present(content: UpdateDialogContent, delivery: DialogDelivery = {}): Promise<UpdateDialogChoice> {
     // Nothing is revealed while the dashboard is already up, so a person with the window
     // open sees exactly the flow they saw before: `preparing` reveals, an accepted
     // `available` reveals, and no other question moves the window. This is not a new
@@ -125,9 +150,12 @@ export class UpdateDialogPresenter {
     if (!this.port.canPresent()) this.port.reveal();
     if (!this.hosted && !(await this.waitForHost())) return updateDialogDismissal(content).choice;
     const id = this.port.newId();
-    if (!this.port.send({ ...content, id })) return updateDialogDismissal(content).choice;
     return new Promise<UpdateDialogChoice>((settle) => {
-      this.pending.set(id, { id, content, settle });
+      this.pending.set(id, { id, content, settle, delivery, received: false });
+      if (!this.send({ ...content, id })) {
+        this.pending.delete(id);
+        settle(updateDialogDismissal(content).choice);
+      }
     });
   }
 

@@ -1,3 +1,5 @@
+import { logMain } from "./main-log.ts";
+import { observeUpdateLaunch, unmanagedLaunchMessage } from "./launch-health.ts";
 import { removeMigrationSourceLogin } from "./migration-integration-ports.ts";
 import { migrationStartupGate } from "../../scripts/migration-runtime.mjs";
 import { repairMigration } from "../../scripts/install-migration.mjs";
@@ -38,7 +40,7 @@ import {
 import type { UpdateSnapshot } from "../shared/update.ts";
 import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
-import { UpdateDialogPresenter } from "./update-dialog.ts";
+import { UpdateDialogPresenter, type DialogDelivery } from "./update-dialog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { readReceipt } from "../shared/install-receipt.mjs";
@@ -128,6 +130,7 @@ function showIntegrationResult(title: string, message: string): void {
  * unthemed auto-update surface is the thing being removed, not a fallback worth keeping.
  */
 const updateDialogPresenter = new UpdateDialogPresenter({
+  log: logMain,
   canPresent: () => {
     const win = getMainWindow();
     if (!win || win.isDestroyed() || !win.isVisible()) return false;
@@ -148,8 +151,8 @@ const updateDialogPresenter = new UpdateDialogPresenter({
 });
 
 /** Ask, and translate the modal's two words back into the updater's own vocabulary. */
-function askUpdate(content: UpdateDialogContent): Promise<UpdateDialogChoice> {
-  return updateDialogPresenter.present(content);
+function askUpdate(content: UpdateDialogContent, delivery?: DialogDelivery): Promise<UpdateDialogChoice> {
+  return updateDialogPresenter.present(content, delivery);
 }
 
 const updateDialogs: UpdateDialogs = {
@@ -181,8 +184,8 @@ const updateDialogs: UpdateDialogs = {
   async error(message) {
     await askUpdate(UPDATE_DIALOGS.error(message));
   },
-  async outcome(outcome) {
-    await askUpdate(UPDATE_DIALOGS.outcome(outcome));
+  async outcome(outcome, delivery) {
+    await askUpdate(UPDATE_DIALOGS.outcome(outcome), delivery);
   },
 };
 
@@ -249,6 +252,10 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.on("mission:update-dialog-ready", (event) => {
     if (event.sender !== getMainWindow()?.webContents) return;
     updateDialogPresenter.attach();
+  });
+  ipcMain.on("mission:update-dialog-received", (event, id: unknown) => {
+    if (event.sender !== getMainWindow()?.webContents) return;
+    updateDialogPresenter.received(id);
   });
   ipcMain.on("mission:update-dialog-choice", (event, payload: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return;
@@ -326,6 +333,9 @@ app.whenReady().then(async () => {
     cb(permission === "notifications");
   });
 
+  const launchWarning = runningBundle && process.platform === "darwin" ? await unmanagedLaunchMessage(runningBundle) : null;
+  if (launchWarning) logMain(`unmanaged app launch: ${launchWarning}`);
+
   backgroundStart = ownElectronBackgroundStart(
     process.env.MISSION_DEV_SERVER_URL,
     () =>
@@ -355,7 +365,8 @@ app.whenReady().then(async () => {
       if (background && !isQuitting()) return updater?.retryMigrationRepair();
     }).catch((error: unknown) => console.error(error));
   });
-  createWindow(paths.preload);
+  const mainWindow = createWindow(paths.preload, launchWarning);
+  if (runningBundle) observeUpdateLaunch(mainWindow.webContents, runningBundle, stateDir());
   updater = new UpdateController(
     createDefaultUpdaterPort({
       packaged: app.isPackaged,
@@ -376,6 +387,7 @@ app.whenReady().then(async () => {
   registerIpc(updater);
   stopUpdateSubscription = updater.subscribe(pushUpdateSnapshot);
   const updaterStart = updater.start();
+  if (launchWarning) void updateDialogs.error(launchWarning);
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });

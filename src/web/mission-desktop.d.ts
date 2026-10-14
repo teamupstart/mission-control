@@ -48,6 +48,8 @@ declare global {
        * falls back to a platform sheet; there is none left in the update path.
        */
       onDialog?(cb: (request: UpdateDialogRequest) => void): () => void;
+      /** Confirm the notice is rendered, without answering or closing it. */
+      receivedDialog?(id: string): void;
       /** Answer one question by the id it arrived with. */
       answerDialog?(id: string, choice: UpdateDialogChoice): void;
     };

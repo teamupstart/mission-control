@@ -1331,9 +1331,10 @@ on as you move between changed files, and is off again after a reload, as it is 
 
 Only lines that exist in the working tree take a comment. A deleted line is text that is gone,
 and a hunk header belongs to git, so neither gets a button. The diff is a snapshot from when the
-tab loaded, so a line is also only clickable while it still matches the file on disk: if the
-agent has rewritten it since, reload the diff to comment on what is there now. There is no
-Preview here; a diff is source, so every comment made from it is a line comment.
+tab loaded, so clicking a line re-reads the file first and the comment anchors to the file as it
+is on disk now. If the agent has rewritten that line since, the click says so instead of opening
+the box, and the line stops being clickable until you reload the diff. There is no Preview here;
+a diff is source, so every comment made from it is a line comment.
 
 The control says why when a file takes no comment, and stays focusable so the reason is
 reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the

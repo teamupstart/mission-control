@@ -12,7 +12,7 @@
 // Preview surfaces are out of scope here by design. A diff is source, so a comment in it is
 // always an `editor`-surface line comment.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileCommentReview,
   FileCommentThread,
@@ -22,6 +22,7 @@ import type {
 import {
   appendFileCommentMessage,
   fetchSessionFile,
+  fetchSessionFileIfChanged,
   markFileCommentRead,
   setFileCommentStatus,
 } from "../lib/api.ts";
@@ -44,10 +45,24 @@ import { useKeybindingHints } from "../lib/keybindings.ts";
 import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
+/** What re-reading the file found: the document as it is on disk now, or why it could not. */
+export type DiffSourceRecheck =
+  | { ok: true; document: SessionFileDocument }
+  | { ok: false; error: string };
+
 /** The working-tree document a diff file's comments anchor against. */
 export interface DiffSourceDocument {
   document: SessionFileDocument | null;
   error: string | null;
+  /**
+   * Re-read the file on disk, replacing the held copy when it has moved.
+   *
+   * The held copy and the diff were read together, so they agree with EACH OTHER even after
+   * the agent edits the file - which is exactly when neither describes the disk. A new comment
+   * must not be anchored to either alone, so a click asks again first. Costs a hash on the
+   * daemon when nothing changed.
+   */
+  recheck: () => Promise<DiffSourceRecheck>;
 }
 
 /**
@@ -100,7 +115,29 @@ export function useDiffSourceDocument(
     && answer.reloadKey === reloadKey
     ? answer
     : null;
-  return { document: current?.document ?? null, error: current?.error ?? null };
+  // Read through a ref so `recheck` stays one identity while the held document moves.
+  const held = useRef(current);
+  held.current = current;
+
+  const recheck = useCallback(async (): Promise<DiffSourceRecheck> => {
+    const known = held.current?.document;
+    if (!path || !known) return { ok: false, error: "the file has not been read yet" };
+    const result = await fetchSessionFileIfChanged(sessionId, path, known.revision);
+    if (!result.ok) return result;
+    if (result.unchanged) return { ok: true, document: known };
+    // Written only under the request it answers: a reader who moved to another file while
+    // this was in flight must not have that file's rows checked against this one's text.
+    setAnswer((previous) =>
+      previous
+        && previous.sessionId === sessionId
+        && previous.path === path
+        && previous.reloadKey === reloadKey
+        ? { ...previous, document: result.file, error: null }
+        : previous);
+    return { ok: true, document: result.file };
+  }, [path, reloadKey, sessionId]);
+
+  return { document: current?.document ?? null, error: current?.error ?? null, recheck };
 }
 
 /** Everything a rendered diff file needs to draw comments and take new ones. */
@@ -119,7 +156,8 @@ export interface DiffFileComments {
   sourceLine: (line: DiffLine) => number | null;
   /** The threads drawn on a working-tree line, in the order they were written. */
   threadsOn: (line: number) => readonly FileCommentThread[];
-  onLineSelect: (line: number) => void;
+  /** A click on a row's line number. The row, not its number, so it can be checked again. */
+  onLineSelect: (row: DiffLine) => void;
   onMarkerSelect: (line: number) => void;
   /** The working-tree line whose panel is open, or null when none is. */
   panelLine: number | null;
@@ -185,7 +223,9 @@ export function useDiffLineComments(input: {
   );
   const threadLines = useMemo(() => threadsByLine(visibleThreads), [visibleThreads]);
   const resolvedCount = allThreads.filter((thread) => thread.status === "resolved").length;
-  const openThread = allThreads.find((thread) => thread.id === openThreadId) ?? null;
+  // From the threads DRAWN, not every thread: a panel whose marker has been filtered away -
+  // a resolved thread once Resolved is switched off - would be left hanging under a bare line.
+  const openThread = visibleThreads.find((thread) => thread.id === openThreadId) ?? null;
 
   // Reading a thread is what clears its pip, here exactly as in the Files tab: the badge is
   // durable, so the read has to be too.
@@ -198,7 +238,10 @@ export function useDiffLineComments(input: {
   // A comment belongs to the file and session it was written on. Moving to another closes
   // what was open and lets a draft settle where it was written.
   const dismissDraft = draft.dismiss;
+  /** Bumped by every click on a line and every move to another file; see `onLineSelect`. */
+  const selection = useRef(0);
   useEffect(() => {
+    selection.current += 1;
     setOpenThreadId(null);
     setThreadError(null);
     dismissDraft();
@@ -224,20 +267,53 @@ export function useDiffLineComments(input: {
     if (next.status === "draft" && !readOnly) draft.openDraft(next);
   }, [draft, openThreadId, readOnly, threadLines]);
 
-  const onLineSelect = useCallback((line: number): void => {
+  const recheck = source.recheck;
+  /**
+   * A click on a line number: the thread already there, or a new comment on what the file says
+   * NOW.
+   *
+   * The diff and the held document were read together, so after the agent edits the file they
+   * still agree with each other and the row still looks commentable - while neither describes
+   * the disk. So a new comment re-reads the file first and anchors to that read: its text, its
+   * line, its revision. A row the edit changed is refused with the remedy, and the refreshed
+   * document turns that row inert so it does not invite the same click again.
+   *
+   * Only the LATEST click is honoured. Another click, or a move to another file, while the read
+   * is out makes this one stale, and a stale answer must not open a composer nobody is looking
+   * at - or one anchored to the file the reader just left.
+   */
+  const onLineSelect = useCallback(async (row: DiffLine): Promise<void> => {
+    const line = diffRowSourceLine(row, lines);
+    if (line === null) return;
     if (threadLines.has(line)) {
       openThreadOnLine(line);
       return;
     }
-    if (!active || text === null) return;
+    if (!active) return;
+    // What was open closes on the click, as it does in the Files tab - and so a refusal below
+    // is reported in the notice rather than hidden behind a panel about another line.
     setOpenThreadId(null);
     draft.dismiss();
-    if (draft.openLine(line, text)) {
+    const ticket = ++selection.current;
+    const fresh = await recheck();
+    if (ticket !== selection.current) return;
+    if (!fresh.ok) {
+      setThreadError(`This file could not be re-read, so no comment was started: ${fresh.error}`);
+      return;
+    }
+    const current = fresh.document.text;
+    if (current === null || diffRowSourceLine(row, sourceLines(current)) !== line) {
+      setThreadError(
+        "This line has changed since the diff loaded. Reload the diff to comment on what is there now.",
+      );
+      return;
+    }
+    if (draft.openLine(line, current, fresh.document.revision)) {
       setThreadError(null);
       return;
     }
     setThreadError("This file has no text to anchor a comment to.");
-  }, [active, draft, openThreadOnLine, text, threadLines]);
+  }, [active, draft, lines, openThreadOnLine, recheck, threadLines]);
 
   const reply = useCallback(async (threadId: string, body: string): Promise<boolean> => {
     setThreadBusy(true);
@@ -316,7 +392,12 @@ export function useDiffLineComments(input: {
     onToggleMode,
     resolvedCount,
     showResolved,
-    onToggleResolved: () => setShowResolved((value) => !value),
+    onToggleResolved: () => {
+      // Hiding closed threads closes one that is open, rather than leaving it to reappear the
+      // next time they are shown.
+      if (showResolved && openThread?.status === "resolved") setOpenThreadId(null);
+      setShowResolved((value) => !value);
+    },
     sourceLine: (line) => diffRowSourceLine(line, lines),
     threadsOn: (line) => threadLines.get(line) ?? NO_THREADS,
     onLineSelect,
@@ -435,7 +516,7 @@ export function DiffLines({
                           type="button"
                           className="dl-num-comment"
                           aria-label={`Comment on line ${line}`}
-                          onClick={() => comments.onLineSelect(line)}
+                          onClick={() => comments.onLineSelect(l)}
                         >
                           {l.newNo}
                         </button>

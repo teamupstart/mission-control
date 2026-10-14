@@ -322,6 +322,18 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await resolvedMarker.click();
   await expect(thread.getByRole("button", { name: "Reopen" })).toBeVisible();
 
+  // Hiding closed threads takes an open one's panel away with its marker, and showing them
+  // again does not bring the panel back on its own.
+  await showResolved.click();
+  await expect(showResolved).toHaveAttribute("aria-pressed", "false");
+  await expect(resolvedMarker).toHaveCount(0);
+  await expect(thread).toBeHidden();
+  await showResolved.click();
+  await expect(resolvedMarker).toBeVisible();
+  await expect(thread).toBeHidden();
+  await resolvedMarker.click();
+  await expect(thread.getByRole("button", { name: "Reopen" })).toBeVisible();
+
   // ---- a refused reply keeps the thread open and the sentence in the box ----
   await page.route("**/api/file-comments/*/messages", (route) =>
     route.fulfill({
@@ -378,4 +390,69 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   expect(storedOn(daemon, 3)?.status).toBe("draft");
   await page.unroute("**/api/file-comments/*/status");
   await shoot(diff, page, "diff-reopened-thread");
+});
+
+/** The revision the daemon reports for a file in the session's checkout right now. */
+async function currentRevision(daemon: DaemonHandle, path: string): Promise<string> {
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as { id: string }[];
+  const response = await fetch(
+    `${daemon.baseURL}/api/sessions/${encodeURIComponent(sessions[0]!.id)}/file?path=${encodeURIComponent(path)}`,
+  );
+  const body = (await response.json()) as { revision?: string };
+  expect(body.revision, `the daemon reported no revision for ${path}`).toBeTruthy();
+  return body.revision!;
+}
+
+/** Each thread's anchor as stored: line, quote, and the revision it was taken against. */
+function storedAnchors(daemon: DaemonHandle): { start_line: number; quote: string; revision: string | null }[] {
+  return withDaemonDb(daemon, (db) =>
+    db
+      .prepare(`SELECT start_line, quote, revision FROM file_comment_threads ORDER BY created_at`)
+      .all() as never);
+}
+
+const CHANGED_LINE = "This line has changed since the diff loaded. Reload the diff to comment on what is there now.";
+
+test("a click re-reads the file: an untouched line anchors to it, an edited one is refused", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "README.md"), README);
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiffOn(page, "README.md");
+  await diff.getByRole("button", { name: "Comment mode" }).click();
+  await expect(diff.getByRole("button", { name: "Comment on line 3" })).toBeVisible();
+  const loaded = await currentRevision(daemon, "README.md");
+
+  // ---- the agent edits elsewhere in the file after the diff was read ----
+  // The diff and its copy of the file still agree with each other, and line 3 still says what
+  // it said. The comment must anchor to the file as it is now, not to the copy.
+  writeFileSync(join(cwd, "README.md"), `${README}A trailing note the agent added.\n`);
+  const moved = await currentRevision(daemon, "README.md");
+  expect(moved).not.toBe(loaded);
+
+  await diff.getByRole("button", { name: "Comment on line 3" }).click();
+  const box = diff.getByRole("textbox", { name: "Comment on line 3" });
+  await box.fill("Still the line I meant.");
+  await expect
+    .poll(() => storedAnchors(daemon), { message: "the draft was not anchored to the re-read file" })
+    .toEqual([{ start_line: 3, quote: QUOTE, revision: moved }]);
+  await box.press("Escape");
+  await expect.poll(() => storedThreads(daemon).length, { message: "cancelling left the draft behind" })
+    .toBe(0);
+
+  // ---- the agent rewrites the line itself ----
+  writeFileSync(join(cwd, "README.md"), README.replace("thirty", "sixty"));
+  await diff.getByRole("button", { name: "Comment on line 3" }).click();
+  await expect(diff.getByText(CHANGED_LINE)).toBeVisible();
+  await expect(diff.getByRole("textbox", { name: "Comment on line 3" })).toHaveCount(0);
+  expect(storedThreads(daemon), "no comment was written against the old text").toHaveLength(0);
+  // The re-read copy turns the changed line inert rather than inviting the same click again,
+  // and lines the edit did not touch still take a comment.
+  await expect(diff.getByRole("button", { name: "Comment on line 3" })).toHaveCount(0);
+  await expect(diff.getByRole("button", { name: "Comment on line 1" })).toBeVisible();
+  await shoot(diff, page, "diff-changed-line-refused");
 });

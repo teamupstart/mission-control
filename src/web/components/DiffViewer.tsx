@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Session, SessionDiff } from "@shared/types.ts";
+import type { FileCommentReview, FileCommentThread, Session, SessionDiff } from "@shared/types.ts";
 import { sessionWorkspaceRoot } from "@shared/session.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import {
@@ -8,10 +8,21 @@ import {
   type DiffFile,
   type DiffFileTarget,
 } from "../lib/diff.ts";
-import { chordFromEvent, useKeybindings } from "../lib/keybindings.ts";
+import { diffCommentBlockReason } from "../lib/diffComments.ts";
+import { chordFromEvent, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ResizablePaneDivider } from "./ResizablePaneDivider.tsx";
+import {
+  DiffCommentControls,
+  DiffLines,
+  useDiffLineComments,
+  useDiffSourceDocument,
+  type DiffFileComments,
+} from "./DiffLineComments.tsx";
+
+const NO_THREADS: readonly FileCommentThread[] = [];
+const NO_REVIEWS: readonly FileCommentReview[] = [];
 
 /**
  * Console and Board give a session's diff a real tab, reusing one reader without a
@@ -22,11 +33,19 @@ export function InlineDiffViewer({
   commit,
   requestNonce,
   onOpenInFiles,
+  fileCommentThreads = NO_THREADS,
+  fileCommentReviews = NO_REVIEWS,
 }: {
   session: Session;
   commit?: string | null;
   requestNonce?: number;
   onOpenInFiles?: (path: string) => void;
+  /**
+   * Every live comment thread and walkthrough state the event stream holds - the same two
+   * lists the Files tab reads, so a thread written in either tab is drawn in both.
+   */
+  fileCommentThreads?: readonly FileCommentThread[];
+  fileCommentReviews?: readonly FileCommentReview[];
 }): React.JSX.Element {
   return (
     <DiffViewerContent
@@ -34,6 +53,8 @@ export function InlineDiffViewer({
       commit={commit}
       requestNonce={requestNonce}
       onOpenInFiles={onOpenInFiles}
+      fileCommentThreads={fileCommentThreads}
+      fileCommentReviews={fileCommentReviews}
     />
   );
 }
@@ -43,11 +64,15 @@ function DiffViewerContent({
   commit,
   requestNonce,
   onOpenInFiles,
+  fileCommentThreads,
+  fileCommentReviews,
 }: {
   session: Session;
   commit?: string | null;
   requestNonce?: number;
   onOpenInFiles?: (path: string) => void;
+  fileCommentThreads: readonly FileCommentThread[];
+  fileCommentReviews: readonly FileCommentReview[];
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,15 +119,62 @@ function DiffViewerContent({
     : null;
   const { bindings } = useKeybindings();
 
+  // Line comments on the file being read. Only a working-tree diff anchors to the file the
+  // Files tab holds, so a single-commit diff, a binary and a file with no Files route never
+  // read a document at all - `diffCommentBlockReason` says why each takes no comment.
+  const commentPath = !commit && active && !active.binary ? activeTarget?.path ?? null : null;
+  const source = useDiffSourceDocument(session.id, commentPath, diff);
+  const comments = useDiffLineComments({
+    session,
+    path: commentPath,
+    source,
+    blockReason: active && activeTarget
+      ? diffCommentBlockReason({
+        file: active,
+        target: activeTarget,
+        commit,
+        document: source.document,
+        documentError: source.error,
+      })
+      : "There is no file to comment on",
+    threads: fileCommentThreads,
+    reviews: fileCommentReviews,
+  });
+  const toggleCommentMode = comments.onToggleMode;
+  const commentModeAvailable = comments.blockReason === null && !comments.readOnly;
+  // Sending or discarding a comment unmounts the box that held focus, which drops it on
+  // the document body - and this reader's keys answer only inside it. Hand focus back so
+  // the next arrow or `m` works without a click, but never take it from somewhere the
+  // reader moved it on purpose.
+  const panelOpen = comments.panelLine !== null;
+  useEffect(() => {
+    if (panelOpen) return;
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) {
+      contentRef.current?.focus({ preventScroll: true });
+    }
+  }, [panelOpen]);
+
   // File navigation is this reader's own: ↑/↓ and j/k walk the list without leaving the
   // keyboard. The inline reader attaches it to its focusable region, keeping those keys
   // scoped to the embedded reader instead of changing the Console or Board selection.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
+      // A comment's composer and reply box live inside this region, so their keystrokes
+      // bubble here. Typing a `j` into a comment must type a `j`, not change the file.
+      if (isTypingTarget(e.target)) return;
       if (chordFromEvent(e) === bindings.openDiffFile) {
         if (activeTarget?.path && onOpenInFiles) {
           e.preventDefault();
           onOpenInFiles(activeTarget.path);
+        }
+        return;
+      }
+      // Comment mode answers to `m` here as it does in the Files tab.
+      if (e.key === "m" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        if (commentModeAvailable) {
+          e.preventDefault();
+          toggleCommentMode();
         }
         return;
       }
@@ -117,7 +189,14 @@ function DiffViewerContent({
         setSelected((i) => Math.max(0, i - 1));
       }
     },
-    [activeTarget?.path, bindings.openDiffFile, files.length, onOpenInFiles],
+    [
+      activeTarget?.path,
+      bindings.openDiffFile,
+      commentModeAvailable,
+      files.length,
+      onOpenInFiles,
+      toggleCommentMode,
+    ],
   );
   // Keep the picked file visible in the list, and show its diff from the top.
   useEffect(() => {
@@ -214,6 +293,7 @@ function DiffViewerContent({
                   file={active}
                   target={activeTarget}
                   onOpenInFiles={onOpenInFiles}
+                  comments={comments}
                 />
               )}
             </div>
@@ -266,10 +346,12 @@ function FileDiff({
   file,
   target,
   onOpenInFiles,
+  comments,
 }: {
   file: DiffFile;
   target: DiffFileTarget;
   onOpenInFiles?: (path: string) => void;
+  comments: DiffFileComments;
 }): React.JSX.Element {
   return (
     <section className="diff-file">
@@ -282,6 +364,7 @@ function FileDiff({
           {file.added > 0 && <span className="diff-add">+{file.added}</span>}
           {file.removed > 0 && <span className="diff-del">−{file.removed}</span>}
         </span>
+        <DiffCommentControls comments={comments} />
         {/* Rendered for EVERY file, including the ones it cannot act on: a control that
             vanishes on some files teaches that the diff sometimes has no route to the
             Files tab, when the real answer is that this one file has none and here is
@@ -305,23 +388,19 @@ function FileDiff({
           </Tooltip>
         )}
       </div>
+      {/* A comment refusal with no panel to carry it, as the Files tab shows one. */}
+      {comments.notice && (
+        <div className="file-notice">
+          <span>{comments.notice}</span>
+          <Tooltip label="Dismiss this comment error">
+            <button className="btn" onClick={comments.onDismissNotice}>Dismiss</button>
+          </Tooltip>
+        </div>
+      )}
       {file.binary ? (
         <p className="diff-binary">Binary file</p>
       ) : (
-        <div className="diff-lines">
-          <table>
-            <tbody>
-              {file.lines.map((l, i) => (
-                <tr key={i} className={`dl dl-${l.type}`}>
-                  <td className="dl-num">{l.oldNo ?? ""}</td>
-                  <td className="dl-num">{l.newNo ?? ""}</td>
-                  <td className="dl-sign">{l.type === "add" ? "+" : l.type === "del" ? "−" : ""}</td>
-                  <td className="dl-text">{l.text || " "}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DiffLines lines={file.lines} comments={comments} />
       )}
     </section>
   );

@@ -494,8 +494,9 @@ under the existing helper lock before waiting for shutdown and immediately befor
   `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
   inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
   Executable positions are inspected, so an app path passed as ordinary data to a fixed executable
-  does not block an update. Follow `nice` to its utility after its optional priority argument;
-  the utility's ordinary data arguments are not treated as executables.
+  does not block an update. Follow `nice` past its optional priority argument and `arch` past
+  its architecture and environment options to the utility they execute. The utility's ordinary
+  data arguments are not treated as executables.
   Also inspect `open` jobs that launch this bundle through LaunchServices, including bundle
   paths, symlinks, file URLs, and `-a` or `-b` application selectors. Arguments after `--args`,
   environment and I/O options, Finder-only `-R` reveals, and file operands sent to another

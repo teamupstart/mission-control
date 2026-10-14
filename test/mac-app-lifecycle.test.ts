@@ -264,6 +264,38 @@ test("preflight finds dormant nice jobs that execute the bundle", async (t) => {
   }
 });
 
+test("preflight finds dormant arch jobs that execute the bundle", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.arch-launcher";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const [name, program, argv] of [
+    ["architecture flag", "/usr/bin/arch", ["arch", "-arm64", binary]],
+    ["architecture operand", "/usr/bin/arch", ["arch", "-arch", "arm64", binary]],
+    ["environment options", "/usr/bin/arch", ["arch", "-c", "-d", "MISSION_HOME", "-e", "FLAG=private-fixture-secret", "-arm64", binary]],
+    ["wrapped utility", "/usr/bin/arch", ["arch", "-arm64", "/usr/bin/nice", "-n", "5", binary]],
+    ["shell command", "/bin/sh", ["sh", "-c", `exec /usr/bin/arch -arm64 "${binary}"`]],
+  ] as const) {
+    await t.test(name, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = ${program}\narguments = {\n ${argv.join("\n ")}\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.arch-launcher'/);
+      assert.doesNotMatch(message, /MISSION_HOME|FLAG|private-fixture-secret|Contents\/MacOS/);
+      assert.ok(!f.calls.some((call) => call.includes("bootout")));
+    });
+  }
+  for (const argv of [
+    ["arch", "-arm64", "/usr/bin/true", binary],
+    ["arch", "-e", `MISSION_APP=${binary}`, "-arm64", "/usr/bin/true"],
+  ]) {
+    f.outputs.set(`print gui/501/${label}`, `program = /usr/bin/arch\narguments = {\n ${argv.join("\n ")}\n}\n`);
+    assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "data operands do not execute the app");
+  }
+});
+
 test("preflight finds dormant open jobs that launch the bundle through LaunchServices", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-open-launcher-"));
   t.after(() => rm(root, {recursive: true, force: true}));
@@ -359,10 +391,51 @@ test("launch proof needs matching bundle, Foreground registration, running pid a
   await assert.rejects(verifyAppLaunch(bundle, nonce, f.ops, 1000), /verified/);
 });
 
+test("launch verification times out for stuck and exited process states despite valid registration and acknowledgment", async (t) => {
+  for (const state of ["U", "Z", "X", "U+"]) {
+    await t.test(`process state ${state}`, async () => {
+      const f = fixture();
+      const nonce = "a".repeat(32);
+      f.outputs.set("ps", `42 1 ${state} ${binary}\n`);
+      await assert.rejects(verifyAppLaunch(bundle, nonce, f.ops, 1000), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(error.message.includes(`LaunchServices launch could not be verified (registered=true; process=${state}; renderer=true)`));
+        return true;
+      });
+      assert.equal(f.ops.now(), 1000, "unhealthy process must remain unverified through the bounded wait");
+      f.outputs.set("ps", `42 1 S ${binary}\n`);
+      await verifyAppLaunch(bundle, nonce, f.ops, 1000);
+      assert.equal(f.ops.now(), 1000, "the same launch proof succeeds immediately when the process is healthy");
+    });
+  }
+});
+
 test("unreadable host inventory fails closed without echoing command output", async () => {
   const f = fixture();
   f.ops.run = async () => ({code: 1, stdout: "secret"});
   await assert.rejects(inspectAppLaunch(bundle, f.ops), /Could not inspect/);
+});
+
+test("preflight skips a vanished GUI job but refuses other launchctl print failures", async (t) => {
+  for (const code of [113, 1]) {
+    await t.test(`launchctl print exit ${code}`, async () => {
+      const f = fixture();
+      f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.fixture.unreadable\n");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        const result = await run(command, args, timeout);
+        return args[0] === "print" ? {code, stdout: "private-fixture-secret"} : result;
+      };
+      if (code === 113) assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []});
+      else await assert.rejects(inspectAppLaunch(bundle, f.ops), {
+        message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
+      });
+      assert.deepEqual(f.calls, [
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=",
+        "/bin/launchctl list", "/bin/launchctl print gui/501/com.fixture.unreadable",
+      ]);
+    });
+  }
 });
 
 test("launch proof rejects stale or mismatched acknowledgment fields", async (t) => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,6 +44,10 @@ interface Observed {
   spawn: Array<{ command: string; args: string[] }>;
   logged: string[];
   loadError: string | null;
+  inspection: Array<{command: string; args: string[]}>;
+  pages: string[];
+  dialogs: Array<{kind: string; detail: string}>;
+  signals: Array<{pid: number; signal: string}>;
 }
 
 /**
@@ -60,6 +64,8 @@ function fixture(): { home: string; state: string; personal: string } {
   const state = join(root, "state");
   const personal = join(home, "Applications", "Mission Control.app");
   mkdirSync(join(personal, "Contents", "Resources", "app"), { recursive: true });
+  mkdirSync(join(personal, "Contents", "MacOS"), {recursive: true});
+  writeFileSync(join(personal, "Contents", "MacOS", "Mission Control"), "fixture executable");
   mkdirSync(state, { recursive: true });
   writeFileSync(
     join(personal, "Contents", "Info.plist"),
@@ -206,6 +212,47 @@ test("an unmanaged entry point is untouched by any of this", () => {
   assert.deepEqual(observed.spawn, []);
   assert.deepEqual(observed.app, ["requestSingleInstanceLock", "quit"]);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("packaged startup diagnoses an unregistered current process in its log, page and dialog without quitting", async (t) => {
+  for (const registration of ["missing", "foreground"]) {
+    await t.test(registration, () => {
+      const paths = fixture();
+      t.after(() => rmSync(join(paths.home, ".."), {recursive: true, force: true}));
+      const result = spawnSync(process.execPath, [HARNESS], {
+        encoding: "utf8", timeout: 15_000,
+        env: {...process.env, HOME: paths.home, MISSION_HOME: paths.state,
+          HARNESS_MAIN_BUNDLE: MAIN_BUNDLE,
+          HARNESS_APP_PATH: join(paths.personal, "Contents", "Resources", "app"),
+          HARNESS_LAUNCH_REGISTRATION: registration},
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const observed = JSON.parse(result.stdout.trim().split("\n").at(-1)!) as Observed;
+      assert.equal(observed.loadError, null);
+      assert.deepEqual(observed.logged, [], "startup must not throw or fall back to stderr");
+      assert.deepEqual(observed.app, ["requestSingleInstanceLock"], "no app exit or quit");
+      assert.deepEqual(observed.signals, [], "no process signaling");
+      assert.deepEqual(observed.spawn, [], "no relaunch");
+      assert.ok(observed.inspection.some(({command}) => command === "/usr/bin/lsappinfo"));
+      assert.equal(observed.pages.length, 1, "the real startup page was loaded");
+      const logPath = join(paths.state, "daemon.log");
+      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      if (registration === "missing") {
+        assert.match(log, /\[main pid=\d+\] unmanaged app launch: .*not registered as a Foreground app/);
+        assert.match(log, /launchctl bootout 'gui\/501\/com.fixture.startup-respawner'/);
+        assert.match(observed.pages[0]!, /not registered as a Foreground app/);
+        assert.match(observed.pages[0]!, /launchctl bootout/);
+        assert.equal(observed.dialogs.length, 1);
+        assert.equal(observed.dialogs[0]!.kind, "error");
+        assert.match(observed.dialogs[0]!.detail, /launchctl bootout 'gui\/501\/com.fixture.startup-respawner'/);
+        assert.match(observed.dialogs[0]!.detail, /not registered as a Foreground app/);
+      } else {
+        assert.doesNotMatch(log, /unmanaged app launch/);
+        assert.doesNotMatch(observed.pages[0]!, /not registered|launchctl bootout/);
+        assert.deepEqual(observed.dialogs, []);
+      }
+    });
+  }
 });
 
 test("a failed migrated background startup releases the shell so reopening can retry", (t) => {

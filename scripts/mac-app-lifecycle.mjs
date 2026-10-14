@@ -189,11 +189,12 @@ function commandLaunchesBundle(words, bundle, shell = false) {
     if (["!", "if", "then", "else", "elif", "do", "while", "until", "{"].includes(word.value)) continue;
     const path = shell ? word.value : printedPath(word.value);
     const name = path.split("/").at(-1);
-    if (["exec", "env", "command", "nohup", "nice"].includes(name) || (shell && path === "builtin")) { wrapper = name; continue; }
+    if (["exec", "env", "command", "nohup", "nice", "arch"].includes(name) || (shell && path === "builtin")) { wrapper = name; continue; }
     if (wrapper && word.value.startsWith("-")) {
       optionValue = (wrapper === "exec" && word.value === "-a")
         || (wrapper === "env" && ["-u", "--unset", "-C", "--chdir"].includes(word.value))
-        || (wrapper === "nice" && word.value === "-n");
+        || (wrapper === "nice" && word.value === "-n")
+        || (wrapper === "arch" && ["-arch", "-d", "-e"].includes(word.value));
       continue;
     }
     // eval reparses its arguments as shell source, including deferred expansion.

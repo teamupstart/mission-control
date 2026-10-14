@@ -22,6 +22,24 @@ test("unmanaged startup reports the current process, with the same job remediati
   assert.equal(await unmanagedLaunchMessage(bundle, 99, ops), null);
 });
 
+test("unmanaged startup returns actionable guidance when launch inspection fails", async (t) => {
+  for (const failure of ["nonzero exit", "rejected read"]) {
+    await t.test(failure, async () => {
+      const ops = realMacAppOps();
+      const reads: string[] = [];
+      ops.kill = () => { throw new Error("must not signal"); };
+      ops.run = async (command, args) => {
+        reads.push(`${command} ${args.join(" ")}`);
+        if (failure === "rejected read") throw new Error("private-fixture-secret");
+        return {code: 1, stdout: "private-fixture-secret"};
+      };
+      const warning = await unmanagedLaunchMessage("/Applications/Mission Control.app", 42, ops);
+      assert.deepEqual(reads, ["/usr/bin/lsappinfo list"]);
+      assert.equal(warning, "Mission Control could not verify its LaunchServices registration. Inspect lsappinfo list and launchctl list. Open the app from Finder or the Dock after resolving any launch conflict.");
+    });
+  }
+});
+
 test("renderer acknowledgment retries on the next load after a failed write", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "mission-launch-ack-retry-"));
   t.after(() => rmSync(root, {recursive: true, force: true}));

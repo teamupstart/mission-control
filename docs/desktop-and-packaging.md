@@ -456,7 +456,10 @@ hides that result until update state changes. Success and failure outcomes are r
 only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
-app waits for its helper to finish before interpreting the pending outcome. Diagnostic output
+app waits asynchronously for its live helper to finish before interpreting the pending outcome,
+including retries and rollback that take longer than 90 seconds. The dashboard stays usable
+while this wait continues. Persistent lock-inspection errors are logged and the saved outcome
+is read instead of silently abandoning it. Diagnostic output
 from the build remains in the rotating
 `update.log` in the state directory, with credentials, absolute paths, and remote URLs redacted
 by [`src/main/update-log.ts`](../src/main/update-log.ts) - including every line the staged build

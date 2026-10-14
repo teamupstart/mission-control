@@ -16,10 +16,10 @@ export async function unmanagedLaunchMessage(bundle: string, pid = process.pid, 
 }
 
 /** Called only after Electron has run JavaScript in a loaded window, including the local startup page. */
-export function acknowledgeUpdateLaunch(bundle: string, directory: string, argv = process.argv): void {
+export function acknowledgeUpdateLaunch(bundle: string, directory: string, argv = process.argv): boolean {
   const index = argv.indexOf("--mission-update-launch");
   const nonce = index >= 0 ? argv[index + 1] : undefined;
-  if (!nonce || !/^[a-f0-9]{32}$/.test(nonce)) return;
+  if (!nonce || !/^[a-f0-9]{32}$/.test(nonce)) return false;
   const path = launchAckPath(directory, nonce);
   const staged = `${path}.${process.pid}.tmp`;
   try {
@@ -29,7 +29,11 @@ export function acknowledgeUpdateLaunch(bundle: string, directory: string, argv 
     writeFileSync(staged, JSON.stringify({nonce, pid: process.pid, bundle, identity}), {mode: 0o600});
     renameSync(staged, path);
     logMain("update launch: main event loop and renderer responded");
-  } catch { logMain("update launch: could not write renderer acknowledgment"); }
+    return true;
+  } catch {
+    logMain("update launch: could not write renderer acknowledgment");
+    return false;
+  }
 }
 
 /** A real renderer round trip, independent of daemon readiness and update dialog answers. */
@@ -39,8 +43,7 @@ export function observeUpdateLaunch(contents: Pick<WebContents, "on" | "executeJ
     if (acknowledged) return;
     void contents.executeJavaScript("true").then(() => {
       if (acknowledged) return;
-      acknowledged = true;
-      acknowledgeUpdateLaunch(bundle, directory, argv);
+      acknowledged = acknowledgeUpdateLaunch(bundle, directory, argv);
     }).catch(() => logMain("update launch: renderer did not respond"));
   });
 }

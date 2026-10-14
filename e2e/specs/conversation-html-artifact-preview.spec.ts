@@ -67,6 +67,13 @@ async function session(daemon: DaemonHandle): Promise<{ id: string; cwd: string 
 }
 
 async function inject(daemon: DaemonHandle, sessionId: string, text: string): Promise<void> {
+  const replyCount = async () => {
+    const transcript = await (await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/transcript`)).json() as {
+      messages?: { role: string; text: string }[];
+    };
+    return transcript.messages?.filter((message) => message.role === "assistant" && message.text === `Mock reply to: ${text}`).length ?? 0;
+  };
+  const repliesBefore = await replyCount();
   const response = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -75,12 +82,7 @@ async function inject(daemon: DaemonHandle, sessionId: string, text: string): Pr
   expect(response.ok, `POST /inject answered ${response.status}: ${await response.text()}`).toBe(true);
   // Acceptance is not a completed reply. Seed one finished turn at a time so reloads
   // and layout assertions cannot race the fake's stream or a later injected turn.
-  await expect.poll(async () => {
-    const transcript = await (await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/transcript`)).json() as {
-      messages?: { role: string; text: string }[];
-    };
-    return transcript.messages?.some((message) => message.role === "assistant" && message.text === `Mock reply to: ${text}`) ?? false;
-  }).toBe(true);
+  await expect.poll(replyCount).toBeGreaterThan(repliesBefore);
   await expect.poll(async () => {
     const rows = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as { id: string; state: string }[];
     return rows.find((row) => row.id === sessionId)?.state;
@@ -140,6 +142,8 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   write(live.cwd, REPORT, REPORT_SOURCE);
   write(live.cwd, CSS, "#finding { font-weight: 700; text-decoration: underline; }\n");
   write(live.cwd, OTHER, "<!doctype html><h1>Other artifact</h1>\n");
+  await inject(daemon, live.id, REPORT_TURN);
+  // Identical text must wait for a new completed reply, not reuse the first one.
   await inject(daemon, live.id, REPORT_TURN);
   const incidentalTurn = `I edited ${OTHER} while preparing the report.`;
   const absentTurn = "Report: docs/reports/conversation-card/missing.html";
@@ -376,6 +380,11 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   const tile = page.getByRole("button", { name: /Prepare an HTML Artifact Preview/i });
   await tile.focus();
   await tile.press("Enter");
+  // Opening the board briefly shrinks the transcript to a few pixels. Wait for
+  // its transition before scrolling; otherwise the later reflow undoes that position.
+  await page.locator(".board-detail").evaluate(async (element) => {
+    await Promise.allSettled(element.getAnimations().map((animation) => animation.finished));
+  });
   let card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card).toBeVisible();
   // Bring the lazy preview into the transcript's viewport before reading its frame.

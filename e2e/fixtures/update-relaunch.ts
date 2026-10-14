@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Page } from "@playwright/test";
 import { UpdateController, type UpdaterPort } from "../../src/main/updater.ts";
 import { UpdateDialogPresenter } from "../../src/main/update-dialog.ts";
-import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "../../src/main/update-outcome.ts";
+import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "../../src/main/update-outcome.ts";
 import { UPDATE_DIALOGS, type UpdateDialogRequest } from "../../src/shared/update-dialog.ts";
 
 /** Real outcome store, controller and presenter, replacing only the Electron IPC transport. */
@@ -53,7 +53,7 @@ export async function updateOutcomeHost(page: Page, directory: string) {
     runtime: unexpected, stage: unexpected, stagedBundleIdentity: unexpected,
     handoff: unexpected, requestQuit: unexpected, launchPreflight: unexpected,
     helperSource: () => "", stateDirectory: () => directory,
-    readOutcome: () => readUpdateOutcome(updateOutcomePath(directory)),
+    readOutcome: () => readSettledUpdateOutcome(directory),
     clearOutcome: (expected) => clearUpdateOutcome(updateOutcomePath(directory), expected),
     now: Date.now, random: () => 0, log: (message) => messages.push(message),
     dialogs: {

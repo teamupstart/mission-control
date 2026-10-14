@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runApplyUpdate, realHelperLockOperations, type ApplyOperations } from "../../scripts/apply-update.mjs";
+import { acquireHelperLock, releaseHelperLock, HELPER_LOCK_DIR_NAME } from "../../scripts/update-lock.mjs";
 import { assertSafeAppLaunch, type MacAppOps } from "../../scripts/mac-app-lifecycle.mjs";
 import { readUpdateOutcome, updateOutcomePath, writeUpdateOutcome } from "../../src/main/update-outcome.ts";
 import { updateOutcomeHost } from "../fixtures/update-relaunch.ts";
@@ -10,6 +11,41 @@ import { expect, test } from "../fixtures/test.ts";
 
 const job = "com.mission-control.recovery-20260918";
 const bundle = "/fixture/Mission Control.app";
+
+for (const result of ["success", "failure"] as const) {
+  test(`a late helper ${result} reaches the running dashboard after its lock is released`, async ({dashboard, daemon}) => {
+    const path = updateOutcomePath(daemon.home);
+    const lockPath = join(daemon.home, HELPER_LOCK_DIR_NAME);
+    const ops = realHelperLockOperations();
+    const lock = acquireHelperLock(lockPath, ops);
+    expect(lock.ok).toBe(true);
+    writeUpdateOutcome(path, {result: "in-progress", targetVersion: "alpha e00afcc", recordedAt: "2026-10-13T13:27:40.000Z"});
+    const host = await updateOutcomeHost(dashboard, daemon.home);
+    try {
+      await host.launch();
+      await expect(dashboard.getByRole("button", {name: "Dispatch"}).first()).toBeVisible();
+      const dialog = dashboard.getByRole("dialog", {name: "Mission Control update"});
+      await expect(dialog).toHaveCount(0);
+      const outcome = {targetVersion: "alpha e00afcc", recordedAt: "2026-10-13T13:29:40.000Z"};
+      writeUpdateOutcome(path, result === "success"
+        ? {...outcome, result, launchVerified: true}
+        : {...outcome, result, message: "Launch verification failed. The previous version was restored."});
+      releaseHelperLock(lockPath, lock.entryName!, ops);
+      await expect(dialog).toContainText(result === "success" ? "was updated to alpha e00afcc" : "The previous version was restored");
+      await expectContentClearsBorder(dialog);
+      expect(readUpdateOutcome(path)?.result).toBe(result);
+      if (process.env.MC_E2E_EVIDENCE && result === "success") {
+        await mkdir("e2e/.artifacts/update-relaunch", {recursive: true});
+        await dashboard.screenshot({path: "e2e/.artifacts/update-relaunch/late-outcome.png"});
+      }
+      await dialog.getByRole("button", {name: "OK", exact: true}).click();
+      await expect.poll(() => readUpdateOutcome(path)).toBeNull();
+    } finally {
+      releaseHelperLock(lockPath, lock.entryName!, ops);
+      await host.stop();
+    }
+  });
+}
 
 test("an unanswered verified success replays after the renderer is lost, then stops replaying only after OK", async ({dashboard, daemon}) => {
   writeUpdateOutcome(updateOutcomePath(daemon.home), {

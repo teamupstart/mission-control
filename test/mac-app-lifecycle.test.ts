@@ -61,6 +61,23 @@ test("only a registered runningboard application job is exempt, not a lookalike 
   assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).jobs, [label]);
 });
 
+test("preflight finds dormant shell respawners after options that consume operands", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.shell-options";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const options of [["-o", "posix"], ["+o", "posix"], ["-eo", "posix"], ["-O", "extglob"], ["--rcfile", "/tmp/fixture-rc"]]) {
+    await t.test(options.join(" "), async () => {
+      const job = (source: string) => `program = /bin/sh\narguments = {\n /bin/sh\n ${[...options, "-c", source].join("\n ")}\n}\n`;
+      f.outputs.set(`print gui/501/${label}`, job(`exec "${binary}"`));
+      assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).jobs, [label]);
+      f.outputs.set(`print gui/501/${label}`, job(`printf '%s' "${binary}"`));
+      assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).jobs, []);
+    });
+  }
+});
+
 test("preflight finds a dormant job whose program or executable argument is a symlink into the bundle", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-launch-alias-"));
   t.after(() => rm(root, {recursive: true, force: true}));
@@ -360,6 +377,23 @@ test("launch proof rejects stale or mismatched acknowledgment fields", async (t)
       await verifyAppLaunch(bundle, nonce, f.ops, 1000);
     });
   }
+});
+
+test("launch proof accepts an acknowledgment of the same bundle through a symlink", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "mission-launch-ack-alias-"));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const app = join(root, "Mission Control.app");
+  const alias = join(root, "Alias.app");
+  await mkdir(join(app, "Contents", "MacOS"), {recursive: true});
+  await writeFile(join(app, "Contents", "MacOS", "Mission Control"), "fixture");
+  await symlink(app, alias);
+  const f = fixture();
+  f.outputs.set("apps", registration().replaceAll(bundle, app));
+  f.outputs.set("ps", `42 1 S ${app}/Contents/MacOS/Mission Control\n`);
+  f.ops.readAck = () => ({nonce: "a".repeat(32), bundle: alias, pid: 42, identity: "start-42"});
+  await verifyAppLaunch(app, "a".repeat(32), f.ops, 1000);
+  f.ops.readAck = () => ({nonce: "a".repeat(32), bundle: `${root}/Other.app`, pid: 42, identity: "start-42"});
+  await assert.rejects(verifyAppLaunch(app, "a".repeat(32), f.ops, 1000), /could not be verified/);
 });
 
 

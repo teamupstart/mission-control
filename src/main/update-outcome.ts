@@ -8,9 +8,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { realHelperLockOperations, parseClaimEntryName, parseStagingEntryName, HELPER_LOCK_DIR_NAME } from "../../scripts/update-lock.mjs";
+import { realHelperLockOperations, parseClaimEntryName, parseStagingEntryName, HELPER_LOCK_DIR_NAME, type LockOperations } from "../../scripts/update-lock.mjs";
 import { stateDir } from "../shared/harness-runtime.mjs";
 import type { UpdateApplyOutcome } from "../shared/update.ts";
+import { logMain } from "./main-log.ts";
 
 export const UPDATE_OUTCOME_SCHEMA = 1;
 
@@ -91,11 +92,9 @@ export function clearUpdateOutcome(path = updateOutcomePath(), expected?: Update
 }
 
 /** The freshly opened app starts before its helper can publish the verified outcome. */
-export async function readSettledUpdateOutcome(directory: string): Promise<UpdateApplyOutcome | null> {
+export async function readSettledUpdateOutcome(directory: string, lock: Pick<LockOperations, "list" | "readEntry" | "isLive"> = realHelperLockOperations()): Promise<UpdateApplyOutcome | null> {
   const path = updateOutcomePath(directory);
-  const lock = realHelperLockOperations();
   const lockDirectory = join(directory, HELPER_LOCK_DIR_NAME);
-  const deadline = Date.now() + 90_000;
   const active = (): boolean => {
     try {
       return lock.list(lockDirectory).some((name) => {
@@ -103,12 +102,16 @@ export async function readSettledUpdateOutcome(directory: string): Promise<Updat
         return entry !== null && lock.isLive({...entry, identity: lock.readEntry(lockDirectory, name)?.identity ?? null});
       });
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code !== "ENOENT";
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return false;
+      if (code === "EBUSY" || code === "EAGAIN") return true;
+      logMain("update outcome: could not inspect helper lock; reading saved outcome", join(directory, "daemon.log"));
+      return false;
     }
   };
   while (active()) {
-    // Never turn a live helper's pending verification into an interrupted-update failure.
-    if (Date.now() >= deadline) return null;
+    // The controller awaits this in the background. A live helper may still be
+    // retrying or rolling back, so keep watching until its final outcome is readable.
     await delay(250);
   }
   return readUpdateOutcome(path);

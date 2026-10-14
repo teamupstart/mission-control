@@ -207,11 +207,24 @@ function commandLaunchesBundle(words, bundle, shell = false) {
       if (shell) return true;
       for (let argument = index + 1; argument < words.length; argument++) {
         const option = words[argument].value;
-        if (option === "--" || !option.startsWith("-")) break;
-        if (/^-[^-]*c/.test(option) || option === "--command") {
+        if (option === "--" || !/^[+-]/.test(option)) break;
+        if (words[argument].expanded) return true;
+        if (option === "--command" || /^-[^-oO]*c/.test(option)) {
           // Only the next argument is source; remaining arguments are $0, $1, ...
-          return commandLaunchesBundle(literalShellWords(words[argument + 1]?.value ?? ""), bundle, true);
+          const source = words[argument + 1];
+          return !source || source.expanded || commandLaunchesBundle(literalShellWords(source.value), bundle, true);
         }
+        // -o/+o and bash -O/+O consume a named option, even in a flag cluster.
+        // Its operand must not hide a subsequent -c from preflight.
+        if (/^[+-][^-]*[oO]$/.test(option) || ["--rcfile", "--init-file"].includes(option)) {
+          if (!words[++argument] || words[argument].expanded) return true;
+          continue;
+        }
+        if (/^[+-][a-zA-Z]+$/.test(option) && !/[oO]/.test(option)) continue;
+        if (["--login", "--noprofile", "--norc", "--posix", "--restricted", "--verbose", "--nolineediting"].includes(option)) continue;
+        // Unknown option syntax could consume another operand. Do not guess where
+        // executable source begins or evaluate it to find out.
+        return true;
       }
       return false;
     }
@@ -322,7 +335,7 @@ export async function verifyAppLaunch(bundle, nonce, ops, timeout = LAUNCH_TIMEO
     const ack = ops.readAck(nonce);
     const main = running.find((row) => row.pid === ack?.pid && isMain(row.executable, bundle));
     detail = `registered=${registrations.some((row) => row.id === APP_ID && canonical(row.bundle) === canonical(bundle))}; process=${main?.state ?? "missing"}; renderer=${ack?.nonce === nonce}`;
-    return ack?.nonce === nonce && ack?.bundle === bundle && ack?.identity && ops.identity(ack.pid) === ack.identity && main && !/[TZUX]/.test(main.state) && registered(registrations, bundle, main.pid);
+    return ack?.nonce === nonce && typeof ack?.bundle === "string" && canonical(ack.bundle) === canonical(bundle) && ack?.identity && ops.identity(ack.pid) === ack.identity && main && !/[TZUX]/.test(main.state) && registered(registrations, bundle, main.pid);
   }, () => `LaunchServices launch could not be verified (${detail}). Check daemon.log and update.log. If other apps also cannot open or the Dock says "not open anymore", restart macOS before trying again.`);
 }
 

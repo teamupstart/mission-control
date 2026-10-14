@@ -4,7 +4,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { _electron as electron, type Page } from "playwright";
+import { _electron as electron, type Page, type ElectronApplication } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
@@ -66,17 +66,18 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
   test(`desktop startup recovers from ${scenario}`, async ({ daemon }) => {
     assertElectronGuiLaunchAllowed();
     const gate = await gatedDaemon(daemon.baseURL);
-    const windowModule = join(daemon.home, "window.cjs");
-    buildSync({
-      entryPoints: ["src/main/window.ts"], outfile: windowModule,
-      bundle: true, platform: "node", format: "cjs", external: ["electron"],
-      alias: { "@shared": join(process.cwd(), "src/shared") },
-    });
-    const application = await electron.launch({ args: [
-      fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
-      gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
-    ] });
+    let application: ElectronApplication | undefined;
     try {
+      const windowModule = join(daemon.home, "window.cjs");
+      buildSync({
+        entryPoints: ["src/main/window.ts"], outfile: windowModule,
+        bundle: true, platform: "node", format: "cjs", external: ["electron"],
+        alias: { "@shared": join(process.cwd(), "src/shared") },
+      });
+      application = await electron.launch({ args: [
+        fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)),
+        gate.origin, windowModule, join(daemon.home, "electron-profile"), scenario,
+      ] });
       const page = await application.firstWindow();
       await expect(page.getByRole("heading", { name: "Starting Mission Control", exact: true })).toBeVisible();
       await evidence(page, "starting");
@@ -123,8 +124,7 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
       await page.waitForTimeout(2200);
       expect(gate.dashboardRequests()).toBe(requests);
     } finally {
-      await application.close();
-      await gate.close();
+      try { await application?.close(); } finally { await gate.close(); }
     }
   });
 }
@@ -133,15 +133,16 @@ for (const scenario of ["late readiness", "timeout and retry", "readiness after 
 test("unmanaged launch warning is visible before daemon readiness and renderer failures reach the durable log", async ({daemon}) => {
   assertElectronGuiLaunchAllowed();
   const gate = await gatedDaemon(daemon.baseURL);
-  const windowModule = join(daemon.home, "window.cjs");
-  buildSync({entryPoints: ["src/main/window.ts"], outfile: windowModule, bundle: true, platform: "node", format: "cjs", external: ["electron"], alias: {"@shared": join(process.cwd(), "src/shared")}});
-  const healthModule = join(daemon.home, "launch-health.cjs");
-  buildSync({entryPoints: ["src/main/launch-health.ts"], outfile: healthModule, bundle: true, platform: "node", format: "cjs", external: ["electron"], alias: {"@shared": join(process.cwd(), "src/shared")}});
-  const warning = launchConflictMessage({jobs: ["com.mission-control.recovery-20260918"], unregistered: [42372]}, 501)!;
-  const application = await electron.launch({args: [
-    fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)), gate.origin, windowModule, join(daemon.home, "electron-profile"), "launch-conflict", warning, healthModule,
-  ]});
+  let application: ElectronApplication | undefined;
   try {
+    const windowModule = join(daemon.home, "window.cjs");
+    buildSync({entryPoints: ["src/main/window.ts"], outfile: windowModule, bundle: true, platform: "node", format: "cjs", external: ["electron"], alias: {"@shared": join(process.cwd(), "src/shared")}});
+    const healthModule = join(daemon.home, "launch-health.cjs");
+    buildSync({entryPoints: ["src/main/launch-health.ts"], outfile: healthModule, bundle: true, platform: "node", format: "cjs", external: ["electron"], alias: {"@shared": join(process.cwd(), "src/shared")}});
+    const warning = launchConflictMessage({jobs: ["com.mission-control.recovery-20260918"], unregistered: [42372]}, 501)!;
+    application = await electron.launch({args: [
+      fileURLToPath(new URL("../fixtures/desktop-startup.cjs", import.meta.url)), gate.origin, windowModule, join(daemon.home, "electron-profile"), "launch-conflict", warning, healthModule,
+    ]});
     const page = await application.firstWindow();
     await expect(page.getByRole("alert")).toContainText("launchctl bootout 'gui/501/com.mission-control.recovery-20260918'");
     expect(gate.dashboardRequests()).toBe(0);
@@ -165,7 +166,6 @@ test("unmanaged launch warning is visible before daemon readiness and renderer f
     gate.release();
     await expect(page.getByRole("button", {name: "Dispatch"}).first()).toBeVisible();
   } finally {
-    await application.close();
-    await gate.close();
+    try { await application?.close(); } finally { await gate.close(); }
   }
 });

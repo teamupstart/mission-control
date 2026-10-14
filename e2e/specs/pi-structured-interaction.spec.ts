@@ -119,7 +119,10 @@ test("trust approval, timeout correlation, stop and managed queue controls use t
   await expect(queueInput).toBeVisible();
   await queueInput.fill("Follow up after the extension question");
   await queueInput.press("Enter");
-  await expect(dashboard.locator(".console-detail")).toContainText("Follow up after the extension question");
+  // The draft textarea already contains this text before the POST completes.
+  // Wait for the saved row before interrupting or reading the durable queue.
+  await expect(dashboard.locator(".work-queue .wq-intent"))
+    .toHaveText("Follow up after the extension question");
   await shoot(dashboard, "managed-queue-blocked-on-question");
   // The shared interrupt route cancels the UI request before Pi's abort settles the turn.
   const interrupted = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/interrupt`, { method: "POST" });

@@ -280,7 +280,10 @@ test("a spent repair-round Command skips while both execution slots are occupied
     await expect(testTile).not.toContainText("Queued");
 
     const status = testTile.locator(".wf-pipeline-status");
-    await status.hover();
+    // The live posture banner can grow while the Persona settles, moving the
+    // chip away from a stationary pointer. Keyboard focus follows the chip.
+    await status.focus();
+    await expect(status).toBeFocused();
     await expect(dashboard.locator(".tooltip", {
       hasText: "Already ran the most times this run allows.",
     })).toContainText("Change the limit in Library › Commands.");

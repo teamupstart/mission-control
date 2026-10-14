@@ -30,7 +30,17 @@ async function configure(page: Page, daemon: DaemonHandle) {
   await expect(page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"})).not.toBeChecked();
 }
 async function enable(page: Page, daemon: DaemonHandle) {
+  // A previous uncheck may still be saving. A GET can briefly see the earlier true value
+  // before that off write lands, so wait for the PUT caused by this check before reading.
+  const saved = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/api/task-sources/config")
+      || response.request().method() !== "PUT") return false;
+    try {
+      return JSON.parse(response.request().postData() ?? "{}").sources?.[0]?.keepUpdated === true;
+    } catch { return false; }
+  });
   await page.getByRole("checkbox",{name:"Keep imported backlog tasks updated"}).check();
+  expect((await saved).ok()).toBe(true);
   await expect.poll(async()=> (await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json()).sources[0].keepUpdated).toBe(true);
 }
 

@@ -394,7 +394,6 @@ export function WorkflowBindingDialog({
   const canSubmit = Boolean(
     sessionId
     && (versionId || existing)
-    && !conflict
     && Number.isInteger(maxRepairRounds)
     && maxRepairRounds >= 1
     && maxRepairRounds <= 20
@@ -403,7 +402,6 @@ export function WorkflowBindingDialog({
   );
 
   const create = async (): Promise<WorkflowBinding | null> => {
-    if (conflict) throw new Error("This conversation is bound to a different immutable workflow version");
     let bound = existing ?? null;
     if (existing) {
       if (existing.state !== "active") {
@@ -437,6 +435,7 @@ export function WorkflowBindingDialog({
       body: JSON.stringify({
         workflowVersionId: versionId,
         sessionId,
+        ...(conflict ? { replaceBindingId: conflict.id } : {}),
         triggerMode,
         deliveryMode,
         maxRepairRounds,
@@ -631,10 +630,10 @@ export function WorkflowBindingDialog({
         </p>
       )}
       {conflict && (
-        <p className="wf-error" role="alert">
+        <p className="workflow-binding-existing">
           This conversation is already bound to{" "}
           {workflowVersionLabel(conflict.workflowVersionId, workflows)}.
-          Archive that binding before selecting another version.
+          Switching archives that binding and cancels any active run.
         </p>
       )}
       {session && (
@@ -659,7 +658,7 @@ export function WorkflowBindingDialog({
       <footer className="modal-foot">
         <Tooltip label="Attach the workflow to this session without starting a run">
           <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>
-            {existing?.state === "active" ? "Update binding" : existing ? "Reattach only" : "Bind only"}
+            {conflict ? "Switch workflow" : existing?.state === "active" ? "Update binding" : existing ? "Reattach only" : "Bind only"}
           </button>
         </Tooltip>
         <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
@@ -670,7 +669,9 @@ export function WorkflowBindingDialog({
           >
           {busy
             ? "Capturing…"
-            : existing
+            : conflict
+              ? "Switch and submit"
+              : existing
               ? existing.state === "active" ? "Submit bound version" : "Reattach and submit"
               : "Bind and submit"}
           </button>

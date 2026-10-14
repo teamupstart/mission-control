@@ -62,6 +62,17 @@ changing persisted IDs, workflow evidence, action adapters, or registries, follo
 [session-action contract](agent-guides/change-contracts.md#session-actions) rather than
 copying their rules here.
 
+## Switching a session workflow
+
+The binding dialog submits a new published version with the id of the active binding it
+observed. `WorkflowManager.createBinding` validates the selected version, live session, and
+binding modes before `WorkflowStore.replaceBindingAndCancel` takes the database write lock.
+The store verifies that the expected binding still owns the conversation, archives it and
+any active repository siblings, cancels their active runs, and inserts the new binding in
+one transaction. A failed insert rolls the archives back. The manager publishes the old
+binding and run changes and the new binding only after the transaction commits. A stale
+binding id returns a conflict so another session's workflow is never silently replaced.
+
 ## Runtime continuity
 
 Continue in terminal transfers every active binding of the same native conversation,

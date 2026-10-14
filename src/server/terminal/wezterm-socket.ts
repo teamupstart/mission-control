@@ -43,7 +43,10 @@ export async function withWeztermSocket<T>(
   const env = binEnv(WEZTERM_BIN);
   const located = await exec(bin, ["cli", "--no-auto-start", "list", "--format", "json"], {
     env: { ...env, WEZTERM_LOG: "wezterm_client::client=trace" },
-    timeoutMs: 1000,
+    // Four concurrent browser workers can take over a second to start even the fake CLI.
+    // --no-auto-start still makes an absent GUI fail promptly, while this leaves time for a
+    // real but contended CLI to identify its socket before we report a stale pane.
+    timeoutMs: 2500,
   });
   const path = located.code === 0 ? selectedSocket(located.stderr) : null;
   if (!path) return null;

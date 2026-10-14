@@ -1203,7 +1203,9 @@ export class WorkflowManager {
     if (prerequisite) return prerequisite;
     const noteKey = noteKeyFor(session);
     const current = this.store.activeBindingForNote(noteKey);
-    if (current) {
+    if ((current && !input.replaceBindingId)
+      || (input.replaceBindingId && (current?.id !== input.replaceBindingId
+        || current.workflowVersionId === input.workflowVersionId))) {
       return {
         ok: false,
         reason: "conflict",
@@ -1211,11 +1213,26 @@ export class WorkflowManager {
         current,
       };
     }
+    const insert = {
+      id: randomUUID(),
+      workflowVersionId: input.workflowVersionId,
+      noteKey,
+      sessionId: session.id,
+      sessionAgent: session.agent,
+      sessionName: session.name,
+      sessionCwd: session.cwd,
+      sessionRepoRoot: session.repoRoot,
+      triggerMode,
+      deliveryMode,
+      maxRepairRounds,
+      now,
+    };
     let created: WorkflowBinding;
+    let archived: Array<{ binding: WorkflowBinding; cancelledRunId: string | null }> = [];
     /*
-     * This try covers the INSERT and nothing else. It exists to translate one specific SQLite
-     * failure - the UNIQUE constraint on an active note key, lost to a concurrent caller - into
-     * a typed conflict, and anything else inside it gets read through that lens.
+     * This try covers only database writes: either the insert or the archive-and-insert
+     * transaction. It translates the UNIQUE constraint on an active note key, lost to a
+     * concurrent caller, into a typed conflict.
      *
      * Publishing sits outside for exactly that reason. It runs after the row is durably
      * committed, so a throw from it is not a failed bind: caught here it would either be
@@ -1225,20 +1242,19 @@ export class WorkflowManager {
      * response invented.
      */
     try {
-      created = this.store.insertBinding({
-        id: randomUUID(),
-        workflowVersionId: input.workflowVersionId,
-        noteKey,
-        sessionId: session.id,
-        sessionAgent: session.agent,
-        sessionName: session.name,
-        sessionCwd: session.cwd,
-        sessionRepoRoot: session.repoRoot,
-        triggerMode,
-        deliveryMode,
-        maxRepairRounds,
-        now,
-      });
+      if (input.replaceBindingId) {
+        const replaced = this.store.replaceBindingAndCancel(input.replaceBindingId, insert);
+        if (!replaced) return {
+          ok: false,
+          reason: "conflict",
+          message: "This conversation's workflow binding changed; reload and try again",
+          current: this.store.activeBindingForNote(noteKey),
+        };
+        archived = replaced.archived;
+        created = replaced.created;
+      } else {
+        created = this.store.insertBinding(insert);
+      }
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         return {
@@ -1249,6 +1265,10 @@ export class WorkflowManager {
         };
       }
       throw error;
+    }
+    for (const old of archived) {
+      if (old.cancelledRunId) this.publishRun(old.cancelledRunId);
+      this.publishBinding(old.binding.id);
     }
     // Every arm lands here - the dispatch one included, since `bindDispatchedTaskWorkflow`
     // creates its binding through this method. Publishing HERE rather than at each caller is

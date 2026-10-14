@@ -513,6 +513,9 @@ under the existing helper lock before waiting for shutdown and immediately befor
   using its own splitting and expansion rules, including attached or clustered short options.
   Variables used only as arguments to a fixed executable do not trigger that rule. Environment
   values stay private.
+  Command substitutions (`$(...)` and backticks) are refused even in arguments, assignments, or
+  redirects because the shell executes them before the outer command. Single-quoted or escaped
+  substitution text remains literal data, as does non-shell launchd argv.
   Do not copy job environments or command lines into logs.
 - Exempt the runningboard-owned job only when its PID is registered for this exact bundle as a
   Foreground application. A label that merely resembles an application job is not sufficient.

@@ -236,6 +236,46 @@ test("preflight rejects dormant shell eval without exposing its environment", as
   }
 });
 
+test("preflight refuses dormant command substitutions even outside executable positions", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.command-substitution";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  const substitution = `$("${binary}")`;
+  const backticks = '`"$MISSION_APP"`';
+  for (const [name, command] of [
+    ["quoted argument", `printf %s "${substitution}"`],
+    ["unquoted argument", `printf %s ${substitution}`],
+    ["assignment", `OUTPUT="${substitution}" /usr/bin/true`],
+    ["assignment only", `OUTPUT="${backticks}"`],
+    ["backtick argument", `printf %s "${backticks}"`],
+    ["unquoted backticks", `printf %s ${backticks}`],
+    ["redirect target", `/usr/bin/true >"${substitution}"`],
+    ["wrapper option operand", `env -u "${substitution}" /usr/bin/true`],
+    ["open app data", `open /Applications/Other.app --args "${substitution}"`],
+  ]) {
+    await t.test(name, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n ${command}\n}\nenvironment = {\n MISSION_APP => ${binary}\n TOKEN => private-fixture-secret\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.command-substitution'/);
+      assert.doesNotMatch(message, /MISSION_APP|TOKEN|private-fixture-secret|Contents\/MacOS/);
+    });
+  }
+  for (const command of [
+    `printf %s '${substitution}' '${backticks}'`,
+    'printf %s "\\$(literal)" "\\`literal\\`"',
+    `printf %s "$MISSION_APP" # ${substitution}`,
+  ]) {
+    f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n ${command}\n}\n`);
+    assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "literal text and variable data do not execute commands");
+  }
+  f.outputs.set(`print gui/501/${label}`, `program = /usr/bin/true\narguments = {\n true\n ${substitution}\n ${backticks}\n}\n`);
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "launchd argv is not shell source");
+});
+
 test("preflight refuses dormant jobs that source shell scripts", async (t) => {
   const f = fixture();
   const label = "com.fixture.sourced-launcher";

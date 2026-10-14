@@ -75,11 +75,12 @@ const registered = (rows, bundle, pid) => rows.some((row) => row.id === APP_ID &
 /** Read shell words and mark expansion, without evaluating it or reading environment values. */
 function literalShellWords(command) {
   const words = [];
-  let word = "", quote = "", expanded = false;
+  let word = "", quote = "", expanded = false, commandSubstitution = false;
   const finish = () => {
-    if (word) words.push({value: word, expanded, operator: false});
+    if (word) words.push({value: word, expanded, commandSubstitution, operator: false});
     word = "";
     expanded = false;
+    commandSubstitution = false;
   };
   for (let index = 0; index < command.length; index++) {
     const character = command[index];
@@ -94,6 +95,7 @@ function literalShellWords(command) {
       if (character === quote) quote = "";
       else {
         if (quote !== "'" && /[$`]/.test(character)) expanded = true;
+        if (quote !== "'" && (character === "`" || (character === "$" && command[index + 1] === "("))) commandSubstitution = true;
         word += character;
       }
     } else if (character === "'" || character === '"') {
@@ -107,6 +109,7 @@ function literalShellWords(command) {
       if (character === "\n" || !/\s/.test(character)) words.push({value: operator, expanded: false, operator: true});
     } else {
       if (/[$`]/.test(character)) expanded = true;
+      if (character === "`" || (character === "$" && command[index + 1] === "(")) commandSubstitution = true;
       word += character;
     }
   }
@@ -174,6 +177,9 @@ function openLaunchesBundle(words, bundle, shell) {
 }
 
 function commandLaunchesBundle(words, bundle, shell = false) {
+  // Substitutions run before the outer command, including in data arguments,
+  // assignments and redirects. Refuse them before skipping any such position.
+  if (shell && words.some((word) => word.commandSubstitution)) return true;
   let executable = true, wrapper = "", optionValue = false, redirect = false;
   for (const [index, word] of words.entries()) {
     if (word.operator) {

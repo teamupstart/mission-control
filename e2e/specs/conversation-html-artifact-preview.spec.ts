@@ -46,6 +46,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
+  const row = page.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row").filter({ hasText: TASK });
+  await expect(row.locator(".rail-state")).toHaveText("idle");
 }
 
 async function session(daemon: DaemonHandle): Promise<{ id: string; cwd: string }> {
@@ -70,6 +73,18 @@ async function inject(daemon: DaemonHandle, sessionId: string, text: string): Pr
     body: JSON.stringify({ text, buffer: false }),
   });
   expect(response.ok, `POST /inject answered ${response.status}: ${await response.text()}`).toBe(true);
+  // Acceptance is not a completed reply. Seed one finished turn at a time so reloads
+  // and layout assertions cannot race the fake's stream or a later injected turn.
+  await expect.poll(async () => {
+    const transcript = await (await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/transcript`)).json() as {
+      messages?: { role: string; text: string }[];
+    };
+    return transcript.messages?.some((message) => message.role === "assistant" && message.text === `Mock reply to: ${text}`) ?? false;
+  }).toBe(true);
+  await expect.poll(async () => {
+    const rows = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as { id: string; state: string }[];
+    return rows.find((row) => row.id === sessionId)?.state;
+  }).toBe("idle");
 }
 
 async function commentThreadCount(daemon: DaemonHandle, sessionId: string): Promise<number> {
@@ -163,6 +178,15 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
     });
   });
   const threadCountBefore = await commentThreadCount(daemon, live.id);
+  // Later turns can leave this preloaded iframe outside the conversation viewport.
+  // Scroll its host first so Chromium can run the frame's click stability checks.
+  const preview = card.locator(`iframe[title="Preview of ${REPORT}"]`);
+  await preview.evaluate((element) => {
+    element.scrollIntoView({ block: "center" });
+    // Complete the fixture scroll before a session update can follow the tail.
+    element.closest(".transcript-log")!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(preview).toBeInViewport();
   await frame.locator("#finding").click();
   await expect.poll(() => page.evaluate(() => (
     (window as typeof window & { artifactBlockMessages?: number }).artifactBlockMessages
@@ -354,6 +378,12 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   await tile.press("Enter");
   let card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card).toBeVisible();
+  // Bring the lazy preview into the transcript's viewport before reading its frame.
+  await card.evaluate((element) => {
+    element.scrollIntoView({ block: "center" });
+    element.closest(".transcript-log")!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(card).toHaveAttribute("data-preview-source", "loaded");
   await expect(card.frameLocator("iframe.artifact-preview").getByRole("heading", {
     name: "Conversation artifact",
   })).toBeVisible();
@@ -466,6 +496,8 @@ test("the transcript root margin preloads nearby cards and releases distant sour
       - log.getBoundingClientRect().top
       + log.scrollTop;
     log.scrollTop = contentBottom + 400;
+    // scrollTop alone defers onScroll, leaving the transcript pinned to its tail.
+    log.dispatchEvent(new Event("scroll"));
   });
   const preloadGap = await card.evaluate((element) => {
     const log = element.closest<HTMLElement>(".transcript-log")!;
@@ -487,6 +519,7 @@ test("the transcript root margin preloads nearby cards and releases distant sour
       - log.getBoundingClientRect().top
       + log.scrollTop;
     log.scrollTop = contentBottom + 800;
+    log.dispatchEvent(new Event("scroll"));
   });
   await expect.poll(() => card.evaluate((element) => {
     const log = element.closest<HTMLElement>(".transcript-log")!;

@@ -256,6 +256,32 @@ test("preflight refuses dormant jobs that source shell scripts", async (t) => {
   assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []});
 });
 
+test("preflight refuses dormant shells with opaque script or stdin sources", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.shell-script-launcher";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const [name, argv] of [
+    ["script operand", ["sh", "/private/fixture-respawner.sh"]],
+    ["script after flags", ["sh", "-e", "/private/fixture-respawner.sh"]],
+    ["script after terminator", ["sh", "--", "/private/fixture-respawner.sh"]],
+    ["explicit stdin source", ["sh", "-s"]],
+    ["implicit stdin source", ["sh"]],
+  ] as const) {
+    await t.test(name, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n ${argv.join("\n ")}\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.shell-script-launcher'/);
+      assert.doesNotMatch(message, /private|fixture-respawner/);
+    });
+  }
+  f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n /usr/bin/true\n /private/fixture-respawner.sh\n}\n`);
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "a positional argument after inline source is data");
+});
+
 test("preflight finds dormant nice jobs that execute the bundle", async (t) => {
   const f = fixture();
   const label = "com.fixture.nice-launcher";

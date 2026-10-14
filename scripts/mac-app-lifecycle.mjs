@@ -230,7 +230,9 @@ function commandLaunchesBundle(words, bundle, shell = false) {
         // executable source begins or evaluate it to find out.
         return true;
       }
-      return false;
+      // Without inline -c source, the shell can execute a script or stdin that
+      // this read-only inventory cannot inspect. Do not declare it safe.
+      return true;
     }
     executable = false;
   }

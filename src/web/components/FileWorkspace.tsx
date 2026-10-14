@@ -96,6 +96,7 @@ import {
 import { Tooltip } from "./Tooltip.tsx";
 import { ResizablePaneDivider } from "./ResizablePaneDivider.tsx";
 import { ManagedPlanLinks } from "./ManagedPlanReader.tsx";
+import { artifactPublishState } from "../lib/artifactPublish.ts";
 
 function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   const labels: Record<FileBuffer["saveState"], string> = {
@@ -259,6 +260,11 @@ export interface FileWorkspaceProps {
   ref?: React.Ref<FileWorkspaceHandle>;
 }
 
+/** One publish's identity: the session that sent it and the file it is about. */
+function publishKey(sessionId: string, path: string): string {
+  return JSON.stringify([sessionId, path]);
+}
+
 /**
  * Session upserts carry activity, cost, state, and transcript progress several times during
  * an active turn. Files reads only the session identity and display name, so those unrelated
@@ -271,6 +277,11 @@ export function fileWorkspacePropsEqual(
 ): boolean {
   return previous.session.id === next.session.id
     && previous.session.name === next.session.name
+    // The Publish control's gate: which harness, and whether a turn can reach it.
+    && previous.session.agent === next.session.agent
+    && previous.session.runtime === next.session.runtime
+    && Boolean(previous.session.pipeline) === Boolean(next.session.pipeline)
+    && JSON.stringify(previous.session.terminals ?? null) === JSON.stringify(next.session.terminals ?? null)
     && JSON.stringify(previous.session.workspace ?? null) === JSON.stringify(next.session.workspace ?? null)
     && previous.controller === next.controller
     && previous.fileCommentThreads === next.fileCommentThreads
@@ -306,6 +317,20 @@ function FileWorkspaceBody({
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<{ path: string; target: OpenTargetId } | null>(null);
+  /**
+   * Publishes in flight and their outcomes, one entry per session and file (`publishKey`).
+   *
+   * Per file rather than one slot, because requests overlap: a person can publish one file,
+   * move on, and publish another before the first answers, and this component stays mounted
+   * across files and sessions. With one slot, whichever reply landed last replaced the other's
+   * result - an older success could erase a newer failure. Each answer is written only under
+   * the file it is about, shown only while that file is open, and kept until it is dismissed
+   * or that file is published again.
+   */
+  const [publishing, setPublishing] = useState<ReadonlySet<string>>(() => new Set());
+  const [publishNotices, setPublishNotices] = useState<
+    Readonly<Record<string, { text: string; ok: boolean }>>
+  >({});
   const focusSelectedFile = useRef(false);
   /** A thread to open once the selection has landed on the file it belongs to. */
   const pendingThreadOpen = useRef<string | null>(null);
@@ -2183,6 +2208,55 @@ function FileWorkspaceBody({
     setLaunchError(result.ok ? null : (result.error ?? "could not open the file"));
   }, [session.id]);
 
+  const publish = buffer
+    ? artifactPublishState(session, selectedPath, isSavePending(buffer) || hasUnwrittenEdits(buffer))
+    : artifactPublishState(session, null, false);
+
+  /**
+   * Ask the session's own agent to publish the open file, as one ordinary turn.
+   *
+   * Mission Control uploads nothing. The agent publishes with its own tool, under its own
+   * sign-in and permission rules, and replies in the conversation. An accepted request only
+   * means the agent received the prompt - its tool may be unavailable, and then it says so
+   * instead of publishing - so the confirmation points at the conversation for the outcome
+   * rather than promising a link.
+   */
+  async function publishArtifact(): Promise<void> {
+    if (!publish.ok || !selectedPath) return;
+    const sessionId = session.id;
+    const path = selectedPath;
+    const key = publishKey(sessionId, path);
+    setPublishing((current) => new Set(current).add(key));
+    dismissPublishNotice(key);
+    // `injectPrompt`, not `sendText`: the prompt has line breaks, and a terminal pane takes
+    // every newline in a literal send as Enter. This is the composer's own path - one turn.
+    const result = await api.injectPrompt(sessionId, publish.prompt);
+    setPublishing((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    setPublishNotices((current) => ({
+      ...current,
+      [key]: result.ok
+        ? {
+            ok: true,
+            text: `Sent a request to publish ${path} as a ${publish.label}. The conversation will show the link, or why the agent could not publish it.`,
+          }
+        : { ok: false, text: result.error ?? "The publish request could not be sent." },
+    }));
+  }
+  function dismissPublishNotice(key: string): void {
+    setPublishNotices((current) => {
+      if (!(key in current)) return current;
+      const { [key]: _dismissed, ...rest } = current;
+      return rest;
+    });
+  }
+  const currentPublishKey = selectedPath ? publishKey(session.id, selectedPath) : null;
+  const publishingHere = currentPublishKey !== null && publishing.has(currentPublishKey);
+  const shownPublishNotice = currentPublishKey ? publishNotices[currentPublishKey] ?? null : null;
+
   /** Both refusal paths say the same thing, because they are the same refusal. */
   const unwritten = (path: string): string => `Not opened - ${path} could not be saved first.`;
 
@@ -2435,6 +2509,25 @@ function FileWorkspaceBody({
               )}
             </div>
           )}
+          {buffer && (
+            <Tooltip
+              label={publish.ok
+                ? `Ask the agent to publish this exact file, unchanged, as a ${publish.label}`
+                : publish.reason}
+            >
+              <button
+                type="button"
+                className="file-publish"
+                aria-label={`Publish as ${publish.label}`}
+                disabled={!publish.ok || publishingHere}
+                onClick={() => { void publishArtifact(); }}
+              >
+                {/* The glyph stays when a narrow toolbar drops the word; the name is aria-label's. */}
+                <span aria-hidden>⇪</span>
+                <span className="file-publish-label">{publishingHere ? "Publishing…" : "Publish"}</span>
+              </button>
+            </Tooltip>
+          )}
           <OpenInMenu
             disabled={!buffer || readOnlyWorkspace}
             disabledReason={readOnlyWorkspace && buffer
@@ -2577,6 +2670,14 @@ function FileWorkspaceBody({
             )}
             <Tooltip label="Dismiss this comment error">
               <button className="btn" onClick={() => setThreadError(null)}>Dismiss</button>
+            </Tooltip>
+          </div>
+        )}
+        {shownPublishNotice && (
+          <div className="file-notice" role={shownPublishNotice.ok ? "status" : "alert"}>
+            <span>{shownPublishNotice.text}</span>
+            <Tooltip label="Dismiss this publish notice">
+              <button className="btn" onClick={() => { if (currentPublishKey) dismissPublishNotice(currentPublishKey); }}>Dismiss</button>
             </Tooltip>
           </div>
         )}

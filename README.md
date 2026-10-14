@@ -195,6 +195,13 @@ source session. Retrying a report path returns its existing archive; publish rev
 new slug. Select a report card to preview its source in **Files**, or **Open archive** to read
 the immutable published copy. Read more in [Archives](docs/archives.md).
 
+To share a report outside Mission Control, open it in a Claude session's **Files** tab and
+click **Publish**, beside **Open in ▾**. Claude publishes that exact file, unchanged, as a
+private claude.ai artifact, and its link - or the reason it could not publish - appears in
+that session's conversation. Codex and Pi sessions show the button disabled with the reason.
+See [Publish a file as a shareable page](docs/ui.md#publish-a-file-as-a-shareable-page) for
+requirements and limits.
+
 SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
 internal launch secret, not a setting to configure. Public session IDs cannot select report
 credentials. See [Configuration](docs/configuration.md) for the launch boundary.

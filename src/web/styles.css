@@ -5705,11 +5705,15 @@ body.is-pane-resizing {
   .file-main > .file-toolbar > .file-toolbar-spacer,
   .file-main > .file-toolbar .file-language,
   .file-main > .file-toolbar .file-size,
-  .file-main > .file-toolbar .kb-hint {
+  .file-main > .file-toolbar .kb-hint,
+  .file-main > .file-toolbar .file-publish-label,
+  /* Only the steady state yields: Modified, Saving and a failure still need to be seen. */
+  .file-main > .file-toolbar .file-save-state.is-saved {
     display: none;
   }
   .file-main > .file-toolbar .file-mode button,
   .file-main > .file-toolbar .file-comment-toggle,
+  .file-main > .file-toolbar .file-publish,
   .file-main > .file-toolbar .open-in-btn {
     padding-inline: 6px;
   }
@@ -5907,7 +5911,9 @@ body.is-pane-resizing {
    toolbars, and none of them has comments. Nothing here is `position: fixed` or lifted
    above the topbar's z-index either, so the desktop shell's drag region is untouched. */
 .file-comment-controls { display: flex; flex: none; gap: 6px; }
-.file-comment-toggle {
+/* Publish shares the comment toggles' chrome: same row, same weight, one look. */
+.file-comment-toggle,
+.file-publish {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -5919,13 +5925,16 @@ body.is-pane-resizing {
   font: 10.5px var(--sans);
   cursor: pointer;
 }
-.file-comment-toggle:hover:not(:disabled) { color: var(--fg); }
+.file-comment-toggle:hover:not(:disabled),
+.file-publish:hover:not(:disabled) { color: var(--fg); }
+.file-publish { flex: none; }
 .file-comment-toggle.on {
   color: var(--fg);
   border-color: color-mix(in oklab, var(--working) 50%, var(--border));
   background: color-mix(in oklab, var(--working) 16%, var(--panel));
 }
-.file-comment-toggle:disabled { opacity: .45; cursor: default; }
+.file-comment-toggle:disabled,
+.file-publish:disabled { opacity: .45; cursor: default; }
 /* A comment is out with the agent. The queue no longer opens itself on send, so this says it. */
 .file-review-live {
   flex: none;

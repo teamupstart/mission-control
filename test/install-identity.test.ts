@@ -9,7 +9,7 @@ import {
   userAppPath,
   type IdentityInputs,
 } from "../src/main/install-identity.ts";
-import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
+import type { InstallReceipt, SourceInstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 
 const HOME = "/Users/someone";
@@ -18,7 +18,7 @@ const USER_APP = userAppPath(HOME);
 const COMMIT = "a".repeat(40);
 const OTHER_COMMIT = "b".repeat(40);
 
-function receipt(over: Partial<InstallReceipt> = {}): InstallReceipt {
+function receipt(over: Partial<SourceInstallReceipt> = {}): InstallReceipt {
   return {
     schema: 1,
     repo: CANONICAL_REPO,

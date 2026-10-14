@@ -1,4 +1,5 @@
-export interface InstallReceipt {
+import type { BinaryProvenance } from "./binary-distribution.mjs";
+interface ReceiptBase {
   /** Append-only schema number. See `INSTALL_RECEIPT_SCHEMA`. */
   schema: number;
   /** Repository the app was installed from, as `owner/name`. */
@@ -13,8 +14,6 @@ export interface InstallReceipt {
    * The destination someone deliberately chose. Absent means legacy, not system consent.
    */
   installScope?: InstallScope;
-  /** Absolute path to the updater-owned clone the app was built in. */
-  sourceClone: string;
   /** Absolute path to the installed app bundle. */
   appPath: string;
   /** ISO 8601 timestamp of the install. */
@@ -28,3 +27,11 @@ export type InstallScope = "user" | "system" | "custom";
 export const INSTALL_SCOPES: readonly InstallScope[];
 export const INSTALL_RECEIPT_SCHEMA: number;
 export function validateReceipt(value: unknown): string | null;
+
+export type SourceInstallReceipt = ReceiptBase & {
+  schema: number; kind?: 'source';
+  /** Absolute path to the source clone or retained compiled source installer. */
+  sourceClone: string;
+};
+export type BinaryInstallReceipt = ReceiptBase & {schema: 2; kind: 'binary'; sourceClone?: never; installedCommit: string; provenance: BinaryProvenance};
+export type InstallReceipt = SourceInstallReceipt | BinaryInstallReceipt;

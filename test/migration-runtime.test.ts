@@ -44,3 +44,9 @@ test('reused PID is not signalled; missing assets and a launch without its journ
   assert.equal(normal.proceed, true);
   await assert.rejects(boundedMigrationWait(() => false, 'bounded startup', {timeout: 5}), /bounded startup/);
 });
+
+test('an identified parent that refuses shutdown is bounded before mutation', async () => {
+  const identity = processIdentity(process.pid)!;
+  const ports = migrationRuntimePorts({parent: {pid: process.pid, identity}, port: 1, timeout: 5});
+  await assert.rejects(ports.waitForParent(), /did not exit/);
+});

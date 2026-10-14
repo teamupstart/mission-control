@@ -989,6 +989,19 @@ test("a plain attempt that left the app dismantled is not retried with authoriza
   assert.deepEqual(prompts, [], "no authorization was requested for an unsafe retry");
 });
 
+test("an invalid copied bundle is refused without an administrator retry or destination mutation", () => {
+  const fs = bundleFs([SWAP.appPath]);
+  const result = replaceAppBundle({sourceBundle: SWAP.packagedApp, appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir, pid: 4242, platform: "darwin", appsDirWritable: true,
+    sweep: () => [], ops: fs.ops,
+    verifyStaged: () => { throw new Error("copied bytes changed"); },
+    runElevated: () => assert.fail("verification failures cannot be repaired by elevation"),
+  });
+  assert.match(result.problem!, /copied bytes changed/);
+  assert.equal(result.elevated, false);
+  assert.deepEqual([...fs.paths], [SWAP.appPath]);
+});
+
 test("an escalated failure reports why the plain attempt failed as well", () => {
   // "User canceled" on its own reads as the whole story. It is not: an ordinary install was
   // tried first, and why THAT could not finish is what tells anyone reading the log what to fix.

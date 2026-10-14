@@ -198,6 +198,26 @@ Three contracts hold for readers:
 - **`installScope` is optional, and absent means legacy.** A reader may not treat a missing
   scope as an explicit choice of any destination.
 
+### Binary contract and receipt compatibility
+
+The browser-safe [`binary-distribution.mjs`](../src/shared/binary-distribution.mjs) owns the
+versioned manifest and signed build metadata shapes, with declarations beside it. It bounds
+canonical repository, stable tag or exact alpha SHA, product/version/platform identity, helper
+protocol range and immutable asset inventory. Archive hashes stay in the external manifest;
+signed metadata never embeds its containing archive's digest.
+
+Shape validation does not authenticate a publisher. A binary staged operation requires matching
+signed metadata and a trusted caller-supplied Developer ID team and notarization policy. That
+policy cannot come from the downloaded manifest. Distribution signing, credentials, archive
+transport and real signed-runtime qualification belong to subsequent distribution work.
+
+Receipt schema 1 remains the legacy source form, including retained compiled installers and
+absent legacy scope. New readers also accept schema-2 `source` and `binary` forms. Binary receipts
+carry immutable manifest and asset provenance and no invented `sourceClone`; unsupported future
+schemas fail closed. Source writers continue writing schema 1. Identity, destination, relocation
+and source-support cleanup readers accept the union. This does not enable binary release discovery
+in the current source updater.
+
 ### The running app checks that it is the app in the receipt
 
 The receipt names an absolute `appPath`, and until personal installs existed nothing compared it
@@ -268,8 +288,8 @@ A missing, incompatible, or unusable runtime leaves the release visible with a d
 npm, then use **Check again** to refresh executable discovery without closing the app. The same
 message is shown when checking from the native menu.
 
-The check runs again before preparation; installation of an already staged bundle rechecks Node
-without requiring npm. The runtime selected
+The check runs again before source preparation. An already staged bundle uses the copied
+bundled runtime without probing host Node or npm. The source-build runtime selected
 by a version-manager shim is pinned into the build's child PATH, and the installer uses the npm
 path resolved by the executable catalog through `MISSION_NPM_BIN`. The installer retains its own
 Node prerequisite check. A changed launch-time override or an inherited PATH that still prioritizes
@@ -341,18 +361,15 @@ twice.
 
 That check cannot be the last one either, because the swap happens in another process up to two
 minutes later - the helper waits for the app to exit first - and a rebuild can land in that window.
-So the revision travels: the app hands it over as `--staged-revision`, the detached helper forwards
-it without interpreting it, and `install-app.mjs --from-staged` re-reads the bundle's identity in
-the instant before `replaceAppBundle` and refuses a mismatch there. The version is checked too, against
-the version its `--ref` names. `src/shared/staged-bundle.mjs` owns the one formula all three read,
+The revision travels with the accepted install descriptor and is rechecked by the shared staged
+installer before `replaceAppBundle`. The version and commit are checked against the accepted
+target too. `src/shared/staged-bundle.mjs` owns the one formula all three read,
 and a handoff carrying no pin - an install driven by hand, or one from an app that predates this -
 still installs, exactly as a ref that names no version still installs.
 
-What remains open, deliberately: a rebuild that lands during the copy itself. Closing that means
-moving the bundle out of the shared clone before the swap rather than checking it, which is a
-separate change with its own cleanup lifetime. Quitting Mission Control while a build
-is running cancels it, along with the `npm` and `electron-builder` children it spawned, so nothing
-keeps writing into the clone that the next attempt will check out.
+The shared staged installer now pins the complete bundle digest and checks the copied bytes.
+Quitting Mission Control while a source build is running still cancels it and its children, so
+nothing keeps writing into the clone that the next attempt will check out.
 
 Background failures stay quiet and are written to the local update log, with one exception. A
 failure that will still be there in six hours and that only the operator can clear - `gh` missing,
@@ -401,50 +418,70 @@ The plain browser dashboard and older desktop bridges have no alpha setting.
 
 ### Where the work happens, and why it splits
 
-Steps 1 to 7 of [`scripts/install-app.mjs`](../scripts/install-app.mjs) - prerequisites, the
-updater-owned clone, the release, the checkout, `npm ci`, `npm run package`, and version
-verification - touch nothing but that clone. Only the bundle swap and the receipt need the
-installed app gone. The update is therefore applied in two halves, selected by flags on the one
-install script rather than by a second script:
+Source preparation remains in [`scripts/install-app.mjs`](../scripts/install-app.mjs). It checks
+prerequisites, fetches the selected source identity, runs npm and packaging, and verifies the
+result. `--stage-only --progress` stops there while the app stays open. This phase still requires
+host Node, npm and the source build tools. The Bash installer and explicit developer commands
+retain their existing source behavior.
 
-- `--stage-only` runs everything up to and including verification and stops, printing the bundle
-  it produced. `--progress` makes it emit a stage marker per step, which is what the app's progress
-  bar reads. The live app runs this, so all the minutes are visible and cancellable.
-- `--from-staged <bundle>` installs a bundle that was already built: the swap and the receipt, and
-  nothing else. The detached helper runs this after the app has quit.
+[`scripts/install-staged-app.mjs`](../scripts/install-staged-app.mjs) owns prepared-bundle
+validation, destination policy, copying through the existing swap primitive, and receipt
+publication for direct installs. Both the source installer and detached apply use it. An accepted
+descriptor pins the receipt, bundle revision, full content digest and measured size. The final
+copy is checked before publication on the ordinary swap path and again before launch. Hashing
+includes modes, file bytes and internal framework symlinks; escaping links and oversized
+inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
+race without consuming a developer's build output.
 
-The install script remains the only owner of checkout, build, version verification, the atomic
-bundle swap, and the receipt; a plain `make install` still runs both halves in one pass.
+A direct reinstall restores its retained app if post-swap verification or receipt publication
+fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained
+app; a cleanup failure reports the remaining path without undoing the committed installation.
 
-After the person accepts the restart, the Electron process copies
-[`scripts/apply-update.mjs`](../scripts/apply-update.mjs) out of the bundle and starts it as a
-detached system-Node process, handing it the staged bundle with `--staged-bundle`. The app marks
-itself as quitting before calling Electron's quit API, which lets the hide-on-close window guard
-close normally. The helper waits for the app process to exit, backs up the installed bundle and
-receipt, and invokes the clone's `install-app.mjs --from-staged` path.
+After restart acceptance, the app copies its **complete current app bundle**, including
+frameworks, to a private attempt directory under `update-runtimes/` in the state home. It copies
+the helper's full module inventory beside that runtime. The detached executable is the copy's
+Electron with `ELECTRON_RUN_AS_NODE=1`, never a Node selected from PATH. A verified candidate can
+supply the runtime to future bootstrap callers. Runtime, candidate, destination and recovery
+backup are separate. Disk checks account for the runtime copy, old-app backup, new staging copy
+and a possible rollback copy on each filesystem, without assuming copy-on-write.
+If snapshot preparation fails before spawn, the lock holder removes the incomplete attempt it
+created so the same transaction can retry. It never removes a pre-existing attempt this way.
 
-An install script that predates these flags says `unknown argument: --stage-only`, and the app then
-falls back to the single-shot handoff it has always used: the helper builds as well as installs, with
-no progress to show. That is reachable when the updater-owned clone is checked out at an older ref
-than the running app - `--ref` allows exactly that - and an update applied without a progress bar is
-better than one refused over it.
+The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
+identity before the app requests quit. Parent and target waits are bounded and use PID plus
+start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
+home. No helper opens SQLite or starts a second daemon.
 
-Each half carries its own bound, reported in its own words. The build gets 45 minutes, in the app
-and in the helper alike; a staged install gets ten, which is generous for a copy and a receipt but
-still allows for an administrator panel waiting to be answered. Both are separate from the
-two-minute wait for the app to quit - a wedged `npm` and an app that will not close are different
-failures, and a person reading either message should be told which one happened.
+Targets advertising `missionInstallTransaction` protocol 1 use the existing migration journal
+and startup gate for in-place installation. Journal protocol 2 adds this mode; protocol-1
+relocation journals and their append-only stages remain readable. Validation rejects a protocol
+and transaction kind that disagree. The old receipt's exact bytes
+and the installed bundle's identity are pinned at acceptance and checked again under the lock.
+The target acknowledges its nonce, process, commit, bundle and state home before a daemon,
+SQLite, session restore or agents start. Only then does the helper commit the receipt.
 
-The helper relaunches the installed bundle by its exact path. A build, verification, swap, outcome,
-or relaunch failure restores both the previous app and its receipt before relaunching it. A failure
-also copies what it was holding to `failed-update/` in the state directory before its temp directory
-is removed: the previous app bundle, the previous receipt, and the bundle that failed. That is the
-evidence of how it broke and a second, by-hand rollback if the automatic one did not take. It keeps
-one attempt's worth - the next update clears it as it starts, before anything that could fail,
-so it holds the latest attempt however that attempt ended and cannot accumulate. If that copy cannot be made at all, because the state directory is full or unwritable,
-nothing is deleted to compensate: the helper's temp directory is left in place holding the backup,
-and the failed bundle stays beside the installed app. The operator whose state directory is too
-broken to hold a second copy is exactly the one who must not lose the first.
+Before commitment, failure stops the exact target process and restores the prior bundle while
+leaving the old receipt bytes intact. A restored in-place journal is archived with its backup
+before relaunch, allowing an older app that understands only protocol 1 to start. After
+commitment, recovery proceeds forward; it never guesses that an older app can read migrated
+state. Unreadable receipts, changed destinations, failed outcome writes and unsuccessful recovery
+retain material for inspection. A later launch recovering an interrupted in-place transaction
+also uses an independent bundled helper before the launching app exits.
+
+Snapshots stay on disk while their executable is mapped. A later update lock holder may remove
+only a positively identified dead helper's completed snapshot with no pending journal obligation.
+Unknown ownership and unfinished attempts are retained. A matching completed in-place journal
+and committed receipt also permit reclamation of its verified recovery copy, after archiving
+the journal. The journal records the swap's actual retained sibling and directory revision;
+the same cleanup reclaims that exact sibling only when its revision and previous-app digest
+still match. Older journals without this record remain readable and do not authorize guessing
+which sibling to remove. Failed recovery material and old source support are not deleted by this cleanup.
+
+Older source targets without the new transaction reader retain the compatible apply/rollback
+behavior, but a staged handoff still uses the copied runtime and shared staged installer. An old
+source installer without staging support retains its explicit source-build fallback and host
+prerequisites. Binary descriptors never take this fallback. There is no binary downloader,
+bootstrap, DMG enrollment or publishing entry point in this transaction layer.
 
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is

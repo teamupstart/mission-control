@@ -1,3 +1,4 @@
+import { resolveOwnedRuntime } from "../shared/owned-runtime.mjs";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -193,8 +194,7 @@ interface MissionMcpRuntime {
  * that session failed with "ReferenceError: crypto is not defined".
  */
 export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  if (/^node(\.exe)?$/.test(basename(execPath))) return { command: execPath, env: {} };
-  return { command: execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+  return resolveOwnedRuntime({executable: execPath, kind: /^node(\.exe)?$/.test(basename(execPath)) ? "node" : "electron"});
 }
 
 /**

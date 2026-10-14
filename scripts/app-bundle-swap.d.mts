@@ -9,6 +9,8 @@ export interface SwapAttempt {
   problem: string | null;
   /** Whether the installed app survived the attempt, so a privileged retry is safe. */
   appIntact: boolean;
+  /** Authorization cannot repair an invalid staged copy. */
+  verificationFailed?: boolean;
   /** Where the displaced bundle actually ended up when retaining it, including the fallback. */
   retainedAt: string | null;
   /** Paths this transaction could not clean up after itself and that still occupy disk. */
@@ -53,6 +55,7 @@ export function attemptSwapAppBundle(input: {
   appPath: string;
   appsDir: string;
   pid: number | string;
+  verifyStaged?: (path: string) => void;
   keepPrevious?: boolean;
   ops: BundleOps;
 }): SwapAttempt;
@@ -61,6 +64,7 @@ export function swapAppBundle(input: {
   appPath: string;
   appsDir: string;
   pid: number | string;
+  verifyStaged?: (path: string) => void;
   keepPrevious?: boolean;
   ops: BundleOps;
 }): string | null;
@@ -87,6 +91,7 @@ export function replaceAppBundle(input: {
   appPath: string;
   appsDir: string;
   pid: number | string;
+  verifyStaged?: (path: string) => void;
   keepPrevious?: boolean;
   prompt?: string;
   platform?: NodeJS.Platform;

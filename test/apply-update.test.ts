@@ -100,7 +100,7 @@ const FIXTURE_ENTRY = claimEntryName({ createdAtMs: 1_000_000, pid: 4242 });
 function operations(
   options: {
     installFails?: boolean;
-    launchFails?: boolean;
+    launchFailures?: number;
     retainFails?: boolean;
     waitFails?: boolean;
     restoreFails?: boolean;
@@ -116,7 +116,7 @@ function operations(
   } = {},
 ) {
   const actions: string[] = [];
-  let firstLaunch = true;
+  let launches = 0;
   const locks = new Map<string, string>();
   const ops = {
     preflight: async (_bundle: string) => {},
@@ -171,8 +171,7 @@ function operations(
     }),
     launch: (path: string) => {
       actions.push(`launch:${path}`);
-      if (options.launchFails && firstLaunch) {
-        firstLaunch = false;
+      if (++launches <= (options.launchFailures ?? 0)) {
         throw new Error("launch failed");
       }
     },
@@ -309,18 +308,18 @@ test("a deliberate build failure restores both app and receipt before relaunchin
   assert.ok(receiptRestoreIndex >= 0 && receiptRestoreIndex < launchIndex);
 });
 
-test("a relaunch failure also rolls back and tries the restored app", async (t) => {
+test("two open failures roll back and try the restored app", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "mission-apply-launch-failure-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
-  const f = operations({ launchFails: true });
+  const f = operations({ launchFailures: 2 });
 
   const result = await runApplyUpdate(args(state), f.ops);
   const launches = f.actions.filter((action) => action === "launch:/Applications/Mission Control.app");
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.equal(result.ok, false);
-  assert.equal(launches.length, 2);
+  assert.equal(launches.length, 3);
   assert.equal(outcome.result, "failure");
   assert.match(outcome.message, /launch failed/);
 });
@@ -1246,6 +1245,32 @@ test("a verified second launch records success after one cleanup without rolling
   assert.deepEqual(f.actions.filter((action) => action === "stop-attempt" || action.startsWith("launch:")), [
     `launch:${args(state).appPath}`, "stop-attempt", `launch:${args(state).appPath}`,
   ]);
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "success");
+  assert.equal(outcome.launchVerified, true);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("a transient open failure gets one guarded retry and records success only after verification", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-open-retry-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations({launchFailures: 1});
+  f.ops.preflight = async () => { f.actions.push("preflight"); };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  f.ops.waitForBundle = async () => { f.actions.push("bundle-exit"); };
+  f.ops.prepareLaunch = async () => { f.actions.push("prepare-launch"); };
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => {
+    verifications++;
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+  };
+  assert.deepEqual(await runApplyUpdate(args(state), f.ops), {ok: true, message: null});
+  const launch = `launch:${args(state).appPath}`;
+  const afterFirstLaunch = f.actions.slice(f.actions.indexOf(launch)).filter((action) =>
+    action === launch || ["preflight", "stop-attempt", "bundle-exit", "prepare-launch"].includes(action));
+  assert.deepEqual(afterFirstLaunch, [launch, "stop-attempt", "bundle-exit", "prepare-launch", "preflight", launch]);
+  assert.equal(verifications, 1, "only the successful open reaches verification");
   assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
   assert.equal(outcome.result, "success");

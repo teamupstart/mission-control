@@ -550,8 +550,8 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     for (let attempt = 0; attempt < 2; attempt++) {
       await ops.preflight(args.appPath);
       launchAttempted = true;
-      await ops.launch(args.appPath, launchNonce);
       try {
+        await ops.launch(args.appPath, launchNonce);
         await ops.verifyLaunch(args.appPath, launchNonce);
         break;
       } catch (error) {

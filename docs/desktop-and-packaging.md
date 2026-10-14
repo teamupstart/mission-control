@@ -539,7 +539,7 @@ bundle, PID and process start identity after its main loop ran JavaScript in a l
 The local startup page can acknowledge this even while the daemon is recovering. This proves launch
 responsiveness, not that every SDK session or workflow has recovered.
 
-An unverified launch gets one retry, after stopping only a process carrying this attempt's nonce
+An `open` failure or an unverified launch gets one retry, after stopping only a process carrying this attempt's nonce
 and rechecking its executable and process identity before any signal. All bundle processes must
 exit and old registrations must clear again. An unrelated process blocks retry and automatic
 rollback; no stale PID or process-group number authorizes a signal. A second unverified launch

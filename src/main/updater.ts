@@ -437,6 +437,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
         "--source-clone", args.sourceClone, "--target-tag", args.targetTag, "--app-path", args.appPath,
         "--parent-pid", String(args.parentPid), "--state-dir", args.stateDirectory, "--log-path", args.logPath,
         "--staged-bundle", args.stagedBundle, "--staged-revision", args.stagedRevision,
+        ...(plan ? [] : ["--staged-digest", descriptor.digest]),
       ]});
     return;
   }

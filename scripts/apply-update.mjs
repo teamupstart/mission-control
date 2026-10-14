@@ -92,7 +92,7 @@ export function rollbackIsNeeded({ installedVersion, backupVersion, installedCom
 export { bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 
 export function parseArgs(argv) {
-  const values = { stagedBundle: null, stagedRevision: null };
+  const values = { stagedBundle: null, stagedRevision: null, stagedDigest: null };
   const names = new Map([
     ["--source-clone", "sourceClone"],
     ["--target-tag", "targetTag"],
@@ -102,6 +102,7 @@ export function parseArgs(argv) {
     ["--log-path", "logPath"],
     ["--staged-bundle", "stagedBundle"],
     ["--staged-revision", "stagedRevision"],
+    ["--staged-digest", "stagedDigest"],
     ["--source-app", "sourceApp"],
     ["--target-app", "targetApp"],
     ["--migration-plan", "migrationPlan"],
@@ -110,7 +111,7 @@ export function parseArgs(argv) {
   ]);
   // Optional rather than required, because a handoff from an app that predates staging carries
   // neither and must still be applied.
-  const optional = new Set(["stagedBundle", "stagedRevision", "sourceApp", "targetApp", "migrationPlan", "attemptDirectory", "recovery"]);
+  const optional = new Set(["stagedBundle", "stagedRevision", "stagedDigest", "sourceApp", "targetApp", "migrationPlan", "attemptDirectory", "recovery"]);
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 2) {
     const key = names.get(argv[index]);
@@ -128,6 +129,9 @@ export function parseArgs(argv) {
     return { args: null, problem: missing ? `missing ${missing}` : "parent pid is invalid" };
   }
   const migration = [values.sourceApp, values.targetApp, values.migrationPlan];
+  if (values.stagedDigest !== null && (!/^[a-f0-9]{64}$/.test(values.stagedDigest) || !values.stagedBundle || !values.stagedRevision)) {
+    return {args: null, problem: "a staged digest requires a SHA-256 digest and pinned staged bundle"};
+  }
   if (migration.some(Boolean) && (!migration.every(Boolean) || !values.stagedBundle || !values.stagedRevision || values.appPath !== values.sourceApp)) {
     return {args: null, problem: "a migration requires a complete source, target, plan and pinned staged bundle"};
   }
@@ -245,11 +249,12 @@ export function realApplyOperations(
       }
       throw new Error("the app did not quit before the update timeout");
     },
-    install: (node, script, tag, appsDir, stagedBundle = null, stagedRevision = null) => {
+    install: (node, script, tag, appsDir, stagedBundle = null, stagedRevision = null, stagedDigest = null) => {
       if (stagedBundle) {
         const previous = readReceipt(join(dirname(logPath), "install-receipt.json"));
         if (!previous) throw new Error("A staged update requires its existing managed receipt");
         const descriptor = prepareSourceUpdate({receipt: previous, bundle: stagedBundle, revision: stagedRevision, targetTag: tag});
+        if (stagedDigest !== null && descriptor.digest !== stagedDigest) throw new Error("The accepted staged app bytes changed");
         if (descriptor.receipt.appPath !== join(appsDir, "Mission Control.app")) throw new Error("The installation destination changed");
         installStagedApp(descriptor, {stateDirectory: dirname(logPath)});
         return;
@@ -526,6 +531,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       dirname(args.appPath),
       args.stagedBundle ?? null,
       args.stagedRevision ?? null,
+      args.stagedDigest ?? null,
     );
     if (alpha && ops.bundleCommit?.(args.appPath) !== args.targetTag) {
       throw new Error("The installed app does not match the requested main commit.");

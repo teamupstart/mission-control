@@ -94,7 +94,6 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return sessions[0]!.cwd!;
 }
 
-/** Select the session and open its Diff tab on one changed file. */
 async function openDiffOn(page: Page, path: string): Promise<Locator> {
   await page
     .getByRole("navigation", { name: "Sessions" })
@@ -148,7 +147,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   const changed = diff.getByRole("navigation", { name: "Changed files" });
   await expect(changed.locator('[aria-current="true"]')).toContainText("README.md");
 
-  // ---- the control, and its key ----
   const commentMode = diff.getByRole("button", { name: "Comment mode" });
   await expect(commentMode).toHaveAttribute("aria-pressed", "false");
   await expect(commentMode).toHaveAttribute("aria-keyshortcuts", "m");
@@ -162,7 +160,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   await expect(lineButtons).toHaveCount(3);
   await expect(diff.getByRole("button", { name: "Comment on line 1" })).toHaveText("1");
 
-  // ---- cancelling one ----
   await diff.getByRole("button", { name: "Comment on line 1" }).click();
   const scratch = diff.getByRole("textbox", { name: "Comment on line 1" });
   await scratch.fill("never mind");
@@ -177,7 +174,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
     .poll(() => storedThreads(daemon).length, { message: "cancelling left the draft behind" })
     .toBe(0);
 
-  // ---- writing one ----
   await diff.getByRole("button", { name: "Comment on line 3" }).click();
   const box = diff.getByRole("textbox", { name: "Comment on line 3" });
   await expect(box).toBeFocused();
@@ -212,7 +208,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   const shortId = /Comment (MC-\w+) on line 3/.exec((await marker.getAttribute("aria-label")) ?? "")?.[1];
   expect(shortId, "the marker names its thread").toBeTruthy();
 
-  // ---- expanding it, and adding to it ----
   await marker.click();
   const thread = diff.getByRole("region", { name: new RegExp(`^Comment ${shortId} on line 3$`) });
   await expect(thread).toContainText(COMMENT);
@@ -224,7 +219,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
     .toBe(2);
   await shoot(diff, page, "diff-thread-expanded");
 
-  // ---- a file with no lines says why, and the mode outlives it ----
   await changed.getByRole("button", { name: /logo\.bin/ }).click();
   await expect(commentMode).toHaveAttribute("aria-disabled", "true");
   await expect(commentMode).toHaveAttribute("aria-pressed", "false");
@@ -235,14 +229,12 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   await expect(commentMode).toHaveAttribute("aria-pressed", "true");
   await expect(diff.getByRole("button", { name: sentMarker(3, shortId) })).toBeVisible();
 
-  // ---- and after a reload, with the mode off, the diff still draws it ----
   await page.reload();
   const reloaded = await openDiffOn(page, "README.md");
   await expect(reloaded.getByRole("button", { name: "Comment mode" }))
     .toHaveAttribute("aria-pressed", "false");
   await expect(reloaded.getByRole("button", { name: sentMarker(3, shortId) })).toBeVisible();
 
-  // ---- the same thread, on the same line, in the Files tab ----
   await reloaded.getByRole("button", { name: "Open in Files" }).click();
   await expect(
     page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
@@ -259,7 +251,6 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   await shoot(page.locator(".file-main"), page, "files-same-thread");
 });
 
-/** One comment, written from the diff and sent, on a working-tree line. */
 async function sendFromDiff(diff: Locator, line: number, body: string): Promise<void> {
   await diff.getByRole("button", { name: `Comment on line ${line}` }).click();
   const box = diff.getByRole("textbox", { name: `Comment on line ${line}` });
@@ -268,7 +259,6 @@ async function sendFromDiff(diff: Locator, line: number, body: string): Promise<
   await expect(box).toBeHidden();
 }
 
-/** The status and message count of the thread anchored at `line`, read from the daemon. */
 function storedOn(daemon: DaemonHandle, line: number): { status: string; messages: number } | undefined {
   return storedThreads(daemon).find((row) => row.start_line === line);
 }
@@ -302,7 +292,6 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   expect(shortId, "the marker names its thread").toBeTruthy();
   const thread = diff.getByRole("region", { name: new RegExp(`^Comment ${shortId} on line 3$`) });
 
-  // ---- Resolve ----
   await queuedMarker.click();
   await thread.getByRole("button", { name: "Resolve" }).click();
   // A closed thread stops being drawn, and its panel goes with its marker.
@@ -312,7 +301,6 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await expect.poll(() => storedOn(daemon, 3)?.status, { message: "Resolve did not close the thread" })
     .toBe("resolved");
 
-  // ---- shown again, behind the Resolved toggle ----
   const showResolved = diff.getByRole("button", { name: "Show resolved comments" });
   await expect(showResolved).toHaveAttribute("aria-pressed", "false");
   await showResolved.click();
@@ -328,13 +316,13 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await expect(showResolved).toHaveAttribute("aria-pressed", "false");
   await expect(resolvedMarker).toHaveCount(0);
   await expect(thread).toBeHidden();
+  await shoot(diff, page, "diff-resolved-hidden");
   await showResolved.click();
   await expect(resolvedMarker).toBeVisible();
   await expect(thread).toBeHidden();
   await resolvedMarker.click();
   await expect(thread.getByRole("button", { name: "Reopen" })).toBeVisible();
 
-  // ---- a refused reply keeps the thread open and the sentence in the box ----
   await page.route("**/api/file-comments/*/messages", (route) =>
     route.fulfill({
       status: 500,
@@ -351,7 +339,6 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   expect(storedOn(daemon, 3)?.messages, "nothing was appended").toBe(1);
   await page.unroute("**/api/file-comments/*/messages");
 
-  // ---- a refused Reopen leaves it closed, and says why ----
   await page.route("**/api/file-comments/*/status", (route) =>
     route.fulfill({
       status: 409,
@@ -366,16 +353,13 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await shoot(diff, page, "diff-refused-action");
   await page.unroute("**/api/file-comments/*/status");
 
-  // ---- Reopen ----
   await thread.getByRole("button", { name: "Reopen" }).click();
   await expect.poll(() => storedOn(daemon, 3)?.status, { message: "Reopen did not put it back in play" })
     .toBe("draft");
-  // The error clears with the action that succeeded, and the thread can be closed again.
   await expect(thread.getByRole("alert")).toHaveCount(0);
   await expect(thread.getByRole("button", { name: "Resolve" })).toBeVisible();
   await expect(diff.getByRole("button", { name: `Comment ${shortId} on line 3, draft` })).toBeVisible();
 
-  // ---- a refused Resolve leaves it open, and says why ----
   await page.route("**/api/file-comments/*/status", (route) =>
     route.fulfill({
       status: 409,
@@ -392,7 +376,6 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await shoot(diff, page, "diff-reopened-thread");
 });
 
-/** The revision the daemon reports for a file in the session's checkout right now. */
 async function currentRevision(daemon: DaemonHandle, path: string): Promise<string> {
   const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as { id: string }[];
   const response = await fetch(
@@ -403,7 +386,6 @@ async function currentRevision(daemon: DaemonHandle, path: string): Promise<stri
   return body.revision!;
 }
 
-/** Each thread's anchor as stored: line, quote, and the revision it was taken against. */
 function storedAnchors(daemon: DaemonHandle): { start_line: number; quote: string; revision: string | null }[] {
   return withDaemonDb(daemon, (db) =>
     db
@@ -427,7 +409,6 @@ test("a click re-reads the file: an untouched line anchors to it, an edited one 
   await expect(diff.getByRole("button", { name: "Comment on line 3" })).toBeVisible();
   const loaded = await currentRevision(daemon, "README.md");
 
-  // ---- the agent edits elsewhere in the file after the diff was read ----
   // The diff and its copy of the file still agree with each other, and line 3 still says what
   // it said. The comment must anchor to the file as it is now, not to the copy.
   writeFileSync(join(cwd, "README.md"), `${README}A trailing note the agent added.\n`);
@@ -444,7 +425,6 @@ test("a click re-reads the file: an untouched line anchors to it, an edited one 
   await expect.poll(() => storedThreads(daemon).length, { message: "cancelling left the draft behind" })
     .toBe(0);
 
-  // ---- the agent rewrites the line itself ----
   writeFileSync(join(cwd, "README.md"), README.replace("thirty", "sixty"));
   await diff.getByRole("button", { name: "Comment on line 3" }).click();
   await expect(diff.getByText(CHANGED_LINE)).toBeVisible();
@@ -482,7 +462,6 @@ test("a line re-read still in flight never opens a composer over a choice made s
   });
   const box = diff.getByRole("textbox", { name: "Comment on line 3" });
 
-  // ---- opening a thread wins over the pending line ----
   let reread = page.waitForResponse((response) => response.url().includes("known="));
   await diff.getByRole("button", { name: "Comment on line 3" }).click();
   await marker.click();
@@ -494,7 +473,6 @@ test("a line re-read still in flight never opens a composer over a choice made s
   await expect(box).toHaveCount(0);
   await expect(thread).toBeVisible();
 
-  // ---- so does switching comment mode off ----
   await thread.getByRole("button", { name: "Collapse comment", exact: false }).click();
   await expect(thread).toBeHidden();
   reread = page.waitForResponse((response) => response.url().includes("known="));
@@ -547,7 +525,6 @@ test("a failed re-read starts no comment, says why, and the next click can succe
   await expect(lineButton).toBeVisible();
   await shoot(diff, page, "diff-reread-failed");
 
-  // Once the file can be read again the same click opens the composer, and the notice clears.
   await page.unroute("**/api/sessions/*/file?*");
   await lineButton.click();
   await expect(box).toBeVisible();

@@ -350,6 +350,87 @@ test("a version picked while bindings are still loading is not reverted", async 
   await expect.poll(() => selectedLabel(published)).not.toContain("No-Mistakes");
 });
 
+test("choosing a different workflow archives the old binding and arms the selected version", async ({
+  page,
+  daemon,
+}) => {
+  await armWorkflowPrerequisites(daemon);
+  await publishAardvark(daemon);
+  await page.goto(daemon.baseURL);
+  const sessionId = await dispatchWithNoMistakes(page, daemon);
+  const detail = await selectOnlySession(page);
+  await detail.getByRole("button", { name: /No-Mistakes Review \(High Rigor\) v\d+/ }).first().click();
+  const bind = page.getByRole("dialog", { name: "Bind workflow" });
+  const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
+  await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
+  await published.selectOption({ label: "Aardvark Review · v1" });
+  const selectedVersionId = await published.inputValue();
+  await expect(bind.getByText(/already bound to No-Mistakes Review/i)).toBeVisible();
+  await expect(bind.getByText(/Switching archives that binding and cancels any active run/)).toBeVisible();
+  await shoot(page, "switch-workflow-ready");
+  const switchButton = bind.getByRole("button", { name: "Switch workflow" });
+  await switchButton.scrollIntoViewIfNeeded();
+  await shoot(page, "switch-workflow-action");
+  await switchButton.click();
+  await expect(bind).toBeHidden();
+
+  await expect.poll(async () => {
+    const bindings = await api<Array<{
+      id: string; sessionId: string | null; state: string; workflowVersionId: string;
+    }>>(daemon, "/api/workflow-bindings");
+    return bindings.find((binding) => binding.sessionId === sessionId && binding.state === "active")
+      ?.workflowVersionId ?? "";
+  }).toBe(selectedVersionId);
+  seen("selected workflow version", selectedVersionId);
+  await expect(detail.getByRole("button", { name: /Aardvark Review v1/ }).first()).toBeVisible();
+  await shoot(page, "switched-workflow");
+});
+
+test("Switch and submit archives the old workflow and submits the selected one", async ({
+  page,
+  daemon,
+}) => {
+  await armWorkflowPrerequisites(daemon);
+  await publishAardvark(daemon);
+  await page.goto(daemon.baseURL);
+  const sessionId = await dispatchWithNoMistakes(page, daemon);
+  const detail = await selectOnlySession(page);
+  await detail.getByRole("button", { name: /No-Mistakes Review \(High Rigor\) v\d+/ }).first().click();
+  const bind = page.getByRole("dialog", { name: "Bind workflow" });
+  const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
+  await expect.poll(() => selectedLabel(published)).toContain("No-Mistakes Review");
+  await published.selectOption({ label: "Aardvark Review · v1" });
+  const selectedVersionId = await published.inputValue();
+  await expect(bind.getByText(/already bound to No-Mistakes Review/i)).toBeVisible();
+  const oldBinding = (await api<Array<{ id: string; sessionId: string | null; state: string }>>(
+    daemon, "/api/workflow-bindings",
+  )).find((binding) => binding.sessionId === sessionId && binding.state === "active");
+  expect(oldBinding).toBeDefined();
+
+  const submitted = page.waitForResponse((response) => response.request().method() === "POST"
+    && /\/api\/workflow-bindings\/[^/]+\/submit$/.test(new URL(response.url()).pathname));
+  await bind.getByRole("button", { name: "Switch and submit" }).click();
+  const response = await submitted;
+  expect(response.status()).toBe(202);
+  const accepted = await response.json() as { run: { id: string; bindingId: string } };
+  await expect(bind).toBeHidden();
+  await expect(page).toHaveURL(new RegExp(`#/runs/${accepted.run.id}$`));
+
+  const bindings = await api<Array<{
+    id: string; sessionId: string | null; state: string; workflowVersionId: string;
+  }>>(daemon, "/api/workflow-bindings");
+  const active = bindings.find((binding) => binding.sessionId === sessionId && binding.state === "active");
+  expect(active?.workflowVersionId).toBe(selectedVersionId);
+  expect(active?.id).toBe(accepted.run.bindingId);
+  expect(bindings.find((binding) => binding.id === oldBinding!.id)).toBeUndefined();
+  const run = await api<{ run: { bindingId: string }; submissions: Array<{ id: string }> }>(
+    daemon, `/api/workflow-runs/${accepted.run.id}`,
+  );
+  expect(run.run.bindingId).toBe(active?.id);
+  expect(run.submissions.length).toBeGreaterThan(0);
+  await shoot(page, "switched-and-submitted-workflow");
+});
+
 test("switching to an unbound session clears the previous session's workflow", async ({
   page,
   daemon,

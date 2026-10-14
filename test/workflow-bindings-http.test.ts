@@ -113,6 +113,97 @@ function request(app: ReturnType<typeof buildApp>, path: string, body?: unknown,
   });
 }
 
+test("switching workflow versions archives the prior binding atomically", async () => {
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [{ id: "done", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" }],
+  };
+  seedRuntimeVersion("switch-old", graph);
+  seedRuntimeVersion("switch-new", graph);
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "switch-session", tty: "ttys-switch" })]);
+  const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
+  const app = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
+    workflows,
+  });
+  const firstResponse = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-switch-old", sessionId: "switch-session",
+  });
+  assert.equal(firstResponse.status, 201);
+  const first = await firstResponse.json() as { id: string };
+
+  const invalid = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-missing", sessionId: "switch-session", replaceBindingId: first.id,
+  });
+  assert.equal(invalid.status, 404);
+  assert.equal(workflows.store.getBinding(first.id)?.state, "active");
+  const stale = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-switch-new", sessionId: "switch-session", replaceBindingId: "old-binding-id",
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(workflows.store.getBinding(first.id)?.state, "active");
+
+  const session = registry.getSession("switch-session");
+  assert.ok(session);
+  const sibling = workflows.store.insertBinding({
+    id: "switch-sibling", workflowVersionId: "v-switch-old", noteKey: noteKeyFor(session),
+    sessionId: session.id, sessionAgent: session.agent, sessionName: session.name,
+    sessionCwd: "/second", sessionRepoRoot: "/second", repoRoot: "/second",
+    triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: 2,
+  });
+  workflows.store.createInitialSubmission(
+    { id: "switch-sibling-run", binding: sibling, intent: FIXTURE_RUN_INTENT,
+      triggerSource: "manual", triggerKey: "switch-sibling-trigger", now: 3 },
+    { id: "switch-sibling-submission", triggerSource: "manual",
+      triggerKey: "switch-sibling-trigger", context: {}, evidence: {}, now: 3 },
+  );
+  workflows.store.setRunState("switch-sibling-run", "running", "persona_review", null, 4);
+
+  const db = openDb();
+  db.exec(`CREATE TRIGGER refuse_switch_insert BEFORE INSERT ON workflow_bindings
+    WHEN NEW.workflow_version_id = 'v-switch-new'
+    BEGIN SELECT RAISE(ABORT, 'replacement insert failed'); END`);
+  try {
+    assert.throws(() => workflows.createBinding({
+      workflowVersionId: "v-switch-new", sessionId: "switch-session", replaceBindingId: first.id,
+    }), /replacement insert failed/);
+    assert.equal(workflows.store.getBinding(first.id)?.state, "active");
+    assert.equal(workflows.store.getBinding(sibling.id)?.state, "active");
+    assert.equal(workflows.store.getRun("switch-sibling-run")?.status, "running");
+  } finally {
+    db.exec("DROP TRIGGER refuse_switch_insert");
+  }
+
+  const switched = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-switch-new", sessionId: "switch-session",
+    replaceBindingId: first.id, triggerMode: "manual", deliveryMode: "preview",
+  });
+  assert.equal(switched.status, 201);
+  const next = await switched.json() as { id: string; workflowVersionId: string; state: string };
+  assert.notEqual(next.id, first.id);
+  assert.equal(next.workflowVersionId, "v-switch-new");
+  assert.equal(next.state, "active");
+  assert.equal(workflows.store.getBinding(first.id)?.state, "archived");
+  assert.equal(workflows.store.getBinding(sibling.id)?.state, "archived");
+  assert.equal(workflows.store.getRun("switch-sibling-run")?.status, "cancelled");
+  assert.equal(workflows.store.getBinding(next.id)?.state, "active");
+  assert.deepEqual(workflows.store.listBindings().map((binding) => binding.id).filter((id) =>
+    id === first.id || id === next.id), [next.id]);
+  const repeated = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-switch-new", sessionId: "switch-session", replaceBindingId: first.id,
+  });
+  assert.equal(repeated.status, 409);
+  assert.equal(workflows.store.getBinding(next.id)?.state, "active");
+  assert.equal(workflows.archiveBinding(next.id).ok, true);
+});
+
 test("session evidence routes expose and remove staging before a binding exists", async () => {
   const registry = new Registry();
   registry.applyDiscovery([discovered({

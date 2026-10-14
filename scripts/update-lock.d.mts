@@ -13,3 +13,6 @@ export function claimIsLive(entry: ProcessRecord, deps?: { identity?: (pid: numb
 export function realHelperLockOperations(): LockOperations;
 export function acquireHelperLock(directory: string, ops: LockOperations): { ok: boolean; heldBy: number | null; entryName: string | null };
 export function releaseHelperLock(directory: string, entryName: string, ops: LockOperations): void;
+
+export function parseClaimEntryName(name: string): {pid: number; createdAtMs: number; name: string} | null;
+export function parseStagingEntryName(name: string): {pid: number; name: string} | null;

@@ -838,7 +838,11 @@ repository root, and pins the immutable version id. Publishing or editing a newe
 cannot change an existing binding or run. Reaching for the chip on a session that is still bound
 to an active binding opens the dialog **on that binding** rather than on whichever workflow
 happens to sort first: choosing the bound version offers **Submit bound version**, and choosing
-a different one explains the conflict, naming both workflows in words rather than by id.
+a different one offers **Switch workflow** or **Switch and submit**. Either action makes the
+selected workflow active and archives the previous binding automatically. **Switch and submit**
+also starts a review of the selected workflow. Switching cancels any active run on the previous
+binding; its run history remains readable. The replacement and conflict rules are documented in
+[Switching a session workflow](workflow-system.md#switching-a-session-workflow).
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never

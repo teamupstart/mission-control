@@ -446,6 +446,9 @@ backup are separate. Disk checks account for the runtime copy, old-app backup, n
 and a possible rollback copy on each filesystem, without assuming copy-on-write.
 If snapshot preparation fails before spawn, the lock holder removes the incomplete attempt it
 created so the same transaction can retry. It never removes a pre-existing attempt this way.
+The app marks itself as quitting before the quit request, so the hide-on-close guard closes
+normally. The helper checks competing launchers and waits for all bundle executables to exit
+before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
@@ -483,10 +486,22 @@ source installer without staging support retains its explicit source-build fallb
 prerequisites. Binary descriptors never take this fallback. There is no binary downloader,
 bootstrap, DMG enrollment or publishing entry point in this transaction layer.
 
+The legacy source fallback also preserves its backup if a live process prevents safe rollback.
+It retains the failed attempt in `failed-update/`; if retention cannot be written, its temporary
+backup is kept instead. A subsequent legacy attempt clears the previous retained failure.
+
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Diagnostic output remains only in the rotating
+hides that result until update state changes. Success and failure outcomes are retired from disk
+only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
+renderer loss or a missing dashboard host. A newly launched
+app waits asynchronously for its live helper to finish before interpreting the pending outcome,
+including retries and rollback that take longer than 90 seconds. The dashboard stays usable
+while this wait continues. Persistent lock-inspection errors are logged and the saved outcome
+is read instead of silently abandoning it. Diagnostic output
+from the build remains in the rotating
 `update.log` in the state directory, with credentials, absolute paths, and remote URLs redacted
 by [`src/main/update-log.ts`](../src/main/update-log.ts) - including every line the staged build
 produced, because an `npm` or `electron-builder` failure is only ever diagnosable in its own
@@ -501,13 +516,121 @@ colon. Both spellings of a git remote go the same way, `scheme://host/path` and
 `git@host:path`, and whole URLs are replaced rather than just their credentials - which
 registry a build reached is the fact worth hiding, exactly as which directory it built in
 already was. `scripts/apply-update.mjs` carries a deliberate copy of the rule set, because the
-detached helper is copied out of the bundle with exactly one sibling module and can import
-nothing else; `test/update-log.test.ts` pins the two to identical output so the copy cannot
+detached helper is copied out of the bundle with the dependencies in
+`scripts/update-helper-files.mjs`; `test/update-log.test.ts` pins the two to identical output so the copy cannot
 drift.
 
 This updates only the packaged application and its updater-owned clone. A separately installed
 daemon LaunchAgent still runs from the repository path recorded in its plist and is not changed by
 an application update.
+
+## Update relaunch safeguards
+
+The app checks launch ownership before handing off an update. The detached helper checks again
+under the existing helper lock before waiting for shutdown and immediately before installing.
+`scripts/mac-app-lifecycle.mjs` owns the same read-only macOS inspection for both processes:
+
+- Enumerate `launchctl list`, then inspect each job in `gui/<uid>` with `launchctl print`.
+  Inspect its program and argument block, including shell wrappers that execute this bundle's
+  `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
+  inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
+  Executable positions are inspected, so an app path passed as ordinary data to a fixed executable
+  does not block an update. Follow `nice` past its optional priority argument and `arch` past
+  its architecture and environment options to the utility they execute. The utility's ordinary
+  data arguments are not treated as executables.
+  Also inspect `open` jobs that launch this bundle through LaunchServices, including bundle
+  paths, symlinks, file URLs, and `-a` or `-b` application selectors. Arguments after `--args`,
+  environment and I/O options, Finder-only `-R` reveals, and file operands sent to another
+  explicitly selected application do not count as launches of this bundle.
+  The launchd `program` selects the executable when present; its first
+  argument is only the process's display name. For a shell's `-c`, inspection accepts a single
+  printed source line. Additional lines are refused because `launchctl print` does not distinguish
+  multiline source from later positional arguments. This can conservatively block a benign shell
+  job with positional arguments; inspection never assumes those lines are inert data.
+  Shells that instead execute a script file or read commands from stdin are refused because their
+  execution source is outside the inspected job. Inspection does not read or execute those scripts.
+  A shell executable that depends on variable or command expansion, starts another shell, or uses
+  the shell's `eval`, `.` or `source` builtins is conservatively treated as a conflict because this
+  inspection cannot establish its target. This includes `command` and `builtin` wrappers.
+  The same refusal applies to `env -S` (`--split-string`), which interprets a command string
+  using its own splitting and expansion rules, including attached or clustered short options.
+  Variables used only as arguments to a fixed executable do not trigger that rule. Environment
+  values stay private.
+  Command substitutions (`$(...)` and backticks) are refused even in arguments, assignments, or
+  redirects because the shell executes them before the outer command. Single-quoted or escaped
+  substitution text remains literal data, as does non-shell launchd argv.
+  Do not copy job environments or command lines into logs.
+- Exempt the runningboard-owned job only when its PID is registered for this exact bundle as a
+  Foreground application. A label that merely resembles an application job is not sufficient.
+- Compare main executables with `lsappinfo list`. Electron helpers need not have their own
+  Foreground registration. Any unregistered main instance blocks the update.
+
+A conflict names the job and the exact, quoted `launchctl bootout 'gui/<uid>/<label>'` command.
+Mission Control never removes the job itself. Inspection errors fail closed. A packaged start
+without its own registration logs the same diagnostic to `daemon.log`, displays it on the local
+startup page and offers it through the existing update error modal once the dashboard is ready.
+This is diagnostic only: detecting an unmanaged start does not kill it. Parent PID 1 alone is not
+evidence, since ordinary LaunchServices launches also have launchd as their parent.
+
+After the parent exits, the helper waits up to two minutes for **all** processes whose executable
+is beneath the bundle, including orphan helpers and utility processes. After replacement it runs
+`lsregister -f` using macOS's LaunchServices utility and waits up to 25 seconds for old bundle
+instances to disappear from `lsappinfo list`. It then rechecks launch conflicts and calls `open`
+on the exact bundle. It never directly executes the application binary or requests a new instance
+with `open -n`.
+
+An `open` exit status does not establish success. For up to 25 seconds per attempt, the helper
+requires all of the following: the exact bundle and `com.mission-control.app` appear as a Foreground
+application in LaunchServices; that PID is running rather than stopped, stuck in uninterruptible
+launch, or a zombie; and Electron has written an acknowledgment bound to this attempt's nonce,
+bundle, PID and process start identity after its main loop ran JavaScript in a loaded renderer.
+The local startup page can acknowledge this even while the daemon is recovering. This proves launch
+responsiveness, not that every SDK session or workflow has recovered.
+
+An `open` failure or an unverified launch gets one retry, after stopping only a process carrying this attempt's nonce
+and rechecking its executable and process identity before any signal. All bundle processes must
+exit and old registrations must clear again. An unrelated process blocks retry and automatic
+rollback; no stale PID or process-group number authorizes a signal. A second unverified launch
+records a sanitized failure and follows the same guarded bundle/receipt rollback path. Success
+is written only after verification. Backup retention, atomic bundle replacement and the helper
+lock remain the owners of recovery. The personal-install migration path also uses LaunchServices
+and checks registration alongside its existing nonce-bound pre-commit readiness acknowledgment.
+
+`daemon.log` receives timestamped main-process entries for renderer `unresponsive` and
+`render-process-gone` events, update dialog sends, renderer delivery, and actual answers. Dialog
+entries carry kind and ID, not release notes or raw diagnostic payloads. Logging applies the
+existing credential/path redaction and cannot prevent startup or an answer. No outcome notice is
+auto-closed or suppressed as a relaunch remedy.
+
+The replay policy requires an actual operator answer for both success and failure, including a
+verified success already delivered to the renderer. Neither launch verification nor delivery
+retires the saved outcome. The notice returns after a restart if the renderer hangs before the
+operator can answer it.
+
+These barriers prevent the observed competing-launcher update sequence and refuse to claim success
+when the OS cannot launch the app. They cannot repair a system-wide LaunchServices fault, prevent an
+administrator from introducing a new launcher after inspection, or guarantee that an already
+launched app never becomes unresponsive. See [launch conflict recovery](troubleshooting.md#mission-control-is-not-open-anymore-or-an-update-relaunch-fails).
+
+### Evidence behind this change
+
+The October 13, 2026 incident had a successful bundle install and a separate unmanaged respawn job.
+The exact event that first wedged LaunchServices remains unproven; concurrent launchers around
+bundle replacement are a hypothesis, not an established macOS defect. Current host inspection
+confirmed that normal Dock applications use Submitted launchd jobs owned by runningboard, so job
+type alone cannot identify the fault. In the incident daemon log, `listening` precedes
+`recovery_complete`. The latter is the workflow manager's recovery milestone, not renderer or
+HTTP readiness. Current startup serves HTTP before background SDK restore completes. The roughly
+100-second recovery interval and database size therefore do not establish the cause of the frozen
+modal. No operator database was copied, mutated or benchmarked for this change.
+
+The browser regression in `e2e/specs/update-relaunch.spec.ts` also runs against the exact
+`e00afcc` helper for before/after evidence. It scripts the incident's competing launchd job,
+unregistered window owner and stopped LaunchServices copy at the helper's injected OS boundary;
+the helper, outcome file, main controller, presenter and browser modal remain real. The old
+helper replaces the bundle and publishes success under those conditions; the guarded helper
+refuses before replacement and displays the remediation. This is a deterministic reproduction
+of the helper's unsafe sequence, not a claim to reproduce or explain macOS's system-wide wedge.
 
 ## Release identity
 

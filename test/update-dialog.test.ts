@@ -367,3 +367,31 @@ test("the presenter rejects the system choice for a non-migration question", asy
   assert.equal(presenter.outstanding, 0);
   assert.equal(await asked, "dismiss");
 });
+
+test("delivery is distinct from an answer: log both, keep the modal outstanding, never acknowledge detach", async () => {
+  const f = recorder({visible: true});
+  const log: string[] = [];
+  f.port.log = (line) => log.push(line);
+  const presenter = new UpdateDialogPresenter(f.port);
+  presenter.attach();
+  let delivered = 0;
+  let answered = 0;
+  const pending = presenter.present(UPDATE_DIALOGS.outcome({result: "success", targetVersion: "1.2.4", recordedAt: "now", launchVerified: true}), {
+    delivered: () => { delivered++; }, acknowledged: () => { answered++; },
+  });
+  presenter.received("unknown");
+  presenter.received("dialog-1");
+  presenter.received("dialog-1");
+  assert.equal(delivered, 1);
+  assert.equal(answered, 0);
+  assert.equal(presenter.outstanding, 1);
+  presenter.answer("dialog-1", "dismiss");
+  assert.equal(answered, 1);
+  await pending;
+  assert.match(log.join("\n"), /send id=dialog-1 kind=outcome sent=true/);
+  assert.match(log.join("\n"), /answer id=dialog-1 kind=outcome choice=dismiss/);
+  const lost = presenter.present(UPDATE_DIALOGS.error("failed"), {acknowledged: () => { answered++; }});
+  presenter.detach();
+  await lost;
+  assert.equal(answered, 1);
+});

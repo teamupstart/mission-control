@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { launchConflictMessage } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_COPY } from "../../src/shared/update-copy.ts";
 import { UPDATE_DIALOGS, type UpdateDialogRequest } from "../../src/shared/update-dialog.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -23,6 +24,7 @@ interface DialogBridge {
   push(request: UpdateDialogRequest): void;
   /** The answers the dashboard sent back. */
   answers(): { id: string; choice: string }[];
+  delivered(): string[];
 }
 
 declare global {
@@ -41,6 +43,7 @@ declare global {
 async function installDialogBridge(dashboard: Page): Promise<void> {
   await dashboard.addInitScript(() => {
     const listeners = new Set<(request: unknown) => void>();
+    const delivered: string[] = [];
     const answered: { id: string; choice: string }[] = [];
     Object.defineProperty(window, "missionDesktop", {
       value: {
@@ -53,6 +56,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
             listeners.add(cb);
             return () => listeners.delete(cb);
           },
+          receivedDialog: (id: string) => delivered.push(id),
           answerDialog: (id: string, choice: string) => answered.push({ id, choice }),
         },
       },
@@ -63,6 +67,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
           for (const listener of listeners) listener(request);
         },
         answers: () => answered,
+        delivered: () => delivered,
       },
     });
   });
@@ -373,4 +378,34 @@ test("two outstanding questions are answered one at a time, each by its own id",
     { id: "outcome-1", choice: "dismiss" },
     { id: "offer-1", choice: "confirm" },
   ]);
+});
+
+
+test("launch conflict names the respawn job and exact remediation; verified success stays open after delivery", async ({dashboard}) => {
+  await installDialogBridge(dashboard);
+  const message = launchConflictMessage({jobs: ["com.mission-control.recovery-20260918"], unregistered: [42372]}, 501)!;
+  await dashboard.evaluate((request) => window.updateDialogFixture.push(request), {
+    ...UPDATE_DIALOGS.error(message), id: "launch-conflict",
+  });
+  const modal = dashboard.getByRole("dialog", {name: "Mission Control update"});
+  await expect(modal).toContainText("launchctl bootout 'gui/501/com.mission-control.recovery-20260918'");
+  await expect(modal).toContainText("not registered as a Foreground app");
+  await expect(modal).toContainText("No launchd job was removed");
+  await expectContentClearsBorder(modal);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    await mkdir("e2e/.artifacts/update-relaunch", {recursive: true});
+    await dashboard.screenshot({path: "e2e/.artifacts/update-relaunch/launch-conflict.png"});
+  }
+  await modal.getByRole("button", {name: "OK", exact: true}).click();
+  await expect(modal).toBeHidden();
+  await dashboard.evaluate((request) => window.updateDialogFixture.push(request), {
+    ...UPDATE_DIALOGS.outcome({result: "success", targetVersion: "alpha e00afcc", recordedAt: "2026-10-13T13:27:40.000Z", launchVerified: true}), id: "verified-success",
+  });
+  await expect.poll(() => dashboard.evaluate(() => window.updateDialogFixture.delivered())).toContain("verified-success");
+  await expect(modal).toContainText("Mission Control was updated to alpha e00afcc");
+  expect(await dashboard.evaluate(() => window.updateDialogFixture.answers())).toEqual([{id: "launch-conflict", choice: "dismiss"}]);
+  await expectContentClearsBorder(modal);
+  if (process.env.MC_E2E_EVIDENCE === "1") await dashboard.screenshot({path: "e2e/.artifacts/update-relaunch/success-still-open.png"});
+  await modal.getByRole("button", {name: "OK", exact: true}).press("Enter");
+  await expect(modal).toBeHidden();
 });

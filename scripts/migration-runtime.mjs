@@ -1,7 +1,8 @@
 import { spawnBundledUpdateHelper } from "./update-helper-runtime.mjs";
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
-import { spawn, spawnSync } from "node:child_process";
+import { assertSafeAppLaunch, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
@@ -42,34 +43,40 @@ export function migrationPortOccupied(port) {
   });
 }
 
-async function spawnMigrationApp(path, args, env = process.env) {
-  const appEnv = {...env};
-  delete appEnv.ELECTRON_RUN_AS_NODE;
-  const child = spawn(path, args, { detached: true, stdio: "ignore", env: appEnv });
-  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-  child.unref();
-  let identity = null;
-  await boundedMigrationWait(() => {
-    identity = processIdentity(child.pid);
-    if (!processIsAlive(child.pid)) throw new Error("The personal app exited before it could identify itself.");
-    return identity !== null;
-  }, "Could not identify the personal app process.", { timeout: 5000 });
-  return { pid: child.pid, identity };
+async function openMigrationApp(bundle, args, mac, stateDirectory = process.env.MISSION_HOME) {
+  await prepareAppLaunch(bundle, mac);
+  await assertSafeAppLaunch(bundle, mac);
+  const result = await mac.run("/usr/bin/open", [bundle, ...(stateDirectory ? ["--env", `MISSION_HOME=${stateDirectory}`] : []), ...(args.length ? ["--args", ...args] : [])], 5000);
+  if (result.code !== 0) throw new Error("LaunchServices could not open the migration app.");
 }
 
-export function migrationRuntimePorts({ parent, port, inventory, checkpoint, timeout = MIGRATION_TIMEOUT_MS }) {
+export function migrationRuntimePorts({ parent, port, inventory, checkpoint, timeout = MIGRATION_TIMEOUT_MS, mac = realMacAppOps() }) {
   return {
     inventory, checkpoint,
     waitForParent: () => boundedMigrationWait(() => !sameMigrationProcess(parent), "The system app did not exit before migration. Close it and retry.", {timeout}),
     waitForDaemonExit: () => boundedMigrationWait(async () => !await migrationPortOccupied(port), "A background Mission Control daemon is still running. Stop it, then retry the update.", {timeout}),
-    launchTarget: (plan) => spawnMigrationApp(join(plan.target, "Contents", "MacOS", "Mission Control"), ["--mission-migration", plan.nonce], {...process.env, MISSION_HOME: plan.stateDirectory}),
-    waitForReady: (journal) => boundedMigrationWait(() => {
+    launchTarget: async (plan) => {
+      await openMigrationApp(plan.target, ["--mission-migration", plan.nonce], mac, plan.stateDirectory);
+      let launched;
+      await boundedMigrationWait(() => {
+        const record = existsSync(join(plan.stateDirectory, MIGRATION_LAUNCH)) ? readMigrationJson(join(plan.stateDirectory, MIGRATION_LAUNCH)) : null;
+        if (record?.nonce !== plan.nonce || record?.bundle !== plan.target || record?.stateDirectory !== plan.stateDirectory || record?.commit !== plan.targetIdentity.commit || !record?.identity || !sameMigrationProcess(record)) return false;
+        launched = {pid: record.pid, identity: record.identity};
+        return true;
+      }, "The personal app did not register its launch. Check LaunchServices before recovery.", {timeout});
+      return launched;
+    },
+    waitForReady: (journal) => boundedMigrationWait(async () => {
       if (!sameMigrationProcess(journal.targetProcess)) throw new Error("The personal app exited before confirming readiness.");
       if (processIdentity(journal.targetProcess.pid) !== journal.targetProcess.identity) return false;
       const path = join(journal.plan.stateDirectory, MIGRATION_ACK);
       if (!existsSync(path)) return false;
       const ack = readMigrationJson(path);
-      return ack.nonce === journal.plan.nonce && ack.pid === journal.targetProcess.pid &&
+      const registration = await mac.run("/usr/bin/lsappinfo", ["list"]);
+      const running = await mac.run("/bin/ps", ["-axww", "-o", "pid=,ppid=,stat=,comm="]);
+      const foreground = registration.code === 0 && parseLaunchServices(registration.stdout).some((row) => row.id === "com.mission-control.app" && row.bundle === journal.plan.target && row.pid === ack.pid && row.type === "Foreground");
+      const responsive = running.code === 0 && parseAppProcesses(running.stdout).some((row) => row.pid === ack.pid && !/[TZUX]/.test(row.state));
+      return foreground && responsive && ack.nonce === journal.plan.nonce && ack.pid === journal.targetProcess.pid &&
         ack.identity === journal.targetProcess.identity && ack.commit === journal.plan.targetIdentity.commit &&
         ack.stateDirectory === journal.plan.stateDirectory && ack.bundle === journal.plan.target;
     }, "The personal app did not confirm readiness before the migration timeout.", {timeout}),
@@ -95,7 +102,12 @@ export function migrationRuntimePorts({ parent, port, inventory, checkpoint, tim
       }
     },
     launchSource: async (source) => {
-      await spawnMigrationApp(join(source, "Contents", "MacOS", "Mission Control"), []);
+      // Startup recovery can be running inside the unchanged source itself. It must
+      // continue startup, not wait for its own LaunchServices entry to disappear.
+      const registrations = await mac.run("/usr/bin/lsappinfo", ["list"]);
+      if (registrations.code !== 0) throw new Error("Could not inspect LaunchServices during migration recovery.");
+      if (parseLaunchServices(registrations.stdout).some((row) => row.pid === process.pid && row.id === "com.mission-control.app" && row.bundle === source && row.type === "Foreground")) return;
+      await openMigrationApp(source, [], mac);
     },
   };
 }

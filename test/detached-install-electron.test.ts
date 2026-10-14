@@ -25,6 +25,14 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   const ownedProcesses: ProcessRecord[] = [];
   let interruptedTarget: ProcessRecord | null = null;
   t.after(() => {
+    const runtimes = join(root, 'state/update-runtimes');
+    if (existsSync(runtimes)) for (const name of readdirSync(runtimes)) {
+      const marker = join(runtimes, name, 'owner.json');
+      if (existsSync(marker)) {
+        const owner = JSON.parse(readFileSync(marker, 'utf8'));
+        if (owner.helper) ownedProcesses.push(owner.helper);
+      }
+    }
     for (const record of ownedProcesses) {
       if (record.identity && processIdentity(record.pid) === record.identity && processIsAlive(record.pid)) process.kill(record.pid, 'SIGKILL');
     }
@@ -40,6 +48,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   renameSync(join(current, 'Contents/MacOS/Electron'), join(current, 'Contents/MacOS/Mission Control'));
   const plist = join(current, 'Contents/Info.plist');
   writeFileSync(plist, readFileSync(plist, 'utf8').replace(/(<key>CFBundleExecutable<\/key>\s*<string>)[^<]+/, '$1Mission Control')
+    .replace(/(<key>CFBundleIdentifier<\/key>\s*<string>)[^<]+/, '$1com.mission-control.app')
     .replace(/(<key>CFBundleShortVersionString<\/key>\s*<string>)[^<]+/, '$11.26.0'));
   const resources = join(current, 'Contents/Resources/app'); mkdirSync(resources, {recursive: true});
   // Use inert fixture modules at the production readiness inventory. The native
@@ -64,10 +73,13 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     const {join, resolve} = require('node:path');
     app.whenReady().then(async () => {
       try {
-        const {migrationStartupGate, boundedMigrationWait} = await import('./scripts/migration-runtime.mjs');
+        if (process.argv.includes('--fixture-parent')) {await import('./parent.mjs'); app.quit(); return;}
+        const {migrationStartupGate, boundedMigrationWait, recordMigrationLaunch} = await import('./scripts/migration-runtime.mjs');
         // Hold only the attempt's target before readiness. Ordinary recovery and
         // restored-source launches must still run the real startup gate.
         if (${JSON.stringify(mode)} === 'interrupted-after-swap' && process.argv.includes('--mission-migration')) {
+          const {readMigrationJournal} = await import('./scripts/install-migration.mjs');
+          recordMigrationLaunch(readMigrationJournal(process.env.MISSION_HOME).plan);
           writeFileSync(join(process.env.MISSION_HOME, 'fixture-target-waiting'), String(process.pid));
           await boundedMigrationWait(() => existsSync(join(process.env.MISSION_HOME, 'fixture-release-target')),
             'Fixture target was not stopped by recovery', {timeout: 120000});
@@ -79,7 +91,18 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
         writeFileSync(join(process.env.MISSION_HOME, 'fixture-ready.json'), JSON.stringify({result, receipt, pid: process.pid,
           nodeFlag: process.env.ELECTRON_RUN_AS_NODE ?? null, electron: process.versions.electron}));
         app.quit();
-      } catch (error) {writeFileSync(join(process.env.MISSION_HOME, 'fixture-error.txt'), String(error.stack)); app.exit(1);}
+      } catch (error) {
+        writeFileSync(join(process.env.MISSION_HOME, 'fixture-error.txt'), String(error.stack));
+        if (${JSON.stringify(mode)} === 'readiness-failure' && process.argv.includes('--mission-migration')) {
+          const {boundedMigrationWait} = await import('./scripts/migration-runtime.mjs');
+          const {readMigrationJournal} = await import('./scripts/install-migration.mjs');
+          // Exercise exit after launch identification, rather than racing the
+          // helper's first poll and falling into its missing-launch deadline.
+          await boundedMigrationWait(() => readMigrationJournal(process.env.MISSION_HOME)?.targetProcess?.pid === process.pid,
+            'Fixture failed target was not identified', {timeout: 5000});
+        }
+        app.exit(1);
+      }
     });
   `);
   execFileSync('/bin/cp', ['-R', current, candidate]);
@@ -155,8 +178,9 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   const priorBundle = inspectBundle(current);
   const env: NodeJS.ProcessEnv = {...process.env, MISSION_HOME: state, MISSION_PORT: '59999', PATH: `${traps}:/usr/bin:/bin`,
     MISSION_RUNTIME_TRAPS: join(root, 'trap-hits')};
-  const parent = spawn(join(current, 'Contents/MacOS/Mission Control'), [parentScript], {
-    env: {...env, ELECTRON_RUN_AS_NODE: '1'}, stdio: ['ignore', 'pipe', 'pipe']});
+  delete env.ELECTRON_RUN_AS_NODE;
+  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
+    env, stdio: ['ignore', 'pipe', 'pipe']});
   let output = ''; parent.stdout.on('data', (v) => {output += v;}); parent.stderr.on('data', (v) => {output += v;});
   assert.equal(await new Promise((done) => parent.once('exit', done)), 0, output);
   const handed = JSON.parse(readFileSync(join(state, 'handoff.json'), 'utf8'));
@@ -190,7 +214,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     // Ordinary startup of the installed replacement must detach its own recovery
     // helper before restoring the app whose executable it just launched.
     delete env.ELECTRON_RUN_AS_NODE;
-    const retry = spawn(join(current, 'Contents/MacOS/Mission Control'), [], {env, stdio: 'ignore'});
+    const retry = spawn('/usr/bin/open', ['-W', '-n', current, '--env', `MISSION_HOME=${state}`], {env, stdio: 'ignore'});
     await new Promise<void>((done, reject) => {retry.once('spawn', done); retry.once('error', reject);});
     ownedProcesses.push({pid: retry.pid!, identity: processIdentity(retry.pid!)});
     assert.equal(await new Promise((done) => retry.once('exit', done)), 0, 'ordinary startup handed off recovery');

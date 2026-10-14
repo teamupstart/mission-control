@@ -6137,6 +6137,7 @@ export const DeleteWorkflowSchema = ValidateWorkflowSchema;
 export const CreateWorkflowBindingSchema = z.object({
   workflowVersionId: WorkflowIdSchema,
   sessionId: z.string().min(1).max(500),
+  replaceBindingId: WorkflowIdSchema.optional(),
   triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).optional(),
   deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).optional(),
   maxRepairRounds: z

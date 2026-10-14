@@ -163,3 +163,60 @@ eviction path, while preserving its worktree for an explicit cleanup or re-dispa
 Wait for removal before treating the session as fully gone, then inspect the task row for
 its recorded outcome and cleanup choice. See [session lifecycle](session-lifecycle.md#from-observation-to-removal)
 and [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
+
+
+## Mission Control is not open anymore, or an update relaunch fails
+
+A Dock error saying **The application "Mission Control" is not open anymore**, especially with
+an unresponsive update notice still visible, can mean that the window belongs to a process
+macOS did not launch or register normally. The update notice is not the launch failure.
+
+Start with `daemon.log` and `update.log` in your configured `MISSION_HOME` (normally
+`~/.mission-control`). Main-process entries identify renderer hangs/exits and each update dialog's
+send, delivery and answer by ID. `update-outcome.json` distinguishes an installed bundle from a
+verified relaunch; a new successful outcome carries `launchVerified: true`. A failed outcome is
+kept until acknowledged. A verified success also remains on disk until answered, so a renderer
+that hangs after receiving the notice cannot hide that outcome on the next launch.
+
+Inspect the current macOS registration and launch jobs:
+
+```sh
+lsappinfo list
+launchctl list
+launchctl print "gui/$(id -u)/com.mission-control.recovery-20260918"
+ps -axww -o pid,ppid,stat,comm
+```
+
+Use the actual job label reported by the update error. In `lsappinfo list`, look for
+`bundleID="com.mission-control.app"`, your exact bundle path, the matching PID and
+`type="Foreground"`. A process with state `T` is stopped. A running process whose executable
+is the app's `Contents/MacOS/Mission Control` but has no matching Foreground registration is an
+unmanaged start. Electron helper processes normally have no separate Foreground entry.
+
+A launchd job whose program or shell arguments execute that binary can respawn it every time it
+exits and race the updater. Inspect the job before removing it. For the historical recovery label:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.mission-control.recovery-20260918"
+```
+
+The failure message supplies the exact command for the job actually found, including shell quoting.
+Mission Control does not run it for you. Review and remove or disable any persistent LaunchAgent
+configuration through its owner if it would reinstall the job at login. A normal runningboard-owned
+application job is not itself evidence of a stray respawner. Do not reuse old `kill` commands from
+recovery logs: both PIDs and process-group numbers can belong to unrelated processes later.
+
+After resolving the respawner, quit the unmanaged instance and launch the installed `.app` from
+Finder or the Dock. Do not directly execute `Contents/MacOS/Mission Control`. Retry the update only
+when the ordinary launch is responsive and registered. An update refuses to replace a bundle while
+any executable beneath it remains alive. If a separately managed daemon uses that bundle's helpers,
+stop it through its normal owner as well.
+
+If `open` still leaves a stopped app, or other applications also cannot open, LaunchServices may be
+wedged system-wide. Restart macOS, then verify a normal launch before retrying. Do not keep starting
+more copies or delete state, receipts or the database to clear the update modal. A relaunch failure
+retains the prior bundle and receipt under `failed-update/` when possible; if automatic rollback was
+blocked by an unrelated live process, the failure explains that recovery is still pending.
+
+See [update relaunch safeguards](desktop-and-packaging.md#update-relaunch-safeguards) for the
+verification, retry and rollback boundaries.

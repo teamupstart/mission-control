@@ -4800,6 +4800,23 @@ export class WorkflowStore {
     }, (result) => ({ kind: "binding", id: result.id, now: input.now }));
   }
 
+  /** Replace the conversation's anchor and any repository siblings as one durable change. */
+  replaceBindingAndCancel(expectedId: string, input: WorkflowBindingInsert): {
+    created: WorkflowBinding;
+    archived: Array<{ binding: WorkflowBinding; cancelledRunId: string | null }>;
+  } | null {
+    return transaction(this.db, () => {
+      const current = this.activeBindingForNote(input.noteKey);
+      if (current?.id !== expectedId || current.sessionId !== input.sessionId) return null;
+      const archived = this.activeBindingsForNote(input.noteKey).map((binding) => {
+        const result = this.archiveBindingAndCancel(binding.id, input.now);
+        if (!result) throw new Error(`Workflow binding ${binding.id} disappeared during replacement`);
+        return result;
+      });
+      return { archived, created: this.insertBinding(input) };
+    });
+  }
+
   updateBinding(
     id: string,
     patch: Partial<Pick<WorkflowBinding, "triggerMode" | "deliveryMode" | "state" | "maxRepairRounds">>,

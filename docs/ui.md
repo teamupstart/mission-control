@@ -1067,6 +1067,42 @@ application, and says so rather than guessing). The row names what it found, so 
   change. Both records are `Record<OpenTargetId, …>`, so a declared target that nothing can
   launch does not compile.
 
+## Publish a file as a shareable page
+
+The file toolbar's **Publish** button, beside **Open in ▾**, shares the open file as a
+hosted page - most often a scout report at `docs/reports/<slug>/report.html`. Mission
+Control uploads nothing itself. The click sends the session one ordinary turn, through the
+same one-turn path as the reply box, asking its agent to publish that exact file with the
+agent's own tool. The toolbar confirms only that the request was sent: the conversation is
+where the agent replies with the link, or says why it could not publish. Each confirmation
+or refusal belongs to the file and session it was sent from: it is shown only while that
+file is open and stays with it until dismissed or published again, so a request still in
+flight when you move on, or publish a second file, never replaces another file's result.
+
+- **Claude Code publishes a Claude artifact.** The prompt tells Claude to call its
+  `Artifact` tool with `file_path` set to the open file, and not to edit, rewrite,
+  reformat or copy it first. That tool reads its content only from `file_path`, so the page
+  on claude.ai is the file on disk. A new artifact is private to you until you share it
+  from its page header. Artifacts need a Pro, Max, Team or Enterprise plan, a claude.ai
+  sign-in rather than an API key, and the Anthropic API rather than Bedrock or Vertex. The
+  Agent SDK runtime has them off by default. When the tool is not available, the prompt
+  asks Claude to say so and stop rather than publish something else.
+- **Codex and Pi cannot publish.** The button is drawn disabled with the reason. OpenAI's
+  nearest equivalent, Sites, is managed only from ChatGPT on the web or the desktop app, and
+  a Sites deploy may change a project to make it deployable.
+- **Only the tool's source types.** Claude publishes `.html`, `.htm` and `.md`; any other
+  file shows the button disabled with that list.
+- **Unsaved edits are not published.** The button waits for the file to be saved, so what
+  Claude reads is what you are looking at. A session that cannot take a turn - no pane, or
+  driven by a workflow engine - shows the button disabled with that reason.
+- **A published artifact is one page.** Relative links to files beside the report do not
+  resolve on claude.ai, so a report that links to a CSV or screenshot publishes with those
+  links dead.
+- **Adding a harness is one capability entry.** `artifactPublishing` in
+  `@shared/harness-capabilities.ts` carries either the label, the source types and the
+  prompt, or the sentence that explains why the harness cannot publish. The toolbar reads
+  only that entry.
+
 ## Conversation rendering
 
 The Conversation is drawn as a **terminal stream** by default - prompt lines in, stdout out,

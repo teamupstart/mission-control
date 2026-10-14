@@ -418,6 +418,32 @@ export interface StandingInstructionsSpec {
 }
 
 /**
+ * Can this harness publish a checkout file as a hosted, shareable page - and if not, why not.
+ *
+ * A union rather than a nullable spec for `ModelDiscoverySpec`'s reason: the Files tab draws
+ * the Publish control on every harness and needs a sentence for the ones that cannot, so a
+ * harness that does not publish has to say why rather than leave the browser to invent it.
+ *
+ * `prompt` is the whole mechanism. Mission Control does not upload anything itself; it sends
+ * the session one ordinary turn asking the agent to publish the file with its own tool, so
+ * the publish happens under the agent's own sign-in and permission rules. The prompt names
+ * the file and forbids rewriting it, because the operator's contract is that the page shared
+ * is the page on disk.
+ *
+ * `sourceExtensions` is the vendor's own list of publishable source files, lowercase with
+ * the dot, so the control is not offered on a file the tool would refuse.
+ */
+export type ArtifactPublishingSpec =
+  | {
+      publishes: true;
+      /** What the published page is called, as a person reads it: "Claude artifact". */
+      label: string;
+      sourceExtensions: readonly string[];
+      prompt: (path: string) => string;
+    }
+  | { publishes: false; unavailable: string };
+
+/**
  * Live model discovery, and the sign-in that makes it answer anything.
  *
  * A UNION rather than two independent fields, because only two of the four combinations
@@ -523,6 +549,8 @@ interface HarnessCapabilitiesBase {
    * harness with no out-of-band channel declares an empty record and is prefixed instead.
    */
   standingInstructions: StandingInstructionsSpec;
+  /** Never null: a harness that cannot publish names the reason the Files tab shows. */
+  artifactPublishing: ArtifactPublishingSpec;
 }
 
 const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
@@ -647,6 +675,27 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         terminal: "claude-append-system-prompt",
         sdk: "claude-sdk-system-prompt-append",
       },
+    },
+    // Claude Code's `Artifact` tool publishes a local file to a private claude.ai page. Its
+    // content comes only from `file_path` - the vendor schema has no inline-content
+    // parameter (`ArtifactInput`, `sdk-tools.d.ts`) - so naming the file and forbidding a
+    // copy is what keeps the shared page byte-for-byte the file on disk. The extensions are
+    // the tool's documented source types. Whether the tool is enabled is the account's and
+    // settings' decision, which a session can only find out by asking, hence the stop rule.
+    artifactPublishing: {
+      publishes: true,
+      label: "Claude artifact",
+      sourceExtensions: [".html", ".htm", ".md"],
+      prompt: (path) => [
+        `Publish ${path} as a Claude artifact.`,
+        "",
+        "Call the Artifact tool with file_path set to exactly that file. Publish it as it is: " +
+          "do not edit, rewrite, reformat, regenerate or copy it first, and do not add or " +
+          "change any content. If the Artifact tool is not available in this session, say so " +
+          "and stop without publishing anything else.",
+        "",
+        "Reply with the artifact's claude.ai link.",
+      ].join("\n"),
     },
   },
   codex: {
@@ -791,6 +840,13 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Only the embedded driver. `thread/start` takes `developerInstructions`; a terminal
     // Codex has no equivalent, so that pair is prefixed into turn one instead.
     standingInstructions: { outOfBand: { sdk: "codex-developer-instructions" } },
+    // OpenAI's nearest equivalent, Sites, is managed only from ChatGPT on the web or the
+    // desktop app; its documentation says the Codex CLI has no Sites management, and a Sites
+    // deploy may change a project to make it deployable. Neither reaches a session here.
+    artifactPublishing: {
+      publishes: false,
+      unavailable: "Codex cannot publish files from a session. OpenAI Sites is managed only in ChatGPT.",
+    },
   },
   pi: {
     id: "pi",
@@ -919,6 +975,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     standingInstructions: {
       outOfBand: { terminal: "pi-append-system-prompt", sdk: "pi-append-system-prompt" },
     },
+    artifactPublishing: { publishes: false, unavailable: "Pi has no tool for publishing a file as a shareable page." },
   },
 };
 

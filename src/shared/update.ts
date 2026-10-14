@@ -31,7 +31,7 @@ export const UPDATE_PHASES = [
 
 export type UpdateApplyOutcome =
   | { result: "in-progress"; targetVersion: string; recordedAt: string }
-  | { result: "success"; targetVersion: string; recordedAt: string }
+  | { result: "success"; targetVersion: string; recordedAt: string; launchVerified?: boolean }
   | { result: "failure"; targetVersion: string; recordedAt: string; message: string };
 
 export interface UpdateMigration {

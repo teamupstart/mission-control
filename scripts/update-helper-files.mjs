@@ -9,6 +9,7 @@ export const UPDATE_HELPER_FILES = [
   "src/shared/owned-runtime.mjs",
   "src/shared/install-receipt.mjs",
   "src/shared/harness-runtime.mjs",
+  "scripts/mac-app-lifecycle.mjs",
   "scripts/app-bundle-swap.mjs",
   "scripts/update-lock.mjs",
   "scripts/install-migration.mjs",

@@ -359,6 +359,7 @@ test("a narrow Files toolbar keeps both modes and every action visible", async (
     modes.getByRole("button", { name: "Editor" }),
     toolbar.getByRole("button", { name: "Comment mode" }),
     toolbar.getByRole("button", { name: "Comments" }),
+    toolbar.getByRole("button", { name: /^Publish as/ }),
     toolbar.getByRole("button", { name: /^Open in/ }),
     toolbar.getByRole("button", { name: "Extract files window" }),
   ];

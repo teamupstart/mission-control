@@ -14,6 +14,7 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
   let now = Date.now();
   let mainQueries = 0;
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => installedCommit,
     readAlpha: () => readUpdatePreferences(preferences).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(preferences, { alpha }); },

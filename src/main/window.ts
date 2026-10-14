@@ -6,6 +6,7 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
+import { logMain } from "./main-log.ts";
 import { BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
 import { setTimeout as delay } from "node:timers/promises";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
@@ -87,7 +88,7 @@ async function dashboardReady(url: string, signal: AbortSignal): Promise<boolean
   }
 }
 
-export function createWindow(preloadPath: string): BrowserWindow {
+export function createWindow(preloadPath: string, launchWarning: string | null = null): BrowserWindow {
   if (win) return win;
   win = new BrowserWindow({
     ...initialSize(),
@@ -116,6 +117,8 @@ export function createWindow(preloadPath: string): BrowserWindow {
   });
 
   const window = win;
+  window.on("unresponsive", () => logMain("renderer unresponsive"));
+  window.webContents.on("render-process-gone", (_event, details) => logMain(`renderer render-process-gone reason=${details.reason} exitCode=${details.exitCode}`));
   const url = targetUrl();
   // Both local status pages and the dashboard must release navigation on Retry or quit.
   const navigate = async (target: string, signal: AbortSignal): Promise<void> => {
@@ -138,12 +141,12 @@ export function createWindow(preloadPath: string): BrowserWindow {
   };
   const loading = new WindowStartup({
     now: () => Date.now(),
-    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state))}`, signal),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, launchWarning))}`, signal),
     ready: (signal) => dashboardReady(url, signal),
     load: (signal) => navigate(url, signal),
     pause: (signal) => delay(1000, undefined, { signal }),
     loaded: () => { for (const listener of loadedListeners) listener(); },
-    log: (error) => console.error("[mission-control] dashboard startup navigation failed:", error),
+    log: (error) => logMain(`dashboard startup navigation failed: ${String(error)}`),
   });
   startup = loading;
   window.once("ready-to-show", () => { if (!window.isDestroyed()) window.show(); });

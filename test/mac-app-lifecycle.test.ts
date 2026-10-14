@@ -236,6 +236,26 @@ test("preflight rejects dormant shell eval without exposing its environment", as
   }
 });
 
+test("preflight refuses dormant jobs that source shell scripts", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.sourced-launcher";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const builtin of [".", "source", "command .", "builtin source"]) {
+    await t.test(builtin, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n ${builtin} '/private/fixture-launcher.sh'\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.sourced-launcher'/);
+      assert.doesNotMatch(message, /private|fixture-launcher/);
+    });
+  }
+  f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n /usr/bin/true source . '/private/fixture-launcher.sh'\n}\n`);
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []});
+});
+
 test("preflight finds dormant nice jobs that execute the bundle", async (t) => {
   const f = fixture();
   const label = "com.fixture.nice-launcher";

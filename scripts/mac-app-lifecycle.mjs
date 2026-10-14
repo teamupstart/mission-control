@@ -200,9 +200,9 @@ function commandLaunchesBundle(words, bundle, shell = false) {
         || (wrapper === "arch" && ["-arch", "-d", "-e"].includes(word.value));
       continue;
     }
-    // eval reparses its arguments as shell source, including deferred expansion.
-    // Refuse it at an executable position without evaluating or logging that source.
-    if (shell && path === "eval") return true;
+    // eval and source builtins execute additional shell source. Refuse them at
+    // an executable position without reading, evaluating or logging that source.
+    if (shell && ["eval", ".", "source"].includes(path)) return true;
     if (path.startsWith("/") && isMain(path, bundle)) return true;
     if ((path === "open" || canonical(path) === canonical("/usr/bin/open")) && openLaunchesBundle(words.slice(index + 1), bundle, shell)) return true;
     if (/(?:^|\/)(?:sh|bash|zsh|dash|ksh)$/.test(canonical(path))) {

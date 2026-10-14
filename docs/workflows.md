@@ -105,7 +105,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Twelve ready-made review roles ship with the application. Nothing has to be
+Fourteen ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -120,6 +120,8 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Documentation Consistency Judge | Agreement across changed documents and their relevant current references |
+| Conciseness & Reference Judge | Useful prose, necessary context, and precise references instead of repeated explanations |
 | Slop Filter | Low-signal code, tests, comments, and prose that add no trustworthy behavior or useful explanation |
 | Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 | Code Design Reviewer | The design of the change: appropriate abstractions, SOLID without Liskov, DRY, composition over inheritance, encapsulation, unrepresentable illegal states, and explicit dependencies. Scoped to the submitted change, and never style or types |
@@ -167,7 +169,7 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-Four ready-made workflows ship already published in the Library:
+These ready-made workflows ship already published in the Library:
 
 | Workflow | Judges, in stage order | Finishes with |
 | --- | --- | --- |
@@ -175,6 +177,8 @@ Four ready-made workflows ship already published in the Library:
 | **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
 | **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
+| **Local Plan Validation** | The same plan review roles over an exact local revision | Local plan publication |
+| **Documentation Review** | Intent Conformance; then Documentation Steward, Documentation Consistency, and Conciseness & Reference | Verified Pull Request action |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -196,13 +200,40 @@ material is reported as a gap. Plan tasks with Persona review receive instructio
 frozen text artifact containing the root plan, phase files, relevant unchanged references, and
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
+#### Documentation Review
+
+The default for [document tasks](dispatch-and-backlog.md) starts with the
+`documentation` Command. Configure that slot for the repository's link, anchor, formatting,
+generated-reference, or docs-build checks. It uses the normal Command trust and execution
+rules; an unconfigured slot reports **Skipped** and passes. There is no hard-coded test suite
+or automatic execution of commands found in documentation.
+
+Intent Conformance runs next. Documentation Steward owns accuracy and authoritative placement;
+Documentation Consistency compares relevant current documents; Conciseness & Reference removes
+unnecessary explanation while preserving local context. The three specialists run together and
+must all pass before the Pull Request action. Their guidance lives in the
+[Persona sources](../personas/README.md), rather than being repeated here.
+
+Document tasks with Persona review ask the author to register current changed document text,
+complete relevant sections of unchanged references, an inventory, source hashes or revisions,
+and focused check results. Paths or changed hunks alone cannot establish consistency. Review
+scope excludes unrelated historical debt, and missing context is disclosed as an evidence gap.
+This preset sets **Evidence preflight** to **Off**.
+
+Every judge in this preset has **Recheck after repairs** enabled. In a workflow copy, a Persona's
+Routing panel in Pipeline view, or its properties in Graph view, can change that setting. It
+forces a fresh review after repairs even when the machine skips previously passing judges.
+The choice is frozen on each published node; old graphs without it retain the machine policy.
+
+#### Implementation workflow versions
+
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
 Their next versions update only the pinned model to `gpt-6-sol`.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks this workflow - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -401,7 +432,7 @@ so a draft moves between them freely and existing workflows need no migration.
 
 There are two add controls, because they answer two different questions. **＋ Stage**, on the
 seam between cards, creates a stage and offers all three things a stage can be: your Personas,
-the four check slots, and your addable session actions, grouped. The picker inside an
+the check slots, and your addable session actions, grouped. The picker inside an
 evaluation stage adds another *member* to it, so it offers Personas and checks only. A session
 action stage has neither - it holds exactly one action by construction - so its own control
 chooses **which** action it sends. Checks are offered even before you have authored a Persona,
@@ -636,8 +667,7 @@ reason.
 which is the same already-shipped path an unconfigured slot takes - see [Running a check
 command](worktrees-and-checks.md#running-a-check-command) for why the platform floor exists.
 
-**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck` and
-`build`. What each one runs is configured in
+**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck`, `build`, and `documentation`. What each one runs is configured in
 [Library › Commands](library-and-line.md#commands) (`#/library/commands/<slot>`), keeping the
 exportable published version machine-neutral and free of argv. The execution contract accepts
 an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor

@@ -43,7 +43,7 @@ import {
  * on the right, a local draft, a discard guard and a compare-and-swap save - because an
  * operator who has navigated one should not have to learn a third shape. It draws the rail
  * out of the SHARED primitives under `src/web/library/` rather than a fourth copy of them.
- * What is different is that the rail is CLOSED: four built-in slots ship with the product,
+ * What is different is that the rail is CLOSED: built-in slots ship with the product,
  * so there is no New, no duplicate, no archive, and no empty state. A slot nobody has
  * configured is still a row.
  *

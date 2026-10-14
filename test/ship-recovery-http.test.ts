@@ -48,7 +48,7 @@ const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function seed(
   suffix = "",
   decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
-  kind: "ship" | "bugfix" = "ship",
+  kind: "ship" | "bugfix" | "document" = "ship",
 ): { sessionId: string; noteKey: string; taskId: string } {
   const sessionId = `ship-recovery-session${suffix}`;
   const noteKey = `ship-recovery-conversation${suffix}`;
@@ -124,7 +124,7 @@ function seed(
   return { sessionId, noteKey, taskId };
 }
 
-for (const kind of ["ship", "bugfix"] as const) {
+for (const kind of ["ship", "bugfix", "document"] as const) {
 test(`the daemon revalidates ${kind} recovery and suppresses it on a new PR`, async () => {
   const { sessionId, noteKey, taskId } = seed(`-${kind}`, null, kind);
   const identity = {

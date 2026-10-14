@@ -1,4 +1,4 @@
-import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "./builtin-workflow.ts";
+import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, LOCAL_PLAN_VALIDATION_WORKFLOW_ID, DOCUMENTATION_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -88,6 +88,16 @@ export interface TaskKindInfo {
 }
 
 export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
+  document: {
+    label: "document",
+    blurb: "Update repository documentation, with Documentation Review before the pull request.",
+    purpose: "write and maintain documentation",
+    accent: "#e9b96e",
+    icon: [
+      { shape: "path", d: "M4 1.5h5l3 3V14H4zM9 1.5v3h3M6 7h4M6 9.5h4M6 12h2" },
+    ],
+    afterWorkHint: "Documentation Review checks accuracy, consistency, concise prose, and references.",
+  },
   ship: {
     label: "ship",
     blurb: "Deliver a change, as a pull request.",
@@ -167,6 +177,12 @@ export interface TaskKindBehavior {
  * whether Foreman may schedule it.
  */
 export const TASK_KIND_BEHAVIOR = {
+  document: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
   ship: {
     repoAvailability: "workspace",
     launch: "harness",
@@ -252,10 +268,11 @@ export function allowsBacklogAutopilot(kind: TaskKind): boolean {
  * value. Mixing them would put "what is this choice?" and "what follows from it?" in one
  * record and lose the reason either is written down.
  *
- * Ship and Bugfix produce implementation diffs; Plan produces reviewable documents.
+ * Ship and Bugfix produce implementation diffs; Plan and Document produce reviewable documents.
  * This record keeps that property independent from which kind is the dispatch default.
  */
 const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
+  document: true,
   ship: true,
   bugfix: true,
   scout: false,
@@ -277,6 +294,7 @@ export function hasReviewableDiff(kind: TaskKind): boolean {
 
 /** Whether this kind can be stored in the backlog or produced by backlog automation. */
 const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
+  document: true,
   ship: true,
   bugfix: true,
   scout: true,
@@ -539,12 +557,13 @@ export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPill
   };
 }
 
-/** Kinds that share implementation handoff, PR follow-through, and ship recovery. */
+/** Kinds that defer publication and share PR follow-through and ship recovery. */
 export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
-  return kind === "ship" || kind === "bugfix";
+  return kind === "ship" || kind === "bugfix" || kind === "document";
 }
 
 const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
+  document: DOCUMENTATION_REVIEW_WORKFLOW_ID,
   ship: undefined,
   scout: undefined,
   plan: PLAN_VALIDATION_WORKFLOW_ID,

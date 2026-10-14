@@ -848,7 +848,7 @@ available:
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
-  ship, bugfix, scout, plan, pipeline or chat - on both surfaces, `ship` included. Each kind
+  ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
   card's **Medallion**, which shows the icon alone and gives the word on hover. The console
   badge does the same only on a pane too narrow for anything else, where every other header

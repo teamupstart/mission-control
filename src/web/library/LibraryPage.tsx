@@ -290,7 +290,7 @@ export function LibraryPage({
       <Shelf
         id="commands"
         cards={commands}
-        // No cross-link, and no ＋ New card. The four slots ship with the product, and their
+        // No cross-link, and no ＋ New card. The slots ship with the product, and their
         // runs are the workflow runs the first shelf already links to.
         crossLink={null}
         crossLinkHint=""
@@ -298,7 +298,7 @@ export function LibraryPage({
         onOpenCard={(card) => onOpenAsset("commands", card.id)}
         openHint={(card) => `Set what the ${card.name} Command runs on this machine`}
         newCard={null}
-        // Unreachable: `commandCards` projects the four built-in slots, so the shelf is
+        // Unreachable: `commandCards` projects the built-in slots, so the shelf is
         // never empty. Kept honest rather than removed.
         empty="This build offers no Command slots."
       />

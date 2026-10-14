@@ -757,7 +757,7 @@ test("bugfix shares ship recovery and its live-delivery boundaries", () => {
       );
     }
   }
-  for (const kind of ["ship", "bugfix"] as const) {
+  for (const kind of ["ship", "bugfix", "document"] as const) {
     assert.deepEqual(decideShipShepherd(input({
       session: session({ task: mkTaskSummary({ id: "task-1", kind, status: "done" }) }),
     })), { kind: "skip", why: "no running managed task is bound" });

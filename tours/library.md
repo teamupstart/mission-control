@@ -44,7 +44,7 @@ You may associate a specific skill to be invoked for an action (recommended).
 ## A Command slot
 <!-- stage: command-slot -->
 
-Four fixed slots ship with the product - test, lint, typecheck, and build - so there is no New card here. A workflow's Command node names a portable slot and never an argv, which is what lets the same workflow run against any repository; this screen is where THIS machine says what the slot runs.
+Fixed slots ship with the product - test, lint, typecheck, build, and documentation - so there is no New card here. A workflow's Command node names a portable slot and never an argv, which is what lets the same workflow run against any repository; this screen is where THIS machine says what the slot runs.
 
 ## Overrides, and saving one
 <!-- stage: command-overrides -->

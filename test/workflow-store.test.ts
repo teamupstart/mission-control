@@ -273,6 +273,23 @@ test("Publish freezes a node override beside the Persona snapshot, and later edi
   assert.equal(after.persona.runner, "claude");
 });
 
+test("Publish freezes each judge's repair policy across subsequent edits", () => {
+  seed();
+  const graph = (recheckAfterRepair: boolean) => ({
+    ...draft,
+    nodes: draft.nodes.map(node => node.kind === "persona" ? { ...node, recheckAfterRepair } : node),
+  });
+  assert.equal(store.updateWorkflowCas("w1", 1, { draft: graph(true) }, 3).ok, true);
+  assert.equal(store.publishWorkflow("w1", 2, "v1", 4).ok, true);
+  assert.equal(store.updateWorkflowCas("w1", 2, { draft: graph(false) }, 5).ok, true);
+  assert.equal(store.publishWorkflow("w1", 3, "v2", 6).ok, true);
+  for (const [version, expected] of [[1, true], [2, false]] as const) {
+    const node = store.getWorkflowVersion("w1", version)!.graph.nodes.find(node => node.kind === "persona");
+    assert.ok(node?.kind === "persona");
+    assert.equal(node.recheckAfterRepair, expected);
+  }
+});
+
 test("Publish leaves an inheriting node with no override key at all", () => {
   seed();
   const published = store.publishWorkflow("w1", 1, "v1", 4);
@@ -283,6 +300,7 @@ test("Publish leaves an inheriting node with no override key at all", () => {
   // distinguishes inheritance from a choice would have to start distinguishing two spellings
   // of inheritance instead.
   assert.equal(Object.hasOwn(node, "executionOverride"), false);
+  assert.equal(Object.hasOwn(node, "recheckAfterRepair"), false);
   assert.equal(JSON.stringify(published.version.graph).includes("executionOverride"), false);
 });
 

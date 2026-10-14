@@ -85,6 +85,7 @@ import {
   personaOriginRank,
   personaSnapshotOf,
   withExecutionOverride,
+  withRecheckAfterRepair,
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
@@ -3478,7 +3479,7 @@ export class WorkflowStore {
 
   // ---- Global Command catalog ----
   //
-  // The four portable slots are BUILT IN, so this catalog behaves unlike the two beside it:
+  // The portable slots are BUILT IN, so this catalog behaves unlike the two beside it:
   // nothing creates or archives a row, every slot is always projected whether or not it has
   // been stored, and the unit of both identity and update is the slot rather than a surrogate
   // id. What it keeps from Personas and SessionActions is the part that matters - one
@@ -3663,7 +3664,7 @@ export class WorkflowStore {
   }
 
   /**
-   * Apply a COMPLETE legacy `checkCommands` list across all four slots, in one transaction.
+   * Apply a COMPLETE legacy `checkCommands` list across all slots, in one transaction.
    *
    * The adapter behind `PUT /api/workflows/config`. Whole-list replacement, because that is
    * exactly what the old field was: the form sends the entire array and a row it omits is a
@@ -4106,7 +4107,7 @@ export class WorkflowStore {
       .filter((entry): entry is WorkflowCommandOverride => entry !== null);
   }
 
-  /** One pass over the override table, so projecting four slots is not four queries. */
+  /** One pass over the override table, so projecting the slots does not require a query per slot. */
   private workflowCommandOverridesBySlot(): Map<string, WorkflowCommandOverride[]> {
     const out = new Map<string, WorkflowCommandOverride[]>();
     const rows = this.db
@@ -4537,6 +4538,7 @@ export class WorkflowStore {
             // a version that merged them could never tell an operator which of the two they
             // are looking at.
             ...withExecutionOverride(node.executionOverride),
+            ...withRecheckAfterRepair(node.recheckAfterRepair),
           };
         }),
         edges: workflow.draft.edges,

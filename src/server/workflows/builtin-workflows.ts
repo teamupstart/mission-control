@@ -3,6 +3,7 @@ import {
   normalizeWorkflowName,
   personaSnapshotOf,
   withExecutionOverride,
+  withRecheckAfterRepair,
   sessionActionSnapshotOf,
   type PersonaId,
   type PersonaSnapshot,
@@ -28,6 +29,7 @@ import {
   BUG_FIX_REVIEW_WORKFLOW_SLUG,
   PLAN_VALIDATION_WORKFLOW_SLUG,
   LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG,
+  DOCUMENTATION_REVIEW_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -195,6 +197,7 @@ function publishBuiltinGraph(
           // one does it is not silently dropped on the way into the version. Because no
           // shipped draft has the field, every existing built-in version is byte-identical.
           ...withExecutionOverride(node.executionOverride),
+          ...withRecheckAfterRepair(node.recheckAfterRepair),
         };
       }
       // No shipped workflow authors one yet - the runtime that would execute it arrives in a
@@ -371,7 +374,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   end: "nmr-end",
 } as const;
 
-const reviewer = (nodeId: string, slug: string): StageMember =>
+const reviewer = (nodeId: string, slug: string): Extract<StageMember, { kind: "persona" }> =>
   ({ nodeId, kind: "persona", personaId: builtinPersonaId(slug) });
 
 const check = (nodeId: string, slot: WorkflowCheckSlot): StageMember =>
@@ -1658,6 +1661,34 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       ] },
       personaExecution: { default: { runner: "codex", model: "gpt-6-sol" } },
       completionPolicy: { kind: "none" }, resumptionPolicy: "auto", evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
+  }),
+  builtinWorkflow({
+    slug: DOCUMENTATION_REVIEW_WORKFLOW_SLUG,
+    name: "Documentation Review",
+    description: "Checks documentation, then reviews intent, accuracy, consistency, and concise references before a verified pull request. Judges review every repair.",
+    versions: [{
+      pipeline: {
+        sessionId: "dr-session", endId: "dr-end", endOutcome: "Complete",
+        stages: [
+          { kind: "evaluation", joinId: null, members: [check("dr-documentation", "documentation")] },
+          { kind: "evaluation", joinId: null, members: [
+            { ...reviewer("dr-intent", "intent-conformance-judge"), recheckAfterRepair: true },
+          ] },
+          { kind: "evaluation", joinId: "dr-review-join", members: [
+            { ...reviewer("dr-steward", "documentation-steward"), recheckAfterRepair: true },
+            { ...reviewer("dr-consistency", "documentation-consistency-judge"), recheckAfterRepair: true },
+            { ...reviewer("dr-conciseness", "conciseness-reference-judge"), recheckAfterRepair: true },
+          ] },
+          action("dr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-6-sol" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
     }],

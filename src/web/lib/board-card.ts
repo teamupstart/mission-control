@@ -415,7 +415,7 @@ export const DISPLAY_CHOICES: readonly AnyDisplayChoice[] = [
     group: "card",
     label: "Task type",
     description:
-      "How a card marks what kind of task it came from - ship, bugfix, scout, plan, pipeline or chat. Every kind is marked, ship included.",
+      "How a card marks what kind of task it came from - ship, bugfix, scout, plan, pipeline, chat or document. Every kind is marked, ship included.",
     options: TASK_KIND_CARD_STYLES.map((id) => ({ id, ...TASK_KIND_CARD_COPY[id] })),
   },
   {

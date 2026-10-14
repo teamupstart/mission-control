@@ -256,6 +256,7 @@ test("a mission can be saved with no Workflow selected, and the daemon stores no
 for (const [kind, workflowId] of [
   ["bugfix", "builtin-workflow:bug-fix-review"],
   ["plan", "builtin-workflow:plan-validation"],
+  ["document", "builtin-workflow:documentation-review"],
 ] as const) {
   for (const optOut of [false, true]) {
     test(`selecting ${kind} on a mission persists ${optOut ? "explicit None" : "its default review"}`, async ({ dashboard, daemon }) => {
@@ -283,7 +284,7 @@ for (const [kind, workflowId] of [
   }
 }
 
-for (const kind of ["bugfix", "plan"] as const) {
+for (const kind of ["bugfix", "plan", "document"] as const) {
   test(`returning from ${kind} restores the mission's prior workflow choice`, async ({ dashboard, daemon }) => {
     const customWorkflowId = await publishDefaultWorkflow(daemon);
     await dashboard.getByRole("button", { name: "Recurring missions" }).click();

@@ -156,6 +156,7 @@ function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {
  * whose wrong answer is invisible until a completion is silently retired.
  */
 const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
+  document: false,
   ship: true,
   bugfix: true,
   scout: true,
@@ -166,6 +167,7 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
 
 /** Kinds whose ordinary completion stays with the human unless a Workflow was selected. */
 const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
+  document: false,
   ship: false,
   bugfix: false,
   scout: false,

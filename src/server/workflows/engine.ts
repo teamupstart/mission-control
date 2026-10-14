@@ -992,7 +992,7 @@ export class WorkflowEngine {
       return;
     }
     if (!isPersona(node)) return;
-    if (this.workflowPolicy().skipPassedJudges) {
+    if (this.workflowPolicy().skipPassedJudges && !node.recheckAfterRepair) {
       const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
       const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
       const directive = initial.operatorDirective

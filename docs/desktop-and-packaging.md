@@ -502,8 +502,10 @@ under the existing helper lock before waiting for shutdown and immediately befor
   environment and I/O options, Finder-only `-R` reveals, and file operands sent to another
   explicitly selected application do not count as launches of this bundle.
   The launchd `program` selects the executable when present; its first
-  argument is only the process's display name. Only the argument immediately after a shell's `-c`
-  is shell source, not its later positional arguments.
+  argument is only the process's display name. For a shell's `-c`, inspection accepts a single
+  printed source line. Additional lines are refused because `launchctl print` does not distinguish
+  multiline source from later positional arguments. This can conservatively block a benign shell
+  job with positional arguments; inspection never assumes those lines are inert data.
   Shells that instead execute a script file or read commands from stdin are refused because their
   execution source is outside the inspected job. Inspection does not read or execute those scripts.
   A shell executable that depends on variable or command expansion, starts another shell, or uses

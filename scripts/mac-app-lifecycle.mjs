@@ -220,9 +220,12 @@ function commandLaunchesBundle(words, bundle, shell = false) {
         if (option === "--" || !/^[+-]/.test(option)) break;
         if (words[argument].expanded) return true;
         if (option === "--command" || /^-[^-oO]*c/.test(option)) {
-          // Only the next argument is source; remaining arguments are $0, $1, ...
+          // launchctl print does not delimit embedded newlines from later argv.
+          // More printed lines could extend the source, not just supply $0/$1.
+          // Refuse that ambiguity instead of inspecting only its first line.
           const source = words[argument + 1];
-          return !source || source.expanded || commandLaunchesBundle(literalShellWords(source.value), bundle, true);
+          return words.length !== argument + 2 || !source || source.expanded
+            || commandLaunchesBundle(literalShellWords(source.value), bundle, true);
         }
         // -o/+o and bash -O/+O consume a named option, even in a flag cluster.
         // Its operand must not hide a subsequent -c from preflight.

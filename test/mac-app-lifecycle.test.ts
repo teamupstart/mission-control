@@ -236,6 +236,30 @@ test("preflight rejects dormant shell eval without exposing its environment", as
   }
 });
 
+test("preflight refuses ambiguous multiline shell source from a dormant job", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.multiline-shell";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const [name, source] of [
+    ["later executable", `/usr/bin/true\nexec "${binary}"`],
+    ["later expanded executable", '/usr/bin/true\nexec "$MISSION_APP"'],
+    ["comment before executable", `# fixture comment\nexec "${binary}"`],
+    ["indented continuation", `/usr/bin/true\n  exec "${binary}"`],
+    ["ambiguous positional argument", `/usr/bin/true\n${binary}`],
+  ]) {
+    await t.test(name, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n ${source}\n}\nenvironment = {\n MISSION_APP => ${binary}\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.multiline-shell'/);
+      assert.doesNotMatch(message, /MISSION_APP|Contents\/MacOS/);
+    });
+  }
+});
+
 test("preflight refuses dormant command substitutions even outside executable positions", async (t) => {
   const f = fixture();
   const label = "com.fixture.command-substitution";
@@ -319,7 +343,7 @@ test("preflight refuses dormant shells with opaque script or stdin sources", asy
     });
   }
   f.outputs.set(`print gui/501/${label}`, `program = /bin/sh\narguments = {\n sh\n -c\n /usr/bin/true\n /private/fixture-respawner.sh\n}\n`);
-  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "a positional argument after inline source is data");
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [label], unregistered: []}, "printed positional arguments cannot be distinguished from multiline source");
 });
 
 test("preflight finds dormant nice jobs that execute the bundle", async (t) => {
@@ -461,7 +485,6 @@ test("preflight allows a fixed executable whose arguments only contain app paths
     ["shell names are data", "/usr/bin/true", ["/usr/bin/true", "/bin/sh", "-c", `exec "${binary}"`]],
     ["wrapper arguments", "/usr/bin/env", ["/usr/bin/env", "FLAG=1", "/usr/bin/true", binary]],
     ["shell data", "/bin/sh", ["/bin/sh", "-c", `/usr/bin/true "${binary}"`]],
-    ["shell positional argument", "/bin/sh", ["/bin/sh", "-c", "/usr/bin/true", binary]],
     ["eval is data", "/usr/bin/true", ["/usr/bin/true", "eval", `exec "${binary}"`]],
     ["eval is shell data", "/bin/sh", ["/bin/sh", "-c", "/usr/bin/true eval 'exec \"$MISSION_APP\"'"]],
     ["eval is a display name", "/bin/sh", ["/bin/sh", "-c", "exec -a eval /usr/bin/true"]],

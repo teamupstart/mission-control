@@ -199,6 +199,14 @@ export function useDiffLineComments(input: {
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadBusy, setThreadBusy] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
+  /**
+   * The ticket a pending line re-read must still hold to open its composer; see `onLineSelect`.
+   *
+   * Bumped by EVERYTHING that decides what the panel shows instead: another line click, opening
+   * a thread from its marker or its line, switching comment mode, and moving to another file or
+   * session. A read that returns after any of them answers a question the reader stopped asking.
+   */
+  const selection = useRef(0);
   const draft = useFileCommentDraft({
     sessionId: session.id,
     path,
@@ -209,7 +217,9 @@ export function useDiffLineComments(input: {
   const canComment = blockReason === null && !readOnly;
   const active = mode && canComment;
   const onToggleMode = useCallback(() => {
-    if (canComment) setMode((value) => !value);
+    if (!canComment) return;
+    selection.current += 1;
+    setMode((value) => !value);
   }, [canComment]);
 
   const allThreads = useMemo(() => {
@@ -238,8 +248,6 @@ export function useDiffLineComments(input: {
   // A comment belongs to the file and session it was written on. Moving to another closes
   // what was open and lets a draft settle where it was written.
   const dismissDraft = draft.dismiss;
-  /** Bumped by every click on a line and every move to another file; see `onLineSelect`. */
-  const selection = useRef(0);
   useEffect(() => {
     selection.current += 1;
     setOpenThreadId(null);
@@ -253,6 +261,9 @@ export function useDiffLineComments(input: {
   const openThreadOnLine = useCallback((line: number): void => {
     const bucket = threadLines.get(line) ?? [];
     if (bucket.length === 0) return;
+    // The reader chose this thread. A line re-read still in flight must not land a composer
+    // over it when it returns.
+    selection.current += 1;
     setThreadError(null);
     // `-1` when nothing on this line is open lands on the first; running off the end closes
     // the panel rather than wrapping back to a thread just read.
@@ -278,9 +289,10 @@ export function useDiffLineComments(input: {
    * line, its revision. A row the edit changed is refused with the remedy, and the refreshed
    * document turns that row inert so it does not invite the same click again.
    *
-   * Only the LATEST click is honoured. Another click, or a move to another file, while the read
-   * is out makes this one stale, and a stale answer must not open a composer nobody is looking
-   * at - or one anchored to the file the reader just left.
+   * Only the LATEST choice is honoured. Another click, a thread opened, comment mode switched,
+   * or a move to another file while the read is out makes this one stale (see `selection`), and
+   * a stale answer must not open a composer nobody is looking at - over the thread the reader
+   * just opened, or anchored to the file they just left.
    */
   const onLineSelect = useCallback(async (row: DiffLine): Promise<void> => {
     const line = diffRowSourceLine(row, lines);

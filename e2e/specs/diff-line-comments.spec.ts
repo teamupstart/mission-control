@@ -456,3 +456,54 @@ test("a click re-reads the file: an untouched line anchors to it, an edited one 
   await expect(diff.getByRole("button", { name: "Comment on line 1" })).toBeVisible();
   await shoot(diff, page, "diff-changed-line-refused");
 });
+
+test("a line re-read still in flight never opens a composer over a choice made since", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "README.md"), README);
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiffOn(page, "README.md");
+  const commentMode = diff.getByRole("button", { name: "Comment mode" });
+  await commentMode.click();
+  await sendFromDiff(diff, 1, "Is the new heading meant to be title case?");
+  const marker = diff.getByRole("button", { name: sentMarker(1) });
+  await expect(marker).toBeVisible();
+
+  // Hold the re-read a click starts, so the reader can change their mind while it is out.
+  await page.route("**/api/sessions/*/file?*", async (route) => {
+    if (route.request().url().includes("known=")) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+    await route.continue();
+  });
+  const box = diff.getByRole("textbox", { name: "Comment on line 3" });
+
+  // ---- opening a thread wins over the pending line ----
+  let reread = page.waitForResponse((response) => response.url().includes("known="));
+  await diff.getByRole("button", { name: "Comment on line 3" }).click();
+  await marker.click();
+  const thread = diff.getByRole("region", { name: /^Comment MC-\w+ on line 1$/ });
+  await expect(thread).toBeVisible();
+  await reread;
+  // The answer has landed; give React the frame a stale composer would have opened in.
+  await page.waitForTimeout(300);
+  await expect(box).toHaveCount(0);
+  await expect(thread).toBeVisible();
+
+  // ---- so does switching comment mode off ----
+  await thread.getByRole("button", { name: "Collapse comment", exact: false }).click();
+  await expect(thread).toBeHidden();
+  reread = page.waitForResponse((response) => response.url().includes("known="));
+  await diff.getByRole("button", { name: "Comment on line 3" }).click();
+  await commentMode.click();
+  await expect(commentMode).toHaveAttribute("aria-pressed", "false");
+  await reread;
+  await page.waitForTimeout(300);
+  await expect(box).toHaveCount(0);
+  expect(storedThreads(daemon), "only the comment on line 1 exists").toHaveLength(1);
+  await page.unroute("**/api/sessions/*/file?*");
+});

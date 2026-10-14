@@ -507,3 +507,49 @@ test("a line re-read still in flight never opens a composer over a choice made s
   expect(storedThreads(daemon), "only the comment on line 1 exists").toHaveLength(1);
   await page.unroute("**/api/sessions/*/file?*");
 });
+
+const REREAD_REFUSED = "the daemon could not read README.md";
+
+test("a failed re-read starts no comment, says why, and the next click can succeed", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "README.md"), README);
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiffOn(page, "README.md");
+  await diff.getByRole("button", { name: "Comment mode" }).click();
+  const lineButton = diff.getByRole("button", { name: "Comment on line 3" });
+  await expect(lineButton).toBeVisible();
+
+  // Only the re-read a click starts is refused - the one carrying the revision already held.
+  // The first read, which drew the line buttons, has already succeeded.
+  await page.route("**/api/sessions/*/file?*", (route) =>
+    route.request().url().includes("known=")
+      ? route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: REREAD_REFUSED }),
+      })
+      : route.continue());
+
+  const box = diff.getByRole("textbox", { name: "Comment on line 3" });
+  await lineButton.click();
+  // A comment anchored to a read that did not happen would quote whatever the copy held, so
+  // the click stops and says why rather than opening the box on the stale copy.
+  await expect(diff.getByText(`This file could not be re-read, so no comment was started: ${REREAD_REFUSED}`))
+    .toBeVisible();
+  await expect(box).toHaveCount(0);
+  expect(storedThreads(daemon), "nothing was written without a fresh read").toHaveLength(0);
+  // The line stays clickable: nothing says it changed, only that it could not be checked.
+  await expect(lineButton).toBeVisible();
+  await shoot(diff, page, "diff-reread-failed");
+
+  // Once the file can be read again the same click opens the composer, and the notice clears.
+  await page.unroute("**/api/sessions/*/file?*");
+  await lineButton.click();
+  await expect(box).toBeVisible();
+  await expect(diff.getByText(/This file could not be re-read/)).toHaveCount(0);
+});

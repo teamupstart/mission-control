@@ -264,6 +264,33 @@ test("preflight finds dormant nice jobs that execute the bundle", async (t) => {
   }
 });
 
+test("preflight refuses dormant env split-string launchers without exposing their source", async (t) => {
+  const f = fixture();
+  const label = "com.fixture.env-split-launcher";
+  f.outputs.set("apps", "");
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+  for (const argv of [
+    ["env", "-S", `"${binary}" --private-fixture-secret`],
+    ["env", `-S"${binary}" --private-fixture-secret`],
+    ["env", "-iS", `"${binary}"`],
+    ["env", "-i", "-S", '"${MISSION_APP}"'],
+    ["env", "--split-string", `"${binary}"`],
+    ["env", `--split-string="${binary}"`],
+  ]) {
+    await t.test(argv[1]!, async () => {
+      f.outputs.set(`print gui/501/${label}`, `program = /usr/bin/env\narguments = {\n ${argv.join("\n ")}\n}\n`);
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [label], unregistered: []});
+      const message = launchConflictMessage(conflicts, 501)!;
+      assert.match(message, /launchctl bootout 'gui\/501\/com.fixture.env-split-launcher'/);
+      assert.doesNotMatch(message, /MISSION_APP|private-fixture-secret|Contents\/MacOS/);
+    });
+  }
+  f.outputs.set(`print gui/501/${label}`, `program = /usr/bin/env\narguments = {\n env\n -uMISSION_APP\n /usr/bin/true\n -S\n "${binary}"\n}\n`);
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []}, "split flags passed as data to a fixed utility are not executable source");
+});
+
 test("preflight finds dormant arch jobs that execute the bundle", async (t) => {
   const f = fixture();
   const label = "com.fixture.arch-launcher";

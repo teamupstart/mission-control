@@ -507,6 +507,8 @@ under the existing helper lock before waiting for shutdown and immediately befor
   A shell executable that depends on variable or command expansion, starts another shell, or uses
   the shell's `eval` builtin is conservatively treated as a conflict because this inspection cannot
   establish its target. This includes `command eval` and `builtin eval`.
+  The same refusal applies to `env -S` (`--split-string`), which interprets a command string
+  using its own splitting and expansion rules, including attached or clustered short options.
   Variables used only as arguments to a fixed executable do not trigger that rule. Environment
   values stay private.
   Do not copy job environments or command lines into logs.

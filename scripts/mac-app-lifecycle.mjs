@@ -191,6 +191,9 @@ function commandLaunchesBundle(words, bundle, shell = false) {
     const name = path.split("/").at(-1);
     if (["exec", "env", "command", "nohup", "nice", "arch"].includes(name) || (shell && path === "builtin")) { wrapper = name; continue; }
     if (wrapper && word.value.startsWith("-")) {
+      // env -S splits and expands a command string using its own grammar. Refuse
+      // that execution source, including attached and clustered short options.
+      if (wrapper === "env" && /^(?:-[iv0]*S|--split-string(?:=|$))/.test(word.value)) return true;
       optionValue = (wrapper === "exec" && word.value === "-a")
         || (wrapper === "env" && ["-u", "--unset", "-C", "--chdir"].includes(word.value))
         || (wrapper === "nice" && word.value === "-n")

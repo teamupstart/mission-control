@@ -27,3 +27,7 @@ export const PLAN_SCHEDULING_TOOL = "create_task" as const;
 
 /** Live workflow authority before the skill takes its direct publication path. */
 export const PLAN_PUBLICATION_TOOL = "get_plan_publication_context" as const;
+
+export const PLAN_CONTEXT_TOOL = "get_plan_context" as const;
+export const PLAN_SAVE_TOOL = "save_plan" as const;
+export const PLAN_READ_TOOL = "read_plan" as const;

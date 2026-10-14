@@ -152,6 +152,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.deepEqual(APP_CONFIG_ENTRIES.skills.classification.fields, {
     enabled: "setting",
     defaultSkillEnabled: "setting",
+    commitPlanHtml: "setting",
+    planStorage: "setting",
     skills: "setting",
     generation: "derived",
     generationAt: "derived",
@@ -177,6 +179,8 @@ test("mixed config snapshots include settings and exclude derived or operational
   const skills = SkillsConfigSchema.parse({
     enabled: true,
     defaultSkillEnabled: true,
+    commitPlanHtml: true,
+    planStorage: "local",
     skills: { retro: true },
     generation: 42,
     generationAt: 1234,
@@ -184,6 +188,8 @@ test("mixed config snapshots include settings and exclude derived or operational
   assert.deepEqual(settingPayloadForEntry(APP_CONFIG_ENTRIES.skills, skills), {
     enabled: true,
     defaultSkillEnabled: true,
+    commitPlanHtml: true,
+    planStorage: "local",
     skills: { retro: true },
   });
 

@@ -217,8 +217,8 @@ only one of those places is a rule an operator can save past:
 On a machine an organization's device management identifies, Mission Control manages the
 **Product analytics** destination for that organization. Off by default still holds everywhere
 else. Today the only organization is Upstart, and [Running Mission Control at
-Upstart](upstart.md#telemetry-to-upstarts-datadog) covers what is detected and how pilot
-volunteers enroll. Everything an organization contributes - its device management hosts, its
+Upstart](upstart.md#telemetry-to-upstarts-datadog) covers what is detected and sent.
+Everything an organization contributes - its device management hosts, its
 preset, its rollout - is one entry in `src/server/environment/organizations.ts`.
 
 **Detection** runs once at daemon start, before the telemetry cycle starts, and again on
@@ -239,18 +239,21 @@ that does not match the rule withdraws the managed settings.
 **Apply.** The first time an organization is recognized, the whole previous Product analytics
 destination and the master switch are kept in the `telemetry.organization` record. In the same
 transaction, the destination is replaced by the preset (endpoint, temporality, network gate,
-acceptance window and export shape) and switched **off**, whatever it was. The endpoint change
-bumps the destination generation, which fences batches queued for the old endpoint, and the
-switch-off drops them, so nothing queued for the previous collector can reach the
-organization's gateway. The master switch does not move. Every write goes through the same
+acceptance window and export shape) and switched according to the rollout. For Upstart's
+`default-on` rollout, it and the master switch turn on. The endpoint change bumps the
+destination generation, fencing batches queued for the old endpoint, so old batches cannot
+reach the organization's gateway. Every write goes through the same
 `setTelemetryConfig` path as a person's edit, attributed to the daemon.
 
 **Keep in step.** Every later start and Re-check writes every preset field again, so a newer
-preset version replaces the old one. An identical configuration stores nothing. While the
-rollout is `pilot`, the destination is on exactly when the Mac has joined the pilot
-(`POST /api/telemetry/organization/pilot` with `{"enrolled": true}`). Joining also turns the
-master switch on. Leaving turns the destination off and puts the master switch back to its
-value before first application.
+preset version replaces the old one. An identical configuration stores nothing. Under
+`default-on`, every recognized Mac has the destination and master switch on. The old pilot
+enrollment route answers 409 and cannot change this setting. A previously enrolled Mac keeps
+its saved pre-management configuration for withdrawal.
+
+**Notice.** On a default-on managed Mac, the dashboard shows a one-time notice describing the
+telemetry and linking to the view-only Settings panel. Dismissal is stored on the daemon via
+`POST /api/telemetry/organization/notice`, so it persists across dashboard and daemon restarts.
 
 **Withdraw.** When a Mac that has a record is no longer recognized, the previous destination,
 including its own switch, and the previous master switch are restored in one write, and the
@@ -273,7 +276,7 @@ and the person's own backend keep running.
 More generally, while an organization holds the lock, Product analytics sends only when all of
 these are stored, not merely implied:
 - a readable record for that organization;
-- the rollout's permission, which during the pilot is a stored enrollment;
+- the rollout's permission, which is automatic under `default-on`;
 - the managed endpoint in the destination.
 
 If the first application's write fails, nothing is sent, not even when the person's previous
@@ -284,7 +287,8 @@ the preset.
 `reset_identity` operations answer 403 with
 `{"error": "Telemetry settings on this Mac are managed by <organization>", "managedBy": "<id>"}`,
 and Settings > Telemetry renders view-only. The `retry` operation, the connection probe, the
-pilot route and Re-check still work, because none of them is a settings edit. The daemon's own
+notice acknowledgement and Re-check still work, because neither is a settings edit. The pilot
+route remains available only for older `pilot` rollouts. The daemon's own
 apply path is not a request, so the lock never blocks it. Nothing outside Settings > Telemetry
 is locked. `GET /api/telemetry/config` reports the active organization as `organization`, or
 `null`. These routes, and the pilot route, wait for any detection still in flight, including

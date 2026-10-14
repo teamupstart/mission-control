@@ -1,3 +1,4 @@
+import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -48,6 +49,7 @@ import {
   fetchHarnessesConfig,
   fetchPipelineRepos,
   fetchRepos,
+  fetchSkills,
   fetchTaskSources,
   type DispatchResult,
 } from "../lib/api.ts";
@@ -1064,6 +1066,7 @@ function DispatchModal({
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
+  const [planStorage, setPlanStorage] = useState<"repository" | "local" | null>(null);
   const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   /**
    * What this MACHINE has to say about tooling a launched session will inherit - already
@@ -1241,8 +1244,7 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
-  const dependencyKey = (dependency: TaskDependencyInput): string =>
-    dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+  const dependencyKey = dependencyInputKey;
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -1276,11 +1278,9 @@ function DispatchModal({
     // Keep disappeared targets visible in an edit. They remain blocking until removed,
     // but hiding them from the select would also make them impossible to remove.
     for (const dependency of editing?.dependencies ?? []) {
-      const input: TaskDependencyInput = dependency.type === "task"
-        ? { type: "task", taskId: dependency.taskId }
-        : { type: "session", sessionId: dependency.sessionId };
+      const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (!out.has(key)) out.set(key, { input, label: `${dependency.title} (unavailable)`, group: "session" });
+      if (!out.has(key)) out.set(key, { input, label: dependency.type === "plan" ? `${dependency.title} (${dependency.satisfiedAt === null ? "waiting for publication" : "published"})` : `${dependency.title} (unavailable)`, group: "session" });
     }
     return out;
   }, [editing, sessions, tasks]);
@@ -1288,12 +1288,11 @@ function DispatchModal({
     const stored = editing?.dependencies.find(
       (candidate) =>
         dependencyKey(
-          candidate.type === "task"
-            ? { type: "task", taskId: candidate.taskId }
-            : { type: "session", sessionId: candidate.sessionId },
+          dependencyInputOf(candidate),
         ) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
+    if (dependency.type === "plan") return true;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
@@ -1307,7 +1306,7 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null);
+  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, editing?.planPolicy?.storage ?? planStorage ?? "repository");
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
@@ -1379,7 +1378,7 @@ function DispatchModal({
     if (kind === draft.kind) return {};
     if (taskHasOwnDefaultWorkflow(kind)) {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: taskDefaultWorkflowId(kind, null) };
+      return { workflowId: taskDefaultWorkflowId(kind, null, planStorage ?? "repository") };
     }
     if (!hasReviewableDiff(kind)) {
       if (!hasReviewableDiff(draft.kind)) return {};
@@ -2002,6 +2001,7 @@ function DispatchModal({
       setRepos(list);
       setReposLoading(false);
     });
+    void fetchSkills().then((skills) => { if (alive) setPlanStorage(skills?.planStorage ?? "repository"); });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {
         if (alive) setWorkflowConfig(config);
@@ -2814,6 +2814,7 @@ function DispatchModal({
                   <select
                     className="field-input"
                     value={draft.kind}
+                    disabled={planStorage === null}
                     onChange={(e) => {
                       const kind = e.target.value as TaskKind;
                       if (guidedTakeValue("kind", kind)) return;
@@ -3121,7 +3122,7 @@ function DispatchModal({
                 {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
-                    <span className="field-hint">each waits for its merged PR</span>
+                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR"}</span>
                   </span>
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
@@ -3189,8 +3190,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog and dispatches when their
-                      PRs merge.
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}

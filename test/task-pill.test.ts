@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { ScheduleOriginChip } from "../src/web/components/session-bits.tsx";
 import { taskPillParts } from "../src/shared/task.ts";
-import { DEFAULT_TASK_KIND, TASK_KINDS } from "../src/shared/types.ts";
+import { TASK_KINDS } from "../src/shared/types.ts";
 import type { Session, TaskSummary } from "../src/shared/types.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { mkSessionView } from "./helpers/session-view.ts";
@@ -14,18 +14,13 @@ import { containsMarkup } from "./helpers/markup.ts";
 /**
  * The task pill, reduced to what it can actually tell a reader.
  *
- * Two of its three parts were usually saying nothing. Every automated writer defaults to
- * `ship` and the MCP `create_task` tool cannot produce anything else - so the badge read
- * `SHIP` in almost every session, uncoloured and frozen from the moment the task left the
- * backlog. The title was a duplicate of the `h2` two rows above it, because a dispatched
- * session is named after its task.
+ * The title was a duplicate of the `h2` two rows above it, because a dispatched session is
+ * named after its task. The kind used to live here too, drawn for every kind but `ship` -
+ * which left the most common kind printed nowhere. It moved out of the pill entirely: every
+ * kind, `ship` included, is now marked beside the session's own name by `TaskKindMark`, in
+ * the style the operator picks, so the pill carries no kind at all.
  *
- * The rule the reduction settled on is "draw every kind except the default", not "draw
- * scout", which is why `plan` arrived already drawn and this file gained a case rather
- * than a change. `ship` is silent because it is what you get by NOT choosing; a kind
- * somebody picked on purpose is worth a badge whatever it is called.
- *
- * Both reductions live in ONE shared predicate rather than in each component. The title is
+ * The reduction lives in ONE shared predicate rather than in each component. The title is
  * a comparison rather than a deletion because a re-assigned session keeps the first task's
  * title as its name, so the pill is the only place the task now executing is written.
  *
@@ -44,20 +39,13 @@ function dispatched(task: Partial<TaskSummary> = {}): Session {
   return mkSession({ name: summary.title, task: summary });
 }
 
-test("the predicate keeps only the kind that says something", () => {
-  assert.equal(taskPillParts(dispatched({ kind: "ship" })).kind, null);
-  assert.equal(taskPillParts(dispatched({ kind: "scout" })).kind, "scout");
-  // Deliberately chosen, therefore worth drawing - the same reasoning that draws `scout`,
-  // applied by a rule that reads the default rather than naming the kinds.
-  assert.equal(taskPillParts(dispatched({ kind: "plan" })).kind, "plan");
-  // Stated as the rule, so a fourth kind is covered by this file the day it is added and
-  // a change that made `ship` loud would fail here rather than in a screenshot.
+test("the pill carries no kind, for any kind", () => {
+  // Stated over the whole list, so a new kind is covered the day it is added: the kind is
+  // the kind mark's job now, and a pill that drew it as well would say it twice.
   for (const kind of TASK_KINDS) {
-    assert.equal(
-      taskPillParts(dispatched({ kind })).kind,
-      kind === DEFAULT_TASK_KIND ? null : kind,
-      `${kind} should be drawn exactly when it is not the default`,
-    );
+    const parts = taskPillParts(dispatched({ kind }));
+    assert.ok(!("kind" in parts), `the ${kind} pill still carries a kind`);
+    assert.equal(parts.silent, true, `a ${kind} task named after its session has a pill to draw`);
   }
 });
 
@@ -77,7 +65,6 @@ test("the predicate keeps the title only when the session's name does not carry 
 
 test("a session with no task has no pill to draw", () => {
   assert.deepEqual(taskPillParts(mkSession({ task: null })), {
-    kind: null,
     title: null,
     silent: true,
   });
@@ -92,9 +79,8 @@ test("the predicate reports a pill with nothing left in it as silent", () => {
 });
 
 test("anything the pill hosts keeps it, one at a time", () => {
-  // Each of the four parts on its own, because "silent" is an AND and a wrong operand
+  // Each of the three parts on its own, because "silent" is an AND and a wrong operand
   // would only show up for the case that has exactly that one thing to say.
-  assert.equal(taskPillParts(dispatched({ kind: "scout" })).silent, false, "a scout badge");
   assert.equal(
     taskPillParts(mkSession({ name: "Ship A", task: mkTaskSummary({ title: "Ship B" }) })).silent,
     false,
@@ -157,21 +143,16 @@ test("a silent pill does not take the multi-repo pull-request row with it", () =
   assert.ok(html.includes("demo") && html.includes("second"));
 });
 
-test("a ship task draws no kind badge in the shared detail", () => {
-  // A task whose title the session does NOT carry, so the pill is drawn and the badge's
-  // absence is a fact about the badge rather than about the whole chip having stood down.
-  const session = mkSession({ name: "agent-1", task: mkTaskSummary({ kind: "ship" }) });
-  const html = detail(session);
-  assert.ok(html.includes("task-chip"));
-  assert.ok(!html.includes('class="task-kind"'));
-  assert.ok(!html.includes("ship task"));
-});
-
-test("non-default task kinds draw their badges in the shared detail", () => {
-  for (const kind of TASK_KINDS.filter((candidate) => candidate !== DEFAULT_TASK_KIND)) {
-    const html = detail(dispatched({ kind }));
-    assert.match(html, new RegExp(`class="task-kind"[^>]*>${kind}<`));
-    assert.ok(html.includes(`${kind} task`));
+test("every kind, ship included, is marked once in the shared detail and never in the pill", () => {
+  // A task whose title the session does NOT carry, so the pill is drawn too and the kind's
+  // absence from it is a fact about the pill rather than about the chip having stood down.
+  for (const kind of TASK_KINDS) {
+    const html = detail(mkSession({ name: "agent-1", task: mkTaskSummary({ kind }) }));
+    const marks = html.match(/class="tk-mark tk-badge"/g) ?? [];
+    assert.equal(marks.length, 1, `the ${kind} task is not marked exactly once`);
+    assert.match(html, new RegExp(`class="tk-mark tk-badge"[^>]*>.*?</svg><span class="tk-label">${kind}</span>`));
+    const chip = html.slice(html.indexOf('class="task-chip'));
+    assert.ok(!chip.slice(0, chip.indexOf("</div>")).includes("tk-mark"), `the ${kind} pill draws a kind`);
   }
 });
 

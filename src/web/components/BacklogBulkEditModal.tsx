@@ -536,7 +536,7 @@ export function BacklogBulkEditModal({
               {draft.dependenciesAdd.map((input) => {
                 const key = dependencyInputKey(input);
                 const title =
-                  input.type === "task"
+                  input.type === "plan" ? `Plan ${input.planId} revision ${input.revision}` : input.type === "task"
                     ? (allTasks.find((t) => t.id === input.taskId)?.title ?? input.taskId)
                     : (sessions.find((s) => s.id === input.sessionId)?.name ?? input.sessionId);
                 return (

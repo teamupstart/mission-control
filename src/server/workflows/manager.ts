@@ -1,4 +1,6 @@
 import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
+import type { TaskManager } from "../tasks.ts";
+import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import type { RawWorkflowContext } from "./context.ts";
@@ -716,7 +718,7 @@ export class WorkflowManager {
             this.publishRun(delivery.runId);
           }
           for (const binding of this.store.listBindings()) {
-            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding)) continue;
+            if (binding.sessionId !== event.id || binding.state === "archived" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
             if (active) {
               this.publishBinding(active.id);
@@ -784,7 +786,13 @@ export class WorkflowManager {
     }
   }
 
+  private localPlans: LocalPlanPublication | null = null;
+  localPlanPublication(tasks: TaskManager): LocalPlanPublication {
+    return this.localPlans ??= new LocalPlanPublication(this.registry, this, tasks);
+  }
+
   async stop(): Promise<void> {
+    await this.localPlans?.stop();
     for (const cancel of this.transferWaiters) cancel();
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -1479,6 +1487,19 @@ export class WorkflowManager {
       return { owner: "unavailable", reason: "The planning session is not live" };
     }
     const key = noteKeyFor(session);
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    return this.planPublicationContextForNote(key, Boolean(task?.workflowId));
+  }
+
+  /** Recovery resolves the same binding authority from the durable task episode. */
+  taskPlanPublicationContext(taskId: string): PlanPublicationContext {
+    const task = this.registry.getTask(taskId);
+    const episode = this.registry.workEpisodeForTask(taskId);
+    if (!task || !episode || task.sessionId !== episode.sessionId) return { owner: "unavailable", reason: "The planning task's work episode is unavailable" };
+    return this.planPublicationContextForNote(episode.agentSessionId || episode.sessionId, Boolean(task.workflowId));
+  }
+
+  private planPublicationContextForNote(key: string, workflowSelected: boolean): PlanPublicationContext {
     const binding = this.store.activeBindingForNote(key);
     if (binding) {
       if (!this.store.getWorkflowVersionById(binding.workflowVersionId)) {
@@ -1493,8 +1514,7 @@ export class WorkflowManager {
     if (previous && previous.state !== "archived") {
       return { owner: "unavailable", reason: "The workflow binding is paused or orphaned; resolve its ownership before publication" };
     }
-    const task = this.registry.taskForSession(session.id, session.cwd);
-    if (!previous && task?.workflowId) {
+    if (!previous && workflowSelected) {
       return { owner: "unavailable", reason: "The task selected a workflow but its binding has not been established" };
     }
     return { owner: "skill" };
@@ -6466,6 +6486,7 @@ export class WorkflowManager {
       // The row, not the caller's copy. A repair round is captured from a run object the
       // caller resolved some time ago, and the frozen intent is read here rather than passed
       // in so a resumed capture and a first one review against the same ask.
+      freezeLocalPlanSubmission(this.registry, this, binding, submission);
       const runRow = this.store.getRun(run.id) ?? run;
       /*
        * A run whose frozen basis cannot be read is refused, not quietly reverted.
@@ -6584,6 +6605,7 @@ export class WorkflowManager {
        * criteria exactly as freshly declared ones do.
        */
       await inheritSubmissionEvidence(this.store, submission);
+      verifyLocalPlanEvidence(this.store, submission.id);
       /*
        * Then freeze any claim whose links only became resolvable once that carry landed, and
        * record whatever is still unresolved.
@@ -7179,7 +7201,7 @@ export class WorkflowManager {
 
   private reconcileBindingsAfterDiscovery(): void {
     for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || transferProtectsBinding(binding)) continue;
+      if (binding.state !== "active" || transferProtectsBinding(binding) || this.localPlanOwnsBinding(binding)) continue;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const updated = !session || session.state === "exited"
         ? this.store.orphanBinding(binding.id, "session_disappeared")
@@ -7191,6 +7213,10 @@ export class WorkflowManager {
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
     }
+  }
+
+  private localPlanOwnsBinding(binding: WorkflowBinding): boolean {
+    return this.registry.listTasks().some((task) => localPlanRecoveryPending(this.registry, task, this.store, binding.id));
   }
 
   /**

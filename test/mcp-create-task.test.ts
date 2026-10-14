@@ -132,8 +132,7 @@ test("MCP task creation combines phase prerequisites with the calling session", 
 });
 
 test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", async () => {
-  // An agent filing work through MCP has no opinion about which harness runs it - the tool
-  // has no `agent` field at all - so it must take whatever `ship` is configured to run on.
+  // A caller omitting `agent` must take whatever `ship` is configured to run on.
   // The route used to say `agent: "claude"` here, which was an opinion expressed by accident
   // and one no setting could reach.
   openDb().exec("DELETE FROM app_config");

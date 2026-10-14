@@ -18,7 +18,8 @@ import {
 } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
-import { api, fetchRepos } from "./lib/api.ts";
+import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
+import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -158,6 +159,7 @@ import { UpdateBanner } from "./components/UpdateBanner.tsx";
 import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
+import { OrganizationTelemetryNotice } from "./components/OrganizationTelemetryNotice.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
 import { useGuidedDispatch } from "./lib/guided-dispatch.ts";
 import { activateDeleteShortcut, deleteShortcutMatchesChord } from "./lib/delete-shortcut.ts";
@@ -3993,6 +3995,13 @@ export function App(): React.JSX.Element {
           onReload={() => window.location.reload()}
         />
         <SetupBanner view={setup.view} onDismiss={setup.dismissBanner} />
+        <OrganizationTelemetryNotice
+          notice={settingsStatus?.telemetry?.organizationNotice ?? null}
+          onDismiss={async () => {
+            const result = await acknowledgeTelemetryOrganizationNotice(beginOperation("settings"));
+            return result.ok ? null : result.error;
+          }}
+        />
         {tourPreferenceError && !tourPickerOpen && !overlays.anyOpen && !activeTour && (
           <TourPreferenceNotice onBrowse={() => openTourPicker()}
             onDismiss={() => setTourPreferenceError(false)} />

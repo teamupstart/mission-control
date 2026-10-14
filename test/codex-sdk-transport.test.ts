@@ -71,6 +71,60 @@ test("an empty final response is an error rather than an empty answer", async ()
   );
 });
 
+test("an SDK turn.failed event retains provider origin and token exhaustion", async () => {
+  const diagnostic = `${"provider detail ".repeat(24)}insufficient_quota`;
+  await assert.rejects(
+    () => runCodexSdkOneShot("x", "/bin/codex", {}, {
+      createClient: () => ({ startThread: () => ({
+        run: async () => { assert.fail("streamed path must be used"); },
+        runStreamed: async () => ({
+          events: (async function* () { yield { type: "turn.failed" as const, error: { message: diagnostic } }; })(),
+        }),
+      }) }),
+    }),
+    (error: Error & { kind?: string }) => error.name === "ProviderFailure" && error.kind === "token_exhausted",
+  );
+});
+
+test("a successful SDK stream returns its final agent message and usage", async () => {
+  const usage = { input_tokens: 124, cached_input_tokens: 12, output_tokens: 9 };
+  const result = await runCodexSdkOneShot("x", "/bin/codex", {}, {
+    createClient: () => ({ startThread: () => ({
+      id: "th_stream_success",
+      run: async () => { assert.fail("streamed path must be used"); },
+      runStreamed: async () => ({
+        events: (async function* () {
+          yield { type: "item.completed" as const, item: { type: "reasoning", text: "not the answer" } };
+          yield { type: "item.completed" as const, item: { type: "agent_message", text: '{"title":"Streamed answer"}' } };
+          yield { type: "turn.completed" as const, usage };
+        })(),
+      }),
+    }) }),
+  });
+
+  assert.deepEqual(result, {
+    text: '{"title":"Streamed answer"}',
+    usage,
+    threadId: "th_stream_success",
+  });
+});
+
+test("an SDK stream ending before turn.completed cannot supply a review", async () => {
+  await assert.rejects(
+    () => runCodexSdkOneShot("x", "/bin/codex", {}, {
+      createClient: () => ({ startThread: () => ({
+        run: async () => { assert.fail("streamed path must be used"); },
+        runStreamed: async () => ({
+          events: (async function* () {
+            yield { type: "item.completed" as const, item: { type: "agent_message", text: '{"verdict":"pass"}' } };
+          })(),
+        }),
+      }) }),
+    }),
+    /stream ended before turn\.completed/i,
+  );
+});
+
 test("a synchronous SDK construction failure still releases its disposable state home", async () => {
   let stateHome = "";
   await assert.rejects(

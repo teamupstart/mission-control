@@ -59,6 +59,7 @@ export interface TaskContractInputs {
   planSkills?: PlanSkillInvocations | null;
   /** The server resolved a Persona node in the selected immutable workflow graph. */
   workflowEvidence?: boolean;
+  planDiscovery?: string;
 }
 
 /**
@@ -100,7 +101,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => [
-    planContractAppendix(requirePlanSkills(task, inputs), task.workflowId !== null),
+    planContractAppendix(requirePlanSkills(task, inputs), task.workflowId !== null, task.planPolicy?.storage),
     ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
   ].join("\n\n"),
   pipeline: () => null,
@@ -144,6 +145,7 @@ export function withTaskKindContract(
       workflowEvidence: false,
       workflowContinuation: false,
     }),
+    inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the
     // eligibility reader this flag arrives from - so it is not re-decided per kind here. A

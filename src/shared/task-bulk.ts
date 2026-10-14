@@ -4,11 +4,12 @@ import type { Task, TaskDependency } from "./types.ts";
 
 /** One dependency's identity, the same `task:`/`session:` key the dispatch form uses. */
 export function dependencyInputKey(dependency: TaskDependencyInput): string {
-  return dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+  return dependency.type === "plan" ? `plan:${dependency.repoKey}:${dependency.planId}:${dependency.revision}` : dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
 }
 
 /** A stored edge as the input that names it, which is what an update body carries. */
 export function dependencyInputOf(dependency: TaskDependency): TaskDependencyInput {
+  if (dependency.type === "plan") return { type: "plan", repoKey: dependency.repoKey, planId: dependency.planId, revision: dependency.revision };
   return dependency.type === "task"
     ? { type: "task", taskId: dependency.taskId }
     : { type: "session", sessionId: dependency.sessionId };

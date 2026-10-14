@@ -48,3 +48,6 @@ export const BUG_FIX_REVIEW_WORKFLOW_SLUG = "bug-fix-review";
 export const PLAN_VALIDATION_WORKFLOW_SLUG = "plan-validation";
 export const BUG_FIX_REVIEW_WORKFLOW_ID = builtinWorkflowId(BUG_FIX_REVIEW_WORKFLOW_SLUG);
 export const PLAN_VALIDATION_WORKFLOW_ID = builtinWorkflowId(PLAN_VALIDATION_WORKFLOW_SLUG);
+
+export const LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG = "local-plan-validation";
+export const LOCAL_PLAN_VALIDATION_WORKFLOW_ID = builtinWorkflowId(LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG);

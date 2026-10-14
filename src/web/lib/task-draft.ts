@@ -1,3 +1,4 @@
+import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } from "@shared/task-bulk.ts";
 // The dispatch form's working copy of a task, and the two translations between it and
 // a stored `Task`: seeding the form from a row, and turning the form back into a PATCH.
 //
@@ -142,11 +143,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     effort: t.effort ?? "",
     workflowId: t.workflowId,
     enabled: t.enabled,
-    dependencies: t.dependencies.map((dependency) =>
-      dependency.type === "task"
-        ? { type: "task" as const, taskId: dependency.taskId }
-        : { type: "session" as const, sessionId: dependency.sessionId },
-    ),
+    dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
   };
 }
@@ -188,7 +185,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
 }
 
 function dependencyInputKey(dependency: TaskDependencyInput): string {
-  return dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+  return sharedDependencyInputKey(dependency);
 }
 
 function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[]): boolean {
@@ -255,11 +252,7 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
     patch.workflowId = draft.workflowId;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
-  const storedDependencies: TaskDependencyInput[] = task.dependencies.map((dependency) =>
-    dependency.type === "task"
-      ? { type: "task", taskId: dependency.taskId }
-      : { type: "session", sessionId: dependency.sessionId },
-  );
+  const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);
   if (!dependencyInputsEqual(draft.dependencies, storedDependencies)) {
     patch.dependencies = draft.dependencies;
   }

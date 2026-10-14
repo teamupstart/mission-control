@@ -95,7 +95,20 @@ one-shot task, even when that work crosses application layers. The HTML Plans re
 this as its final selectable follow-up; choosing it passes the approved plan and submitted decisions
 into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
-Phased Plan commits and pushes its artifacts before scheduling. It then reads
+**Commit generated HTML plan files** defaults off, including when an older saved Skills
+record lacks the preference. It remains configurable with the master skills switch off.
+**Plan storage** defaults to Repository. Local keeps complete plans outside Git and disables
+that checkbox while preserving its value. Both preferences apply only to new plans; new plan
+tasks pin them before dispatch and select Local Plan Validation when appropriate.
+New managed plans use `get_plan_context`, `save_plan`, and `read_plan`: repository Markdown is written
+to the checkout, while complete revision snapshots and HTML previews stay beneath
+`$MISSION_HOME/plans/`. Opt-in adds HTML to the returned Git-required paths. Each plan pins
+its creation policy. Existing tracked plans and installed skill links are unchanged by a
+preference edit, and no reload generation advances. Settings snapshots retain the preference,
+not the local bundles. See [managed plans](managed-plans.md) for limits and recovery.
+
+In repository mode, Phased Plan commits and pushes its Markdown and policy-included HTML before scheduling.
+Policy-excluded HTML is verified in the retained revision. It then reads
 `get_plan_publication_context`: a bound workflow owns the PR and the planning turn ends;
 without a binding, the skill opens and follows the PR itself. Manual bindings wait for manual
 submission. Missing tools, unreadable context, pending bindings, and paused bindings do not
@@ -106,7 +119,7 @@ repository keeps the current-repository default. Work implemented only in reposi
 primary; when its plan files remain in source repository A, A is attached and marked context-only so
 the implementing agent can read the published paths without being asked to change A. An inseparable
 A+B phase becomes one multi-repo task with a deliberate primary and opens one pull request per
-repository it actually changes. Every phase still depends on the planning session, so the task
+repository it actually changes. Every repository-mode phase still depends on the planning session, so the task
 cannot launch until the merge publishes those plan paths. A selector or harness-capability refusal
 stops dependent task creation; the procedure reports the unscheduled phase and ids already created
 instead of falling back to A or dropping an attachment.
@@ -286,6 +299,12 @@ And the **shipped defaults draw the card the previous release drew**: everything
 a card is still on it, and the one genuinely new item, the **worktree**, starts off. Turn it
 on and the card prints the checkout's directory name with the full path on hover, which is a
 fact the console detail used to be the only place to read.
+
+The same panel holds two **Task type** pickers, one under **Board card** and one under
+**Conversation header**. Every task is marked with its kind, `ship` included, and these choose
+how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
+medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
+the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
 
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a
@@ -514,3 +533,11 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   it is storing. While the config is unreadable the footnote says so and stops naming
   repositories - it cannot see which - but it does not go silent, and it is never invented:
   a page that has never read a config claims nothing.
+
+Local plan-only scheduling saves and explicitly approves the complete immutable bundle, then
+creates phases with typed `planInputs` and exact `planPrerequisites`. Local Plan Validation or
+another review-only workflow validates the frozen approved text; explicit None uses
+`publish_plan`. Publication releases only the matching artifact edge. Code-phase and mixed-task
+merge edges stay blocked until their normal publication condition. Missing tools never permit
+fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
+home separately to retain plan contents and their daemon ledger.

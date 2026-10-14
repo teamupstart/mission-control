@@ -413,6 +413,9 @@ test("the deepest rung is an allowlist, so a chip added later cannot reopen the 
   const kept = allowlisted(selector);
   for (const [name, why] of [
     ["agent-dot", "the session's agent mark"],
+    // A fixed 48px, and it stands in for the agent dot (which rides its corner) when the
+    // operator picks the Kind tile style - hiding it would take the agent mark with it.
+    ["tk-tile", "the task-kind tile that replaces the agent mark"],
     ["detail-title", "the session's name and objective"],
     ["badge", "the REVIEW BUTTON, which no rung may ever hide"],
     ["workflow-bind-chip", "the bind offer, which no other surface in the app makes"],
@@ -440,6 +443,7 @@ test("the deepest rung is an allowlist, so a chip added later cannot reopen the 
       "detail-head-spacer",
       "detail-title",
       "si-session-chip",
+      "tk-tile",
       "workflow-bind-chip",
     ],
     "the allowlist grew an entry. Anything kept here is width the deepest header carries on " +

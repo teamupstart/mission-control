@@ -4,7 +4,7 @@ import {
 } from "@shared/plans.ts";
 import type { Task } from "@shared/types.ts";
 import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "./tools.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL } from "./tools.ts";
 
 /**
  * The delivery contract every plan task gets - which POINTS AT the planning skills instead
@@ -86,7 +86,21 @@ export interface PlanSkillInvocations {
  * keep it short - every line spent explaining how to write a plan is a line arguing with the
  * skill this contract exists to hand the work to.
  */
-export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false): string {
+export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false, storage: "repository" | "local" = "repository"): string {
+  if (storage === "local") {
+    const contract = taskCompletionContract("plan", workflowBound, "local")!;
+    return [PLAN_APPENDIX_MARKER,
+      "This is a local plan-only task. Do not implement the plan. Invoke the static planning skills:",
+      skills.htmlPlans, skills.phasedPlan,
+      "Call get_plan_context and save_plan with the complete Markdown and rendered HTML bundle. Local mode overrides the saved HTML-commit preference. Use read_plan for exact revisions and the returned scoped preview.",
+      "Use request_plan_decisions for open choices. Bind final approval with managedPlan {repoSlot, planId, revision}; the human must explicitly approve the complete final bundle. If phasing or repair changes it, save and approve the new revision.",
+      "Schedule requested phases with create_task planInputs and planPrerequisites naming exact repoKey, planId, revision and Markdown files. Add only direct implementation task merge edges. Local artifact publication never releases those code edges.",
+      "## Local plan completion handoff", ...contract.complete.map((item) => `- ${item}`),
+      `Do not ${deferredImperativeList(contract)} for this local plan-only task.`,
+      workflowBound ? "Finish planning and yield. Foreman starts the selected automatic validation workflow; Manual bindings wait for explicit submission. The daemon publishes after that exact approved revision passes. No empty PR is needed." : "After approval and scheduling, call publish_plan for each exact local revision, report its receipt and task map, then end this turn.",
+      "Saving, previewing, dismissal, or an agent-authored approval string cannot publish. Mixed code-and-plan tasks retain their ordinary shipping workflow and merge prerequisites.",
+    ].join("\n");
+  }
   const lines = [
     PLAN_APPENDIX_MARKER,
     "This is a plan task. The deliverable is a plan a human has read and agreed with - written,",
@@ -97,8 +111,10 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
     "   rendered and put in front of a person, and nothing here repeats it - so read it rather",
     "   than working from what you already believe a good plan looks like. On this harness:",
     `   ${skills.htmlPlans}`,
-    `2. The plan belongs in this checkout at \`${PLAN_SOURCE_PATH_SHAPE}\`, with its rendered`,
-    `   \`${PLAN_PAGE_FILENAME}\` beside it, where \`<name>\` is a short kebab-case name for the work.`,
+    `2. Call ${PLAN_CONTEXT_TOOL}, then ${PLAN_SAVE_TOOL} with complete Markdown and static HTML content.`,
+    `   The daemon writes \`${PLAN_SOURCE_PATH_SHAPE}\` and retains \`${PLAN_PAGE_FILENAME}\` locally`,
+    `   unless this plan's pinned policy includes HTML in Git. Use ${PLAN_READ_TOOL} for exact revisions,`,
+    "   review the returned preview URL, and publish only returned requiredPaths. Saving is not publication.",
     `3. Ask for the review, and for every open choice in it, with the \`${PLAN_DECISIONS_TOOL}\``,
     "   tool rather than in prose. It blocks until the human answers, which is what holds the",
     "   refinement open. A dismissal ends the work; it is never read back as a selection.",

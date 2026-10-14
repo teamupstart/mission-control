@@ -17,6 +17,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+const { openDb } = await import("../src/server/db.ts");
 
 /** Every git fixture this file built, removed together - they are whole checkouts. */
 const roots: string[] = [];
@@ -827,16 +828,20 @@ test("the drop's own arguments hand the task to the agent", async () => {
   gitIn(clone, "checkout", "-q", "--detach");
   r.upsertTask(mkTask({ repoRoot: clone, title: "Hand me over" }));
 
+  let prompt = "";
   const res = await tasks.assign("t1", sessionId, {
     // Exactly what `POST /api/tasks/:id/assign` derives from the drop's body.
     overrideDisabled: true,
     confirmReset: false,
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+    inject: async (_session, text) => { prompt = text; return { ok: true, pasted: true, submitVerified: true }; },
   });
 
   assert.equal(res.ok, true, res.error);
+  assert.match(prompt, /Plan inputs and discovery/);
+  assert.ok(prompt.includes(`${clone}/docs/plans`));
+  assert.match(prompt, /local plans .*plans/);
   assert.equal(res.resetConfirm, undefined, "a clean agent is handed the task with no question");
   // The outcome the gesture promises: the task is no longer in the backlog, and it is on
   // the agent that was dropped onto.
@@ -1313,18 +1318,24 @@ test("an assigned plan is typed the invocations THAT SESSION could actually run"
   // The resolver is the session-scoped one, so what lands in the pane is what this
   // conversation can load - not what a freshly launched agent of the same harness could.
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-plan-contract-");
-  r.upsertTask(mkTask({ repoRoot: clone, kind: "plan", intent: "plan the archives reading UI" }));
+  const taskId = "assigned-plan-reservation";
+  r.upsertTask(mkTask({ id: taskId, repoRoot: clone, kind: "plan", intent: "plan the archives reading UI" }));
   let typed: string | null = null;
   let askedAbout: string | null = null;
+  let reservation: unknown;
 
-  const res = await tasks.assign("t1", sessionId, {
+  const res = await tasks.assign(taskId, sessionId, {
     paneReady,
     confirmReset: true,
     requirePlanSkills: (session) => {
       askedAbout = session.id;
       return { ok: true, commands: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } };
     },
-    reset: cleanReset,
+    reset: () => {
+      reservation = openDb().prepare("SELECT plan_id, policy FROM managed_plan_reservations WHERE task_id = ?").get(taskId);
+      assert.ok(reservation, "assignment reserves the plan before resetting the receiving session");
+      return cleanReset();
+    },
     inject: async (_session, prompt) => {
       typed = prompt;
       return { ok: true, pasted: true, submitVerified: true };
@@ -1332,6 +1343,7 @@ test("an assigned plan is typed the invocations THAT SESSION could actually run"
   });
 
   assert.equal(res.ok, true, res.error);
+  assert.deepEqual(openDb().prepare("SELECT plan_id, policy FROM managed_plan_reservations WHERE task_id = ?").get(taskId), reservation);
   assert.equal(askedAbout, sessionId, "resolved against the session being typed into");
   assert.ok(typed !== null, "the task was typed");
   assert.match(typed!, /^plan the archives reading UI/, "the operator's words come first, intact");

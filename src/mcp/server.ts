@@ -1,9 +1,10 @@
+import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ReviewItem } from "@shared/types.ts";
+import type { ReviewItem, Task } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -35,10 +36,11 @@ import { reportProductFeedback, reportProductIssueWithConfirmation } from "./pro
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
+import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -89,8 +91,9 @@ async function createReview(
   title: string,
   body: string,
   decisions?: unknown,
+  managedPlan?: unknown,
 ): Promise<string> {
-  const res = await http("/mcp/reviews", "POST", {
+  const res = await http(managedPlan ? "/mcp/v2/reviews" : "/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
     cwd: process.cwd(),
@@ -98,6 +101,7 @@ async function createReview(
     title,
     body,
     decisions,
+    managedPlan,
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { id: string }).id;
@@ -260,6 +264,7 @@ server.registerTool(
     inputSchema: {
       title: z.string().describe("Short title for the plan"),
       plan: z.string().describe("The plan as GitHub-flavored markdown, shown above the decisions"),
+      managedPlan: PlanReviewInputSchema.optional().describe("Bind final-bundle approval to this exact saved plan and revision. The daemon appends an explicit approval decision; use again after any revision change."),
       decisions: z
         .array(
           z.object({
@@ -288,13 +293,13 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
-        .min(1)
-        .describe("The decision points to present"),
+        .default([])
+        .describe("Open choices; empty is allowed for managed final-bundle approval"),
     },
   },
-  async ({ title, plan, decisions }, extra) => {
+  async ({ title, plan, decisions, managedPlan }, extra) => {
     try {
-      const id = await createReview("plan-decisions", title, plan, decisions);
+      const id = await createReview("plan-decisions", title, plan, decisions, managedPlan);
       const review = await waitForResolution(id, extra);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
@@ -329,20 +334,46 @@ server.registerTool(
   },
 );
 
+/** Return persisted configuration so callers can verify pins, clearing, and inheritance. */
+function taskConfiguration(task: Task) {
+  return {
+    id: task.id,
+    title: task.title,
+    intent: task.intent,
+    status: task.status,
+    repository: task.repoRoot,
+    additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
+    kind: task.kind,
+    agent: task.agent,
+    model: task.model,
+    effort: task.effort,
+    workflowId: task.workflowId,
+    enabled: task.enabled,
+    priority: task.priority,
+    labels: task.labels,
+    dependencies: task.dependencies,
+  };
+}
+
 server.registerTool(
   "create_task",
   {
-    title: "Schedule an implementation task",
+    title: "Schedule a backlog task",
     description:
-      "Create one ship task in the Mission Control backlog. It targets the current repository " +
+      "Create one task in the Mission Control backlog without launching it. Ship is the default kind. It targets the current repository " +
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
-      "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
+      "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
+      "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "model/effort follows launch-time defaults. Null workflowId opts out of an after-work workflow. " +
+      "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
-      "prerequisites keep the new task backlogged until their pull requests merge. Repository " +
+      "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
+      "planPrerequisites wait for artifact publication; planInputs pin the readable Markdown revision. Repository " +
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
-      "authority later. Returns the new task id and canonical repository set.",
+      "authority later. Returns the new task id, saved configuration, and canonical repository set.",
     inputSchema: {
+      ...McpTaskConfigurationSchema.shape,
       title: z
         .string()
         .min(1)
@@ -378,6 +409,8 @@ server.registerTool(
           "Repositories to attach, each as an absolute local checkout path or unique repository " +
             "directory name",
         ),
+      planInputs: TaskPlanInputsSchema.optional().describe("Exact repository key, plan id, revision and Markdown files for each managed input"),
+      planPrerequisites: z.array(PlanIdentitySchema).max(16).optional().describe("Approved local plan-only artifact prerequisites. Keep implementation task dependencies separately; repository and mixed sources still use dependsOnCurrentSession."),
       dependsOnTaskIds: z
         .array(z.string().min(1))
         .max(50)
@@ -396,10 +429,13 @@ server.registerTool(
     additionalRepositories,
     dependsOnTaskIds,
     dependsOnCurrentSession,
+    planInputs, planPrerequisites,
+    ...configuration
   }) => {
     try {
       const explicitRepositories =
         repository !== undefined || Boolean(additionalRepositories?.length);
+      const pinnedPlans = planInputs !== undefined || planPrerequisites !== undefined;
       const body = {
         env: ENV,
         sessionId: SESSION_ID,
@@ -409,22 +445,29 @@ server.registerTool(
         intent,
         dependsOnTaskIds,
         dependsOnCurrentSession,
+        ...configuration,
       };
+      const path = pinnedPlans || Object.keys(configuration).length > 0
+        ? "/mcp/v3/tasks"
+        : explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks";
       const res = await http(
-        explicitRepositories ? "/mcp/v2/tasks" : "/mcp/tasks",
+        path,
         "POST",
-        explicitRepositories
+        explicitRepositories || pinnedPlans
           ? {
               ...body,
               targetRepository: repository,
               additionalRepositories: additionalRepositories ?? [],
+              ...(pinnedPlans ? { planInputs: planInputs ?? [], planPrerequisites: planPrerequisites ?? [] } : {}),
             }
           : body,
       );
-      if (explicitRepositories && res.status === 404) {
+      // A missing route is plain text; a daemon refusal (for example, an unknown
+      // dependency session) is JSON and must keep its actual error below.
+      if (path !== "/mcp/tasks" && res.status === 404 && !res.headers.get("content-type")?.includes("application/json")) {
         return textResult(
           "Could not create task: this Mission Control daemon does not support repository " +
-            "selectors. Update or restart Mission Control and retry; no task was created.",
+            "selectors, task configuration or exact plan inputs. Update or restart Mission Control and retry; no task was created.",
           true,
         );
       }
@@ -432,28 +475,76 @@ server.registerTool(
         return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
       }
 
-      const task = (await res.json()) as {
-        id: string;
-        title: string;
-        status: string;
-        repoRoot: string;
-        extraRepos: Array<{ repoRoot: string }>;
-      };
+      const task = (await res.json()) as Task;
       return textResult(
         JSON.stringify(
           {
-            id: task.id,
-            title: task.title,
-            status: task.status,
-            repository: task.repoRoot,
-            additionalRepositories: task.extraRepos.map((entry) => entry.repoRoot),
+            ...taskConfiguration(task),
             dependsOnTaskIds,
             dependsOnCurrentSession,
+            planInputs: planInputs ?? [], planPrerequisites: planPrerequisites ?? [],
           },
           null,
           2,
         ),
       );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "update_task",
+  {
+    title: "Edit a backlog task",
+    description:
+      "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
+      "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "repository, and additionalRepositories. Null model/effort clears the override; changing " +
+      "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
+      "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
+      "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
+      "absolute local checkout path or unique repository directory name. An empty title derives " +
+      "a new title from the intent. Returns the saved task configuration without launching it.",
+    inputSchema: {
+      taskId: z.string().min(1).describe("Id of the backlog task to edit"),
+      ...McpUpdateTaskSchema.shape,
+    },
+  },
+  async ({ taskId, ...patch }) => {
+    try {
+      const res = await http(`/mcp/tasks/${encodeURIComponent(taskId)}/update`, "POST", patch);
+      if (!res.ok) {
+        return textResult(`Could not update task (${res.status}): ${await res.text()}`, true);
+      }
+      const result = (await res.json()) as { task: Task };
+      return textResult(JSON.stringify(taskConfiguration(result.task), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "delete_task",
+  {
+    title: "Delete a task",
+    description:
+      "Delete one Mission Control task by taskId. Backlog and finished tasks can be deleted; " +
+      "running or dispatching tasks must be cancelled first. Uses the dashboard's deletion " +
+      "rules, including archive preservation and resource cleanup. If cleanup is refused, " +
+      "the task record remains and the error is returned. Returns the deleted task id.",
+    inputSchema: McpDeleteTaskSchema,
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/delete", "POST", { taskId });
+      if (!res.ok) {
+        return textResult(`Could not delete task (${res.status}): ${await res.text()}`, true);
+      }
+      return textResult(JSON.stringify({ taskId, deleted: true }));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }
@@ -896,6 +987,32 @@ server.registerTool(
     }
   },
 );
+
+async function managedPlanCall(operation: string, input: unknown) {
+  try {
+    const payload = operation === "read" ? { input } : input;
+    const response = await http(`/mcp/plans/${operation}`, "POST", {
+      ...payload as object, env: ENV, sessionId: SESSION_ID, cwd: process.cwd(),
+    });
+    return textResult(await response.text(), !response.ok);
+  } catch (error) { return textResult(`Managed plan ${operation} failed: ${String(error)}`, true); }
+}
+server.registerTool("get_plan_context", {
+  description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",
+  inputSchema: PlanContextInputSchema.shape, annotations: { readOnlyHint: true },
+}, async (input) => managedPlanCall("context", input));
+server.registerTool("save_plan", {
+  description: "Save a complete immutable Markdown and static HTML plan bundle. Use a UUID requestId for retries, expectedRevision 0 for creation, then the returned planId/revision. The daemon pins policy and writes eligible checkout files. Saving does not approve, commit, push or publish. Files are flat bounded UTF-8 content; each Markdown file needs a same-name HTML rendering.",
+  inputSchema: SavePlanInputSchema.shape,
+}, async (input) => managedPlanCall("save", input));
+server.registerTool("publish_plan", {
+  description: "Publish an exact approved local plan-only revision. The daemon verifies current human approval, work episode, clean plan-only checkout and successful applicable workflow. No Git or PR is created. Workflow completion also reconciles owed receipts. Mixed/code tasks retain merge publication.",
+  inputSchema: PlanReviewInputSchema.shape,
+}, async (input) => managedPlanCall("publish", input));
+server.registerTool("read_plan", {
+  description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
+  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+}, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The
 // daemon attributes the existing launch environment and resolves repository slots itself.

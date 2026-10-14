@@ -1,6 +1,10 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
   ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
+  ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],
+  ["POST", "/mcp/plans/read", "Read-only exact revision or catalog query; not a publication or action outcome."],
+  ["POST", "/mcp/plans/save", "Agent artifact checkpoint, including retry recovery; excluded from primary-action counts because saving does not publish or complete a plan task."],
+  ["POST", "/mcp/plans/publish", "Idempotent local artifact receipt recorded by the plan ledger; task completion remains observed by the task lifecycle owner, not counted again per plan."],
   ["POST", "/api/sessions/:id/workflow-review", "Phase 4 owns workflow run/submission facts through the WorkflowStore mutation observer."],
   ["POST", "/api/sessions/:id/html-block-anchor", "Read-only renderer handshake; Files entry/preview owns intentional use."],
   ["POST", "/api/sessions/:id/html-block-target", "Read-only renderer handshake; Files entry/preview owns intentional use."],
@@ -32,6 +36,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/api/telemetry/drain", "Phase 2 telemetry controls/typed ingress; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/ingress", "Phase 2 telemetry controls/typed ingress; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/organization/pilot", "Managed telemetry consent control; excluded from recursive primary-action and error capture like the other telemetry controls."],
+  ["POST", "/api/telemetry/organization/notice", "Managed telemetry notice acknowledgement; excluded from recursive primary-action and error capture."],
   ["POST", "/api/telemetry/organization/recheck", "Managed telemetry detection refresh; excluded from recursive primary-action and error capture like the other telemetry controls."],
   ["POST", "/api/tasks/:id/dispatch", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/tasks/:id/assign", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

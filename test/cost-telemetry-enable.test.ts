@@ -28,6 +28,8 @@ process.env.MISSION_HOME = home;
 const settingsPath = join(home, "claude-settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;
 writeFileSync(settingsPath, "{}\n");
+// An empty managed-settings root, so the status read never looks at this Mac's real policy.
+process.env.MISSION_MANAGED_SETTINGS_ROOT = join(home, "managed-root");
 
 const { openDb, recordDriverSessionUsage } = await import("../src/server/db.ts");
 const { costTelemetryStatus, setCostConfig } = await import("../src/server/cost.ts");

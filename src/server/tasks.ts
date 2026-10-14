@@ -1,3 +1,8 @@
+import { newPlanPolicy, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
+import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
+import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
+import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
+import { dependencyInputKey } from "@shared/task-bulk.ts";
 import { transferForTask } from "./session-transfers/store.ts";
 import { canRefreshSourceTask, sameSourceContent, type SourceContent } from "@shared/task-source-sync.ts";
 import { saveSourceSync } from "./task-sources/sync-store.ts";
@@ -232,6 +237,7 @@ export interface CreateTaskInput {
   workflowId?: string | null;
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
+  planInputs?: TaskPlanInput[];
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -240,6 +246,12 @@ export interface CreateTaskInput {
   source?: TaskSourceRef;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
+}
+
+/** Daemon-resolved creation decisions, never accepted from a request body. */
+export interface TaskCreationPolicy {
+  planPolicy: ManagedPlanPolicy | null;
+  workflowId: string | null;
 }
 
 export interface CreateRetroFollowupInput {
@@ -2347,6 +2359,8 @@ export class TaskManager {
    */
   private agentWentAway(t: Task): void {
     if (transferForTask(t.id)) return;
+    // Frozen local validation or its receipt still owns completion after the author leaves.
+    if (localPlanRecoveryPending(this.registry, t)) return;
     this.autoCompleted.delete(t.id);
     if (providerOwnsTaskCompletion(t.kind)) {
       if (isActiveTask(t.status)) this.pipelineHostWentAway(t);
@@ -2472,7 +2486,9 @@ export class TaskManager {
 
   /** Explicit blockers are enforced on every path that can start a task. */
   dependencyBlockers(task: Task): BacklogBlocker[] {
-    return declaredBlockers(task, this.registry.listTasks());
+    const declared = declaredBlockers(task, this.registry.listTasks());
+    const problem = taskPlanInputProblem(task);
+    return problem ? [...declared, { taskId: task.id, title: problem, state: "stopped", source: "declared" }] : declared;
   }
 
   private observedPrFor(session: Session, taskId?: string): string | null {
@@ -2507,7 +2523,7 @@ export class TaskManager {
     const selectedAt = Date.now();
     const existing = new Map(
       current.map((dependency) => [
-        dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`,
+        dependencyInputKey(dependency),
         dependency,
       ]),
     );
@@ -2517,7 +2533,15 @@ export class TaskManager {
 
     for (const input of inputs) {
       let dependency: TaskDependency;
-      if (input.type === "session") {
+      if (input.type === "plan") {
+        const saved = planRevisionRecord(input.planId, input.revision);
+        const source = saved.task_id ? this.getDurable(saved.task_id) : null;
+        const manifest = readPlanRevision(input.planId, input.revision).manifest;
+        if (manifest.repoKey !== input.repoKey || manifest.policy.storage !== "local" || ((source?.kind !== "plan" || source.planPolicy?.storage !== "local") && !publicationReceipt(input))) throw new TaskDependencyError("Artifact prerequisites require an exact local plan-only source; code and repository plans retain merge dependencies");
+        if (saved.task_id === taskId) throw new TaskDependencyError("a task cannot depend on its own plan publication");
+        dependency = { ...input, title: `${manifest.slug} revision ${input.revision} publication`, sessionId: null, episodeId: null, agentSessionId: null, branch: null, prUrl: null,
+          selectedAt, satisfiedAt: publicationReceipt(input)?.publishedAt ?? null };
+      } else if (input.type === "session") {
         const kept = existing.get(`session:${input.sessionId}`);
         if (kept?.type === "session") {
           dependency = kept;
@@ -2612,7 +2636,7 @@ export class TaskManager {
         }
       }
 
-      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      const key = dependencyInputKey(dependency);
       if (dependency.type === "task" && dependency.taskId === taskId) {
         throw new TaskDependencyError("a task cannot depend on itself");
       }
@@ -2635,17 +2659,23 @@ export class TaskManager {
       visiting.add(id);
       const dependencies = id === taskId ? proposed : tasks.get(id)?.dependencies ?? [];
       for (const dependency of dependencies) {
-        if (dependency.satisfiedAt !== null || dependency.type !== "task") continue;
-        if (reachesTask(dependency.taskId)) return true;
+        if (dependency.satisfiedAt !== null) continue;
+        const target = dependency.type === "plan" ? planRevisionRecord(dependency.planId, dependency.revision).task_id : dependency.type === "task" ? dependency.taskId : null;
+        if (target && reachesTask(target)) return true;
       }
       return false;
     };
     return proposed.some(
       (dependency) =>
         dependency.satisfiedAt === null &&
-        dependency.type === "task" &&
-        reachesTask(dependency.taskId),
+        (dependency.type === "task" ? reachesTask(dependency.taskId) : dependency.type === "plan" ? reachesTask(planRevisionRecord(dependency.planId, dependency.revision).task_id ?? "") : false),
     );
+  }
+
+  /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
+  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId">): TaskCreationPolicy {
+    const planPolicy = input.kind === "plan" ? newPlanPolicy() : null;
+    return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
   }
 
   /**
@@ -2664,11 +2694,14 @@ export class TaskManager {
    *
    * `manualDispatch` is an explicit capability rather than another input field. Request
    * bodies and generic producers therefore cannot opt themselves into creating chat tasks.
+   * `creationPolicy` carries the pair already resolved for route preflight; other creators
+   * resolve it here once, after any durable producer recovery.
    */
   create(
     input: CreateTaskInput,
     internal?: InternalCreateOptions,
     manualDispatch?: symbol,
+    creationPolicy?: TaskCreationPolicy,
   ): Task {
     if (!taskKindAllowsBacklog(input.kind) && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
       throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
@@ -2723,7 +2756,7 @@ export class TaskManager {
             );
           }
         } else {
-          const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind);
+          const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind, existing.planPolicy?.storage);
           if (
             existing.repoRoot !== input.repoRoot ||
             existing.intent !== input.intent ||
@@ -2747,8 +2780,18 @@ export class TaskManager {
       if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
-    const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind);
+    const { planPolicy, workflowId } = creationPolicy ?? this.prepareCreationPolicy(input);
+    const planInputs = input.planInputs ?? [];
+    validatePlanInputs(planInputs, [input.repoRoot, ...(input.extraRepoRoots ?? [])]);
+    for (const edge of input.dependencies ?? []) {
+      if (edge.type === "plan") validatePlanInputs([{ repoKey: edge.repoKey, planId: edge.planId, revision: edge.revision, files: ["plan.md"] }], [input.repoRoot, ...(input.extraRepoRoots ?? [])]);
+    }
+    if (planPolicy?.storage === "local") {
+      const problem = localWorkflowProblem(workflowId);
+      if (problem) throw new PlanStoreError(problem);
+    }
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    validatePlanInputDependencies({ planInputs, dependencies });
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;
     // The ONE edit that makes "work that files itself arrives at the bottom" true for every
@@ -2771,6 +2814,7 @@ export class TaskManager {
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
+      planInputs, planPolicy, planInputError: null, planPolicyError: null,
       backlogRank,
       // Human and internal callers remain schedulable by default. A task source can make
       // the opposite choice explicit in its settings, so every item it files arrives on
@@ -3517,9 +3561,25 @@ export class TaskManager {
    * model writes the whole row back when it lands, so an edit applied before it would be
    * silently reverted a beat later, in front of an operator who watched their text go in.
    */
-  async update(id: string, patch: UpdateTask): Promise<Ok & { task?: Task }> {
+  async update(
+    id: string,
+    patch: UpdateTask,
+    options: { backlogOnly?: boolean } = {},
+  ): Promise<Ok & { task?: Task }> {
     const prepared = await this.prepareUpdate(id, patch);
     if (!prepared.ok) return prepared;
+    // Preparation can await titling or tool availability. MCP edits must still name the
+    // same shelved row at the write boundary, including annotation-only edits.
+    if (options.backlogOnly) {
+      const current = this.registry.getTask(id);
+      if (!current) return { ok: false, error: "no such task" };
+      if (current.status !== "backlog") {
+        return { ok: false, error: `task is ${current.status}, not in the backlog` };
+      }
+      if (current !== prepared.base) {
+        return { ok: false, error: "task changed while preparing the update; retry" };
+      }
+    }
     this.registry.upsertTask(prepared.task);
     return { ok: true, task: prepared.task };
   }
@@ -3631,13 +3691,29 @@ export class TaskManager {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
+    const planPolicy = patch.kind === "plan" && t.kind !== "plan" ? newPlanPolicy() : t.planPolicy;
+    try {
+      const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];
+      validatePlanInputs(patch.planInputs ?? t.planInputs ?? [], roots);
+      for (const edge of patch.dependencies ?? t.dependencies) {
+        if (edge.type === "plan") validatePlanInputs([{ repoKey: edge.repoKey, planId: edge.planId, revision: edge.revision, files: ["plan.md"] }], roots);
+      }
+      if (planPolicy?.storage === "local" && (patch.kind ?? t.kind) === "plan") {
+        const problem = localWorkflowProblem(patch.workflowId === undefined ? t.workflowId : patch.workflowId);
+        if (problem) return { ok: false, error: problem };
+      }
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
     let dependencies = t.dependencies;
+    if (patch.planInputs !== undefined && patch.dependencies === undefined) {
+      try { validatePlanInputDependencies({ planInputs: patch.planInputs, dependencies }); } catch (error) { return { ok: false, error: String(error) }; }
+    }
     try {
       if (patch.dependencies !== undefined) {
         dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+        validatePlanInputDependencies({ planInputs: patch.planInputs ?? t.planInputs, dependencies });
       }
     } catch (error) {
-      if (error instanceof TaskDependencyError) return { ok: false, error: error.message };
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return { ok: false, error: error.message };
       throw error;
     }
     const next: Task = {
@@ -3658,6 +3734,8 @@ export class TaskManager {
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
       dependencies,
+      ...(patch.planInputs === undefined ? {} : { planInputs: patch.planInputs, planInputError: null }),
+      ...(planPolicy === t.planPolicy ? {} : { planPolicy }),
       // Guarded by the status check above, like the provisioning fields and unlike
       // priority/labels: it is a statement about scheduling, and there is nothing left
       // to schedule once the task has left the backlog.
@@ -4146,7 +4224,7 @@ export class TaskManager {
     // agent's own submission failure is the backstop for the remaining case, and it happens
     // with the checkout intact rather than after it was reset.
     const workflowEvidence = this.workflowEvidenceEnabledForTask(t);
-    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence;
+    const requiresSubmissionTool = t.kind === "scout" || workflowEvidence || !!t.planInputs?.length;
     const mcpDescriptor = requiresSubmissionTool
       ? await (opts.missionMcpDescriptor ?? missionMcpDescriptor)(s.cwd ?? undefined)
       : null;
@@ -4156,6 +4234,7 @@ export class TaskManager {
         error: t.kind === "scout"
           ? "this is a scout, and Mission Control's MCP server is not built on this machine, so "
             + "the agent could not submit the report the task needs to finish"
+          : t.planInputs?.length ? "This task has pinned plan inputs, but Mission Control's MCP reader is not built on this machine"
           : "this workflow accepts image evidence, but Mission Control's MCP server is not built on this machine",
         scope: "task",
       };
@@ -4187,6 +4266,7 @@ export class TaskManager {
         )(
           [
             ...(t.kind === "scout" ? [SUBMIT_SCOUT_ARTIFACTS_TOOL] : []),
+            ...(t.planInputs?.length ? ["read_plan" as const] : []),
             ...(workflowEvidence ? [SUBMIT_WORKFLOW_EVIDENCE_TOOL] : []),
           ],
           s.startedAt,
@@ -4237,6 +4317,13 @@ export class TaskManager {
     // generation is still holding the previous set - so the launch-time answer would have this
     // seam paste an invocation naming a skill the agent cannot load, which is exactly the
     // silent degradation the watermark rung exists to turn into a refusal.
+    let planDiscovery: string;
+    try {
+      const problem = taskPlanInputProblem(t) ?? (t.kind === "plan" && t.planPolicy?.storage === "local" ? localWorkflowProblem(t.workflowId) : null);
+      if (problem) return { ok: false, error: problem, scope: "task" };
+      reserveTaskPlans(t);
+      planDiscovery = await taskPlanDiscovery(t, s.cwd);
+    } catch (error) { return { ok: false, error: String(error), scope: "task" }; }
     const planSkills = isPlanTask(t)
       ? (opts.requirePlanSkills ?? planSkillsForSession)(s)
       : null;
@@ -4399,11 +4486,12 @@ export class TaskManager {
         this.registry.getSession(s.id) ?? s,
         withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
           fallbackRoot: s.cwd,
+          planDiscovery,
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
         }),
         undefined,
-        () => this.registry.promptResourceBlockerForSession(s.id),
+        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
       );
     } catch (err) {
       discardScoutPromptBoundary(boundary);
@@ -6096,6 +6184,8 @@ export class TaskManager {
       return;
     }
     t = currentAfterProbe;
+    // Startup must preserve the same durable publication obligation as live eviction.
+    if (localPlanRecoveryPending(this.registry, t)) return;
     const settledStatus = t.status === "done" || t.status === "cancelled" ? t.status : "failed";
     const settledError =
       t.status === "done" || t.status === "cancelled"

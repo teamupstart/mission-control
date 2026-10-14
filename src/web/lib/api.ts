@@ -2570,6 +2570,15 @@ export const recheckTelemetryOrganization = async (operation: AppOperation) => {
   return res.ok ? { ...res, data: rehydrateTelemetryStatus(res.data) } : res;
 };
 
+/** Persist the one-time managed telemetry notice acknowledgement on this Mac. */
+export const acknowledgeTelemetryOrganizationNotice = (operation: AppOperation) =>
+  telemetryWrite<{ acknowledged: true }>(
+    "/api/telemetry/organization/notice",
+    "POST",
+    {},
+    operation,
+  );
+
 export const probeTelemetryEndpoint = (
   profile: "user" | "product",
   operation: AppOperation,

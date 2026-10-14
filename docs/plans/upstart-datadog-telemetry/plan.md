@@ -1,6 +1,8 @@
 # Upstart default telemetry to Datadog
 
-- **Status:** Approved for phased implementation planning
+- **Status:** Phased implementation in progress. The default-on PR was prepared on 2026-10-08
+  under an explicit operator override of the pilot gate; the planned pilot measurements have
+  not been established.
 - **Date:** 2026-09-25, decisions recorded 2026-09-28
 - **Scope:** Planning only. This document proposes no application changes by itself.
 - **Surfaces:**
@@ -18,6 +20,10 @@
     only non-Upstart users edit settings".
   - Also on 2026-09-29, the human chose to redact internal details before publishing to this
     public repository. The unredacted investigation notes are kept outside the repository.
+  - On 2026-10-08, the operator chose to prepare the default-on PR despite the unmet pilot
+    gate. A Datadog query found one distinct installation in the last seven days and no
+    reported health metric from seven to one days before the query. This decision does not
+    establish the custom-metric, host-billing or trace-cost checks in the gate.
 
 ## The short version
 

@@ -314,6 +314,7 @@ test("Pi dispatches both worktrees without directory grant flags", async () => {
   assert.ok(existsSync(task.extraRepos[0]!.worktreePath!));
   assert.ok(argv.some((arg) => arg.includes(task.extraRepos[0]!.worktreePath!)),
     "the launch message names the secondary worktree");
+  assert.ok(argv.some((arg) => arg.includes("Plan inputs and discovery") && arg.includes("repo-02:") && arg.includes("docs/plans") && arg.includes("local plans")), "the delivered prompt discovers both stores for every issued repo");
   assert.equal(argv.includes("--add-dir"), false, "no directory grant is invented for Pi");
   assert.equal(argv.some((arg) => arg.includes("sandbox_workspace_write")), false);
   assert.equal(registry.getSession(task.sessionId!)?.agentSessionId,

@@ -31,7 +31,7 @@ import {
 } from "../TranscriptPanel.tsx";
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
-import { useDisplayItems } from "../../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -66,6 +66,7 @@ import {
 } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
+import { kindAccentStyle, TaskKindMark } from "../TaskKindMark.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
 import { unreadAgentReplies } from "../../lib/fileComments.ts";
@@ -420,8 +421,12 @@ export function ConsoleDetail({
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
-  // The shared reduction keeps the task kind and title rules consistent across surfaces.
+  // The shared reduction keeps the task title rule consistent across surfaces.
   const pill = taskPillParts(session);
+  // The task's kind, in whichever style the operator picked - for every kind, `ship`
+  // included. Null draws nothing: a session with no task, or the style set to `off`.
+  const kindStyle = useDisplayChoice("taskKindHeader");
+  const kindMark = session.task && kindStyle !== "off" ? kindStyle : null;
 
   // The `.detail-sub` band, cell by cell, so the container can answer whether it has
   // anything at all to say.
@@ -501,10 +506,22 @@ export function ConsoleDetail({
 
   return (
     <div className={`cdetail tone-${st.tone}`}>
-      <header className="detail-head" ref={headRef}>
-        <AgentDot agent={session.agent} />
+      <header
+        className={`detail-head${kindMark === "tile" ? " tk-edge" : ""}`}
+        ref={headRef}
+        style={kindMark === "tile" ? kindAccentStyle(session.task!.kind) : undefined}
+      >
+        {kindMark === "tile" ? (
+          <TaskKindMark kind={session.task!.kind} variant="tile">
+            <AgentDot agent={session.agent} />
+          </TaskKindMark>
+        ) : (
+          <AgentDot agent={session.agent} />
+        )}
         <div className="detail-title">
+          {kindMark === "eyebrow" && <TaskKindMark kind={session.task!.kind} variant="eyebrow" />}
           <div className="detail-title-line">
+            {kindMark === "badge" && <TaskKindMark kind={session.task!.kind} variant="badge" />}
             <SessionTitle
               session={session}
               canRename={canRename}
@@ -662,11 +679,6 @@ export function ConsoleDetail({
               band was tightened to stop drawing. */}
           {!pill.silent && (
           <div className={`task-chip task-${session.task.status}`}>
-            {pill.kind && (
-              <Tooltip label={`${pill.kind} task`}>
-                <span className="task-kind">{pill.kind}</span>
-              </Tooltip>
-            )}
             {pill.title && <span className="task-title">{pill.title}</span>}
             <ScheduleOriginChip
               task={session.task}
@@ -715,6 +727,7 @@ export function ConsoleDetail({
       )}
 
       <div className="detail-tabs" ref={tabsRef} role="tablist" aria-label="Session detail">
+        {kindMark === "tabs" && <TaskKindMark kind={session.task!.kind} variant="tabs" />}
         {tabs.map((t) => (
           <Tooltip key={t.id} label={`Show this session's ${t.label.toLowerCase()}`}>
           <button

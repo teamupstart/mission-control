@@ -426,7 +426,16 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
   const launchedSessionId = supervisor.starts[0]?.sessionId;
   assert.match(launchedSessionId ?? "", /^sdk:/);
   assert.equal(registry.managedPipelineLaunch(launchedSessionId!), null);
-  assert.deepEqual(supervisor.starts, [{
+  const deliveredPrompt = supervisor.starts[0]!.prompt;
+  assert.match(deliveredPrompt, /repo-01: repository plans \/repo\/sdk\/docs\/plans\//);
+  assert.match(deliveredPrompt, /local plans .*\/plans\/sdk\/[a-f0-9]{64}\//);
+  assert.match(deliveredPrompt, /Use read_plan through Mission Control/);
+  const discovery = deliveredPrompt.match(/\n\n## Plan inputs and discovery[\s\S]+?(?=\n\n\[Mission Control launch context:)/)![0];
+  const withoutDiscovery = supervisor.starts.map((start) => ({ ...start,
+    prompt: start.prompt.replace(discovery, ""),
+    launchPresentation: { ...start.launchPresentation!, prompt: start.launchPresentation!.prompt.replace(discovery, "") },
+  }));
+  assert.deepEqual(withoutDiscovery, [{
     sessionId: launchedSessionId,
     agent: "codex",
     name: "Build the SDK path",

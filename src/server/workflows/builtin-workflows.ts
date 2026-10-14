@@ -27,6 +27,7 @@ import {
   GENERAL_REVIEW_WORKFLOW_SLUG,
   BUG_FIX_REVIEW_WORKFLOW_SLUG,
   PLAN_VALIDATION_WORKFLOW_SLUG,
+  LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -1641,5 +1642,24 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 2,
     }]),
+  }),
+  builtinWorkflow({
+    slug: LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG,
+    name: "Local Plan Validation",
+    description: "Reviews an approved, exact local plan bundle and ends successfully without a pull request. Code still uses its normal shipping workflow.",
+    versions: [{
+      pipeline: { sessionId: "lpv-session", endId: "lpv-end", endOutcome: "Complete", stages: [
+        { kind: "evaluation", joinId: null, members: [reviewer("lpv-intent", "intent-conformance-judge")] },
+        { kind: "evaluation", joinId: "lpv-join", members: [
+          reviewer("lpv-consistency", "plan-consistency-judge"),
+          reviewer("lpv-dependencies", "phase-dependencies-judge"),
+          reviewer("lpv-feasibility", "plan-feasibility-judge"),
+        ] },
+      ] },
+      personaExecution: { default: { runner: "codex", model: "gpt-6-sol" } },
+      completionPolicy: { kind: "none" }, resumptionPolicy: "auto", evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
   }),
 ];

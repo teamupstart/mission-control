@@ -6,7 +6,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
-import { recordsIn } from "../fixtures/records.ts";
+import { argvValue, recordsIn } from "../fixtures/records.ts";
 
 // One dispatch, several repositories.
 //
@@ -179,13 +179,13 @@ test("the launched agent is granted write access to the secondary worktree", asy
   // capability record that says `--add-dir` and a launch that never renders it look the
   // same everywhere else.
   await expect
-    .poll(() => launchArgvs(daemon).some((argv) => argv.includes("--add-dir")), {
+    .poll(() => launchArgvs(daemon).some((argv) => argvValue(argv, "--add-dir") !== undefined), {
       message: "the launched agent was handed the secondary worktree",
     })
     .toBe(true);
 
-  const granted = launchArgvs(daemon).find((argv) => argv.includes("--add-dir"))!;
-  const dir = granted[granted.indexOf("--add-dir") + 1];
+  const granted = launchArgvs(daemon).find((argv) => argvValue(argv, "--add-dir") !== undefined)!;
+  const dir = argvValue(granted, "--add-dir");
   expect(dir, "the granted directory is the secondary WORKTREE, never the repo itself").toContain(
     join(daemon.home, "worktree-pools"),
   );
@@ -200,7 +200,7 @@ test("a single-repo dispatch is granted nothing extra", async ({ dashboard, daem
 
   await expect.poll(async () => (await provisionedTask(daemon, "Write a haiku about flexbox"))?.provider)
     .toBe("mission");
-  expect(launchArgvs(daemon).some((argv) => argv.includes("--add-dir"))).toBe(false);
+  expect(launchArgvs(daemon).some((argv) => argvValue(argv, "--add-dir") !== undefined)).toBe(false);
 });
 
 test("an attached repo can be read and detached before dispatching", async ({

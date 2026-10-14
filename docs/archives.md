@@ -283,8 +283,17 @@ it does not satisfy a normal completion.
 
 ## How a plan produces one
 
-A [plan task](dispatch-and-backlog.md) writes its plan into the checkout as
-`docs/plans/<name>/plan.md` with a rendered `plan.html` beside it, and once it has been phased,
+A [managed plan](managed-plans.md) writes repository Markdown in repository mode and retains complete immutable
+revisions beneath the Mission state home. HTML is omitted from Git by default, remains
+reviewable from Files, and enters the checkout only with the plan's pinned opt-in. At
+cleanup, registered revisions supply verified bytes to the existing archive owner, including
+excluded HTML or the entire local-mode bundle. Capture still works after the authoring checkout is removed; a missing or
+corrupt registered preview is an error, not a policy omission. Managed bundles retain a
+`plan.html` companion as well as the primary page so phase links back to it keep working.
+
+The following diff-discovery behavior continues for unmanaged legacy plans. A legacy
+[plan task](dispatch-and-backlog.md) writes `docs/plans/<name>/plan.md` with a rendered
+`plan.html` beside it, and once it has been phased,
 one document per phase in the same directory. When anything is about to destroy that checkout,
 Mission Control captures what the task wrote:
 
@@ -712,3 +721,8 @@ session filter can be cleared independently. Session filters default to the loca
 foreign producer/session pairs are explicit. These filters read manifest provenance, so they
 continue working after the live session is removed. Legacy archives without provenance stay
 in the global library. Both surfaces refresh through `archive_changed` without polling.
+
+Local publication does not move or delete retained revisions. Normal task cleanup uses the same
+archive capture path; a source task row can be pruned without losing its exact publication receipt.
+Plans are machine-local data, not part of settings export. Back up the Mission state home, including
+the plan store and database, separately from preferences.

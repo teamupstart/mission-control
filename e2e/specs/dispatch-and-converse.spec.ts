@@ -7,7 +7,7 @@ import type { Locator, Page } from "@playwright/test";
 import { CONVERSATION_TEXT_MAX_LENGTH } from "../../src/shared/protocol.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { recordsIn } from "../fixtures/records.ts";
+import { argvValue, recordsIn } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { settled } from "../fixtures/settle.ts";
@@ -1201,8 +1201,9 @@ test("the dispatched agent resolves normal Mission Control state to a disposable
 
   // The SDK's own contract with the CLI.
   expect(record.argv).toEqual(
-    expect.arrayContaining(["--output-format", "stream-json", "--input-format", "--permission-mode"]),
+    expect.arrayContaining(["--output-format", "stream-json", "--input-format"]),
   );
+  expect(argvValue(record.argv, "--permission-mode")).toBe("auto");
   expect(record.entrypoint).toBe("sdk-ts");
 
   // `sdkSubprocessEnv` strips these three deliberately: the machine-installed hooks fire

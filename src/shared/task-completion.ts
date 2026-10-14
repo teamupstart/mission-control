@@ -95,7 +95,7 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
     "the plan's Markdown and rendered HTML are complete and consistent",
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
-    "artifacts referenced by phase tasks are committed and pushed, with exact paths verified before scheduling, and every phase task depends on the planning session",
+    "Markdown artifacts referenced by phase tasks and policy-included HTML are committed and pushed, with exact paths verified before scheduling; policy-excluded HTML is verified in its retained revision, and every phase task depends on the planning session",
     "the verification the planning work requires has been run",
     "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
   ],
@@ -104,6 +104,20 @@ const PLAN_CONTRACT: TaskCompletionContract = {
     ...SHIP_CONTRACT.deferred.filter((action) => !["commit", "push"].includes(action.id)),
     { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
   ],
+};
+
+const LOCAL_PLAN_CONTRACT: TaskCompletionContract = {
+  ...PLAN_CONTRACT,
+  boundary: "the local plan publication handoff",
+  complete: [
+    "the complete final Markdown and HTML bundle is saved as an immutable local revision",
+    "the human explicitly approved that exact final bundle through a managed plan review; dismissal is not approval",
+    "requested phases carry exact structured Markdown inputs, local artifact prerequisites, and direct implementation merge dependencies",
+    "applicable focused validation and final plan text evidence are registered for the selected workflow",
+    "the task contains only local plan artifacts; code and mixed tasks keep their normal shipping workflow",
+    "when no workflow is selected, publish_plan has verified and published the approved local revision",
+  ],
+  deferred: SHIP_CONTRACT.deferred,
 };
 
 /**
@@ -134,7 +148,9 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
 export function taskCompletionContract(
   kind: TaskKind | null | undefined,
   workflowBound = false,
+  planStorage: "repository" | "local" = "repository",
 ): TaskCompletionContract | null {
+  if (kind === "plan" && planStorage === "local") return LOCAL_PLAN_CONTRACT;
   if (kind === "plan" && workflowBound) return PLAN_CONTRACT;
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }

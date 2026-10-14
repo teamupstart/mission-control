@@ -137,6 +137,8 @@ const worktreesFields = {
 } satisfies Record<keyof WorktreesConfig, AppConfigValueClass>;
 
 const skillsFields = {
+  commitPlanHtml: "setting",
+  planStorage: "setting",
   enabled: "setting",
   defaultSkillEnabled: "setting",
   skills: "setting",
@@ -244,6 +246,8 @@ const uiFields = {
   layout: "setting",
   conversationView: "setting",
   lineDensity: "setting",
+  taskKindHeader: "setting",
+  taskKindCard: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",

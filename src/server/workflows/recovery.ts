@@ -36,6 +36,7 @@ export const WORKFLOW_PHASE_RECOVERY = {
   failed_outcome: "resume",
   image_evidence_capture: "resume",
   infrastructure_error: "retry",
+  provider_token_exhausted: "decision",
   invalid_version: "resume",
   missing_workflow_version: "resume",
   persona_feedback: "resume",

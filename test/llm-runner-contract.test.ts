@@ -76,6 +76,10 @@ cat > "$RUN_STDIN"
 for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
 pwd > "$RUN_CWD"
 printf '%s\\n%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS" > "$RUN_ENV"
+if [ "$RUN_CLAUDE_PROVIDER_FAIL" = "1" ]; then
+  printf '%s\\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"prompt_too_long","errors":["prompt exceeds model token limit"]}'
+  exit 1
+fi
 printf '{"result":"the model text"}'
 `,
 );
@@ -106,6 +110,10 @@ if [ "$RUN_CODEX_FAIL" = "1" ]; then
   printf '%s\\n' 'STDERR OPERATOR BRIEF MUST NOT LEAK' >&2
   printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OPERATOR BRIEF MUST NOT LEAK"}}'
   printf '%s\\n' '{"type":"turn.failed","error":{"message":"schema validation failed: missing tasks"}}'
+  exit 1
+fi
+if [ "$RUN_CODEX_STREAM_ERROR" = "1" ]; then
+  printf '%s\\n' '{"type":"error","message":"local event stream failed"}'
   exit 1
 fi
 if [ "$RUN_CODEX_ORPHAN" = "1" ]; then
@@ -275,6 +283,18 @@ test("a run carries no way to see a previous one", async () => {
   }
   assert.ok(args.includes("-p"), "not a one-shot run");
   assert.equal(flag("--model"), "claude-haiku-4-5", "the caller's model did not reach the provider");
+});
+
+test("Claude print marks an explicit provider token refusal without retrying locally", async () => {
+  process.env.RUN_CLAUDE_PROVIDER_FAIL = "1";
+  try {
+    await assert.rejects(
+      withPrintTransport(() => claudeRunner.run("review", { timeoutMs: 5_000 })),
+      (error: Error & { kind?: string }) => error.name === "ProviderFailure" && error.kind === "token_exhausted",
+    );
+  } finally {
+    delete process.env.RUN_CLAUDE_PROVIDER_FAIL;
+  }
 });
 
 test("the Claude runner routes an sdk transport choice through the SDK one-shot", async () => {
@@ -504,7 +524,8 @@ test("Codex keeps a bounded JSON-stream failure reason without leaking agent tex
         schema: { type: "object" },
       }),
       (err: Error) => {
-        assert.match(err.message, /codex exited 1: schema validation failed: missing tasks/);
+        assert.equal(err.name, "ProviderFailure");
+        assert.match(err.message, /schema validation failed: missing tasks/);
         assert.doesNotMatch(err.message, /STDERR|OPERATOR BRIEF|real operator brief/);
         assert.ok(err.message.length <= 340, "the bounded provider diagnostic grew without limit");
         return true;
@@ -514,6 +535,18 @@ test("Codex keeps a bounded JSON-stream failure reason without leaking agent tex
     assert.equal(existsSync(schemaPath), false, "a failed run kept its schema file");
   } finally {
     delete process.env.RUN_CODEX_FAIL;
+  }
+});
+
+test("a Codex stream error alone is a local failure, not a provider response", async () => {
+  process.env.RUN_CODEX_STREAM_ERROR = "1";
+  try {
+    await assert.rejects(
+      codexRunner.run("review", { timeoutMs: 5_000 }),
+      (error: Error) => error.name !== "ProviderFailure" && /local event stream failed/.test(error.message),
+    );
+  } finally {
+    delete process.env.RUN_CODEX_STREAM_ERROR;
   }
 });
 

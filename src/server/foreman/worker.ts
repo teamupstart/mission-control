@@ -1248,7 +1248,7 @@ async function runShipShepherd(
               transcriptTruncated: window.truncated,
               standards: standards.docs,
               standardsTruncated: standards.truncated,
-              completionContract: taskCompletionContract(task.kind)!,
+              completionContract: taskCompletionContract(task.kind, task.workflowId !== null, task.planPolicy?.storage)!,
               workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
@@ -2097,7 +2097,7 @@ export async function processPromptedWrapup(
     log(`${session.name}: prompted wrap-up held - plan publication ownership is unavailable`);
     return false;
   }
-  const completionContract = taskCompletionContract(session.task?.kind, planPublication?.owner === "workflow");
+  const completionContract = taskCompletionContract(session.task?.kind, planPublication?.owner === "workflow", session.task?.planPolicy?.storage);
   const [diff, transcriptRead, evidenceRead] = await Promise.all([
     client.diff(session.id).catch(() => null),
     client.transcriptSize(session.id).then(
@@ -2358,6 +2358,10 @@ export async function processPromptedWrapup(
     // blocking unverified gaps and fall through to the ordinary hold plan below.
     current = await refreshPromptedCandidate(client, pcfg, candidate);
     if (!current || current.candidate.kind !== "check") return false;
+  }
+  if (session.task?.kind === "plan" && session.task.planPolicy?.storage === "local") {
+    log(`${session.name}: local plan publication is waiting for its daemon receipt; no direct PR handoff`);
+    return false;
   }
   const plan = planPromptedWrapup(
     candidate.episodeKey,

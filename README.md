@@ -159,6 +159,13 @@ instructions reach each harness and runtime. Running sessions keep the instructi
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 
+Settings > Skills > Plan storage chooses repository Markdown (the default) or complete,
+repository-scoped local plan bundles. The HTML-in-Git preference is disabled in local mode
+without losing its value. Existing plans keep their policy. Approved local plan-only tasks
+publish after applicable validation without a PR; repository and code dependencies still
+wait for their normal merge condition. See
+[managed plans](docs/managed-plans.md).
+
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 

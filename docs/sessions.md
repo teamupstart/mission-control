@@ -1757,6 +1757,50 @@ exporter fell silent - the very regression the warning is for. It also has to se
 spend before it fires, because silence on a machine nobody is using reports nothing missing, and a
 panel that warns about a quiet weekend is one you learn to scroll past.
 
+#### When a managed policy decides where metrics go
+
+An organization can manage Claude Code through a device management profile or a
+`managed-settings.json` file, and **a managed policy always wins**. It outranks
+`~/.claude/settings.json`, so the Cost switch's `env` block can be in place and still lose. The
+usual case is a policy that sets `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to the organization's own
+collector. The OpenTelemetry SDK prefers that signal-specific variable to the generic
+`OTEL_EXPORTER_OTLP_ENDPOINT` the switch writes, so every discovered session reports there and
+never here. Mission Control never overrides, edits or writes a managed setting.
+
+What it does is name the cause. While Cost is on, the daemon reads Claude Code's macOS managed
+settings, highest precedence first:
+
+1. `/Library/Managed Preferences/<user>/com.anthropic.claudecode.plist`, the per-user profile;
+2. `/Library/Managed Preferences/com.anthropic.claudecode.plist`, the machine profile;
+3. `/Library/Application Support/ClaudeCode/managed-settings.json`.
+
+The highest-priority location that is present decides. **Settings → Cost** then shows, in
+place of the generic warnings and without waiting for a week of silence:
+
+| The policy | The panel says |
+|---|---|
+| sends metrics to a host other than this daemon | "Your organization's managed Claude Code policy sends metrics to `otel.example.com`, so the estimate covers only sessions Mission Control runs. Sessions you started yourself in a terminal are not counted." |
+| sets `CLAUDE_CODE_ENABLE_TELEMETRY` to `0` or `false`, or `OTEL_METRICS_EXPORTER` to `none` | "Your organization's managed Claude Code policy turns Claude Code's metrics off, so the estimate covers only sessions Mission Control runs." |
+
+On a Mac Mission Control recognizes as [managed by an organization](observability.md#organization-defaults),
+that organization's name replaces "Your organization's". Sessions Mission Control runs are still
+counted either way, because their cost comes off the driver's own stream.
+
+The read is narrow. Only four `env` keys are kept - the two endpoints, `OTEL_METRICS_EXPORTER`
+and `CLAUDE_CODE_ENABLE_TELEMETRY` - and only the endpoint's hostname ever leaves the reader:
+never its scheme, port, path, query or credentials, and never any other key in the block.
+Nothing is logged. Profiles are read with `plutil -extract env`, and the JSON file up to
+64 KiB. A location that is not there gives way to the next, and so does a JSON file that parses
+with no `env` key. A location that is present but cannot be read stops the read, because a
+lower-priority file cannot speak for one Claude Code obeys first. That covers a failure, a
+timeout, an oversized file, unparseable content, a file that cannot be stat'ed, and a profile
+with no `env` key, which `plutil` reports the same way as a failure. Mission Control then claims
+nothing, and the panel reads exactly as it does on an unmanaged machine. The answer is cached
+and refreshed in the background - when a file's modification time or size changes, and
+otherwise every minute - so the dashboard's poll never waits on it. `MISSION_MANAGED_SETTINGS_ROOT` moves the
+root of all three paths, which is how the tests use fixtures instead of the real policy.
+Claude Code's Linux managed path is not read.
+
 #### What the app spends on itself
 
 The Foreman and the GitHub Inspector call models on their own schedule, with nobody asking them
@@ -1950,19 +1994,39 @@ The MCP tools are:
   options (radios / checkboxes) and **block** until the human submits their choices or
   dismisses that decision set without an answer
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
-- `create_task(title, intent, repository?, additionalRepositories?, dependsOnTaskIds?,
-  dependsOnCurrentSession?)` - add a ship task to the backlog with the default
-  agent/model/effort, returning its id and canonical repository set so later tasks can carry
-  durable dependency edges. Omit the selectors to keep the calling repository as primary.
+- `create_task(title, intent, ...)` - add a task to the backlog without launching it,
+  returning its id, saved configuration, and canonical repository set so later tasks can carry
+  durable dependency edges. Optional `agent`, `model`, `effort`, `kind`, `workflowId`, `enabled`,
+  `priority`, `labels`, and `dependencies` use the same configuration rules as the backlog editor.
+  Kind defaults to Ship; an omitted agent uses that kind's default. Omitted or null model and
+  effort follow launch-time defaults. An omitted workflow uses the kind or machine default;
+  explicit null opts out. Set `enabled: false` to park the task outside backlog autopilot.
+  Use `dependsOnTaskIds` and `dependsOnCurrentSession` for the existing dependency shortcuts,
+  or `dependencies` with `{type: "task", taskId}` / `{type: "session", sessionId}` entries.
+  The combined dependency inputs are limited to 50. Omit `repository` and
+  `additionalRepositories` to keep the calling repository as primary.
   Otherwise, each selector is an absolute local checkout path or a unique repository directory
   name; `repository` changes the primary and `additionalRepositories` attaches the rest. A linked
   worktree resolves to the **repo that owns it**, including an absolute path outside the configured
   workspace scan - see [A task's repo is the repo, not the
   worktree](dispatch-and-backlog.md#a-tasks-repo-is-the-repo-not-the-worktree). Ambiguous names
-  are refused with their canonical candidates. Selector-bearing calls use the atomic versioned
-  creation route, so an older daemon returns 404 and creates nothing instead of ignoring the new
-  fields. This validation proves local Git identity only: ordinary push and pull-request operations
+  are refused with their canonical candidates. Selector-bearing and configuration-bearing calls
+  use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
+  ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `update_task(taskId, ...)` - edit a task still in the backlog, using the same configuration
+  fields and repository selectors as creation, plus `title` and `intent`. Only supplied fields
+  change. Null `model` or `effort` restores inheritance; changing `agent` clears either override
+  unless the same call supplies a replacement. Null `priority` clears it and null `workflowId`
+  opts out of the workflow. `labels`, `dependencies`, and `additionalRepositories` replace their
+  saved arrays; `[]` clears them. Use `dependencies`, rather than the creation-only shortcuts,
+  to edit prerequisites. An empty title derives a new one from the intent. Invalid edits,
+  dependency cycles, and edits to tasks that have left the backlog are refused. The tool returns
+  the saved configuration and never launches the task.
+- `delete_task(taskId)` - delete one backlog or finished task using the dashboard's deletion
+  rules. Running and dispatching tasks must be cancelled first. Archive preservation and resource
+  cleanup run before the record is removed; a cleanup refusal keeps the record and returns the
+  reason. The tool returns `{taskId, deleted: true}` on success and reports a missing task as an error.
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape

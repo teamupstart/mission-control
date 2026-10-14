@@ -33,9 +33,12 @@ export interface SkillsState {
 export function useSkills(): SkillsState {
   const [view, setViewState] = useState<SkillsView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The view as last confirmed, readable without making `update` depend on it (which
-  // would rebuild the callback on every poll). This is what a revert restores.
+  // Keep the displayed intent separate from the last confirmed state used by a refusal.
   const viewRef = useRef<SkillsView | null>(null);
+  const confirmedView = useRef<SkillsView | null>(null);
+  const writeTail = useRef<Promise<void>>(Promise.resolve());
+  const writesPending = useRef(0);
+  const writeRevision = useRef(0);
 
   const setView = useCallback((v: SkillsView | null): void => {
     viewRef.current = v;
@@ -45,8 +48,13 @@ export function useSkills(): SkillsState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
+      if (writesPending.current) return;
+      const revision = writeRevision.current;
       const v = await fetchSkills();
-      if (alive && v) setView(v);
+      if (alive && v && !writesPending.current && revision === writeRevision.current) {
+        confirmedView.current = v;
+        setView(v);
+      }
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -71,16 +79,31 @@ export function useSkills(): SkillsState {
     async (patch: SkillsConfigPatch): Promise<void> => {
       const before = viewRef.current;
       if (!before) return;
+      const revision = ++writeRevision.current;
+      writesPending.current += 1;
       setView(optimistic(before, patch));
-      const res = await api.setSkillsConfig(patch);
-      if (!res.ok) {
-        setView(before);
-        setError(whyItFailed(res.error));
-        return;
-      }
-      setError(null);
-      const v = await fetchSkills();
-      if (v) setView(v);
+      const save = async (): Promise<void> => {
+        try {
+          const res = await api.setSkillsConfig(patch);
+          const v = await fetchSkills();
+          if (v) confirmedView.current = v;
+          // Older confirmations must not repaint a newer optimistic choice.
+          if (revision !== writeRevision.current) return;
+          if (!res.ok) {
+            setView(confirmedView.current ?? before);
+            setError(whyItFailed(res.error));
+            return;
+          }
+          setError(null);
+          if (v) setView(v);
+        } finally {
+          writesPending.current -= 1;
+        }
+      };
+      // Request order is not arrival order. Persist each click after its predecessor.
+      const saved = writeTail.current.then(save, save);
+      writeTail.current = saved;
+      await saved;
     },
     [setView],
   );
@@ -102,6 +125,8 @@ function optimistic(view: SkillsView, patch: SkillsConfigPatch): SkillsView {
   return {
     ...view,
     enabled: patch.enabled ?? view.enabled,
+    commitPlanHtml: patch.commitPlanHtml ?? view.commitPlanHtml,
+    planStorage: patch.planStorage ?? view.planStorage,
     skills: view.skills.map((s) => ({ ...s, enabled: patch.skills?.[s.id] ?? s.enabled })),
   };
 }

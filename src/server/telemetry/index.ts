@@ -19,6 +19,7 @@ export {
   userCredentialConfigured,
 } from "./config.ts";
 export {
+  acknowledgeOrganizationNotice,
   applyOrganization,
   describeOrganizationOutcome,
   organizationSettled,

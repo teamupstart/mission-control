@@ -847,6 +847,18 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **Every task says what kind it is.** A session working on a task is marked with its kind -
+  ship, bugfix, scout, plan, pipeline or chat - on both surfaces, `ship` included. Each kind
+  has its own icon and colour. Every style prints the kind's word beside the icon except the
+  card's **Medallion**, which shows the icon alone and gives the word on hover. The console
+  badge does the same only on a pane too narrow for anything else, where every other header
+  control has already been reduced to its mark. By default the console badges the kind before the session's
+  name, on the name's own line, and a Board card carries it on a tab sitting on the card's
+  top edge, which takes no room inside the card. Hover either one for what the kind is for.
+  The style for each surface, or Off, is a
+  [Display setting](skills-and-settings.md#settings). The kind is no longer printed in
+  the PATH and BRANCH band above the conversation; the task chip there still carries a
+  task's title, outcome and schedule origin when it has them.
 - **A card under review states its progress, not its reasons.** That is what **Workflow
   details** governs. Unchecked, a card with a
   bound run draws the run's name and state, its whole stage track, which stage it is on and

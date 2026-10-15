@@ -9181,22 +9181,33 @@ export class WorkflowStore {
   }
 
   private captureRepairInputsChanged(parent: WorkflowSubmission, binding: WorkflowBinding): boolean {
-    if (this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || "")
-        > (parent.stagedImageGeneration ?? 0)) return true;
-    // Re-registering identical reserved bytes deliberately does not bump the generation.
-    // A reservation returned to staged is nevertheless an explicit new submission choice.
-    // Restrict this to the parent's reservations so unrelated leftover coverage cannot wake it.
-    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_evidence_reservations r
-      JOIN workflow_evidence_staging s ON s.id = r.staging_id
-      WHERE r.submission_id = ? AND s.note_key = ? AND s.state = 'staged'
-        AND (s.repository_scope = 'all' OR s.source_root = ?) LIMIT 1`)
-      .get(parent.id, binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
+    const failure = this.evidencePreparationFailure(parent.id);
+    // A generation bump alone says nothing about the failed proof. Require a replacement
+    // for its source, or explicit restaging of a parent item (which need not bump generation).
+    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_evidence_staging s
+      WHERE s.note_key = ? AND s.state = 'staged'
+        AND (s.repository_scope = 'all' OR s.source_root = ?)
+        AND EXISTS (
+          SELECT 1 FROM workflow_evidence_reservations r
+          JOIN workflow_evidence_staging p ON p.id = r.staging_id
+          WHERE r.submission_id = ? AND (
+            s.id = p.id OR (
+              p.client_item_id = ? AND s.generation > ? AND s.source_kind = 'agent'
+              AND s.evidence_kind = p.evidence_kind AND s.source_root = p.source_root
+              AND s.source_locator = p.source_locator
+            )
+          )
+        ) LIMIT 1`)
+      .get(binding.noteKey, binding.repoRoot || binding.sessionCwd || "", parent.id,
+        typeof failure?.itemClientId === "string" ? failure.itemClientId : null,
+        parent.stagedImageGeneration ?? 0));
   }
 
-  /** Called only after the manager observes a settled, compatible session. */
-  markEvidenceCaptureRepairStalled(runId: string, now: number): boolean {
+  /** Persist eligible idle time; delivery age and time spent working are not idle time. */
+  observeEvidenceCaptureRepairIdle(input: { runId: string; now: number; settledSince: number | null }): boolean {
     return transaction(this.db, () => {
-      const run = this.getRun(runId);
+      const { now, settledSince } = input;
+      const run = this.getRun(input.runId);
       const recovery = run ? workflowPreparationRecovery(runLifecycleRecord(run)) : null;
       const latest = run ? this.latestSubmission(run.id) : null;
       const binding = run ? this.getBinding(run.bindingId) : null;
@@ -9204,14 +9215,16 @@ export class WorkflowStore {
           || recovery.submissionId !== latest.id) return false;
       const delivered = this.listDeliveries(run.id).find((delivery) => delivery.submissionId === latest.id
         && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered");
-      if (!delivered?.deliveredAt || delivered.deliveredAt + WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS > now
-          || this.captureRepairInputsChanged(latest, binding)) return false;
+      const idleSince = settledSince === null || !delivered || this.captureRepairInputsChanged(latest, binding)
+        ? null : recovery.idleSince === null || settledSince > recovery.idleSince ? now : recovery.idleSince;
+      const stalled = idleSince !== null && idleSince + WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS <= now;
+      if (!stalled && idleSince === recovery.idleSince) return false;
       const detail = this.evidencePreparationFailure(latest.id);
       if (!detail) return false;
       this.setRunState(run.id, "blocked", "image_evidence_capture", {
-        ...detail, preparationRecovery: { ...recovery, state: "stalled" },
+        ...detail, preparationRecovery: { ...recovery, idleSince, state: stalled ? "stalled" : "pending" },
       }, now);
-      this.appendEvent(run.id, "evidence_capture_repair_stalled", { submissionId: latest.id }, now,
+      if (stalled) this.appendEvent(run.id, "evidence_capture_repair_stalled", { submissionId: latest.id }, now,
         `evidence-capture-stalled:${latest.id}`);
       return true;
     });

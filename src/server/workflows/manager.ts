@@ -5011,11 +5011,17 @@ export class WorkflowManager {
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     const recovery = run ? workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState }) : null;
     if (!run || !latest || !binding || recovery?.state !== "pending"
-        || recovery.submissionId !== latest.id || !this.automaticEvidencePreparation(binding, latest)
-        || this.captureLocks.has(binding.noteKey)) return;
-    const session = this.registry.getSession(binding.sessionId!);
-    if (!session || !settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
-        || reportBucket(session, this.registry.snapshot().sessions) === "needs-you") return;
+        || recovery.submissionId !== latest.id) return;
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
+    const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
+      && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
+      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you";
+    if (!eligible) {
+      if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
+        this.publishRun(runId);
+      }
+      return;
+    }
     const child = recovery.kind === "capture"
       ? this.store.reserveEvidenceCaptureRepair({ id: randomUUID(), runId, parentId: latest.id, now })
       : this.store.reserveEvidenceRecovery({
@@ -5023,7 +5029,9 @@ export class WorkflowManager {
         reason: "automatic_mapping_recovery", automatic: true, now,
       })?.submission;
     if (!child) {
-      if (recovery.kind === "capture" && this.store.markEvidenceCaptureRepairStalled(runId, now)) this.publishRun(runId);
+      if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({
+        runId, now, settledSince: session.lastActivity ?? session.firstSeen,
+      })) this.publishRun(runId);
       return;
     }
     this.publishRun(runId);

@@ -1265,12 +1265,17 @@ without manually resubmitting. Changed reserved content needs a new item id; unc
 content can be restaged under its existing id. Uncaptured items must be registered again. Already
 frozen proof carries forward, and the failed submission and its reservations remain in history.
 
-After confirmed delivery, changed evidence or an explicitly restaged parent item and a settled
-compatible session permit an atomic `evidence_capture_repair` child in the same round. There are
-at most three automatic capture-repair children per round. An idle session with no new evidence
-15 minutes after confirmed delivery is marked visibly stalled. Exhaustion or a stalled repair
-requires operator intervention; neither waives the integrity check. A busy session or an
-unresolved permission prompt is not treated as an idle failed repair.
+After confirmed delivery, a new registration for the failed source or an explicitly restaged
+parent item and a settled compatible session permit an atomic `evidence_capture_repair` child in
+the same round. Unrelated evidence and coverage registrations do not spend repair attempts.
+When a replacement uses a new path, also restage a valid parent item unchanged to identify the
+registration as a repair. If no valid parent item remains, regenerate the failed source at its
+original path and register its final bytes under a new item id.
+There are at most three automatic capture-repair children per round. The 15-minute idle allowance
+starts at the first eligible sweep after confirmed delivery, persists across restart, and resets
+when the session works or awaits permission. Without relevant evidence progress during that idle
+allowance, the repair is marked visibly stalled. Exhaustion or a stalled repair requires operator
+intervention; neither waives the integrity check.
 
 For the same eligible runs, new criterion-mapping failures receive at most two automatic
 `evidence_recovery` operations per round, after delays of 30 and 120 seconds. These reuse frozen

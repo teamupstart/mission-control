@@ -271,13 +271,18 @@ test(`capture refusal explains ${automatic ? "automatic same-round recovery" : "
     const cwd = realpathSync(session!.cwd);
     mkdirSync(join(cwd, ".evidence"), { recursive: true });
     writeFileSync(join(cwd, ".evidence", "replacement.png"), PNG);
-    writeFileSync(join(cwd, ".gitignore"), "\n.evidence/\n", { flag: "a" });
+    writeFileSync(join(cwd, ".gitignore"), "\n.evidence/\nintact-evidence.png\n", { flag: "a" });
     const response = await fetch(`${daemon.baseURL}/mcp/workflow-evidence`, {
       method: "POST", headers: { "content-type": "application/json",
         "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() },
       body: JSON.stringify({ env: {}, sessionId, cwd, images: [{
         kind: "agent", clientItemId: "corrected-capture", path: ".evidence/replacement.png",
         caption: "The final stable capture", repositoryScope: "all",
+      }, {
+        // A new path alone cannot identify which failed proof it replaces. Restaging valid
+        // parent proof is the explicit repair signal described in the delivered packet.
+        kind: "agent", clientItemId: "phase1-intact-capture", path: "intact-evidence.png",
+        caption: "The screenshot that is still exactly what was registered", repositoryScope: "all",
       }] }),
     });
     expect(response.ok, await response.text()).toBe(true);

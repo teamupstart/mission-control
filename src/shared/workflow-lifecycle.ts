@@ -651,6 +651,8 @@ export interface WorkflowPreparationRecovery {
   limit: number;
   state: "pending" | "exhausted" | "stalled";
   retryAt: number | null;
+  /** First eligible idle observation, reset by work or an unresolved permission prompt. */
+  idleSince: number | null;
 }
 
 export function workflowPreparationRecovery(
@@ -661,13 +663,15 @@ export function workflowPreparationRecovery(
   const value = asRecord(asRecord(record.gateState)?.preparationRecovery ?? null);
   if (!value) return null;
   const { kind, submissionId, attempts, limit, state, retryAt } = value;
+  const idleSince = value.idleSince ?? null;
   if (kind !== (record.phase === "image_evidence_capture" ? "capture" : "mapping")
       || typeof submissionId !== "string" || !submissionId
       || typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 0
       || typeof limit !== "number" || !Number.isInteger(limit) || limit < 1
       || (state !== "pending" && state !== "exhausted" && state !== "stalled")
-      || (retryAt !== null && (typeof retryAt !== "number" || !Number.isFinite(retryAt)))) return null;
-  return { kind, submissionId, attempts, limit, state, retryAt };
+      || (retryAt !== null && (typeof retryAt !== "number" || !Number.isFinite(retryAt)))
+      || (idleSince !== null && (typeof idleSince !== "number" || !Number.isFinite(idleSince)))) return null;
+  return { kind, submissionId, attempts, limit, state, retryAt, idleSince };
 }
 
 /**

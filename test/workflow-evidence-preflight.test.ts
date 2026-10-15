@@ -1898,9 +1898,103 @@ test("idle capture repair without new proof becomes an explicit stalled block", 
   const h = await captureFailureHarness(t, id);
   await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
   h.registry.getSession(id)!.state = "idle";
-  await h.manager.sweepResumptions(Date.now() + 16 * 60_000);
+  const idleAt = Date.now() + 60_000;
+  await h.manager.sweepResumptions(idleAt);
+  await h.manager.stop(); h.manager.start();
+  await h.manager.sweepResumptions(idleAt + 15 * 60_000 - 1);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/);
+  await h.manager.sweepResumptions(idleAt + 15 * 60_000);
   assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
   assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+  assert.equal(h.injected.length, 1);
+});
+
+for (const heldBy of ["working", "permission"] as const) {
+  test(`capture repair idle allowance excludes time ${heldBy === "working" ? "working" : "awaiting permission"}`, async (t) => {
+    const id = `capture-idle-${heldBy}`;
+    const h = await captureFailureHarness(t, id);
+    await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+    const session = h.registry.getSession(id)!;
+    const hold = () => {
+      session.state = heldBy === "working" ? "working" : "idle";
+      session.pendingReviews = heldBy === "permission" ? 1 : 0;
+    };
+    const settle = () => { session.state = "idle"; session.pendingReviews = 0; };
+    const started = Date.now() + 60_000;
+    hold();
+    await h.manager.sweepResumptions(started);
+    await h.manager.sweepResumptions(started + 20 * 60_000);
+    settle();
+    await h.manager.sweepResumptions(started + 21 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/,
+      "the first eligible sweep must not count working or permission time");
+    await h.manager.sweepResumptions(started + 30 * 60_000);
+    hold();
+    await h.manager.sweepResumptions(started + 31 * 60_000);
+    await h.manager.stop(); h.manager.start();
+    await h.manager.sweepResumptions(started + 50 * 60_000);
+    settle();
+    await h.manager.sweepResumptions(started + 51 * 60_000);
+    await h.manager.sweepResumptions(started + 66 * 60_000 - 1);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/,
+      "a busy or permission interval must reset the idle allowance, including across restart");
+    await h.manager.sweepResumptions(started + 66 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+    assert.equal(h.injected.length, 1);
+  });
+}
+
+test("capture repair observes intervening activity even when the session settles between sweeps", async (t) => {
+  const id = "capture-idle-intervening-activity";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  const session = h.registry.getSession(id)!;
+  const idleAt = Date.now() + 60_000;
+  session.state = "idle";
+  await h.manager.sweepResumptions(idleAt);
+  session.lastActivity = idleAt + 10 * 60_000;
+  await h.manager.sweepResumptions(idleAt + 20 * 60_000);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/);
+  await h.manager.sweepResumptions(idleAt + 35 * 60_000);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+});
+
+for (const replace of [false, true]) test(`unrelated evidence preserves capture repair ${replace ? "until relevant proof arrives" : "until the idle deadline"}`, async (t) => {
+  const id = `capture-unrelated-evidence-${replace}`;
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  const parent = h.store.latestSubmission(h.run.id)!;
+  const idleAt = Date.now() + 60_000;
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(idleAt);
+  const unrelatedPath = join(h.path, "..", "unrelated.md");
+  writeFileSync(unrelatedPath, "Unrelated artifact\n");
+  for (let i = 1; i <= 3; i++) {
+    await h.manager.stageAgentEvidence(id, {
+      images: [], commandOutputs: i === 1 ? [{ kind: "command", clientItemId: "unrelated-command",
+        command: `check unrelated ${i}`, output: "passed", exitCode: 0,
+        caption: "Unrelated verification", repositoryScope: "all" }] : [],
+      artifacts: i === 2 ? [{ kind: "text", clientItemId: "unrelated-file", path: relative(repositoryRoot, unrelatedPath),
+        caption: "Unrelated file", repositoryScope: "all" }] : [],
+      coverage: i === 3 ? [{ clientCriterionId: "unrelated-claim", criterion: "Unrelated behavior",
+        proofClass: "focused_execution", repositoryScope: "all",
+        links: [{ clientItemId: "unrelated-command", role: "execution" }] }] : [],
+    });
+    assert.ok(h.store.workflowEvidenceGeneration(h.binding.noteKey, repositoryRoot) > parent.stagedImageGeneration!);
+    await h.manager.sweepResumptions(idleAt + i * 60_000);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1, "unrelated proof cannot spend a repair attempt");
+  }
+  if (replace) {
+    await h.register("replacement-after-unrelated");
+    await h.manager.sweepResumptions(idleAt + 4 * 60_000);
+    await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "relevant replacement did not reach review");
+    assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+    assert.equal(h.store.latestSubmission(h.run.id)?.segment, 1);
+  } else {
+    await h.manager.sweepResumptions(idleAt + 15 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+  }
   assert.equal(h.injected.length, 1);
 });
 

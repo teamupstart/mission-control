@@ -531,3 +531,99 @@ test("the queue's file wins over the comment already out with the agent", async 
   expect(threadOn(daemon, "notes.md").status, "nothing else went out to explain the move").toBe("queued");
   await shoot(page.locator(".file-workspace"), page, "07-queue-file-wins-over-outstanding");
 });
+
+/** A queued comment on one line of notes.md, through the routes the Files composer uses. */
+async function queueOnNotes(daemon: DaemonHandle, sessionId: string, line: number, revision: string): Promise<void> {
+  const session = encodeURIComponent(sessionId);
+  const created = await fetch(`${daemon.baseURL}/api/sessions/${session}/file-comments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      path: "notes.md",
+      startLine: line,
+      endLine: line,
+      quote: NOTES_LINES[line - 1],
+      revision,
+      surface: "editor",
+      body: `Check note ${line}.`,
+    }),
+  });
+  expect(created.status, `the thread on line ${line} was created`).toBe(200);
+  const { thread } = (await created.json()) as { thread: { id: string } };
+  const queued = await fetch(`${daemon.baseURL}/api/file-comments/${encodeURIComponent(thread.id)}/queue`, {
+    method: "POST",
+  });
+  expect(queued.status, `the thread on line ${line} was queued`).toBe(200);
+}
+
+test("a long review queue in the diff scrolls on its own and reaches its last comment", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  commitToBase(daemon);
+  await dispatch(page, daemon);
+  const session = await theSession(daemon);
+  const notes = [...NOTES_LINES];
+  notes[1] = "Note 2: the retry budget moved to RETRY_BUDGET_SECONDS.";
+  writeFileSync(join(session.cwd, "notes.md"), `${notes.join("\n")}\n`);
+  const file = (await (await fetch(
+    `${daemon.baseURL}/api/sessions/${encodeURIComponent(session.id)}/file?path=${encodeURIComponent("notes.md")}`,
+  )).json()) as { revision: string };
+  // Far more comments than the pane has room for.
+  const LINES = Array.from({ length: 16 }, (_, i) => 60 + i);
+  for (const line of LINES) await queueOnNotes(daemon, session.id, line, file.revision);
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiff(page);
+  await select(diff, "notes.md");
+  await diff.getByRole("button", { name: "Review queue" }).click();
+  const queue = diff.getByRole("region", { name: "Review queue" });
+  await expect(queue).toBeVisible();
+  // Held still, so the rows measured below are the rows still there: the first comment out
+  // finishes, and every other one waits.
+  await queue.getByRole("button", { name: "Pause review" }).click();
+  await expect.poll(() => storedReviewState(daemon), { message: "Pause never reached the daemon" })
+    .toBe("paused");
+  await expect
+    .poll(() => storedThreads(daemon).filter((t) => OUT.includes(t.status)).length, {
+      message: "the comment out with the agent never finished",
+      timeout: 30_000,
+    })
+    .toBe(0);
+  const rows = queue.getByRole("list").getByRole("button", { name: /^Open comment / });
+  await expect(rows.nth(LINES.length - 2)).toBeAttached();
+
+  // The default window, and a short one - where 45% of the pane once left the list no room.
+  for (const viewport of [null, { width: 1280, height: 560 }]) {
+    if (viewport) await page.setViewportSize(viewport);
+    const where = viewport ? `at ${viewport.height}px tall` : "at the default size";
+    await expect(queue).toBeVisible();
+    const pane = (await diff.boundingBox())!;
+    const panel = (await queue.boundingBox())!;
+    expect(panel.y + panel.height, `the queue ends inside the diff pane ${where}`)
+      .toBeLessThanOrEqual(pane.y + pane.height + 1);
+    const first = rows.first();
+    const last = rows.last();
+    await expect(first, `the first queued comment shows ${where}`).toBeInViewport();
+    // And the queue never takes the pinned header: its controls stay on screen beside it.
+    await expect(diff.getByRole("button", { name: "Comment mode" }), `Comment stays on screen ${where}`)
+      .toBeInViewport();
+    await expect(diff.getByRole("button", { name: "Comments", exact: true })).toBeInViewport();
+    await expect(last).not.toBeInViewport();
+    // By wheel, the way a reader gets there: a list with no scroll area of its own cannot move.
+    await first.hover();
+    await page.mouse.wheel(0, 5_000);
+    await expect(last, `the last queued comment is reachable ${where}`).toBeInViewport();
+    const row = (await last.boundingBox())!;
+    expect(row.y + row.height, `the last comment is inside the pane ${where}`)
+      .toBeLessThanOrEqual(pane.y + pane.height + 1);
+    // Back to the top over the list itself, so the next size starts where a reader would.
+    await last.hover();
+    await page.mouse.wheel(0, -5_000);
+    await expect(first).toBeInViewport();
+    await shoot(diff, page, viewport ? "09-long-queue-short-window" : "08-long-queue-scrolls");
+  }
+  await rows.last().scrollIntoViewIfNeeded();
+  await rows.last().click();
+  await expect(diff.getByText(`Line ${LINES.at(-1)} is not part of this diff.`)).toBeVisible();
+});

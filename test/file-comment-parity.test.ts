@@ -20,6 +20,8 @@ import {
   fileCommentSummaries,
   fileCommentSummaryLabel,
   fileCommentSummaryTone,
+  stepOutstandingFollow,
+  type OutstandingFollow,
 } from "../src/web/lib/fileComments.ts";
 import { FileCommentBadge } from "../src/web/components/FileCommentBadge.tsx";
 import { FileCommentControls } from "../src/web/components/FileCommentControls.tsx";
@@ -230,4 +232,52 @@ test("read-only evidence keeps the Comments index and drops Comment mode", () =>
   const html = controls({ mode: null });
   assert.doesNotMatch(html, /aria-label="Comment mode"/);
   assert.match(html, /aria-label="Comments"[^>]*>Comments \(2\)</);
+});
+
+/** Feed the Files walkthrough's follow one observation at a time, as its effect does. */
+function follows(steps: { loaded: boolean; out: string | null }[]): boolean[] {
+  let state: OutstandingFollow = { armed: false, followedId: null };
+  return steps.map(({ loaded, out }) => {
+    const step = stepOutstandingFollow(state, loaded, out);
+    state = step.next;
+    return step.follow;
+  });
+}
+
+test("a comment already out when the Files tab opens is not followed, loaded or not", () => {
+  // Opened with the comment state already known: what is out now did not just go out.
+  assert.deepEqual(follows([{ loaded: true, out: "c1" }]), [false]);
+  // Opened BEFORE the comment state arrived. The empty lists that stand in are not the answer,
+  // so the comment that arrives with the snapshot is not taken for one that just went out.
+  assert.deepEqual(
+    follows([
+      { loaded: false, out: null },
+      { loaded: false, out: null },
+      { loaded: true, out: "c1" },
+    ]),
+    [false, false, false],
+  );
+});
+
+test("each comment that goes out while the Files tab is open is followed once", () => {
+  assert.deepEqual(
+    follows([
+      { loaded: true, out: null },
+      { loaded: true, out: "c1" },
+      // The same comment on every later render: followed once, not dragged back to.
+      { loaded: true, out: "c1" },
+      { loaded: true, out: null },
+      { loaded: true, out: "c2" },
+    ]),
+    [false, true, false, false, true],
+  );
+  // The next one after a comment that was already out on arrival is followed as before.
+  assert.deepEqual(
+    follows([
+      { loaded: false, out: null },
+      { loaded: true, out: "c1" },
+      { loaded: true, out: "c2" },
+    ]),
+    [false, false, true],
+  );
 });

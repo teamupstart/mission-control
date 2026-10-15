@@ -12522,7 +12522,16 @@ select:not([multiple]) option:focus-visible {
   color: var(--dim);
   font: 11px/1.4 var(--sans);
 }
+/* The review queue shares the detail column with the diff card, and that column clips. So its
+   height is stated here, not inherited: up to 45% of the pane as in Files, but never less than
+   its header and a couple of rows while the pane has room - in a short window 45% left the list
+   no height at all. It never takes the first row of the diff card's header, though, so the
+   pinned Comment and Comments controls stay on screen while the queue is open.
+   `.file-review-list` scrolls inside it, and the diff rows give up the rest of the space, since
+   they scroll on their own. */
 .diff-detail > .file-review {
+  flex: none;
+  max-height: min(max(45%, 120px), calc(100% - 56px));
   border: 1px solid var(--border);
   border-radius: 9px;
   overflow: hidden;

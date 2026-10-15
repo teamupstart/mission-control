@@ -36,7 +36,9 @@ import {
   markerLabel,
   markerTone,
   reanchorThreadsForDisplay,
+  stepOutstandingFollow,
   threadForRenderedBlock,
+  type OutstandingFollow,
   threadsByLine,
   threadsForFile,
 } from "../lib/fileComments.ts";
@@ -249,6 +251,12 @@ export interface FileWorkspaceProps {
    * empty, so a derived "running" would flicker on every advance.
    */
   fileCommentReviews?: readonly FileCommentReview[];
+  /**
+   * Whether the two lists above hold the daemon's answer yet - the event stream's first
+   * snapshot - rather than the empty lists that stand in until it arrives. The walkthrough
+   * follows nothing until then. Defaults to known, for a caller that hands over a settled list.
+   */
+  fileCommentsLoaded?: boolean;
   /** A source line the reader deep-linked to. See `FileEditor`'s `scrollTo` for the nonce. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   /** A rendered file that should enter comment mode once its buffer is available. */
@@ -285,6 +293,7 @@ export function fileWorkspacePropsEqual(
     && previous.controller === next.controller
     && previous.fileCommentThreads === next.fileCommentThreads
     && previous.fileCommentReviews === next.fileCommentReviews
+    && previous.fileCommentsLoaded === next.fileCommentsLoaded
     && previous.fileLineRequest === next.fileLineRequest
     && previous.fileCommentRequest === next.fileCommentRequest
     && previous.onExtract === next.onExtract
@@ -298,6 +307,7 @@ function FileWorkspaceBody({
   controller,
   fileCommentThreads = [],
   fileCommentReviews = [],
+  fileCommentsLoaded = true,
   fileLineRequest = null,
   fileCommentRequest = null,
   onExtract,
@@ -776,19 +786,21 @@ function FileWorkspaceBody({
    * **Never the comment already out when this workspace opens.** The tab mounts because the
    * reader asked for it, usually for one file: a link, Open in Files, or the Diff tab's review
    * queue opening a comment on a file the diff does not hold. That comment did not just go
-   * out, and following it on mount took the reader straight off the file they asked for. So it
-   * counts as followed from the first render, and the next comment to go out is followed as
-   * before.
+   * out, and following it on mount took the reader straight off the file they asked for. So
+   * the first look at the comment state counts whatever is out as followed - and that look
+   * waits for the state to be KNOWN (`fileCommentsLoaded`), because a workspace that mounted
+   * before its comment data arrived would otherwise see the outstanding comment arrive as if it
+   * had just gone out. See `stepOutstandingFollow`.
    */
-  const followedId = useRef<string | null>(outstanding?.id ?? null);
+  const followState = useRef<OutstandingFollow>({ armed: false, followedId: null });
   const writing = draft.composer !== null;
   useEffect(() => {
-    if (!outstanding || followedId.current === outstanding.id) return;
-    followedId.current = outstanding.id;
-    if (writing) return;
+    const step = stepOutstandingFollow(followState.current, fileCommentsLoaded, outstanding?.id ?? null);
+    followState.current = step.next;
+    if (!step.follow || !outstanding || writing) return;
     setFollowedOutstanding((prev) => ({ id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 }));
     if (outstanding.path !== selectedPath) controller.select(session.id, outstanding.path);
-  }, [controller, outstanding, selectedPath, session.id, writing]);
+  }, [controller, fileCommentsLoaded, outstanding, selectedPath, session.id, writing]);
   const scrollTo = useMemo(() => {
     if (threadJump) return { line: threadJump.line, nonce: threadJump.nonce };
     if (

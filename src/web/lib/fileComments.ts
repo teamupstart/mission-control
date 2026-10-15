@@ -597,6 +597,36 @@ export function outstandingThread(queue: readonly FileCommentThread[]): FileComm
   return queue.find((thread) => isOutstandingThreadStatus(thread.status)) ?? null;
 }
 
+/** What the Files workspace's walkthrough has already seen go out. */
+export interface OutstandingFollow {
+  /** False until the comment state was known while this workspace was open. */
+  armed: boolean;
+  followedId: string | null;
+}
+
+/**
+ * Whether the comment out with the agent now is one to take the reader to: one that went out
+ * while they were reading, and not one that was already out when they arrived.
+ *
+ * Nothing is followed before the comment state is known (`loaded`, the first snapshot). The
+ * first look after that arms the follow and counts whatever is already out as followed, so a
+ * workspace opened on a file the reader asked for - or one that mounted before its comment data
+ * arrived - is not pulled off it by a comment that went out earlier. After that each new
+ * outstanding comment is followed once, by id.
+ */
+export function stepOutstandingFollow(
+  previous: OutstandingFollow,
+  loaded: boolean,
+  outstandingId: string | null,
+): { next: OutstandingFollow; follow: boolean } {
+  if (!loaded) return { next: previous, follow: false };
+  if (!previous.armed) return { next: { armed: true, followedId: outstandingId }, follow: false };
+  if (outstandingId === null || outstandingId === previous.followedId) {
+    return { next: previous, follow: false };
+  }
+  return { next: { armed: true, followedId: outstandingId }, follow: true };
+}
+
 /**
  * The message a queued comment would send next: its oldest human message not yet delivered.
  *

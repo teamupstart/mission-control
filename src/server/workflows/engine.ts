@@ -500,7 +500,8 @@ export class WorkflowEngine {
     // once its structure is ready.
     const seedSession = submission.segment === 0
       || submission.refinementReason === "evidence_preflight"
-      || submission.refinementReason === "evidence_recovery";
+      || submission.refinementReason === "evidence_recovery"
+      || submission.refinementReason === "evidence_capture_repair";
     let changed = true;
     while (changed) {
       changed = false;

@@ -1018,14 +1018,25 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 `image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
 submission and therefore the same reserved bytes.
 
-The refusal names the registered item it is about - its display name and the client id a
-re-registration replaces - and the run page states the whole refusal without a disclosure: what
-capture found, which item, that no reviewer ran and no repair round was spent, and that the
-recovery is to register the item again and start the next round. Resuming is not that recovery:
-it revives the same submission and therefore the same immutable reservation, so it re-checks
-the bytes that were just refused and cannot see a re-registered item. A blocked run that has
-been claimed complete again says so beside the refusal; the claim opens no round, and the
-evidence that turn registered is picked up by the next round.
+The refusal names the registered item's display name and client id. The run page shows what
+capture found, which item failed, that no reviewer ran and no repair round was spent, and the
+recovery path that applies.
+
+For new agent-file failures in full-workflow submissions, an active, live binding with automatic
+resumption and a compatible bound session receives an `evidence_capture_repair` packet. The agent
+registers valid replacement proof and updates its coverage links. After confirmed delivery and a
+settled session, changed evidence or an explicitly restaged valid parent item triggers a child
+segment in the same round. Changed reserved content needs a new item id; the failed submission
+and its reservations stay intact. No manual resubmission or new Persona repair round is needed.
+The limits and exclusions are described in [Automatic recovery before review](#automatic-recovery-before-review).
+
+Ordinary session runs using manual resumption or preview, and historical blocked runs without an
+automatic recovery record, require the agent to register the final proof and the operator to use
+the fresh-round action in Runs. External-artifact submissions and SessionAction continuations keep
+their own explicit recovery paths. Resuming a refused capture revives the same submission and
+immutable reservation, so it re-checks the refused bytes and cannot see replacement registrations.
+A later completion claim alone does not create a new capture; the applicable automatic or
+explicit recovery path still owns that transition.
 
 An image whose digest is already frozen and retained references that existing body instead of
 copying it again, so registering the same screenshot in five rounds stores it once. That is a
@@ -1039,10 +1050,11 @@ queue rather than deleted.
 
 Registering byte-identical evidence under an id a previous submission already reserved returns
 it to the mutable tray for the next submission instead of doing nothing. That is not new
-evidence about the work, so it does not move the staged generation and does not resume a
-waiting run. It also does not detach anything from the submission that reserved it: that
-submission's frozen bytes are immutable. Registering genuinely different content under a
-reserved id is still refused.
+evidence about the work, so it does not move the staged generation or by itself resume an ordinary
+readiness wait. A pending automatic capture repair can use an explicitly restaged parent item to
+trigger its same-round child after confirmed delivery and a settled session. Restaging does not
+detach anything from the submission that reserved it: that submission's frozen bytes are
+immutable. Registering genuinely different content under a reserved id is still refused.
 
 A repair round's first submission and an `evidence_preflight` refinement child both start from
 what they staged themselves and then carry forward what the previous submission of the run
@@ -1171,9 +1183,15 @@ verdicts stay intact, pending repair deliveries are retired, and in-flight or un
 prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
 Each explicit recovery request may reserve a fresh segment; there is no lifetime recovery cap
 that withdraws the action after repeated failures. Reservation remains atomic and replaying a
-request is idempotent. Each mapping operation keeps its two-execution cap, and background polling
-never creates recovery requests. Recovery is separate from author refinements, and no historical
-runs are resumed in bulk.
+request is idempotent. Each mapping operation keeps its two-execution cap; background polling
+does not create another explicit request or reset that operation's checkpoint. Separately, for
+new mapping failures recorded as pending automatic recovery on eligible active, live bindings
+with automatic resumption, the resumption sweep may reserve at most two automatic
+`evidence_recovery` segments per round, after delays of 30 and 120 seconds. These use frozen
+evidence, retain the per-operation cap, and require a settled compatible session. See
+[Automatic recovery before review](#automatic-recovery-before-review) for the eligibility
+boundaries. Both recovery paths are separate from author refinements; historical blocked runs
+without automatic recovery records are not resumed in bulk.
 
 Links resolve only against evidence frozen for that submission. Historical snapshots with embedded
 matches normalize into the separate mapping representation when read.
@@ -1231,6 +1249,42 @@ historical `preflight_refinement_exhausted` phase. It needs no newly staged evid
 preflight packet is cancelled before review starts; a sending or uncertain delivery must settle
 first. The handoff is durable, so a restart between continuation and judge activation resumes the
 same submission without creating another refinement or recording an operator decision.
+
+### Automatic recovery before review
+
+Capture integrity compares each file with its registered byte count and SHA-256 before copying
+it into immutable evidence storage. A new registration id does not replace an earlier id at the
+same path. If the file changed, capture must refuse the stale registration even when another id
+correctly describes the current bytes. This checks evidence identity, not whether the proof is
+sufficient or the implementation is correct.
+
+New agent-file capture failures on active, live bindings with automatic resumption now send an
+`evidence_capture_repair` packet to the bound session. It names the failure and reserved sources,
+explains how to register replacements and update coverage, and asks the agent to finish its turn
+without manually resubmitting. Changed reserved content needs a new item id; unchanged valid
+content can be restaged under its existing id. Uncaptured items must be registered again. Already
+frozen proof carries forward, and the failed submission and its reservations remain in history.
+
+After confirmed delivery, changed evidence or an explicitly restaged parent item and a settled
+compatible session permit an atomic `evidence_capture_repair` child in the same round. There are
+at most three automatic capture-repair children per round. An idle session with no new evidence
+15 minutes after confirmed delivery is marked visibly stalled. Exhaustion or a stalled repair
+requires operator intervention; neither waives the integrity check. A busy session or an
+unresolved permission prompt is not treated as an idle failed repair.
+
+For the same eligible runs, new criterion-mapping failures receive at most two automatic
+`evidence_recovery` operations per round, after delays of 30 and 120 seconds. These reuse frozen
+evidence and keep the existing per-operation model-call budget. No agent edit is requested for a
+system mapping failure. The normal readiness loop above still owns author coverage gaps and its
+six/three-attempt policy.
+
+Failure disposition, reservations, counters and delivery receipts survive restart. Prepared
+packets may be delivered; confirmed packets are not resent; sending or uncertain deliveries
+must be resolved before another capture. An interrupted reserved child resumes the same segment.
+No automatic recovery is inferred for historical blocked rows. Preview, manual resumption,
+external-artifact submissions and SessionAction continuations retain their existing explicit
+recovery paths. The latter have a different graph activation route and are not restarted from
+Session by this pre-review recovery.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another

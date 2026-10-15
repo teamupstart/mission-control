@@ -2650,6 +2650,7 @@ export const WORKFLOW_SUBMISSION_REFINEMENT_REASONS = [
   "session_action",
   "evidence_preflight",
   "evidence_recovery",
+  "evidence_capture_repair",
 ] as const;
 export type WorkflowSubmissionRefinementReason =
   (typeof WORKFLOW_SUBMISSION_REFINEMENT_REASONS)[number];
@@ -2706,6 +2707,7 @@ export const WORKFLOW_DELIVERY_KINDS = [
   // ledger a person reads to work out why a run sat still.
   "parked_repair_reminder",
   "evidence_readiness",
+  "evidence_capture_repair",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 

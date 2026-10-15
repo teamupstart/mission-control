@@ -548,8 +548,8 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   ],
   failed_outcome: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
   // Allowed, never required, so a row written before the identity existed keeps decoding.
-  image_evidence_capture: ["error", "code", "itemName", "itemClientId"],
-  evidence_reconciliation_error: ["submissionId", "error"],
+  image_evidence_capture: ["error", "code", "itemName", "itemClientId", "preparationRecovery"],
+  evidence_reconciliation_error: ["submissionId", "error", "preparationRecovery"],
   infrastructure_error: ["nodeId", "attempts", "error"],
   provider_token_exhausted: ["nodeId", "error"],
   invalid_version: ["error"],
@@ -637,6 +637,37 @@ export interface WorkflowCaptureFailure {
   /** Null together on a row written before the throw site attached them; degrade, never guess. */
   itemName: string | null;
   itemClientId: string | null;
+}
+
+export const WORKFLOW_CAPTURE_REPAIR_LIMIT = 3;
+export const WORKFLOW_MAPPING_RECOVERY_DELAYS = [30_000, 120_000] as const;
+export const WORKFLOW_CAPTURE_REPAIR_IDLE_LIMIT_MS = 15 * 60_000;
+
+/** Stored with new failures only. Historical blocks never silently opt into automatic work. */
+export interface WorkflowPreparationRecovery {
+  kind: "capture" | "mapping";
+  submissionId: string;
+  attempts: number;
+  limit: number;
+  state: "pending" | "exhausted" | "stalled";
+  retryAt: number | null;
+}
+
+export function workflowPreparationRecovery(
+  record: WorkflowRunLifecycleRecord,
+): WorkflowPreparationRecovery | null {
+  if (record.status !== "blocked"
+      || !["image_evidence_capture", "evidence_reconciliation_error"].includes(record.phase)) return null;
+  const value = asRecord(asRecord(record.gateState)?.preparationRecovery ?? null);
+  if (!value) return null;
+  const { kind, submissionId, attempts, limit, state, retryAt } = value;
+  if (kind !== (record.phase === "image_evidence_capture" ? "capture" : "mapping")
+      || typeof submissionId !== "string" || !submissionId
+      || typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 0
+      || typeof limit !== "number" || !Number.isInteger(limit) || limit < 1
+      || (state !== "pending" && state !== "exhausted" && state !== "stalled")
+      || (retryAt !== null && (typeof retryAt !== "number" || !Number.isFinite(retryAt)))) return null;
+  return { kind, submissionId, attempts, limit, state, retryAt };
 }
 
 /**

@@ -685,9 +685,15 @@ test("scripted skill and workflow sessions create PRs from the live draft policy
     assert.equal(fixture.commands.filter((args) => args[1] === "create").length, 4);
     assert.ok(fixture.commands.every((args) => args[1] === "create" || args[1] === "view"));
   } finally {
-    await fixture?.setPolicy(false);
-    await fixture?.close();
-    await h.stop();
+    try {
+      await fixture?.setPolicy(false);
+    } finally {
+      try {
+        await fixture?.close();
+      } finally {
+        await h.stop();
+      }
+    }
   }
 });
 

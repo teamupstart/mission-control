@@ -18,6 +18,11 @@ for (const skillsEnabled of [true, false]) {
     await expect(control).toBeVisible();
     await expect(control).toBeEnabled();
     await expect(control).not.toBeChecked();
+    await expect(control).toHaveAccessibleDescription("Create new skill and workflow PRs as drafts for human promotion");
+    await control.hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Create new skill and workflow PRs as drafts for human promotion");
+    await expect(dashboard.locator(".tooltip")).toBeVisible();
+    await dashboard.mouse.move(0, 0);
     const row = dashboard.locator('[data-anchor="skills/always-draft-pr"]');
     await expect(row).toContainText("Only a human promotes drafts to ready for review");
     await expect(row.locator("xpath=preceding-sibling::*[1]")).toContainText("/pull-request");
@@ -50,6 +55,8 @@ for (const skillsEnabled of [true, false]) {
         const evidence = artifactsDir("draft-pr-policy");
         mkdirSync(evidence, { recursive: true });
         await control.scrollIntoViewIfNeeded();
+        await control.hover();
+        await expect(dashboard.locator(".tooltip")).toBeVisible();
         await dashboard.screenshot({ path: `${evidence}always-draft-enabled${skillsEnabled ? "" : "-skills-off"}.png` });
       }
       await control.uncheck();

@@ -7,11 +7,6 @@ Prepare the reviewed work as a reviewer-ready pull request.
 Use the invoked pull-request skill to turn the work this workflow just reviewed into one open
 pull request. Commit everything that was reviewed, push the branch, and open the pull request.
 
-Before creation, read the shared setting through `get_pull_request_policy`, as the skill
-requires. When `alwaysDraftPr` is true, create a draft PR and leave promotion to the human.
-A draft is an open PR for this phase. Do not promote it to trigger CI or complete the workflow.
-There is no separate workflow override for this setting.
-
 This is about one repository and one branch: the repository named in the packet above, or the
 one you are standing in when it names none. If an open pull request already exists for that
 branch and its head matches the work you just pushed, update that pull request rather than

@@ -132,8 +132,10 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         <span className="kb-row-desc">Applies to the Pull Request skill and workflow PR phases in every repository. Only a human promotes drafts to ready for review. Existing PRs keep their status.</span>
       </div>
       <div className="kb-row-controls">
-        <input id="always-draft-pr" type="checkbox" checked={view?.alwaysDraftPr ?? false} disabled={!view}
-          onChange={(event) => void update({ alwaysDraftPr: event.target.checked })} />
+        <Tooltip label="Create new skill and workflow PRs as drafts for human promotion">
+          <input id="always-draft-pr" type="checkbox" checked={view?.alwaysDraftPr ?? false} disabled={!view}
+            onChange={(event) => void update({ alwaysDraftPr: event.target.checked })} />
+        </Tooltip>
       </div>
     </div>
   );

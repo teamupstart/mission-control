@@ -70,6 +70,7 @@ export const MISSION_MCP_TOOLS = [
   PLAN_SAVE_TOOL,
   PLAN_READ_TOOL,
   "publish_plan",
+  "get_pull_request_policy",
   "request_input",
   "report_product_feedback",
   "report_product_issue",

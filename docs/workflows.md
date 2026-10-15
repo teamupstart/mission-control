@@ -549,6 +549,13 @@ only after Mission Control has durable proof that a pull request was opened. Dup
 that completion and that skill, so you can rewrite the instruction without losing the adoption
 proof.
 
+PR phases share **Settings → Skills → Always create draft PRs** with the Pull Request skill.
+When enabled, new PRs are drafts and only the human promotes them to ready for review. A draft
+still counts as an open PR for this phase. The runtime instruction also reaches actions frozen
+in older versions and the **Prepare PR in session** handoff; it asks the agent to read the live
+setting immediately before creation. CI follow-through never authorizes promotion. See the
+[shared setting](skills-and-settings.md#skills-every-session-mixed-reload-behavior).
+
 What the daemon has to see before the stages below it run, and before End:
 
 1. the packet was confirmed sent, something newer than the send anchor proved the session read

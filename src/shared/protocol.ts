@@ -2270,6 +2270,8 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
+  /** Shared by direct skill invocations and workflow PR phases. */
+  alwaysDraftPr: z.boolean().default(false),
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
@@ -2308,7 +2310,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, alwaysDraftPr: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;

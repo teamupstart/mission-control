@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { pullRequestPolicyContract } from "../skills/pull-request-policy.ts";
 import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { WORKFLOW_LIMITS, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import type {
@@ -142,6 +143,8 @@ export interface SessionActionPacketInput {
   workflowEvidence: boolean;
   /** Enabled only for workflow PR completion actions at packet preparation. */
   pullRequestCi?: boolean;
+  /** PR completion or a required Pull Request skill, including older published actions. */
+  pullRequestPolicy?: boolean;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -735,7 +738,8 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
     ? ["", workflowPullRequestCiContract(), ""]
     : [];
-  const payload = `${[...lines, authorization, ...ciPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  const prPolicy = input.pullRequestPolicy ? ["", pullRequestPolicyContract(), ""] : [];
+  const payload = `${[...lines, authorization, ...ciPolicy, ...prPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
   // one is the operator's own instruction, frozen into an immutable version: a prefix of
@@ -766,6 +770,8 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     bounded(input.skillCommand),
     "",
     "Prepare the reviewed work for the workflow's GitHub Inspector final gate.",
+    "",
+    pullRequestPolicyContract(),
     "",
     "Original user goal:",
     bounded(input.originalGoal),

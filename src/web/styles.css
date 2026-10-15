@@ -20365,15 +20365,18 @@ button.wf-carried.is-link:focus-visible {
 .skills-master {
   font-weight: 540;
 }
-/* A fieldset is a layout element here, not a box: strip the UA's border/padding so
-   the rows sit exactly where they would without it. */
 .skills-list {
   border: 0;
   padding: 0;
   margin: 8px 0 0;
   min-width: 0;
 }
-.skills-list:disabled {
+/* Each skill row is a fieldset, with its box supplied by .kb-row. */
+.skill-row {
+  margin: 0;
+  min-width: 0;
+}
+.skill-row:disabled {
   opacity: 0.42;
 }
 .skill-row .kb-row-label {
@@ -20433,8 +20436,8 @@ button.wf-carried.is-link:focus-visible {
   height: 15px;
   cursor: pointer;
 }
-.skills-list:disabled .skill-switch,
-.skills-list:disabled .skill-switch input {
+.skill-row:disabled .skill-switch,
+.skill-row:disabled .skill-switch input {
   cursor: default;
 }
 

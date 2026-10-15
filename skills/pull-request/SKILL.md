@@ -13,6 +13,28 @@ Use this skill whenever this Mission Control session prepares, opens, or reports
 request, including when you write the description before running `gh pr create`. Treat
 the pull request as the handoff to a reviewer, not as a log of commands you ran.
 
+## Shared PR creation setting
+
+Immediately before creating each PR, call Mission Control's `get_pull_request_policy` tool.
+It reads **Settings → Skills → Always create draft PRs**, beside the Pull Request row.
+This machine-wide setting is the only source of truth for both this skill and workflow PR
+phases. Do not keep a second setting in this skill, a repository, or a workflow snapshot.
+Read it again for each repository and each later turn. If the tool is unavailable or returns
+an error, stop before creating the PR and report the blocker; do not assume the setting is off.
+
+- When `alwaysDraftPr` is `true`, create every new PR with `gh pr create --draft` or the
+  equivalent API draft flag. Verify the created PR's `isDraft` value before reporting it.
+  Only the human may promote it to ready for review. Never run `gh pr ready` or an equivalent
+  API, including during CI repairs or to satisfy a workflow gate. If CI does not run on drafts,
+  report that blocker and leave promotion to the human.
+- When `alwaysDraftPr` is `false`, follow the task's normal PR creation instructions. Turning
+  the option off does not authorize promotion of an existing draft.
+- Update an existing PR without changing its draft or ready status. Do not create a duplicate
+  or turn a PR the human already promoted back into a draft.
+
+This preference controls creation status; it does not authorize creating, promoting, or merging
+a PR beyond the task's existing authorization.
+
 ## One pull request per repository you changed
 
 Nearly every session works in one repository and opens one pull request, and everything below

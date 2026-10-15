@@ -5383,6 +5383,8 @@ export class WorkflowManager {
       workflowEvidence: versionSupportsWorkflowEvidence(version),
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true,
+      pullRequestPolicy: snapshot.completion.kind === "pull_request"
+        || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot

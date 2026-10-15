@@ -467,6 +467,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("skills"),
   },
   {
+    id: "skills-always-draft-pr",
+    label: "Always create draft PRs",
+    description: "Create draft pull requests through the skill and workflows; a human promotes them to ready for review.",
+    category: "skills",
+    anchor: "skills/always-draft-pr",
+    keywords: ["pull request", "PR", "draft", "review", "workflow", "human"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
     id: "standing-instructions-default",
     label: "Standing instructions for every repository",
     description: "The machine-wide text a session gets when its checkout has no rule of its own.",

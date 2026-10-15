@@ -997,6 +997,20 @@ async function managedPlanCall(operation: string, input: unknown) {
     return textResult(await response.text(), !response.ok);
   } catch (error) { return textResult(`Managed plan ${operation} failed: ${String(error)}`, true); }
 }
+server.registerTool("get_pull_request_policy", {
+  description: "Read the current machine-wide PR creation policy from Settings > Skills. Call immediately before creating each PR, including workflow PR phases. When alwaysDraftPr is true, create with --draft and leave promotion to the human. An unavailable policy is not permission to create a ready PR.",
+  inputSchema: {}, annotations: { readOnlyHint: true },
+}, async () => {
+  try {
+    const response = await http("/api/skills/pull-request-policy", "GET");
+    if (!response.ok) return textResult(`Could not read pull request policy (${response.status}): ${await response.text()}`, true);
+    // No default here: an old daemon or malformed response is not an opt-out.
+    const policy = z.object({ alwaysDraftPr: z.boolean() }).parse(await response.json());
+    return textResult(JSON.stringify(policy));
+  } catch (error) {
+    return textResult(`Could not read pull request policy: ${String(error)}`, true);
+  }
+});
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",
   inputSchema: PlanContextInputSchema.shape, annotations: { readOnlyHint: true },

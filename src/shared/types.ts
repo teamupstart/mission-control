@@ -1858,6 +1858,7 @@ export interface SkillRow extends SkillCatalogEntry {
 
 /** Everything the skills panel draws, in one read. */
 export interface SkillsView {
+  alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */

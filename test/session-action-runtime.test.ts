@@ -603,11 +603,39 @@ test("only PR actions with CI tracking enabled receive the runtime policy", asyn
         await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
         const delivery = h.store.listDeliveries(runId)[0]!;
         assert.equal(delivery.payload.includes("## Workflow pull request CI follow-through"), pullRequest && trackCiFailures);
+        assert.equal(delivery.payload.includes("## Pull request creation policy"), pullRequest);
         assert.equal(h.injected.length, 0);
       } finally {
         await h.stop();
       }
     }
+  }
+});
+
+test("a Pull Request skill action with session-turn completion receives the creation policy", async () => {
+  const h = await harness("pr-skill-turn-policy", {
+    actions: [{ id: "act", prompt: "# Create a pull request\n", skillId: "pull-request" }],
+    pullRequest: false,
+    deliveryMode: "live",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the Pull Request skill packet never reached the pane",
+    );
+    const attempt = waitingAttempt(h, runId)!;
+    assert.equal(attempt.sessionAction?.completion.kind, "session_turn");
+    assert.equal(attempt.sessionAction?.requiredSkillId, "pull-request");
+    const delivery = h.store.listDeliveries(runId).find((item) => item.kind === "session_action")!;
+    assert.deepEqual(h.injected, [delivery.payload]);
+    assert.match(h.injected[0]!, /^\/mission-pull-request\n/);
+    assert.match(h.injected[0]!, /## Pull request creation policy/);
+    assert.match(h.injected[0]!, /get_pull_request_policy/);
+    assert.match(h.injected[0]!, /gh pr create --draft/);
+    assert.match(h.injected[0]!, /Only the human may promote it/);
+  } finally {
+    await h.stop();
   }
 });
 

@@ -8,6 +8,7 @@ import { planContractAppendix, planWorkflowEvidenceAppendix, type PlanSkillInvoc
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
+import { documentTaskAppendix } from "./documentation/prompt.ts";
 import {
   workflowEvidenceContractAppendix,
 } from "./workflows/agent-contract.ts";
@@ -97,6 +98,7 @@ function requireCompletionContract(kind: TaskKind): TaskCompletionContract {
 }
 
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
+  document: (_task, inputs) => documentTaskAppendix(inputs.workflowEvidence === true),
   ship: () => SHIP_COMPLETION_HANDOFF,
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),

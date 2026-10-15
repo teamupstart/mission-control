@@ -212,8 +212,16 @@ function model(over: Partial<DiffFileComments> = {}): DiffFileComments {
     onMarkerSelect: () => {},
     panelLine: null,
     panel: null,
+    panelDocked: false,
+    reveal: null,
+    openThreadId: null,
     notice: null,
     onDismissNotice: () => {},
+    threads: [thread()],
+    indexBlockReason: null,
+    showIndex: false,
+    onToggleIndex: () => {},
+    onOpenThread: () => {},
     ...over,
   };
 }

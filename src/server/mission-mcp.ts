@@ -126,6 +126,7 @@ export interface MissionMcpRequirement {
  * it is the reason every existing dispatch's argv is unchanged.
  */
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
+  document: [],
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],

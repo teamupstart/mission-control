@@ -14,6 +14,9 @@ atomically emits the usual pass receipts without a model call. The original atte
 the authority, including after daemon recovery; no second pass ledger is stored. Runs resolves
 that reference to display the original round. Checks and Session actions continue through
 their existing execution paths.
+A Persona node with `recheckAfterRepair: true` bypasses pass reuse. The optional flag survives
+stage edits and publication beside the Persona snapshot; omission preserves legacy behavior.
+Documentation Review enables it for every judge.
 Reuse also requires the current directive to match the earned attempt's snapshot, including
 revision, timestamps, and text. This applies changed feedback once without making an unchanged
 directive force perpetual rechecks; removing and recreating a directive cannot revive a pass
@@ -35,20 +38,18 @@ Markdown sources are compiled into generated modules by
 [`scripts/builtin-session-actions.ts`](../scripts/builtin-session-actions.ts), so installed
 defaults and operator-managed copies remain distinct.
 
-The built-in catalog contains General Review, Bug Fix Review, Plan Validation, and No-Mistakes
-Review (High Rigor). The latter's current version is 19. General Review and Bug Fix Review version 2
-and No-Mistakes version 19 run typecheck, test, and lint together in their first All-pass gate.
-No-Mistakes retains its verified Pull Request action and uses the existing `inspector` completion policy
-with `inspector_only` repairs and `wait` for a missing PR. Earlier versions remain immutable.
-General and Bug Fix use the same check, Persona, and Session action primitives with fewer roles.
-Plan Validation uses only Personas and completes locally. Its task contract requests complete
-registered plan text because Persona calls cannot read checkout files. No new engine node,
-submission format, or database table is introduced.
+The [built-in workflow catalog](workflows.md#built-in-workflows) uses the same Check,
+Persona, All-pass Join, and Session action primitives as operator-authored workflows.
+Published versions remain immutable. Repository Plan Validation includes PR publication;
+Local Plan Validation ends without a PR. Documentation Review adds the dedicated documentation
+Command and the documentation review roles without a new graph node kind or database table.
+Persona calls cannot read checkout files, so document and plan contracts request current
+registered text and the relevant unchanged comparison material.
 
 Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
 both the dispatch form and server task creation. Plan defaults to Plan Validation; Bugfix defaults
-to Bug Fix Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
-Bugfix shares Ship's completion contract, automatic wrap-up, backlog eligibility, and recovery
+to Bug Fix Review; Document defaults to Documentation Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
+Bugfix and Document share Ship's deferred publication, automatic wrap-up, backlog eligibility, and recovery
 through the existing registries and `isShippingTaskKind` predicate.
 
 Ensembles coordinate multiple agent attempts and hand a selected result back through

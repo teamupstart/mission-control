@@ -93,7 +93,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test("the kinds preserve the append-only order and derive the type from it", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix"]);
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -105,7 +105,7 @@ test("the kinds preserve the append-only order and derive the type from it", () 
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 6);
+  assert.equal(every.length, 7);
 });
 
 test("every kind says how it is offered", () => {
@@ -151,10 +151,10 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
 });
 
 test("only chat is excluded from backlog-producing surfaces", () => {
-  assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix"]);
+  assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
   assert.deepEqual(
     Object.fromEntries(TASK_KINDS.map((kind) => [kind, taskKindAllowsBacklog(kind)])),
-    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true },
+    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true },
   );
 });
 

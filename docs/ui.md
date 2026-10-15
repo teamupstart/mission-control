@@ -848,7 +848,7 @@ available:
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
-  ship, bugfix, scout, plan, pipeline or chat - on both surfaces, `ship` included. Each kind
+  ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
   card's **Medallion**, which shows the icon alone and gives the word on hover. The console
   badge does the same only on a pane too narrow for anything else, where every other header
@@ -1214,7 +1214,8 @@ itself, still counts both.
 **Comment** in the Files toolbar turns on comment mode (<kbd>m</kbd>, in the integrated tab)
 for any file with source to read. With it on, clicking a line number - or a block of the
 rendered preview - opens a box under that line. An image has no lines and shows the control
-disabled with that as the reason.
+switched off with that as the reason. It stays focusable, so the reason is reachable from the
+keyboard as well as on hover.
 
 **This works in Preview as well as in the Editor.** A comment names a line and quotes it, but
 turning the control on over a rendered Markdown or HTML document takes nothing away and shrinks
@@ -1262,6 +1263,13 @@ state, message count, and most recent text. Selecting a row expands that thread 
 its anchor in the current reader: the rendered block in Preview and the source line in Editor.
 The rail is navigation rather than the review queue, so a thread remains findable after it is
 sent, answered, or resolved.
+
+The file list marks every file that carries comments, so a thread is findable before you open
+its file. The mark is a speech bubble with the same count as that file's **Comments** button.
+It is amber while an agent answer on the file is unread, blue while any thread is open, and
+dimmed once every thread on the file is resolved. Its accessible name says the same in words,
+for example "2 comments, 1 unread reply", and reads as part of the file's row. Opening the
+thread is what clears the amber, here and in the Diff tab alike.
 
 **Resolve** closes a thread, and only a person ever does - a thread does not close itself and
 an agent cannot close one. Closed threads stop being drawn inline, but remain in the
@@ -1317,8 +1325,12 @@ comment - it is your composer with half a sentence in it, and the review queue d
 
 #### Comment from the Diff tab
 
-The bar naming the file you are reading in the **Diff** tab carries the same **Comment**
-control (<kbd>m</kbd> while the diff reader owns focus). With it on, the new-side line number of
+The bar naming the file you are reading in the **Diff** tab carries the same comment controls
+as the Files toolbar, in the same order and with the same names: **Comment** (<kbd>m</kbd> while
+the diff reader owns focus), **Comments (N)**, **Review (N)** and, in comment mode, **Resolved**.
+They are one shared control, so they cannot drift apart. That bar stays put above the diff
+while its lines scroll, as the Files toolbar does, so **Comment**, **Comments** and **Open in
+Files** are in reach at the bottom of a long file as well as at the top. With it on, the new-side line number of
 every line that is in the working-tree file becomes a button; click one and the same box opens
 in a row directly under that line. Everything after that is the Files tab's: the draft is saved
 from the first keystroke, **Send** delivers it or queues it, <kbd>Esc</kbd> discards it, and the
@@ -1339,8 +1351,28 @@ a diff is source, so every comment made from it is a line comment.
 The control says why when a file takes no comment, and stays focusable so the reason is
 reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
 working tree a comment anchors to), a **deleted** file, a **binary** file, and a file the Files
-tab cannot open because it is **outside the session's working directory**. The **Comments** rail
-and **Review (N)** queue stay in the Files tab.
+tab cannot open because it is **outside the session's working directory**. **Comments** says
+why in the same cases, since none of those files has a working-tree path to list threads for.
+
+The **Changed files** list carries the Files list's comment mark beside each file that has
+threads, with the same count and colours, so you can see which files carry comments and which
+answers you have not read yet without opening each one. A single-commit diff marks nothing,
+for the same reason it takes no comment.
+
+**Comments** opens the file's comment index beside the diff. It is the Files tab's rail: every
+thread on the file, resolved ones included, with its location, state, message count and latest
+text. Selecting a row expands that thread and scrolls its line into view. A thread can sit on a
+line the diff does not show, for example one written in the Files tab on a line the change never
+touched. That thread opens in a panel pinned above the diff that names the line, with the full
+conversation, **Reply**, **Resolve** and **Reopen**. You can read and answer the agent's reply
+without leaving the Diff tab. The index stays open as you move between changed files, as comment
+mode does.
+
+**Review (N)** opens the session's review queue below the diff. It is the same queue as in the
+Files tab, with the same reorder, rewrite, drop, **Pause** and **Resume**. Opening a comment from
+it selects that comment's file in the diff and opens the thread there. A comment on a file this
+diff does not contain opens that file in the Files tab instead, even while another comment is
+out with the agent.
 
 ### Comments go to the agent as you send them
 
@@ -1357,7 +1389,7 @@ that, the session settling idle for long enough that it has clearly moved on. On
 ever outstanding, and that is the whole design: you see each answer before the next comment
 goes. When the queue runs dry it simply waits for your next comment.
 
-**Review (N)** in the Files toolbar opens the queue: every comment this session holds, in the
+**Review (N)** in the Files toolbar, or in the Diff tab's file bar, opens the queue: every comment this session holds, in the
 order it will be delivered, across every file. A dot on the button means a comment is out with
 the agent. The panel does not open itself when a comment goes, so it never covers the file while
 you are writing the next one; it opens on its own only when delivery stops for a reason that
@@ -1480,7 +1512,10 @@ covers a session that simply ignores the tool exactly as it covers one that neve
 
 **Opening a file at a line works now.** A `path:line` link from a conversation, a diff, or a
 review finding scrolls the editor to that line rather than opening the file at the top, and the
-walkthrough uses the same route to take you to each comment as it goes out.
+walkthrough uses the same route to take you to each comment as it goes out. It follows comments
+that go out while the Files tab is open. A comment that was already out when you opened the tab
+does not pull you off the file you opened it on, whether you came from a link, **Open in Files**
+or the Diff tab's review queue.
 
 Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
 `mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,

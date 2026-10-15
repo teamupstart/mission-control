@@ -45,6 +45,7 @@ import {
 } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
+import { NodeReviewPolicyEditor } from "./NodeReviewPolicyEditor.tsx";
 import { nodeRoutingLabel, personaNodeRouting } from "./node-execution.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
@@ -209,6 +210,19 @@ export function setMemberExecutionOverride(
   return withStages(pipeline, pipeline.stages.map((stage, index) => index === ref.stage
     ? { ...target, members: target.members.map((candidate, position) =>
         position === ref.member ? next : candidate) }
+    : stage));
+}
+
+export function setMemberRecheckAfterRepair(
+  pipeline: StagePipeline,
+  ref: MemberRef,
+  recheckAfterRepair: boolean,
+): StagePipeline {
+  const target = evaluationStage(pipeline, ref.stage);
+  if (target?.members[ref.member]?.kind !== "persona") return pipeline;
+  return withStages(pipeline, pipeline.stages.map((stage, index) => index === ref.stage
+    ? { ...target, members: target.members.map((member, position) => position === ref.member
+      ? { ...member, recheckAfterRepair } : member) }
     : stage));
 }
 
@@ -1177,21 +1191,32 @@ export function PipelineEditor({
                           </>
                         )}
                         panel={routingOpen && member.kind === "persona" && (
-                          <NodeExecutionEditor
-                            subject={{ nodeId: member.nodeId, personaId: member.personaId }}
-                            name={label}
-                            override={override}
-                            seed={personaNodeRouting(persona)}
-                            inherited={persona ? personaRoutingLabel(persona) : null}
-                            providers={providers}
-                            readOnly={readOnly}
-                            onChange={(next) => apply(
-                              setMemberExecutionOverride(pipeline, ref, next),
-                              next
-                                ? `${label} runs on ${next.runner} · ${next.model} in this workflow`
-                                : `${label} follows its Persona default again`,
-                            )}
-                          />
+                          <>
+                            <NodeReviewPolicyEditor
+                              name={memberRef}
+                              enabled={member.recheckAfterRepair === true}
+                              readOnly={readOnly}
+                              onChange={(enabled) => apply(
+                                setMemberRecheckAfterRepair(pipeline, ref, enabled),
+                                enabled ? `${label} reviews every repair` : `${label} follows the machine review policy`,
+                              )}
+                            />
+                            <NodeExecutionEditor
+                              subject={{ nodeId: member.nodeId, personaId: member.personaId }}
+                              name={label}
+                              override={override}
+                              seed={personaNodeRouting(persona)}
+                              inherited={persona ? personaRoutingLabel(persona) : null}
+                              providers={providers}
+                              readOnly={readOnly}
+                              onChange={(next) => apply(
+                                setMemberExecutionOverride(pipeline, ref, next),
+                                next
+                                  ? `${label} runs on ${next.runner} · ${next.model} in this workflow`
+                                  : `${label} follows its Persona default again`,
+                              )}
+                            />
+                          </>
                         )}
                       />
                     );

@@ -207,6 +207,7 @@ export function endGuidedPass(pass: GuidedPass): GuidedPass {
  * takes it. `test/guided-dispatch-steps.test.ts` fails if two kinds claim the same letter.
  */
 export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
+  document: "d",
   ship: "p",
   bugfix: "b",
   scout: "t",

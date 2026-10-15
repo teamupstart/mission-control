@@ -28,7 +28,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
-const { normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName } =
+const { normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName, WORKFLOW_CHECK_SLOTS } =
   await import("../src/shared/workflow.ts");
 const { captureSettingsCatalogs, settingsCatalogCounts } =
   await import("../src/server/settings-backups/catalogs.ts");
@@ -195,7 +195,7 @@ test("daily capture includes archived operator catalogs and excludes built-ins a
   assert.equal(first.snapshot.counts.sessionActions, 1);
   assert.equal(first.snapshot.counts.workflowDefinitions, 1);
   assert.equal(first.snapshot.counts.workflowVersions, 1);
-  assert.equal(first.snapshot.counts.workflowCommands, 4);
+  assert.equal(first.snapshot.counts.workflowCommands, WORKFLOW_CHECK_SLOTS.length);
   const personaPayload = first.snapshot.domains.find((entry) => entry.domain === "personas")
     ?.payload as Array<{ id: string; archivedAt: number | null; builtin: boolean; guidanceMarkdown: string }>;
   assert.equal(personaPayload.length, 1);

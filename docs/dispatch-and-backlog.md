@@ -87,7 +87,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, and bugfix | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, bugfix, and document | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, <kbd>d</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -133,7 +133,7 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
 Kind is asked before After work: scout and chat move the selection to **None**, while plan
-selects **Plan Validation** and bugfix selects **Bug Fix Review**. The question names the kind
+selects **Plan Validation**, bugfix selects **Bug Fix Review**, and document selects **Documentation Review**. The question names the kind
 and explains its selected workflow.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
@@ -269,17 +269,29 @@ form can override that choice for one task, including an explicit **None** that 
 without a Workflow.
 
 Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
+Choosing **document** selects **Documentation Review**.
 Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
 and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
 mission retains its explicit workflow or None. Returning from a kind default restores the prior
-mission choice, including None; an explicit after-work edit cancels that restoration. Both kind defaults apply to API-created
+mission choice, including None; an explicit after-work edit cancels that restoration. These kind defaults apply to API-created
 tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
 keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
 
 Choosing **scout** or **chat** in the dispatch form preselects **None**. Returning to Ship restores
 the selection put aside by a kind switch. A manual after-work choice clears that restoration,
-so returning to Ship does not overwrite it. Plan and Bugfix remain selectable workflows rather
+so returning to Ship does not overwrite it. Plan, Bugfix, and Document defaults remain selectable workflows rather
 than locks: choose **None** to opt out, or select another published workflow.
+
+**document** writes or maintains repository documentation and produces a reviewable diff.
+It is available in Dispatch, backlog, Recurring Missions, and task sources, with per-kind
+harness/model defaults in [Settings > Models](models.md#task-kinds). Its default
+[Documentation Review](workflows.md#documentation-review) checks the documentation before the
+ordinary PR handoff; explicit workflows and None still win. Ship remains the global kind default.
+
+The initial turn completes the documentation, focused verification, and applicable evidence
+registration, then hands off to Mission Control before commit, push, PR, or CI work. It shares
+Ship's PR follow-through and recovery. Documentation is its intended deliverable, so a docs-only
+diff is not suppressed as an incidental review artifact.
 
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat

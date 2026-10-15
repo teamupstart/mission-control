@@ -481,7 +481,10 @@ still match. Older journals without this record remain readable and do not autho
 which sibling to remove. Failed recovery material and old source support are not deleted by this cleanup.
 
 Older source targets without the new transaction reader retain the compatible apply/rollback
-behavior, but a staged handoff still uses the copied runtime and shared staged installer. An old
+behavior, but a staged handoff still uses the copied runtime and shared staged installer. The
+handoff carries the accepted content digest, which the helper checks before installing even if
+the candidate's root revision and package identity have not changed. Older handoffs without this
+field remain readable. An old
 source installer without staging support retains its explicit source-build fallback and host
 prerequisites. Binary descriptors never take this fallback. There is no binary downloader,
 bootstrap, DMG enrollment or publishing entry point in this transaction layer.

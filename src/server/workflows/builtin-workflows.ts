@@ -3,6 +3,7 @@ import {
   normalizeWorkflowName,
   personaSnapshotOf,
   withExecutionOverride,
+  withRecheckAfterRepair,
   sessionActionSnapshotOf,
   type PersonaId,
   type PersonaSnapshot,
@@ -28,6 +29,7 @@ import {
   BUG_FIX_REVIEW_WORKFLOW_SLUG,
   PLAN_VALIDATION_WORKFLOW_SLUG,
   LOCAL_PLAN_VALIDATION_WORKFLOW_SLUG,
+  DOCUMENTATION_REVIEW_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -39,6 +41,7 @@ import {
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+import { LEGACY_DOCUMENTATION_GUIDANCE } from "./documentation-guidance-snapshots.ts";
 import {
   BUILTIN_SESSION_ACTIONS,
   PULL_REQUEST_SESSION_ACTION_ID,
@@ -195,6 +198,7 @@ function publishBuiltinGraph(
           // one does it is not silently dropped on the way into the version. Because no
           // shipped draft has the field, every existing built-in version is byte-identical.
           ...withExecutionOverride(node.executionOverride),
+          ...withRecheckAfterRepair(node.recheckAfterRepair),
         };
       }
       // No shipped workflow authors one yet - the runtime that would execute it arrives in a
@@ -285,6 +289,28 @@ function appendGpt6Version(
   }];
 }
 
+/** New guidance is opt-in through a new version; pinned reviewers keep their exact text. */
+function appendDocumentationGuidanceVersion(
+  versions: BuiltinWorkflowSource["versions"],
+): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1);
+  if (!previous) throw new Error("Documentation guidance upgrade requires a previous version");
+  return [...versions.map((version) => ({
+    ...version,
+    personaExecution: {
+      ...version.personaExecution,
+      default: version.personaExecution?.default ?? null,
+      snapshotOverrides: {
+        ...LEGACY_DOCUMENTATION_GUIDANCE,
+        ...version.personaExecution?.snapshotOverrides,
+      },
+    },
+  })), {
+    ...previous,
+    sourceDraftRevision: previous.sourceDraftRevision + 1,
+  }];
+}
+
 function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
   if (source.versions.length === 0) {
     throw new Error(`built-in workflow ${source.slug} ships no published version`);
@@ -371,7 +397,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   end: "nmr-end",
 } as const;
 
-const reviewer = (nodeId: string, slug: string): StageMember =>
+const reviewer = (nodeId: string, slug: string): Extract<StageMember, { kind: "persona" }> =>
   ({ nodeId, kind: "persona", personaId: builtinPersonaId(slug) });
 
 const check = (nodeId: string, slot: WorkflowCheckSlot): StageMember =>
@@ -1084,7 +1110,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: appendGpt6Version([
+    versions: appendDocumentationGuidanceVersion(appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1376,7 +1402,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ]),
+    ])),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,
@@ -1661,5 +1687,33 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
     }],
+  }),
+  builtinWorkflow({
+    slug: DOCUMENTATION_REVIEW_WORKFLOW_SLUG,
+    name: "Documentation Review",
+    description: "Checks documentation, then reviews intent, accuracy, consistency, and concise references before a verified pull request. Judges review every repair.",
+    versions: appendDocumentationGuidanceVersion([{
+      pipeline: {
+        sessionId: "dr-session", endId: "dr-end", endOutcome: "Complete",
+        stages: [
+          { kind: "evaluation", joinId: null, members: [check("dr-documentation", "documentation")] },
+          { kind: "evaluation", joinId: null, members: [
+            { ...reviewer("dr-intent", "intent-conformance-judge"), recheckAfterRepair: true },
+          ] },
+          { kind: "evaluation", joinId: "dr-review-join", members: [
+            { ...reviewer("dr-steward", "documentation-steward"), recheckAfterRepair: true },
+            { ...reviewer("dr-consistency", "documentation-consistency-judge"), recheckAfterRepair: true },
+            { ...reviewer("dr-conciseness", "conciseness-reference-judge"), recheckAfterRepair: true },
+          ] },
+          action("dr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-6-sol" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }]),
   }),
 ];

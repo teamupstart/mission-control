@@ -228,6 +228,7 @@ test("each kind's mnemonic is a letter of its own name", () => {
     plan: "l",
     pipeline: "e",
     chat: "c",
+    document: "d",
   });
 });
 

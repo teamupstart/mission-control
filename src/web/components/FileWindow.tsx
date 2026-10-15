@@ -18,6 +18,7 @@ export function FileWindow({
   controller,
   fileCommentThreads,
   fileCommentReviews,
+  fileCommentsLoaded,
   fileLineRequest,
   fileCommentRequest,
   onClose,
@@ -26,6 +27,7 @@ export function FileWindow({
   controller: SessionFilesController;
   fileCommentThreads: FileCommentThread[];
   fileCommentReviews: FileCommentReview[];
+  fileCommentsLoaded: boolean;
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   fileCommentRequest?: { sessionId: string; path: string; nonce: number } | null;
   onClose: () => void;
@@ -83,6 +85,7 @@ export function FileWindow({
           controller={controller}
           fileCommentThreads={fileCommentThreads}
           fileCommentReviews={fileCommentReviews}
+          fileCommentsLoaded={fileCommentsLoaded}
           fileLineRequest={fileLineRequest}
           fileCommentRequest={fileCommentRequest}
           extracted

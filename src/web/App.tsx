@@ -2758,6 +2758,7 @@ export function App(): React.JSX.Element {
     files,
     fileCommentThreads,
     fileCommentReviews,
+    fileCommentsLoaded: hasSnapshot,
     fileLineRequest,
     fileCommentRequest,
     onReset: setResetSessionId,
@@ -3673,7 +3674,7 @@ export function App(): React.JSX.Element {
     )
     : libraryShelf === "commands"
     ? (
-      // The one Library surface with a CLOSED catalog: four built-in slots, no New, and the
+      // The one Library surface with a CLOSED catalog: built-in slots, no New, and the
       // live views straight off the snapshot rather than a second fetch of the same rows.
       <main className="lib-surface">
         <CommandLibrary
@@ -4335,6 +4336,7 @@ export function App(): React.JSX.Element {
             controller={files}
             fileCommentThreads={fileCommentThreads}
             fileCommentReviews={fileCommentReviews}
+            fileCommentsLoaded={hasSnapshot}
             fileLineRequest={fileLineRequest}
             fileCommentRequest={fileCommentRequest}
             onClose={closeFiles}

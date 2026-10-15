@@ -500,7 +500,8 @@ export class WorkflowEngine {
     // once its structure is ready.
     const seedSession = submission.segment === 0
       || submission.refinementReason === "evidence_preflight"
-      || submission.refinementReason === "evidence_recovery";
+      || submission.refinementReason === "evidence_recovery"
+      || submission.refinementReason === "evidence_capture_repair";
     let changed = true;
     while (changed) {
       changed = false;
@@ -992,7 +993,7 @@ export class WorkflowEngine {
       return;
     }
     if (!isPersona(node)) return;
-    if (this.workflowPolicy().skipPassedJudges) {
+    if (this.workflowPolicy().skipPassedJudges && !node.recheckAfterRepair) {
       const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
       const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
       const directive = initial.operatorDirective

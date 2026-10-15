@@ -222,12 +222,27 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   await changed.getByRole("button", { name: /logo\.bin/ }).click();
   await expect(commentMode).toHaveAttribute("aria-disabled", "true");
   await expect(commentMode).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByText("A binary file has no lines to comment on")).toBeAttached();
+  // On the control itself: Comments refuses a binary for the same reason, in the same words.
+  await expect(commentMode).toHaveAccessibleDescription("A binary file has no lines to comment on");
+  const commentsIndex = diff.getByRole("button", { name: "Comments", exact: true });
+  await expect(commentsIndex).toHaveAccessibleDescription("A binary file has no lines to comment on");
+  // And pressing it does nothing: there is no working-tree path to list threads for. From the
+  // keyboard, because that is the way to a control that stays focusable to say why it is off -
+  // and Playwright, rightly, will not click an `aria-disabled` one.
+  await commentsIndex.focus();
+  await page.keyboard.press("Enter");
+  await expect(commentsIndex).toHaveAttribute("aria-disabled", "true");
+  await expect(commentsIndex).toHaveAttribute("aria-expanded", "false");
+  await expect(diff.getByRole("complementary", { name: /^Comments on / })).toHaveCount(0);
   await page.keyboard.press("m");
   await expect(commentMode).toHaveAttribute("aria-pressed", "false");
   await changed.getByRole("button", { name: /README\.md/ }).click();
   await expect(commentMode).toHaveAttribute("aria-pressed", "true");
   await expect(diff.getByRole("button", { name: sentMarker(3, shortId) })).toBeVisible();
+  // The refused press was not remembered either: the index does not spring open on a file
+  // that has threads to list.
+  await expect(commentsIndex).toHaveAttribute("aria-expanded", "false");
+  await expect(diff.getByRole("complementary", { name: /^Comments on / })).toHaveCount(0);
 
   await page.reload();
   const reloaded = await openDiffOn(page, "README.md");

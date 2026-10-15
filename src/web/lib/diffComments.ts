@@ -14,6 +14,22 @@ import type { DiffFile, DiffFileTarget, DiffLine } from "./diff.ts";
 import { isCommentableDocument } from "./fileComments.ts";
 
 /**
+ * The Files-relative path whose comments a changed file shows, or null when it shows none.
+ *
+ * Only a working-tree diff: a commit diff's new side is that commit's tree, and a thread's line
+ * names a line of the working tree. A binary has no lines, and a file with no Files route has
+ * nowhere a thread could have been written. One rule for the file on screen and for every row
+ * of the list, so a file marked as commented in the list is one whose comments open beside it.
+ */
+export function diffFileCommentPath(
+  file: DiffFile,
+  target: DiffFileTarget,
+  commit: string | null | undefined,
+): string | null {
+  return commit || file.binary ? null : target.path;
+}
+
+/**
  * Why this changed file cannot take a new line comment, or null when it can.
  *
  * Asked in the order a reader would want the answer. A commit diff comes first because it is

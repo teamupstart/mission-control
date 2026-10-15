@@ -262,7 +262,7 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
 }
 
 /**
- * The four portable Command slots, always all four and always in registry order.
+ * The portable Command slots, always all present and always in registry order.
  *
  * Driven off `WORKFLOW_CHECK_SLOTS` rather than off the passed catalog, so a slot the daemon
  * has not answered for yet is still a card: the slots are a fixed vocabulary that ships with

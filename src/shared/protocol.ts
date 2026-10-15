@@ -1075,7 +1075,8 @@ export const DispatchSchema = z
     effort: EffortLevelSchema.optional(),
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
-     * plan tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
+     * and the machine default for other kinds.
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
@@ -5204,6 +5205,7 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     // "inherit the Persona's own routing", and a default would write the field onto every
     // legacy graph the moment one was read back.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -5235,6 +5237,7 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     position: WorkflowPointSchema,
     // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is

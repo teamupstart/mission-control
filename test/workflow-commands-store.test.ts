@@ -7,7 +7,7 @@ import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 
 // What is at stake: the store is the boundary a future caller reaches WITHOUT passing the
 // route schema, and what it holds is an argv the daemon spawns. So the rules that make
-// resolution deterministic - one command per repository per slot, four slots always present,
+// resolution deterministic - one command per repository per slot, all slots always present,
 // a whole-slot replacement - have to hold here and not only one layer up. And a value this
 // build cannot read must degrade the FIELD holding it rather than the row or the catalog: one
 // hand-edited value taking every Check node down is a worse failure than one slot reading as
@@ -87,7 +87,7 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
   assert.equal(
     s.replaceWorkflowCommandCas("deploy", 1, { defaultCommand: null, overrides: [], maxRuns: 1 }).ok,
     false,
-    "the four slots are built in; a write cannot mint a fifth",
+    "the slots are built in; a write cannot mint another",
   );
   assert.equal(s.getWorkflowCommand("deploy"), null);
 });

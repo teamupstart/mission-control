@@ -69,21 +69,21 @@ test("the rail's first row is the way out, above its own heading", () => {
   assert.match(html, /<kbd class="kb-hint">esc<\/kbd>/);
 });
 
-test("the rail is the four built-in slots, in registry order, configured or not", () => {
+test("the rail is the built-in slots, in registry order, configured or not", () => {
   const html = markup([view({ defaultCommand: ["npm", "test"] })]);
   for (const slot of WORKFLOW_CHECK_SLOTS) {
     assert.ok(html.includes(`>${slot}</span>`), `${slot} is missing from the rail`);
   }
-  // Registry order, asserted as order rather than as presence: the four slots are a fixed
+  // Registry order, asserted as order rather than as presence: the slots are a fixed
   // vocabulary and a rail that sorted them would be inventing a hierarchy they do not have.
   const at = WORKFLOW_CHECK_SLOTS.map((slot) => html.indexOf(`>${slot}</span>`));
   assert.deepEqual([...at].sort((a, b) => a - b), at);
-  // Four rows, under ONE group head that says built-in once for all of them. The per-row
+  // All rows, under ONE group head that says built-in once for all of them. The per-row
   // tag is gone with the flat list it apologised for - a rail whose every row carries the
   // same tag is a rail whose tag distinguishes nothing.
-  assert.equal(html.match(/class="wf-command-list-item/g)?.length, 4);
+  assert.equal(html.match(/class="wf-command-list-item/g)?.length, WORKFLOW_CHECK_SLOTS.length);
   assert.match(html, /<h4 class="lib-rail-group"><span>Built-in slots<\/span>/);
-  assert.match(html, /<span class="lib-rail-group-count">4<\/span>/);
+  assert.match(html, new RegExp(`<span class="lib-rail-group-count">${WORKFLOW_CHECK_SLOTS.length}</span>`));
   assert.equal(html.match(/lib-rail-tag/g)?.length, undefined);
   for (const absent of ["New", "Duplicate", "Archive"]) {
     assert.ok(
@@ -94,7 +94,7 @@ test("the rail is the four built-in slots, in registry order, configured or not"
 });
 
 test("each rail row carries the slot's stored state, through the shared fact", () => {
-  // What tells four rows apart is which of them has exceptions, and that is one vocabulary
+  // What tells the rows apart is which of them has exceptions, and that is one vocabulary
   // shared with the Library shelf card and the workflow palette rather than a second string
   // formatted here. The purpose sentence that used to sit on every row is identical on every
   // machine, so as a distinguishing fact it was worth nothing.

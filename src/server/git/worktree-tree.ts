@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../util/exec.ts";
@@ -9,11 +10,11 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv): ReturnType<ty
   return run("git", ["-C", cwd, ...args], { timeoutMs: 60_000, env });
 }
 
-function requireOk(step: string, result: Awaited<ReturnType<typeof run>>): string {
+function requireOk(step: string, result: Awaited<ReturnType<typeof run>>, trim = true): string {
   if (result.code !== 0) {
     throw new Error(`${step} failed: ${result.stderr.trim() || `exit ${result.code}`}`);
   }
-  return result.stdout.trim();
+  return trim ? result.stdout.trim() : result.stdout;
 }
 
 function requireObjectId(step: string, value: string): string {
@@ -30,6 +31,7 @@ export function isolatedGitEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.Pr
     "GIT_COMMON_DIR",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
   ]) {
     delete env[inherited];
   }
@@ -41,11 +43,15 @@ export interface CapturedWorktreeTree {
   treeOid: string;
   /** HEAD at the start of capture, or null for an unborn branch. */
   headOid: string | null;
+  publicationTreeOid: string;
+  unpublishedPaths: string[];
 }
 
 export interface CaptureWorktreeTreeOptions {
   /** Persist newly hashed objects in the repository when a later Git operation needs the tree. */
   objectStorage?: "temporary" | "repository";
+  /** Exact validated, retained local artifacts. Tracked paths can never be excluded. */
+  localArtifacts?: readonly { path: string; sha256: string }[];
 }
 
 /**
@@ -72,6 +78,8 @@ export async function captureWorktreeTree(
       extraEnv.GIT_ALTERNATE_OBJECT_DIRECTORIES = objectStore;
     }
     const env = isolatedGitEnvironment(extraEnv);
+    const tracked = new Set(requireOk("git ls-files", await git(worktreePath,
+      ["ls-files", "-z"], baseEnv), false).split("\0"));
     const head = await git(worktreePath, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env);
     const headOid = head.code === 0 && OBJECT_ID.test(head.stdout.trim())
       ? head.stdout.trim()
@@ -85,7 +93,29 @@ export async function captureWorktreeTree(
       "git write-tree",
       requireOk("git write-tree", await git(worktreePath, ["write-tree"], env)),
     );
-    return { treeOid, headOid };
+    if (headOid) {
+      for (const path of requireOk("git ls-tree", await git(worktreePath,
+        ["ls-tree", "-r", "--name-only", "-z", headOid], env), false).split("\0")) tracked.add(path);
+    }
+    for (const artifact of options.localArtifacts ?? []) {
+      if (tracked.has(artifact.path)) throw new Error(`Tracked artifact must be published: ${artifact.path}`);
+      const entry = requireOk("git ls-files", await git(worktreePath,
+        ["ls-files", "--stage", "--", artifact.path], env));
+      if (!/^100(?:644|755) /.test(entry)) throw new Error(`Local artifact is not a regular file: ${artifact.path}`);
+      const blob = await git(worktreePath, ["show", `:${artifact.path}`], env);
+      if (blob.code !== 0 || createHash("sha256").update(blob.stdout).digest("hex") !== artifact.sha256) {
+        throw new Error(`Local artifact changed during capture: ${artifact.path}`);
+      }
+      requireOk("git update-index", await git(worktreePath,
+        ["update-index", "--force-remove", "--", artifact.path], env));
+    }
+    const publicationTreeOid = requireObjectId("publication tree", requireOk("git write-tree",
+      await git(worktreePath, ["write-tree"], env)));
+    const unpublishedPaths = requireOk("publication diff", await git(worktreePath,
+      headOid ? ["diff", "--name-only", "-z", headOid, publicationTreeOid, "--"]
+        : ["ls-tree", "-r", "--name-only", "-z", publicationTreeOid], env), false)
+      .split("\0").filter(Boolean);
+    return { treeOid, headOid, publicationTreeOid, unpublishedPaths };
   } finally {
     rmSync(indexDir, { recursive: true, force: true });
   }

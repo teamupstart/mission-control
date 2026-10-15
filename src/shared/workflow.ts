@@ -4502,6 +4502,15 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /** Daemon-derived publication proof. Older captures retain their strict dirty-tree rule. */
+    publication?: {
+      version: 1;
+      treeOid: string;
+      unpublishedPaths: string[];
+      pathsTruncated: boolean;
+      localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
+      artifactProblems?: string[];
+    };
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;

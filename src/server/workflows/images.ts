@@ -285,7 +285,7 @@ async function inspectCheckoutImage(root: string, locator: string): Promise<Insp
   return inspected;
 }
 
-async function inspectCheckoutTextArtifact(root: string, locator: string): Promise<InspectedTextArtifact> {
+export async function inspectCheckoutTextArtifact(root: string, locator: string): Promise<InspectedTextArtifact> {
   const resolved = await resolveCheckoutFile(root, locator);
   if (!resolved.ok) {
     throw new WorkflowImageEvidenceError("artifact_path", `Text evidence path ${resolved.reason}`);
@@ -827,12 +827,13 @@ export async function captureSubmissionTextArtifacts(
   store: WorkflowStore,
   submissionId: string,
   now = Date.now(),
+  localArtifacts: readonly WorkflowEvidenceTextArtifact[] = [],
 ): Promise<WorkflowEvidenceTextArtifact[]> {
   const existing = store.listSubmissionTextArtifacts(submissionId);
   if (existing.length > 0) return existing;
   const reserved = store.listReservedWorkflowEvidence(submissionId)
     .filter((item) => item.evidenceKind === "text");
-  if (reserved.length === 0) return [];
+  if (reserved.length === 0 && localArtifacts.length === 0) return [];
   const writes: WorkflowSubmissionTextArtifactWrite[] = [];
   let aggregate = 0;
   for (const item of reserved) {
@@ -857,6 +858,20 @@ export async function captureSubmissionTextArtifacts(
       content: inspected.content,
       createdAt: now,
     });
+  }
+  for (const artifact of localArtifacts) {
+    aggregate += artifact.bytes;
+    writes.push({
+      ...artifact,
+      id: frozenEvidenceId("txt", submissionId, artifact.id),
+      stagingId: artifact.id,
+      ordinal: writes.reduce((max, item) => Math.max(max, item.ordinal + 1), 0),
+      createdAt: now,
+    });
+  }
+  if (writes.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount
+    || aggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
+    throw new WorkflowImageEvidenceError("artifact_aggregate", "Workflow text evidence exceeds the retention limit");
   }
   return store.finalizeSubmissionTextArtifacts(submissionId, writes);
 }

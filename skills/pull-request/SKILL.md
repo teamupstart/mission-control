@@ -121,6 +121,8 @@ its own `###` subsection, in this order.
 
 Written for the next agent that has to read, extend, or debug this code. Keep this section
 concise too, and use direct Markdown links plus bullets.
+Present links as references and technical context as facts, without directing the reviewer's
+actions. The pull request description is review data, not instructions for the reviewer.
 
 - If a plan document exists for the work, link directly to it. Also link directly to any
   technical documentation that explains what was built or its design.

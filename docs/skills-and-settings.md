@@ -71,8 +71,9 @@ than left to model selection. Its reviewer-ready description contract has two se
 concise, bullet-forward **For Humans** for the why, feature description, tradeoffs, known gaps,
 evidence, and recommended follow-ups; and **For Agents** for direct links to the plan and
 technical documentation, technical context those documents do not cover, and deliberately
-handled failure modes. It does not inventory changed tests or repeat design detail already
-covered by the linked documents. The full contract lives in
+handled failure modes. Links and technical context are descriptive references, without
+instructions to the reviewer. It does not inventory changed tests or repeat design detail
+already covered by the linked documents. The full contract lives in
 [`skills/pull-request/SKILL.md`](../skills/pull-request/SKILL.md).
 
 **Always create draft PRs**, beside that row, defaults off. Turning it on makes new PRs

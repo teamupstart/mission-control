@@ -18,6 +18,16 @@ test("Documentation Review exposes its judges and preserves repair policy throug
   await row.getByRole("button", { name: /^Model routing for Documentation Consistency Judge/ }).click();
   await expect(row.getByRole("checkbox", { name: /^Recheck Documentation Consistency Judge/ })).toBeChecked();
   await expect(row.getByRole("checkbox", { name: /^Recheck Documentation Consistency Judge/ })).toBeDisabled();
+  await row.getByText("Recheck after repairs", { exact: true }).hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(
+    "Review this judge again after repairs, even when Settings reuses passing verdicts.",
+  );
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}repair-review-tooltip.png` });
+  }
+  await dashboard.mouse.move(0, 0);
+  await expect(dashboard.locator(".tooltip")).toBeHidden();
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await row.scrollIntoViewIfNeeded();

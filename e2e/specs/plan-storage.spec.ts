@@ -13,7 +13,10 @@ test("new plan policy persists, stages eligible files, and renders exact preview
   const control = dashboard.getByRole("checkbox", { name: "Commit generated HTML plan files" });
   await expect(control).not.toBeChecked();
   await expect(control).toHaveAccessibleDescription("Include rendered HTML in Git for new managed plans; existing plans keep their saved policy");
-  await dashboard.getByRole("checkbox", { name: "Enable Mission Control skills" }).uncheck();
+  const master = dashboard.getByRole("checkbox", { name: "Enable Mission Control skills" });
+  // Before settings load, the disabled master renders unchecked and uncheck() is a no-op.
+  await expect(master).toBeChecked();
+  await master.uncheck();
   await expect(control).toBeEnabled();
   await expect.poll(async () => (await (await fetch(`${daemon.baseURL}/api/skills`)).json()).enabled).toBe(false);
   mkdirSync(evidence, { recursive: true });

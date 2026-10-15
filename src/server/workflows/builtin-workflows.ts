@@ -41,6 +41,7 @@ import {
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+import { LEGACY_PULL_REQUEST_PROMPT } from "./pull-request-guidance-snapshot.ts";
 import { LEGACY_DOCUMENTATION_GUIDANCE } from "./documentation-guidance-snapshots.ts";
 import {
   BUILTIN_SESSION_ACTIONS,
@@ -226,7 +227,12 @@ function builtinSessionActionSnapshot(sessionActionId: SessionActionId): Session
       `built-in workflow references session action ${sessionActionId}, which this build does not ship`,
     );
   }
-  return sessionActionSnapshotOf(action);
+  const snapshot = sessionActionSnapshotOf(action);
+  // These authored versions predate the concise PR guidance. Their persisted IDs must
+  // continue resolving the exact prompt they shipped, independently of the live catalog.
+  return sessionActionId === PULL_REQUEST_SESSION_ACTION_ID
+    ? { ...snapshot, promptMarkdown: LEGACY_PULL_REQUEST_PROMPT }
+    : snapshot;
 }
 
 interface BuiltinWorkflowSource {

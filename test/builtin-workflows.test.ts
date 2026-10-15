@@ -1,3 +1,4 @@
+import { LEGACY_PULL_REQUEST_PROMPT } from "../src/server/workflows/pull-request-guidance-snapshot.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -600,7 +601,8 @@ test("version 8 opens the pull request as a stage, and waits rather than prepari
   const shipped = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
   assert.equal(node.action.sourceSessionActionId, "builtin:pull-request");
   assert.equal(node.action.sourceRevision, shipped.revision);
-  assert.equal(node.action.promptMarkdown, shipped.promptMarkdown);
+  assert.equal(node.action.promptMarkdown, LEGACY_PULL_REQUEST_PROMPT);
+  assert.notEqual(node.action.promptMarkdown, shipped.promptMarkdown);
   assert.equal(node.action.requiredSkillId, "pull-request");
   assert.deepEqual(node.action.completion, { kind: "pull_request" });
 
@@ -684,7 +686,8 @@ test("version 9 judges code quality before the verified PR action and completes 
   const pullRequest = version.graph.nodes.find((node) => node.id === "nmr-pull-request");
   assert.ok(pullRequest && pullRequest.kind === "session_action");
   const shippedAction = BUILTIN_SESSION_ACTIONS.find((item) => item.id === "builtin:pull-request")!;
-  assert.equal(pullRequest.action.promptMarkdown, shippedAction.promptMarkdown);
+  assert.equal(pullRequest.action.promptMarkdown, LEGACY_PULL_REQUEST_PROMPT);
+  assert.notEqual(pullRequest.action.promptMarkdown, shippedAction.promptMarkdown);
   assert.deepEqual(pullRequest.action.completion, { kind: "pull_request" });
 
   const route = (source: string, port: string) => version.graph.edges

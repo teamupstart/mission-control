@@ -17,7 +17,7 @@ const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workf
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { builtinWorkflowId } = await import("../src/server/workflows/builtin-workflows.ts");
+const { BUILTIN_WORKFLOWS, builtinWorkflowId } = await import("../src/server/workflows/builtin-workflows.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -486,13 +486,15 @@ const BUILTIN_ID = builtinWorkflowId("no-mistakes-review");
 
 test("the shipped workflow is readable through the existing workflow routes", async () => {
   const { request } = fixture();
+  const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === BUILTIN_ID)!;
+  const versionNumbers = builtin.versions.map((version) => version.version).reverse();
   const list = await request("/api/workflows");
   assert.equal(list.status, 200);
   const summaries = await list.json() as Array<{ id: string; builtin: boolean; publishedVersion: number | null }>;
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 20, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, versionNumbers[0], "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -501,21 +503,21 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@20`);
+  assert.equal(detailBody.workflow.currentVersionId, builtin.definition.currentVersionId);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
   // through the same route after the catalog gained version 8.
   assert.deepEqual(
     detailBody.versions.map((version) => version.version),
-    [20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    versionNumbers,
   );
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
   assert.deepEqual(
     ((await versions.json()) as Array<{ version: number }>).map((version) => version.version),
-    [20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    versionNumbers,
   );
-  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]) {
+  for (const number of versionNumbers) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -654,7 +656,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
     ),
     true,
   );
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/21`)).status, 404);
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/${versionNumbers[0]! + 1}`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

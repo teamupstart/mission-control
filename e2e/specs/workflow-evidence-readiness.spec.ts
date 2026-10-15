@@ -632,7 +632,7 @@ manualPreflightTest("criterion readiness waits, repairs in the same round, and r
   const repairedRounds = dashboard.getByRole("region", { name: "Rounds" });
   await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
   await expect(repairedRounds
-    .getByText("captured to repair evidence preflight gaps", { exact: false })).toBeVisible();
+    .getByText("captured to repair evidence preparation", { exact: false })).toBeVisible();
   await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "04-repaired-same-round", readiness);

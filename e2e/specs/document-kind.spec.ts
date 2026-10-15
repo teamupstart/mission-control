@@ -5,6 +5,30 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const EVIDENCE = artifactsDir("document-kind");
 
+test("the documentation panel's existing judges expose ownership, contract, and clarity guidelines", async ({ dashboard, daemon }) => {
+  await dashboard.setViewportSize({ width: 1440, height: 1100 });
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  const roles = [
+    { slug: "documentation-steward", name: "Documentation Steward", heading: "Consolidation is not loss", detail: "Verified claims need provenance" },
+    { slug: "documentation-consistency-judge", name: "Documentation Consistency Judge", heading: "Names, deliverables, and dependency contracts", detail: "prerequisite slice-plan merges" },
+    { slug: "conciseness-reference-judge", name: "Conciseness & Reference Judge", heading: "Clarity without another source of truth", detail: "Outcomes say what the caller or reader receives" },
+  ];
+  for (const role of roles) {
+    await dashboard.getByRole("complementary", { name: "Persona library" })
+      .getByRole("button", { name: new RegExp(`^${role.name} `) }).click();
+    await expect(dashboard.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(role.name);
+    await dashboard.getByRole("button", { name: "Preview", exact: true }).click();
+    const preview = dashboard.getByRole("region", { name: "Persona guidance" });
+    await expect(preview.getByRole("heading", { name: role.heading, exact: true })).toBeVisible();
+    await expect(preview).toContainText(role.detail);
+    if (process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(EVIDENCE, { recursive: true });
+      await preview.getByRole("heading", { name: role.heading, exact: true }).scrollIntoViewIfNeeded();
+      await dashboard.screenshot({ path: `${EVIDENCE}${role.slug}-guidelines.png` });
+    }
+  }
+});
+
 test("Documentation Review exposes its judges and preserves repair policy through both editors", async ({ dashboard, daemon }) => {
   await dashboard.setViewportSize({ width: 1440, height: 1100 });
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);

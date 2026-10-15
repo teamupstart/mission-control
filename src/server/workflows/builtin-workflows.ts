@@ -41,6 +41,7 @@ import {
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+import { LEGACY_DOCUMENTATION_GUIDANCE } from "./documentation-guidance-snapshots.ts";
 import {
   BUILTIN_SESSION_ACTIONS,
   PULL_REQUEST_SESSION_ACTION_ID,
@@ -284,6 +285,28 @@ function appendGpt6Version(
         }),
       ),
     },
+    sourceDraftRevision: previous.sourceDraftRevision + 1,
+  }];
+}
+
+/** New guidance is opt-in through a new version; pinned reviewers keep their exact text. */
+function appendDocumentationGuidanceVersion(
+  versions: BuiltinWorkflowSource["versions"],
+): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1);
+  if (!previous) throw new Error("Documentation guidance upgrade requires a previous version");
+  return [...versions.map((version) => ({
+    ...version,
+    personaExecution: {
+      ...version.personaExecution,
+      default: version.personaExecution?.default ?? null,
+      snapshotOverrides: {
+        ...LEGACY_DOCUMENTATION_GUIDANCE,
+        ...version.personaExecution?.snapshotOverrides,
+      },
+    },
+  })), {
+    ...previous,
     sourceDraftRevision: previous.sourceDraftRevision + 1,
   }];
 }
@@ -1087,7 +1110,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: appendGpt6Version([
+    versions: appendDocumentationGuidanceVersion(appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1379,7 +1402,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ]),
+    ])),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,
@@ -1669,7 +1692,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: DOCUMENTATION_REVIEW_WORKFLOW_SLUG,
     name: "Documentation Review",
     description: "Checks documentation, then reviews intent, accuracy, consistency, and concise references before a verified pull request. Judges review every repair.",
-    versions: [{
+    versions: appendDocumentationGuidanceVersion([{
       pipeline: {
         sessionId: "dr-session", endId: "dr-end", endOutcome: "Complete",
         stages: [
@@ -1691,6 +1714,6 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "off",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
-    }],
+    }]),
   }),
 ];

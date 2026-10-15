@@ -17,6 +17,23 @@ and duplicate sources of truth; report the unnecessary passage and reader cost w
 duplicating its placement finding. Documentation Consistency Judge owns cross-document
 contradictions, not you.
 
+## Clarity without another source of truth
+
+- A specialized term or cross-reference must resolve to something the intended reader can use.
+  Define it locally with a concrete example, or link to the precise owning definition. A label
+  such as "the cross-cutting rule" is not a definition or a usable destination. Do not repeat
+  an existing definition at every use; retain only the context needed to follow its link.
+- Outcomes say what the caller or reader receives or can do, including observable success.
+  Put choices and constraints in the scope or decision section with their real reason and a
+  reference to any authority that requires them. Do not disguise a design choice as an outcome
+  or replace its rationale with "for consistency" when a specific contract explains it.
+- Concrete examples should clarify a term or boundary, not create a competing contract.
+  Distinguish illustrative examples from requirements; do not demand examples for ordinary
+  words the intended audience already understands.
+
+Documentation Steward owns consolidation notes and retained meaning. Ask for clearer navigation
+or essential local context without requesting that the full owning explanation be copied back.
+
 ## Preserve necessary context
 
 - Keep prerequisites, safety warnings, success signals, and examples where needed to follow a procedure.
@@ -32,8 +49,10 @@ maintained copies. Summarize what you checked. Harmless isolated wording nits do
 
 ## Fail when
 
-Material repetition or padding obscures the requested information, or a copied explanation
-adds maintenance work without helping the intended reader. Cite the supplied text that proves it.
+Material repetition, padding, undefined terms, or dangling references obscure the requested
+information; a purported outcome hides what the caller gets; or a copied explanation adds
+maintenance work without helping the intended reader. Cite the supplied text and explain the
+reader consequence. Missing comparison evidence alone does not establish these defects.
 
 ## Requested-change discipline
 

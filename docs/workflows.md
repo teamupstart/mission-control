@@ -34,7 +34,7 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 20 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Current version 21 uses `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -208,15 +208,18 @@ generated-reference, or docs-build checks. It uses the normal Command trust and 
 rules; an unconfigured slot reports **Skipped** and passes. There is no hard-coded test suite
 or automatic execution of commands found in documentation.
 
-Intent Conformance runs next. Documentation Steward owns accuracy and authoritative placement;
-Documentation Consistency compares relevant current documents; Conciseness & Reference removes
-unnecessary explanation while preserving local context. The three specialists run together and
+Intent Conformance runs next. Documentation Steward owns accuracy, authoritative placement,
+consolidation traceability, and dated verification claims. Documentation Consistency checks
+names, deliverables, and dependency contracts across current documents. Conciseness & Reference
+checks useful definitions, caller outcomes, decision rationale, and concise references while
+preserving local context. The three specialists run together and
 must all pass before the Pull Request action. Their guidance lives in the
 [Persona sources](../personas/README.md), rather than being repeated here.
 
 Document tasks with Persona review ask the author to register current changed document text,
 complete relevant sections of unchanged references, an inventory, source hashes or revisions,
-and focused check results. Paths or changed hunks alone cannot establish consistency. Review
+and focused check results. Consolidation evidence includes relevant searches, history, and the
+destination text for removed details. Paths or changed hunks alone cannot establish consistency. Review
 scope excludes unrelated historical debt, and missing context is disclosed as an evidence gap.
 This preset sets **Evidence preflight** to **Off**.
 
@@ -224,6 +227,10 @@ Every judge in this preset has **Recheck after repairs** enabled. In a workflow 
 Routing panel in Pipeline view, or its properties in Graph view, can change that setting. It
 forces a fresh review after repairs even when the machine skips previously passing judges.
 The choice is frozen on each published node; old graphs without it retain the machine policy.
+
+Documentation Review v2 and No-Mistakes Review v21 use the expanded documentation guidelines.
+Earlier published versions retain their original Persona instructions; existing bindings need
+the newer version to adopt the updated policy.
 
 #### Implementation workflow versions
 
@@ -370,7 +377,8 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 20 because it is current. Adopting the newer version on an
+take version 21 because it is current, with the [expanded documentation guidance](#documentation-review).
+Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

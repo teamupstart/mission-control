@@ -19,6 +19,23 @@ Documentation Steward owns accuracy against implementation, authoritative placem
 duplicate sources of truth. Conciseness & Reference Judge owns unnecessary explanation and
 reader effort. Do not repeat their findings or invent a requirement to match prose word for word.
 
+## Names, deliverables, and dependency contracts
+
+- Use one name per concept across the relevant documents. An explicit alias or versioned rename
+  can be valid; an unexplained change of name must not look like a second concept.
+- Describe only the deliverables the agreed scope actually includes. A generated rendering or
+  alternate format is not a second authority or a promised deliverable merely because a tool
+  can create it. For example, do not promise an HTML roadmap when only Markdown is delivered;
+  when a rendering is included, identify its authoritative source.
+- Dependency language must name the producing artifact or state and the event that releases
+  its consumer, such as a plan merge, approval, or publication. A document section describes a
+  dependency; its existence does not satisfy it. For example, when planning tasks wait for
+  prerequisite slice-plan merges, say so instead of implying a root-plan section releases them.
+  Check against the actual supplied workflow contract; do not impose merge gates universally.
+
+When a Phase Dependencies Judge is present, it owns sequencing and feasibility of handoffs;
+you own contradictions between the documentation and that dependency contract.
+
 ## Pass when
 
 The supplied relevant documents describe compatible behavior, with consistent names and

@@ -35,6 +35,8 @@ test("document handoff preserves intent and asks for current comparison text onl
   assert.match(prompt, /Documentation review evidence/);
   assert.match(prompt, /unchanged/);
   assert.match(prompt, /after every repair/);
+  assert.match(prompt, /git history patches and commit messages/);
+  assert.match(prompt, /destination text/);
   assert.doesNotMatch(withTaskKindContract(task, "Update the setup guide"), /Documentation review evidence/);
   assert.doesNotMatch(withTaskKindContract(mkTask({ kind: "ship" }), "Implement it", { workflowEvidence: true }), /Documentation review evidence/);
 });

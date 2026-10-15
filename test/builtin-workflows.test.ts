@@ -165,7 +165,12 @@ test("every Persona node names a shipped Persona and only frozen snapshots may d
         const frozenIntent = builtin.definition.id === builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG)
           && version.version <= 16
           && node.persona.sourcePersonaId === "builtin:intent-conformance-judge";
-        if (frozenV15Coverage || frozenIntent) {
+        const frozenDocumentation = (builtin.definition.id === builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG)
+          && version.version <= 20 && node.persona.sourcePersonaId === "builtin:documentation-steward")
+          || (builtin.definition.id === builtinWorkflowId("documentation-review") && version.version === 1
+            && ["builtin:documentation-steward", "builtin:documentation-consistency-judge", "builtin:conciseness-reference-judge"]
+              .includes(node.persona.sourcePersonaId));
+        if (frozenV15Coverage || frozenIntent || frozenDocumentation) {
           assert.equal(personaSnapshotIsOutdated(node.persona, current), true);
           continue;
         }
@@ -237,7 +242,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 20),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 21),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -277,7 +282,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -403,7 +408,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20, "one workflow, twenty versions");
+  assert.equal(builtin.versions.length, 21, "one workflow, twenty-one versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -698,7 +703,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -871,7 +876,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 20);
+  assert.equal(builtin.versions.length, 21);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1354,13 +1359,13 @@ for (const [slug, versionNumber, lintId, historicalDigest] of [
   });
 }
 
-test("current built-in versions use GPT-6 while prior bindings keep GPT-5.6", () => {
-  for (const builtin of BUILTIN_WORKFLOWS.filter((workflow) => workflow.versions.length > 1)) {
-    const previous = builtin.versions.at(-2)!;
-    const current = builtin.versions.at(-1)!;
+test("the GPT-6 upgrade preserves each earlier GPT-5.6 binding", () => {
+  for (const [slug, version] of [["no-mistakes-review", 20], ["general-review", 3], ["bug-fix-review", 3], ["plan-validation", 3]] as const) {
+    const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === builtinWorkflowId(slug))!;
+    const previous = builtin.versions[version - 2]!;
+    const current = builtin.versions[version - 1]!;
     assert.equal(current.version, previous.version + 1);
     assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
-    assert.equal(builtin.definition.currentVersionId, current.id);
     assert.deepEqual(asDraft(current.graph), asDraft(previous.graph));
     assert.deepEqual(current.graph.edges, previous.graph.edges);
     assert.deepEqual(current.completionPolicy, previous.completionPolicy);
@@ -1390,3 +1395,49 @@ test("Local Plan Validation is append-only review work with no PR action or comp
   assert.equal(current.graph.nodes.some((node) => node.kind === "session_action"), false);
   assert.equal(current.graph.nodes.filter((node) => node.kind === "persona").length, 4);
 });
+
+// Digests captured from the reviewed catalog before the documentation guidance update.
+for (const [slug, previousCount, historicalDigest] of [
+  [
+    "no-mistakes-review",
+    20,
+    "d231ce2d4031344875d9da3ea956c612b349d4b691ed484154d13d01369d5050"
+  ],
+  [
+    "documentation-review",
+    1,
+    "3f2c313a32997b703443496aa46473deb6a848dedc3714d65b111090f9f65631"
+  ]
+] as const) {
+  test(`documentation guidelines append a version without rewriting ${slug} bindings`, () => {
+    const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === builtinWorkflowId(slug))!;
+    assert.equal(builtin.versions.length, previousCount + 1);
+    assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions.slice(0, previousCount)))
+      .digest("hex"), historicalDigest, "a previously published snapshot changed");
+    const previous = builtin.versions[previousCount - 1]!;
+    const current = builtin.versions[previousCount]!;
+    assert.equal(builtin.definition.currentVersionId, current.id);
+    assert.deepEqual(asDraft(current.graph), asDraft(previous.graph));
+    assert.deepEqual(current.graph.edges, previous.graph.edges);
+    assert.deepEqual(current.completionPolicy, previous.completionPolicy);
+    assert.deepEqual(current.bindingDefaults, previous.bindingDefaults);
+    assert.equal(current.resumptionPolicy, previous.resumptionPolicy);
+    assert.equal(current.evidenceReadinessPolicy, previous.evidenceReadinessPolicy);
+    assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
+    const changed = [];
+    for (const node of current.graph.nodes) {
+      if (node.kind !== "persona") continue;
+      const old = previous.graph.nodes.find((item) => item.id === node.id);
+      assert.ok(old && old.kind === "persona");
+      assert.deepEqual({ ...node.persona, guidanceMarkdown: old.persona.guidanceMarkdown }, old.persona);
+      if (node.persona.guidanceMarkdown !== old.persona.guidanceMarkdown) {
+        changed.push(node.persona.sourcePersonaId);
+        const source = BUILTIN_PERSONAS.find((item) => item.id === node.persona.sourcePersonaId)!;
+        assert.equal(node.persona.guidanceMarkdown, source.guidanceMarkdown);
+      }
+    }
+    assert.deepEqual(changed, slug === "no-mistakes-review" ? ["builtin:documentation-steward"] : [
+      "builtin:documentation-steward", "builtin:documentation-consistency-judge", "builtin:conciseness-reference-judge",
+    ]);
+  });
+}

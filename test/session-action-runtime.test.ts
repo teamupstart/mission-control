@@ -17,7 +17,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -28,6 +28,7 @@ import type {
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
 process.env.MISSION_HOME = home;
@@ -635,6 +636,57 @@ test("a Pull Request skill action with session-turn completion receives the crea
     assert.match(h.injected[0]!, /gh pr create --draft/);
     assert.match(h.injected[0]!, /Only the human may promote it/);
   } finally {
+    await h.stop();
+  }
+});
+
+test("scripted skill and workflow sessions create PRs from the live draft policy", { timeout: 30_000 }, async (t) => {
+  const h = await harness("draft-pr-creation", {
+    actions: [{ id: "act", prompt: "# Create a pull request\n", skillId: "pull-request" }],
+    pullRequest: true,
+    deliveryMode: "live",
+  });
+  let fixture: Awaited<ReturnType<typeof prCreationFixture>> | null = null;
+  try {
+    fixture = await prCreationFixture(h.registry, home);
+    await fixture.setPolicy(false);
+    const runId = await runToAction(h);
+    await waitFor(() => h.injected.length === 1, "the PR workflow packet was not delivered");
+    assert.equal(waitingAttempt(h, runId)!.sessionAction?.completion.kind, "pull_request");
+    const skill = readFileSync(new URL("../skills/pull-request/SKILL.md", import.meta.url), "utf8");
+    const paths = [
+      { name: "pull-request skill", instructions: skill },
+      { name: "workflow PR phase", instructions: h.injected[0]! },
+    ];
+    t.diagnostic("Boundary: real settings HTTP, real MCP subprocess, real workflow delivery; scripted agent and stateful GitHub CLI fixture. No live GitHub writes or model calls.");
+    for (const path of paths) {
+      assert.match(path.instructions, /get_pull_request_policy/);
+      assert.match(path.instructions, /gh pr create --draft/);
+      assert.match(path.instructions, /Only the human may promote it/);
+      // The script models an agent following the delivered instructions. It is not a
+      // claim that a probabilistic model will obey them. GitHub's fixture is independent:
+      // its persisted isDraft is derived only from creation argv, never from settings.
+      for (const enabled of [false, true]) {
+        await fixture.setPolicy(enabled); // After packet delivery: no frozen preference.
+        const readsBeforeCreation: number = fixture.reads.length;
+        const policy = await fixture.readPolicy();
+        assert.equal(fixture.reads.length, readsBeforeCreation + 1, "each creation must read the live policy");
+        assert.deepEqual(fixture.reads.at(-1), { alwaysDraftPr: enabled });
+        const args = ["pr", "create", "--title", path.name, "--body", "Isolated policy integration"];
+        if (policy.alwaysDraftPr) args.push("--draft");
+        const url = await fixture.gh(args);
+        const created = JSON.parse(await fixture.gh(["pr", "view", url, "--json", "number,url,isDraft,state"]));
+        assert.equal(created.isDraft, enabled, `${path.name}: saved PR state must match the setting`);
+        assert.equal(created.state, "OPEN");
+        t.diagnostic(JSON.stringify({ path: path.name, settingRead: fixture.reads.at(-1),
+          creationCommand: ["gh", ...args], createdPr: created, promotion: "human only; no promotion command issued" }));
+      }
+    }
+    assert.equal(fixture.commands.filter((args) => args[1] === "create").length, 4);
+    assert.ok(fixture.commands.every((args) => args[1] === "create" || args[1] === "view"));
+  } finally {
+    await fixture?.setPolicy(false);
+    await fixture?.close();
     await h.stop();
   }
 });

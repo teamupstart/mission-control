@@ -27,7 +27,11 @@ import {
   reanchorThreadsForDisplay,
   sourceLines,
 } from "../src/web/lib/fileComments.ts";
-import { DiffLines, type DiffFileComments } from "../src/web/components/DiffLineComments.tsx";
+import {
+  DiffCommentControls,
+  DiffLines,
+  type DiffFileComments,
+} from "../src/web/components/DiffLineComments.tsx";
 
 function message(over: Partial<FileCommentMessage> = {}): FileCommentMessage {
   return {
@@ -258,4 +262,20 @@ test("a diff with no comment model renders exactly as before", () => {
   const html = renderToStaticMarkup(createElement(DiffLines, { lines: rows(), comments: null }));
   assert.doesNotMatch(html, /dl-num-comment|cm-file-comment-marker|dl-comment-row/);
   assert.match(html, /<td class="dl-num">2<\/td>/);
+});
+
+test("a read-only session keeps Resolved, and only Resolved, while the file has closed threads", () => {
+  const render = (over: Partial<DiffFileComments>) =>
+    renderToStaticMarkup(createElement(DiffCommentControls, { comments: model(over) }));
+  // Closed threads stay readable evidence, and with no comment mode this toggle is the only way
+  // to bring one back on screen.
+  const readOnly = render({ readOnly: true, active: false, resolvedCount: 1 });
+  assert.match(readOnly, /aria-label="Show resolved comments"/);
+  assert.doesNotMatch(readOnly, /aria-label="Comment mode"/);
+  assert.equal(render({ readOnly: true, active: false, resolvedCount: 0 }), "");
+  // A writable session keeps the Files toolbar's rule: Resolved is a comment-mode control.
+  const writable = render({ active: false, resolvedCount: 1 });
+  assert.match(writable, /aria-label="Comment mode"/);
+  assert.doesNotMatch(writable, /Show resolved comments/);
+  assert.match(render({ active: true, resolvedCount: 1 }), /aria-label="Show resolved comments"/);
 });

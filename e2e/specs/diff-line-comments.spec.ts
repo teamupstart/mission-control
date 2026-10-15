@@ -530,3 +530,153 @@ test("a failed re-read starts no comment, says why, and the next click can succe
   await expect(box).toBeVisible();
   await expect(diff.getByText(/This file could not be re-read/)).toHaveCount(0);
 });
+
+async function eventSnapshot(daemon: DaemonHandle): Promise<{
+  sessions: { id: string; cwd: string | null; workspace?: unknown }[];
+  fileCommentThreads?: { id: string; status: string }[];
+}> {
+  const stream = await fetch(`${daemon.baseURL}/events`);
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE closed before its snapshot");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+}
+
+test("a read-only session still shows and reads resolved diff threads, and writes nothing", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "README.md"), README);
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as { id: string }[];
+  const sessionId = sessions[0]!.id;
+
+  // A thread closed on line 3, through the same routes the dashboard writes with.
+  const json = { "content-type": "application/json" };
+  const created = (await (await fetch(
+    `${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/file-comments`,
+    {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({
+        path: "README.md", startLine: 3, endLine: 3, quote: QUOTE, surface: "editor",
+        body: "Closed before the session was pinned as evidence.",
+      }),
+    },
+  )).json()) as { thread?: { id: string } };
+  expect(created.thread?.id, "the thread was not created").toBeTruthy();
+  const closed = await fetch(`${daemon.baseURL}/api/file-comments/${created.thread!.id}/status`, {
+    method: "POST",
+    headers: json,
+    body: JSON.stringify({ status: "resolved" }),
+  });
+  expect(closed.ok, "the thread was not resolved").toBe(true);
+
+  // The daemon's own snapshot, with the session pinned as provider evidence that cannot be
+  // written - the state a read-only Pipeline session reaches. Its diff and file reads are
+  // still the daemon's real answers.
+  const snapshot = await eventSnapshot(daemon);
+  expect(snapshot.fileCommentThreads?.find((thread) => thread.id === created.thread!.id)?.status)
+    .toBe("resolved");
+  snapshot.sessions = snapshot.sessions.map((session) => session.id !== sessionId ? session : {
+    ...session,
+    workspace: {
+      authority: "provider", kind: "implementation", availability: "available",
+      reportedPath: session.cwd, branch: null, commit: null, commitProvenance: null,
+      commitFrozenAt: null, planSlug: null, attempt: 1, providerRevision: 1, reason: null,
+      capabilities: {
+        diff: true, files: true, write: false, comment: false, shell: false,
+        externalOpen: false, manualWorkflow: false,
+      },
+    },
+  });
+  await page.route("**/events", (route) => route.fulfill({
+    contentType: "text/event-stream",
+    body: `data: ${JSON.stringify(snapshot)}\n\n`,
+  }));
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiffOn(page, "README.md");
+  // Nothing that writes: no comment mode, so no line takes a new comment.
+  await expect(diff.getByRole("button", { name: "Comment mode" })).toHaveCount(0);
+  await expect(diff.getByRole("button", { name: /^Comment on line \d+$/ })).toHaveCount(0);
+
+  // The closed thread is still evidence to read, and Resolved is how it comes back.
+  const showResolved = diff.getByRole("button", { name: "Show resolved comments" });
+  await expect(showResolved).toHaveAttribute("aria-pressed", "false");
+  const marker = diff.getByRole("button", { name: /^Comment MC-\w+ on line 3, resolved$/ });
+  await expect(marker).toHaveCount(0);
+  await showResolved.click();
+  await expect(marker).toBeVisible();
+  await marker.click();
+  const thread = diff.getByRole("region", { name: /^Comment MC-\w+ on line 3$/ });
+  await expect(thread).toContainText("Closed before the session was pinned as evidence.");
+  await expect(thread.getByPlaceholder("Reply…")).toHaveCount(0);
+  await expect(thread.getByRole("button", { name: "Reopen" })).toHaveCount(0);
+  await expect(thread.getByRole("button", { name: "Resolve" })).toHaveCount(0);
+  await shoot(diff, page, "diff-read-only-resolved");
+});
+
+test("an older re-read answering last never puts back text a newer one replaced", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "README.md"), README);
+  await useConsoleLayout(page, daemon);
+
+  const diff = await openDiffOn(page, "README.md");
+  await diff.getByRole("button", { name: "Comment mode" }).click();
+  const lineButton = diff.getByRole("button", { name: "Comment on line 3" });
+  await expect(lineButton).toBeVisible();
+
+  // The file moves on while line 3 still says what the diff shows.
+  const trailer = "A trailing note the agent added.\n";
+  writeFileSync(join(cwd, "README.md"), `${README}${trailer}`);
+
+  // The first re-read reads the file now, then is held back until the second has answered.
+  let olderFetched!: () => void;
+  const olderReady = new Promise<void>((resolve) => { olderFetched = resolve; });
+  let releaseOlder!: () => void;
+  const olderHeld = new Promise<void>((resolve) => { releaseOlder = resolve; });
+  let rereads = 0;
+  await page.route("**/api/sessions/*/file?*", async (route) => {
+    if (!route.request().url().includes("known=")) return route.continue();
+    rereads += 1;
+    if (rereads > 1) return route.continue();
+    const response = await route.fetch();
+    olderFetched();
+    await olderHeld;
+    await route.fulfill({ response });
+  });
+
+  await lineButton.click();
+  await olderReady;
+  // Then the agent rewrites line 3, and a second click reads that.
+  writeFileSync(join(cwd, "README.md"), `${README.replace("thirty", "sixty")}${trailer}`);
+  await lineButton.click();
+  await expect(diff.getByText(CHANGED_LINE)).toBeVisible();
+  await expect(lineButton).toHaveCount(0);
+
+  // The older answer, carrying the text from before the rewrite, lands last.
+  const olderLanded = page.waitForResponse((response) => response.url().includes("known="));
+  releaseOlder();
+  await olderLanded;
+  // Read once, after the frame a stale overwrite would have rendered in.
+  await page.waitForTimeout(300);
+  expect(await lineButton.count(), "the older read put the rewritten line back").toBe(0);
+  expect(await diff.getByRole("textbox", { name: "Comment on line 3" }).count()).toBe(0);
+  expect(storedThreads(daemon)).toHaveLength(0);
+  await page.unroute("**/api/sessions/*/file?*");
+});

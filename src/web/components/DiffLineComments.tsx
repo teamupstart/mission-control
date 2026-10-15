@@ -118,13 +118,23 @@ export function useDiffSourceDocument(
   // Read through a ref so `recheck` stays one identity while the held document moves.
   const held = useRef(current);
   held.current = current;
+  /**
+   * The newest re-read asked for. Two clicks can have reads out at once, and they can answer
+   * out of order: an older read landing after a newer one would put the older text back, and a
+   * line the newer read had correctly made inert would turn clickable again.
+   */
+  const latestRecheck = useRef(0);
 
   const recheck = useCallback(async (): Promise<DiffSourceRecheck> => {
     const known = held.current?.document;
     if (!path || !known) return { ok: false, error: "the file has not been read yet" };
+    const asked = ++latestRecheck.current;
     const result = await fetchSessionFileIfChanged(sessionId, path, known.revision);
     if (!result.ok) return result;
     if (result.unchanged) return { ok: true, document: known };
+    // Only the newest read replaces the held copy; an older one still answers its own caller,
+    // whose selection ticket has already gone stale and drops it.
+    if (asked !== latestRecheck.current) return { ok: true, document: result.file };
     // Written only under the request it answers: a reader who moved to another file while
     // this was in flight must not have that file's rows checked against this one's text.
     setAnswer((previous) =>
@@ -429,6 +439,11 @@ export function useDiffLineComments(input: {
  * Open in Files button): the reason a file takes no comment differs by file - one commit,
  * deleted, outside the checkout, binary - and a disabled button cannot be focused, so its
  * tooltip, which is where that reason lives, would be unreachable from the keyboard.
+ *
+ * A read-only session keeps **Resolved** whenever the file has closed threads. Its threads are
+ * evidence that stays readable, and with no comment mode to switch on, this toggle is the only
+ * way to bring a closed one back on screen. Nothing it reveals can write: the thread card is
+ * read-only there.
  */
 export function DiffCommentControls({
   comments,
@@ -436,25 +451,28 @@ export function DiffCommentControls({
   comments: DiffFileComments;
 }): React.JSX.Element | null {
   const [showKeybindingHints] = useKeybindingHints();
-  if (comments.readOnly) return null;
+  const resolvedToggle = (comments.active || comments.readOnly) && comments.resolvedCount > 0;
+  if (comments.readOnly && !resolvedToggle) return null;
   const blocked = comments.blockReason !== null;
   return (
     <div className="file-comment-controls">
-      <Tooltip label={comments.blockReason ?? "Comment on a line: click a line number"}>
-        <button
-          type="button"
-          className={`file-comment-toggle${comments.active ? " on" : ""}`}
-          aria-label="Comment mode"
-          aria-keyshortcuts={blocked ? undefined : "m"}
-          aria-pressed={comments.active}
-          aria-disabled={blocked}
-          onClick={comments.onToggleMode}
-        >
-          Comment
-          {!blocked && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
-        </button>
-      </Tooltip>
-      {comments.active && comments.resolvedCount > 0 && (
+      {!comments.readOnly && (
+        <Tooltip label={comments.blockReason ?? "Comment on a line: click a line number"}>
+          <button
+            type="button"
+            className={`file-comment-toggle${comments.active ? " on" : ""}`}
+            aria-label="Comment mode"
+            aria-keyshortcuts={blocked ? undefined : "m"}
+            aria-pressed={comments.active}
+            aria-disabled={blocked}
+            onClick={comments.onToggleMode}
+          >
+            Comment
+            {!blocked && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
+          </button>
+        </Tooltip>
+      )}
+      {resolvedToggle && (
         <Tooltip
           label={comments.showResolved
             ? "Stop drawing closed threads on this file"

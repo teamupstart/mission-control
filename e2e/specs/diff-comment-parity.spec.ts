@@ -592,12 +592,28 @@ test("a long review queue in the diff scrolls on its own and reaches its last co
     .toBe(0);
   const rows = queue.getByRole("list").getByRole("button", { name: /^Open comment / });
   await expect(rows.nth(LINES.length - 2)).toBeAttached();
+  const openInFiles = diff.getByRole("button", { name: "Open in Files" });
+  const header = [
+    openInFiles,
+    diff.getByRole("button", { name: "Comment mode" }),
+    diff.getByRole("button", { name: "Comments", exact: true }),
+  ];
 
-  // The default window, and a short one - where 45% of the pane once left the list no room.
+  // The diff scrolled with the queue open: its rows move, and the header they scroll under stays.
+  const firstLine = diff.getByText("Note 1: keep this line.", { exact: true });
+  await firstLine.hover();
+  await page.mouse.wheel(0, 2_000);
+  await expect(firstLine).not.toBeInViewport();
+
+  // The default window, and a short one - where 45% of the pane once left the list no room, and
+  // a wrapped header once lost its second row, Open in Files, to the queue.
   for (const viewport of [null, { width: 1280, height: 560 }]) {
     if (viewport) await page.setViewportSize(viewport);
     const where = viewport ? `at ${viewport.height}px tall` : "at the default size";
     await expect(queue).toBeVisible();
+    for (const control of header) {
+      await expect(control, `the diff header keeps its controls on screen ${where}`).toBeInViewport({ ratio: 1 });
+    }
     const pane = (await diff.boundingBox())!;
     const panel = (await queue.boundingBox())!;
     expect(panel.y + panel.height, `the queue ends inside the diff pane ${where}`)
@@ -605,10 +621,6 @@ test("a long review queue in the diff scrolls on its own and reaches its last co
     const first = rows.first();
     const last = rows.last();
     await expect(first, `the first queued comment shows ${where}`).toBeInViewport();
-    // And the queue never takes the pinned header: its controls stay on screen beside it.
-    await expect(diff.getByRole("button", { name: "Comment mode" }), `Comment stays on screen ${where}`)
-      .toBeInViewport();
-    await expect(diff.getByRole("button", { name: "Comments", exact: true })).toBeInViewport();
     await expect(last).not.toBeInViewport();
     // By wheel, the way a reader gets there: a list with no scroll area of its own cannot move.
     await first.hover();
@@ -617,13 +629,20 @@ test("a long review queue in the diff scrolls on its own and reaches its last co
     const row = (await last.boundingBox())!;
     expect(row.y + row.height, `the last comment is inside the pane ${where}`)
       .toBeLessThanOrEqual(pane.y + pane.height + 1);
+    for (const control of header) await expect(control).toBeInViewport({ ratio: 1 });
     // Back to the top over the list itself, so the next size starts where a reader would.
     await last.hover();
     await page.mouse.wheel(0, -5_000);
     await expect(first).toBeInViewport();
     await shoot(diff, page, viewport ? "09-long-queue-short-window" : "08-long-queue-scrolls");
   }
-  await rows.last().scrollIntoViewIfNeeded();
-  await rows.last().click();
-  await expect(diff.getByText(`Line ${LINES.at(-1)} is not part of this diff.`)).toBeVisible();
+
+  // Still at 560px with the queue open: Open in Files does what it says, on the selected file.
+  await openInFiles.click();
+  await expect(
+    page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: /^notes\.md/ }),
+  ).toHaveAttribute("aria-selected", "true");
 });

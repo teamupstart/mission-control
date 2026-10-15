@@ -12472,15 +12472,18 @@ select:not([multiple]) option:focus-visible {
   overflow: hidden;
   padding: 12px 14px 18px;
 }
+/* The card fills what the review queue leaves, and never shrinks below its own header: however
+   many rows a narrow pane wraps the header into, Comment, Comments and Open in Files all stay on
+   screen. `min-content` is the header (and any notice) alone, because the scrolling shell below
+   it contributes no height of its own - see `.diff-file-shell`. Stated rather than left to
+   `auto`, which `overflow: hidden` turns into zero. */
 .diff-detail .diff-file {
-  flex: 0 1 auto;
-  min-height: 0;
+  flex: 1 1 0;
+  min-height: min-content;
   display: flex;
   flex-direction: column;
   margin-bottom: 0;
 }
-/* A short diff keeps its card short; the index beside it takes the pane's height instead. */
-.diff-detail .diff-file.has-comment-rail { flex-grow: 1; }
 .diff-detail .diff-file-head {
   flex: none;
   flex-wrap: wrap;
@@ -12490,8 +12493,11 @@ select:not([multiple]) option:focus-visible {
 /* A basis, so a narrow pane wraps the controls under the path instead of past the border. */
 .diff-detail .diff-file-path { flex: 1 1 120px; }
 .diff-detail .diff-file > .file-notice { flex: none; }
+/* `height: 0` and grow: the shell takes the card's leftover height, and adds nothing to the card's
+   minimum - so the diff rows yield before the header does. */
 .diff-file-shell {
   flex: 1 1 auto;
+  height: 0;
   min-height: 0;
   display: flex;
 }
@@ -12525,16 +12531,23 @@ select:not([multiple]) option:focus-visible {
 /* The review queue shares the detail column with the diff card, and that column clips. So its
    height is stated here, not inherited: up to 45% of the pane as in Files, but never less than
    its header and a couple of rows while the pane has room - in a short window 45% left the list
-   no height at all. It never takes the first row of the diff card's header, though, so the
-   pinned Comment and Comments controls stay on screen while the queue is open.
-   `.file-review-list` scrolls inside it, and the diff rows give up the rest of the space, since
-   they scroll on their own. */
+   no height at all. It shrinks, though, rather than take any of the diff card's header, which
+   the card holds as its minimum. `.file-review-list` scrolls inside it, and the diff rows give
+   up their space first, since they scroll on their own. */
 .diff-detail > .file-review {
-  flex: none;
-  max-height: min(max(45%, 120px), calc(100% - 56px));
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: max(45%, 120px);
   border: 1px solid var(--border);
   border-radius: 9px;
   overflow: hidden;
+}
+/* A short window. The header, the diff and the review queue compete for every pixel of the
+   reader's height, and the header and the queue's rows are the ones a person must reach - so the
+   reader's own spacing gives way first. */
+@media (max-height: 640px) {
+  .diff-viewer-inline .diff-head { padding-block: 8px; }
+  .diff-detail { gap: 6px; padding: 6px 10px 8px; }
 }
 @media (max-width: 820px) {
   .diff-file.has-comment-rail .diff-file-shell { flex-direction: column; }

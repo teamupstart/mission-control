@@ -528,6 +528,61 @@ export function unreadAgentReplies(
   return unread;
 }
 
+/** What a file list says about the comments on one file. */
+export interface FileCommentSummary {
+  /** Every thread the Comments index lists for the file, closed ones included. */
+  total: number;
+  /** Threads nobody has closed yet. */
+  open: number;
+  /** Agent replies on the file nobody has read, counted as `unreadAgentReplies` counts them. */
+  unread: number;
+}
+
+/**
+ * Each commented file in one session, keyed by Files-relative path - the file lists' markers.
+ *
+ * The same population as the Comments index (`threadsForFile` with resolved shown), so the
+ * count beside a file in the list is the count on that file's Comments button, in the Files
+ * tab and the Diff tab alike. One pass over the wire list rather than a filter per row, because
+ * a checkout lists thousands of files and only a handful of them carry comments.
+ */
+export function fileCommentSummaries(
+  threads: readonly FileCommentThread[],
+  sessionId: string,
+): ReadonlyMap<string, FileCommentSummary> {
+  const byPath = new Map<string, FileCommentSummary>();
+  for (const thread of threads) {
+    if (thread.sessionId !== sessionId || thread.status === "orphaned") continue;
+    const summary = byPath.get(thread.path) ?? { total: 0, open: 0, unread: 0 };
+    summary.total += 1;
+    if (thread.status !== "resolved") {
+      summary.open += 1;
+      for (const message of thread.messages) {
+        if (message.author === "agent" && message.readAt === null) summary.unread += 1;
+      }
+    }
+    byPath.set(thread.path, summary);
+  }
+  return byPath;
+}
+
+/** How a file's marker reads to a screen reader, which is everything its colour says. */
+export function fileCommentSummaryLabel(summary: FileCommentSummary): string {
+  const count = `${summary.total} ${summary.total === 1 ? "comment" : "comments"}`;
+  if (summary.unread > 0) {
+    return `${count}, ${summary.unread} unread ${summary.unread === 1 ? "reply" : "replies"}`;
+  }
+  if (summary.open === 0) return summary.total === 1 ? `${count}, resolved` : `${count}, all resolved`;
+  if (summary.open < summary.total) return `${count}, ${summary.open} open`;
+  return count;
+}
+
+/** The marker's visual class: an unread answer outranks an open thread, which outranks none. */
+export function fileCommentSummaryTone(summary: FileCommentSummary): string {
+  if (summary.unread > 0) return "is-unread";
+  return summary.open > 0 ? "is-open" : "is-resolved";
+}
+
 export function reviewQueue(
   threads: readonly FileCommentThread[],
   sessionId: string,

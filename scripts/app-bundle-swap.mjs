@@ -203,19 +203,24 @@ export function attemptSwapAppBundle({
   appsDir,
   pid,
   keepPrevious = false,
+  verifyStaged = () => {},
   ops,
 }) {
   const { staged, previous, failed } = stagingPaths({ appsDir, pid });
   const why = (err) => (err instanceof Error ? err.message : String(err));
 
   ops.remove(staged);
+  let verifying = false;
   try {
     ops.copy(packagedApp, staged);
+    verifying = true;
+    verifyStaged(staged);
   } catch (err) {
     ops.remove(staged);
     return {
       problem: `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`,
       appIntact: true,
+      verificationFailed: verifying,
       retainedAt: null,
       stranded: [],
     };
@@ -463,13 +468,14 @@ export function replaceAppBundle({
   appsDir,
   pid,
   keepPrevious = false,
+  verifyStaged = () => {},
   prompt = ADMINISTRATOR_AUTHORIZATION_PROMPT,
   platform = process.platform,
   appsDirWritable = directoryIsWritable(appsDir),
   owner = bundleOwnerSpec(process.getuid?.(), process.getgid?.()),
   sweep = () => sweepDisplacedBundles({ appsDir, keepPid: pid }),
   ops = {
-    copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit" }),
+    copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit", timeout: 10 * 60 * 1000 }),
     move: renameSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     exists: existsSync,
@@ -478,7 +484,7 @@ export function replaceAppBundle({
     execFileSync(
       "/usr/bin/osascript",
       ["-e", PRIVILEGED_SWAP_APPLESCRIPT, command, promptText],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10 * 60 * 1000 },
     );
   },
 }) {
@@ -501,6 +507,7 @@ export function replaceAppBundle({
       appsDir,
       pid,
       keepPrevious,
+      verifyStaged,
       ops,
     });
     if (!attempt.problem) {
@@ -517,7 +524,7 @@ export function replaceAppBundle({
       };
     }
     // Nothing an administrator can put right, or nothing left to safely retry over.
-    if (platform !== "darwin" || !attempt.appIntact) {
+    if (platform !== "darwin" || !attempt.appIntact || attempt.verificationFailed) {
       return {
         problem: attempt.problem,
         elevated: false,

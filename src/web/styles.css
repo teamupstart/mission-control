@@ -5925,7 +5925,7 @@ body.is-pane-resizing {
   font: 10.5px var(--sans);
   cursor: pointer;
 }
-.file-comment-toggle:hover:not(:disabled),
+.file-comment-toggle:hover:not(:disabled, [aria-disabled="true"]),
 .file-publish:hover:not(:disabled) { color: var(--fg); }
 .file-publish { flex: none; }
 .file-comment-toggle.on {
@@ -5935,6 +5935,8 @@ body.is-pane-resizing {
 }
 .file-comment-toggle:disabled,
 .file-publish:disabled { opacity: .45; cursor: default; }
+/* The Diff tab's toggle stays focusable when it cannot act, so its tooltip can say why. */
+.file-comment-toggle[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 /* A comment is out with the agent. The queue no longer opens itself on send, so this says it. */
 .file-review-live {
   flex: none;
@@ -12614,6 +12616,38 @@ select:not([multiple]) option:focus-visible {
 }
 .dl-hunk .dl-text {
   color: color-mix(in oklab, var(--working) 55%, var(--muted));
+}
+/* Line comments in the Diff tab. The composer, thread card, marker and toggles are the Files
+   tab's own classes; only what a table needs that CodeMirror provided is new here. */
+.dl-num-comment {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+.dl-num-comment:hover,
+.dl-num-comment:focus-visible {
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 16%, transparent);
+}
+.dl-num-comment:focus-visible { outline: 1px solid var(--working); outline-offset: -1px; }
+/* The panel's row spans the table, and the table is as wide as its longest line. The host is
+   held to the visible width of `.diff-lines`, its query container and horizontal scrollport,
+   so a long line never pushes the composer past the right edge of the pane. */
+.diff-lines { container-type: inline-size; }
+.dl-comment-row td { padding: 0; }
+.diff-comment-host {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  width: 100cqw;
+  padding: 6px 10px 10px;
 }
 /* ---- alerts / away control ---- */
 .alertbar {

@@ -47,7 +47,7 @@ test('migration launch opens the exact target and nonce through LaunchServices a
   };
   assert.deepEqual(await f.ports.launchTarget(f.journal.plan), {pid: f.ack.pid, identity: f.ack.identity});
   assert.deepEqual(f.calls.filter((call) => call.command === '/usr/bin/open'), [
-    {command: '/usr/bin/open', args: [f.journal.plan.target, '--args', '--mission-migration', f.journal.plan.nonce]},
+    {command: '/usr/bin/open', args: [f.journal.plan.target, '--env', `MISSION_HOME=${f.stateDirectory}`, '--args', '--mission-migration', f.journal.plan.nonce]},
   ]);
   assert.ok(f.calls[0]?.command.endsWith('/lsregister'));
   assert.deepEqual(f.calls[0]?.args, ['-f', f.journal.plan.target]);
@@ -103,6 +103,12 @@ test('reused PID is not signalled; missing assets and a launch without its journ
   const normal = await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.journal.plan.source, port: 1});
   assert.equal(normal.proceed, true);
   await assert.rejects(boundedMigrationWait(() => false, 'bounded startup', {timeout: 5}), /bounded startup/);
+});
+
+test('an identified parent that refuses shutdown is bounded before mutation', async () => {
+  const identity = processIdentity(process.pid)!;
+  const ports = migrationRuntimePorts({parent: {pid: process.pid, identity}, port: 1, timeout: 5});
+  await assert.rejects(ports.waitForParent(), /did not exit/);
 });
 
 test('migration readiness requires matching Foreground registration and a running target process', async (t) => {

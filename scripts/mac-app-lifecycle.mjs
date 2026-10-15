@@ -17,7 +17,9 @@ export function realMacAppOps(directory) {
     uid: process.getuid(), now: Date.now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     run: (command, args, timeout = 2000) => new Promise((resolve, reject) => {
-      execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      const env = {...process.env};
+      if (command === "/usr/bin/open") delete env.ELECTRON_RUN_AS_NODE;
+      execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, env }, (error, stdout) => {
         if (error && (typeof error.code !== "number" || error.killed)) {
           reject(new Error("Could not inspect macOS launch state within the time limit."));
         } else resolve({code: error?.code ?? 0, stdout});

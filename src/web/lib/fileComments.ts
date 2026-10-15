@@ -12,11 +12,12 @@ import type {
   FileCommentReview,
   FileCommentThread,
   PendingTurn,
+  Session,
   SessionFileDocument,
   SessionState,
 } from "@shared/types.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
-import { boundQuote, normalizeQuote } from "@shared/file-comment-anchor.ts";
+import { boundQuote, normalizeQuote, reanchor } from "@shared/file-comment-anchor.ts";
 import {
   holdsQueuePosition,
   isOutstandingThreadStatus,
@@ -94,6 +95,17 @@ function isBlockHtmlCommentDisplay(display: string): boolean {
  */
 export function isCommentableDocument(document: SessionFileDocument): boolean {
   return document.kind !== "image" && document.text !== null;
+}
+
+/**
+ * Whether this session's checkout is pinned provider evidence that takes no new comment.
+ *
+ * Its threads stay readable - a retained review is still evidence - but nothing on it opens a
+ * composer, replies, or resolves. One predicate for every surface that draws comments, so the
+ * Files tab and the Diff tab cannot disagree about which sessions are writable.
+ */
+export function isReadOnlyWorkspace(session: Pick<Session, "workspace">): boolean {
+  return session.workspace?.authority === "provider" && !session.workspace.capabilities.write;
 }
 
 /** Split exactly as CodeMirror numbers lines, so line N here is line N on screen. */
@@ -299,6 +311,46 @@ export function threadsForFile(
     .filter((thread) => thread.status !== "orphaned")
     .filter((thread) => showResolved || thread.status !== "resolved")
     .sort((a, b) => a.startLine - b.startLine || a.createdAt - b.createdAt);
+}
+
+/**
+ * Where each thread is drawn in the file's CURRENT text.
+ *
+ * The durable row keeps a thread's identity; the current bytes decide where it is drawn.
+ * Delivery re-anchors queued comments on the daemon, but an answered thread can outlive an
+ * edit above its quote without entering that path again. Deriving its display anchor here
+ * keeps every surface that draws it on the same current line, while the next human reply
+ * still uses the existing thread id and lets the daemon persist the move before delivery.
+ * The document revision keeps unchanged files on the cheap path; a newly loaded revision
+ * triggers the same bounded quote search the daemon uses.
+ *
+ * Shared by the Files workspace and the Diff tab, so a thread is never on one line in one
+ * tab and on another line in the other.
+ */
+export function reanchorThreadsForDisplay(
+  threads: readonly FileCommentThread[],
+  text: string,
+  revision: string | null,
+): FileCommentThread[] {
+  return threads.map((thread) => {
+    const outcome = reanchor(thread, text, revision);
+    if (outcome.kind === "outdated") {
+      return thread.outdated ? thread : { ...thread, outdated: true };
+    }
+    if (
+      thread.startLine === outcome.startLine
+      && thread.endLine === outcome.endLine
+      && thread.revision === outcome.revision
+      && thread.outdated === false
+    ) return thread;
+    return {
+      ...thread,
+      startLine: outcome.startLine,
+      endLine: outcome.endLine,
+      revision: outcome.revision,
+      outdated: false,
+    };
+  });
 }
 
 /** Anchor line to the threads on it, in the order they were written. */

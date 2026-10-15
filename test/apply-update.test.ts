@@ -17,7 +17,6 @@ import {
   releaseHelperLock,
   stagingEntryName,
   INSTALL_TIMEOUT_MS,
-  STAGED_INSTALL_TIMEOUT_MS,
   installFailureSummary,
   parseArgs,
   processIsAlive,
@@ -1123,58 +1122,15 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
 });
 
-test("a staged install is bounded in minutes and forwards the bundle to the install script", async (t) => {
-  // Asserted against realApplyOperations, because both the flag and the shorter bound live
-  // inside the real spawnSync call and no injected `install` can see either.
+test("a staged install rejects an absent receipt before executing a source installer", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-apply-staged-args-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const echo = join(root, "echo-args.mjs");
-  await writeFile(
-    echo,
-    "import { writeFileSync } from 'node:fs';\n" +
-      "writeFileSync(process.env.MISSION_TEST_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n",
-  );
-  const argsFile = join(root, "args.json");
-  process.env.MISSION_TEST_ARGS_FILE = argsFile;
-  t.after(() => {
-    delete process.env.MISSION_TEST_ARGS_FILE;
-  });
-  const bundle = join(root, "Mission Control.app");
-
-  const ops = realApplyOperations(join(root, "update.log"), 5_000, 5_000);
-  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle, "99-1700000000000");
-  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
-    "--ref",
-    "v1.2.4",
-    "--apps-dir",
-    "/Applications",
-    "--from-staged",
-    bundle,
-    "--staged-revision",
-    "99-1700000000000",
-  ]);
-
-  // A handoff from an app that predates the pin carries no token, and must still install.
-  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle);
-  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
-    "--ref",
-    "v1.2.4",
-    "--apps-dir",
-    "/Applications",
-    "--from-staged",
-    bundle,
-  ]);
-
-  const wedged = join(root, "wedged.mjs");
-  await writeFile(wedged, "setTimeout(() => {}, 60_000);\n");
-  const bounded = realApplyOperations(join(root, "update.log"), 60_000, 300);
-  assert.throws(
-    () => bounded.install(process.execPath, wedged, "v1.2.4", "/Applications", bundle),
-    // "install", not "build": there is nothing to build by this point, and the words a person
-    // reads should say which half of the update stopped.
-    /the install did not finish within .* minutes and was stopped/,
-  );
-  assert.equal(STAGED_INSTALL_TIMEOUT_MS, 10 * 60 * 1000);
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const script = join(root, "must-not-run.mjs");
+  const executed = join(root, "executed");
+  await writeFile(script, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(executed)}, 'bad');`);
+  const ops = realApplyOperations(join(root, "update.log"));
+  assert.throws(() => ops.install(process.execPath, script, "v1.2.4", root, join(root, "candidate.app")), /managed receipt/);
+  assert.equal(await readFile(executed).then(() => true, () => false), false);
 });
 
 test('migration helper argv rejects incomplete tuples and duplicate arguments without changing old argv', () => {

@@ -1,4 +1,6 @@
 export interface ApplyUpdateArgs {
+  recovery?: string;
+  attemptDirectory?: string;
   sourceClone: string;
   targetTag: string;
   appPath: string;
@@ -77,7 +79,6 @@ export interface ApplyOperations {
 
 export const UPDATE_OUTCOME_SCHEMA: number;
 export const INSTALL_TIMEOUT_MS: number;
-export const STAGED_INSTALL_TIMEOUT_MS: number;
 export const RETAINED_FAILURE_DIR_NAME: string;
 export const HELPER_LOCK_DIR_NAME: string;
 export function processIsAlive(pid: number, kill?: (pid: number) => void): boolean;
@@ -127,7 +128,6 @@ export function writeOutcome(path: string, outcome: Record<string, unknown>): vo
 export function realApplyOperations(
   logPath: string,
   installTimeoutMs?: number,
-  stagedInstallTimeoutMs?: number,
 ): ApplyOperations;
 export function runApplyUpdate(
   args: ApplyUpdateArgs,

@@ -11,6 +11,9 @@
 // from an older app takes, and it is the reason the timeout below is still measured in
 // three quarters of an hour.
 
+import { acknowledgeHelper, finishHelper } from "./update-helper-runtime.mjs";
+import { prepareSourceUpdate, installStagedApp, bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
+import { readReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes } from "node:crypto";
 import { assertSafeAppLaunch, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -18,14 +21,13 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { readMigrationJson, validateMigrationPlan, runMigration } from "./install-migration.mjs";
+import { readMigrationJson, validateMigrationPlan, updateMigrationReceipt, runMigration, recoverMigration, readMigrationJournal } from "./install-migration.mjs";
 import { migrationRuntimePorts } from "./migration-runtime.mjs";
 import { fileURLToPath } from "node:url";
 import {
@@ -50,16 +52,6 @@ const PARENT_POLL_MS = 250;
  * hangs are different failures and read differently.
  */
 export const INSTALL_TIMEOUT_MS = 45 * 60 * 1000;
-
-/**
- * The same bound for an install that only has to swap an already-built bundle.
- *
- * Minutes rather than tens of them, because nothing here compiles: the whole run is a copy of
- * a few hundred megabytes and a receipt. It is not seconds, because the swap may raise an
- * administrator panel, and a person walking back to their desk to answer it must not find the
- * update abandoned.
- */
-export const STAGED_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Where a failed update leaves what it was holding.
@@ -97,16 +89,7 @@ export function rollbackIsNeeded({ installedVersion, backupVersion, installedCom
   return installedVersion !== backupVersion;
 }
 
-// The detached helper can carry only builtins and app-bundle-swap.mjs, so this reader
-// deliberately mirrors main/bundle-version.ts rather than reaching back into the old app.
-export function bundleSourceCommit(appPath) {
-  try {
-    const value = JSON.parse(readFileSync(join(appPath, "Contents", "Resources", "app", "package.json"), "utf8")).missionCommit;
-    return typeof value === "string" && /^[0-9a-f]{40}$/.test(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
+export { bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 
 export function parseArgs(argv) {
   const values = { stagedBundle: null, stagedRevision: null };
@@ -122,10 +105,12 @@ export function parseArgs(argv) {
     ["--source-app", "sourceApp"],
     ["--target-app", "targetApp"],
     ["--migration-plan", "migrationPlan"],
+    ["--attempt-directory", "attemptDirectory"],
+    ["--recovery", "recovery"],
   ]);
   // Optional rather than required, because a handoff from an app that predates staging carries
   // neither and must still be applied.
-  const optional = new Set(["stagedBundle", "stagedRevision", "sourceApp", "targetApp", "migrationPlan"]);
+  const optional = new Set(["stagedBundle", "stagedRevision", "sourceApp", "targetApp", "migrationPlan", "attemptDirectory", "recovery"]);
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 2) {
     const key = names.get(argv[index]);
@@ -137,7 +122,7 @@ export function parseArgs(argv) {
     seen.add(key);
   }
   const missing = [...names.values()].find(
-    (name) => !optional.has(name) && values[name] === undefined,
+    (name) => !optional.has(name) && !(name === "sourceClone" && values.migrationPlan) && values[name] === undefined,
   );
   if (missing || !Number.isInteger(values.parentPid) || values.parentPid < 1) {
     return { args: null, problem: missing ? `missing ${missing}` : "parent pid is invalid" };
@@ -218,7 +203,6 @@ function restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops }) {
 export function realApplyOperations(
   logPath,
   installTimeoutMs = INSTALL_TIMEOUT_MS,
-  stagedInstallTimeoutMs = STAGED_INSTALL_TIMEOUT_MS,
 ) {
   const mac = realMacAppOps(dirname(logPath));
   const log = (line) => {
@@ -262,49 +246,26 @@ export function realApplyOperations(
       throw new Error("the app did not quit before the update timeout");
     },
     install: (node, script, tag, appsDir, stagedBundle = null, stagedRevision = null) => {
-      // SIGKILL, not the default SIGTERM: this child is the last thing standing between the
-      // person and a rollback, and it must be gone before one starts. Its own grandchildren
-      // (npm, electron-builder) do outlive it, but they only ever write inside the
-      // updater-owned clone - nothing moves an app into the installed location except the
-      // child that was just killed - so they waste cycles rather than racing the rollback.
-      // `--apps-dir` is forwarded from the receipt's own `appPath`, not left to the
-      // install script's `/Applications` default. For an ordinary install the two are the
-      // same string, so nothing changes. For an install made somewhere else - which is the
-      // only way the release-verification runbook can exercise this path without touching
-      // the operator's real app - the default would have rebuilt into `/Applications` while
-      // the backup, the rollback, and the relaunch all still pointed at the receipt's path,
-      // leaving the update reported as applied and the running app still on the old version.
-      // `--from-staged` selects the same script's swap-and-receipt half. The app already ran
-      // its build half, in front of the person, so this is the only work left.
-      const staged = typeof stagedBundle === "string" && stagedBundle.length > 0;
-      const timeout = staged ? stagedInstallTimeoutMs : installTimeoutMs;
-      const result = spawnSync(
-        node,
-        [
-          script,
-          "--ref",
-          tag,
-          "--apps-dir",
-          appsDir,
-          ...(staged ? ["--from-staged", stagedBundle] : []),
-          // Forwarded, never inspected here: this helper's job is to outlive the app, and the
-          // script that performs the swap is the last reader that can check the bundle against
-          // what the app verified.
-          ...(staged && stagedRevision ? ["--staged-revision", stagedRevision] : []),
-        ],
-        {
-          encoding: "utf8",
-          maxBuffer: 10 * 1024 * 1024,
-          timeout,
-          killSignal: "SIGKILL",
-        },
-      );
+      if (stagedBundle) {
+        const previous = readReceipt(join(dirname(logPath), "install-receipt.json"));
+        if (!previous) throw new Error("A staged update requires its existing managed receipt");
+        const descriptor = prepareSourceUpdate({receipt: previous, bundle: stagedBundle, revision: stagedRevision, targetTag: tag});
+        if (descriptor.receipt.appPath !== join(appsDir, "Mission Control.app")) throw new Error("The installation destination changed");
+        installStagedApp(descriptor, {stateDirectory: dirname(logPath)});
+        return;
+      }
+      // Compatibility for source installers predating --stage-only. Their child
+      // must be stopped before rollback; staged installs never enter this branch.
+      const timeout = installTimeoutMs;
+      const result = spawnSync(node, [script, "--ref", tag, "--apps-dir", appsDir], {
+        encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout, killSignal: "SIGKILL",
+      });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
       const summary = installFailureSummary(output);
       if (summary) log(summary);
       if (result.error?.code === "ETIMEDOUT") {
         throw new Error(
-          `the ${staged ? "install" : "build"} did not finish within ${Math.round(timeout / 60_000)} minutes and was stopped`,
+          `the build did not finish within ${Math.round(timeout / 60_000)} minutes and was stopped`,
         );
       }
       if (result.error) throw result.error;
@@ -336,7 +297,9 @@ export function realApplyOperations(
     bundleCommit: bundleSourceCommit,
     lock: realHelperLockOperations(),
     launch: (appPath, nonce) => {
-      const result = spawnSync("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: 5000 });
+      const env = {...process.env};
+      delete env.ELECTRON_RUN_AS_NODE;
+      const result = spawnSync("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: 5000, env });
       if (result.error) throw result.error;
       if (result.status !== 0) {
         throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
@@ -354,14 +317,30 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     if (plan.source !== args.sourceApp || plan.target !== args.targetApp || plan.stateDirectory !== realpathSync(args.stateDirectory) || plan.stagedBundle !== args.stagedBundle || plan.stagedRevision !== args.stagedRevision || plan.oldReceipt.sourceClone !== args.sourceClone || handoff.parent?.pid !== args.parentPid || typeof handoff.parent.identity !== "string" || !Number.isInteger(handoff.port) || handoff.port < 1 || handoff.port > 65535) throw new Error("The migration handoff changed.");
     const targetTag = /^[0-9a-f]{40}$/.test(args.targetTag) ? null : args.targetTag;
     if ((targetTag === null && plan.targetIdentity.commit !== args.targetTag) || (targetTag !== null && plan.targetIdentity.version !== targetTag.replace(/^v/, ""))) throw new Error("The migration target does not match the accepted update.");
-    plan.intendedReceipt.releaseTag = targetTag;
+    if (plan.kind !== "in-place") updateMigrationReceipt(plan, {releaseTag: targetTag});
     // The journal takes ownership of this private inventory. Do not leave credentials
     // from MCP env settings in a second, unbounded temp handoff after it is consumed.
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");
     if (resolve(args.migrationPlan) === privateManifest) rmSync(privateManifest, {force: true});
-    const migration = migrationRuntimePorts(handoff);
-    const waitForSource = migration.waitForParent;
-    migration.waitForParent = async () => {
+    const ports = migrationRuntimePorts(handoff);
+    const stopTarget = ports.stopTarget;
+    ports.stopTarget = async (journal) => {
+      await stopTarget(journal);
+      await ops.waitForBundle(plan.target);
+      await ops.preflight(plan.target);
+    };
+    if (args.attemptDirectory) ports.helperReady = () => acknowledgeHelper(args.attemptDirectory);
+    if (args.recovery) {
+      const existing = readMigrationJournal(args.stateDirectory);
+      if (args.recovery !== "1" || JSON.stringify(existing?.plan) !== JSON.stringify(plan)) throw new Error("The recovery transaction changed");
+      // Recovery must stop its recorded target before waiting for the entire bundle
+      // to exit; that target may still be running after the original helper died.
+      const recovered = await recoverMigration(args.stateDirectory, ports);
+      if (args.attemptDirectory && ["complete", "restored"].includes(recovered?.stage)) finishHelper(args.attemptDirectory);
+      return {ok: recovered?.stage === "complete", message: null};
+    }
+    const waitForSource = ports.waitForParent;
+    ports.waitForParent = async () => {
       await ops.preflight(plan.source);
       await ops.preflight(plan.target);
       await waitForSource();
@@ -370,7 +349,8 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       await ops.preflight(plan.source);
       await ops.preflight(plan.target);
     };
-    const result = await runMigration(plan, migration);
+    const result = await runMigration(plan, ports);
+    if (args.attemptDirectory && result.committed) finishHelper(args.attemptDirectory);
     if (result.error) ops.log(`migration: ${result.diagnostic ?? result.error}`);
     return {ok: result.committed, message: result.error ?? null};
   }
@@ -509,6 +489,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
 
   try {
     record({ result: "in-progress", targetVersion, recordedAt: ops.nowIso() });
+    if (args.attemptDirectory) acknowledgeHelper(args.attemptDirectory);
     // The single owner of the retention lifetime, and it runs here rather than beside either
     // outcome because the failures BEFORE the backup exists - the app never quitting, the app
     // being gone already - reach `fail()` with `backupReady` still false and would leave an
@@ -521,7 +502,10 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       ops.log(`could not clear the retained failure directory: ${error?.message ?? error}`);
     }
     await ops.preflight(args.appPath);
-    await ops.waitForParent(args.parentPid);
+    if (args.attemptDirectory) {
+      const {parent} = readMigrationJson(join(args.attemptDirectory, "owner.json"));
+      await migrationRuntimePorts({parent, port: 1}).waitForParent();
+    } else await ops.waitForParent(args.parentPid);
     await ops.waitForBundle(args.appPath);
     await ops.preflight(args.appPath);
     if (!ops.exists(args.appPath)) throw new Error("the installed app is missing before the update");
@@ -563,6 +547,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       }
     }
     record({ result: "success", targetVersion, recordedAt: ops.nowIso(), launchVerified: true });
+    if (args.attemptDirectory) finishHelper(args.attemptDirectory);
     return { ok: true, message: null };
   } catch (error) {
     return await fail(error);

@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { UpdateController } from "../../src/main/updater.ts";
+import { UpdateController, type UpdaterPort } from "../../src/main/updater.ts";
 import { inspectUpdateRuntime } from "../../src/main/update-runtime.ts";
 import type { UpdateSnapshot } from "../../src/shared/update.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -9,11 +9,13 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
   let compatible = false;
   let builds = 0;
   let probes = 0;
+  let handoffs = 0;
+  let quits = 0;
   const node = join(daemon.home, "update-node");
   const npm = join(daemon.home, "update-npm");
   await writeFile(npm, `#!/usr/bin/env node\nconsole.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
   const message = "This update requires Node.js 24 or newer (found 22.0.0). Install or select Node.js 24+, then choose Check again. Mission Control will keep running.";
-  const controller = new UpdateController({
+  const port: UpdaterPort = {
     launchPreflight: async () => {},
     packaged: true,
     arch: "arm64",
@@ -39,34 +41,36 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     now: () => Date.now(), random: () => 0, log: () => {},
     dialogs: { error: async () => {}, available: async () => "defer", upToDate: async () => {}, preparing: async () => {}, ready: async () => "defer", applying: async () => {}, outcome: async () => {} },
     helperSource: () => "", stateDirectory: () => daemon.home,
-    handoff: async () => { throw new Error("this test must never install an app"); },
-    requestQuit: () => { throw new Error("this test must never quit the app"); },
+    handoff: async () => { handoffs++; },
+    requestQuit: () => { quits++; },
     clearOutcome: () => {},
-  });
+  };
+  let controller = new UpdateController(port);
   await controller.start();
   await controller.check(false);
-  await dashboard.exposeFunction("fixtureUpdateCommand", async (command: string) => {
+  await dashboard.exposeFunction("fixtureUpdateCommand", async (command: string, alpha?: boolean) => {
     if (command === "check") await controller.check(true);
     if (command === "apply") await controller.apply();
+    if (command === "install") await controller.install();
+    if (command === "alpha") controller.setAlpha(alpha!);
     return controller.getSnapshot();
   });
-  await dashboard.addInitScript((initial: UpdateSnapshot) => {
-    let snapshot = initial;
+  await dashboard.addInitScript(() => {
     const listeners = new Set<(value: UpdateSnapshot) => void>();
-    const command = async (name: string) => {
-      snapshot = await (window as unknown as { fixtureUpdateCommand(name: string): Promise<UpdateSnapshot> }).fixtureUpdateCommand(name);
+    const command = async (name: string, alpha?: boolean) => {
+      const snapshot = await (window as unknown as { fixtureUpdateCommand(name: string, alpha?: boolean): Promise<UpdateSnapshot> }).fixtureUpdateCommand(name, alpha);
       for (const listener of listeners) listener(snapshot);
       return snapshot;
     };
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true, onOpenSettings: () => () => {},
       updates: {
-        getState: async () => snapshot,
-        check: () => command("check"), apply: () => command("apply"),
+        getState: () => command("state"), setAlpha: (alpha: boolean) => command("alpha", alpha),
+        check: () => command("check"), apply: () => command("apply"), install: () => command("install"),
         onState: (listener: (value: UpdateSnapshot) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       },
     } });
-  }, controller.getSnapshot());
+  });
   try {
     await dashboard.reload();
     const status = dashboard.getByRole("status", { name: "Mission Control update" });
@@ -122,6 +126,37 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     await expect(status).toContainText("1.2.4 is ready to install");
     expect(builds).toBe(1);
     await capture("retry-ready.png");
+    compatible = false;
+    const beforeInstall = probes;
+    await status.getByRole("button", {name: "Restart and Install"}).click();
+    await expect(status).toContainText("Installing Mission Control 1.2.4");
+    expect(probes).toBe(beforeInstall);
+    expect(handoffs).toBe(1);
+    expect(quits).toBe(1);
+    expect(builds).toBe(1);
+    await capture("prepared-without-host-node.png");
+    controller.stop();
+    const prior = port.installSnapshot().receipt!;
+    const {sourceClone: _clone, ...base} = prior;
+    port.installSnapshot = () => ({problem: null, receipt: {...base, schema: 2, kind: "binary", installedCommit: "a".repeat(40),
+      provenance: {manifestSha256: "b".repeat(64), assetId: "123", manifest: {
+        protocol: 1, repo: "teamupstart/mission-control", channel: "stable", releaseTag: "v1.2.3", version: "1.2.3",
+        commit: "a".repeat(40), platform: "darwin", arch: "arm64", bundleId: "com.mission-control.app", minimumSystemVersion: "12.0",
+        helperProtocol: {min: 1, max: 1}, assets: [{kind: "app-zip", id: "123", name: "app.zip", bytes: 123, sha256: "c".repeat(64)}],
+      }}}});
+    controller = new UpdateController(port);
+    await controller.start();
+    await controller.check(false);
+    await dashboard.reload();
+    await dashboard.getByRole("button", {name: "Settings"}).click();
+    await dashboard.getByRole("tab", {name: "Setup"}).click();
+    await expect(dashboard.getByRole("region", {name: "Application updates"})).toContainText("Binary updates are not available in this build");
+    await expect(status).toHaveCount(0);
+    expect(builds).toBe(1);
+    expect(handoffs).toBe(1);
+    await dashboard.mouse.move(1, 1);
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+    await capture("binary-source-fallback-refused.png");
   } finally {
     controller.stop();
   }

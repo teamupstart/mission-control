@@ -1,3 +1,4 @@
+import { spawnBundledUpdateHelper } from "./update-helper-runtime.mjs";
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
 import { assertSafeAppLaunch, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
@@ -42,20 +43,20 @@ export function migrationPortOccupied(port) {
   });
 }
 
-async function openMigrationApp(bundle, args, mac) {
+async function openMigrationApp(bundle, args, mac, stateDirectory = process.env.MISSION_HOME) {
   await prepareAppLaunch(bundle, mac);
   await assertSafeAppLaunch(bundle, mac);
-  const result = await mac.run("/usr/bin/open", [bundle, ...(args.length ? ["--args", ...args] : [])], 5000);
+  const result = await mac.run("/usr/bin/open", [bundle, ...(stateDirectory ? ["--env", `MISSION_HOME=${stateDirectory}`] : []), ...(args.length ? ["--args", ...args] : [])], 5000);
   if (result.code !== 0) throw new Error("LaunchServices could not open the migration app.");
 }
 
 export function migrationRuntimePorts({ parent, port, inventory, checkpoint, timeout = MIGRATION_TIMEOUT_MS, mac = realMacAppOps() }) {
   return {
     inventory, checkpoint,
-    waitForParent: () => boundedMigrationWait(() => !sameMigrationProcess(parent), "The system app did not exit before migration. Close it and retry."),
-    waitForDaemonExit: () => boundedMigrationWait(async () => !await migrationPortOccupied(port), "A background Mission Control daemon is still running. Stop it, then retry the update."),
+    waitForParent: () => boundedMigrationWait(() => !sameMigrationProcess(parent), "The system app did not exit before migration. Close it and retry.", {timeout}),
+    waitForDaemonExit: () => boundedMigrationWait(async () => !await migrationPortOccupied(port), "A background Mission Control daemon is still running. Stop it, then retry the update.", {timeout}),
     launchTarget: async (plan) => {
-      await openMigrationApp(plan.target, ["--mission-migration", plan.nonce], mac);
+      await openMigrationApp(plan.target, ["--mission-migration", plan.nonce], mac, plan.stateDirectory);
       let launched;
       await boundedMigrationWait(() => {
         const record = existsSync(join(plan.stateDirectory, MIGRATION_LAUNCH)) ? readMigrationJson(join(plan.stateDirectory, MIGRATION_LAUNCH)) : null;
@@ -154,6 +155,19 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     // launch can now use the ordinary redirect/single-instance path immediately.
     return {proceed: true, committed: true, fresh: false};
   }
+  if (target && plan.kind === "in-place" && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
+    // Recovery must outlive this launch too. Copy a complete runtime before asking
+    // this process to leave; never restore over the executable doing the recovery.
+    await spawnBundledUpdateHelper({runtimeBundle: runningBundle,
+      helperSource: join(runningBundle, "Contents/Resources/app/scripts/apply-update.mjs"), stateDirectory,
+      parentPid: process.pid, logPath: join(stateDirectory, "update.log"), recovery: true, handoff: {plan, port}, argv: [
+        ...(plan.oldReceipt.sourceClone ? ["--source-clone", plan.oldReceipt.sourceClone] : []),
+        "--target-tag", plan.intendedReceipt.releaseTag ?? plan.targetIdentity.commit, "--app-path", plan.source,
+        "--parent-pid", String(process.pid), "--state-dir", stateDirectory, "--log-path", join(stateDirectory, "update.log"),
+        "--staged-bundle", plan.stagedBundle, "--staged-revision", plan.stagedRevision, "--recovery", "1",
+      ]});
+    return {proceed: false, committed: false, fresh: false};
+  }
   if (target && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
     if (!nonce) throw new Error("An uncommitted personal app cannot start. Reopen the system app to recover the interrupted update.");
     validateMigrationTarget(plan);
@@ -175,5 +189,5 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
   if (journal?.stage === "restored") return { proceed: runningBundle === plan.source, committed: false, fresh: false };
   // A committed target starts only after forward recovery published its marker. The
   // retained source continues to the ordinary validated redirect, never a daemon.
-  return { proceed: true, committed: true, fresh: true };
+  return { proceed: true, committed: true, fresh: plan.kind !== "in-place" };
 }

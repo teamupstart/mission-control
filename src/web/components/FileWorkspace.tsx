@@ -29,9 +29,11 @@ import {
   composerDeliveryHint,
   fileCommentQuoteForDisplay,
   isCommentableDocument,
+  isReadOnlyWorkspace,
   markerLabel,
   markerTone,
   outstandingThread,
+  reanchorThreadsForDisplay,
   reviewQueue,
   threadForRenderedBlock,
   threadsByLine,
@@ -49,7 +51,7 @@ import {
   resolveHtmlBlockTarget,
   setFileCommentStatus,
 } from "../lib/api.ts";
-import { boundQuote, reanchor, sliceLines } from "@shared/file-comment-anchor.ts";
+import { boundQuote, sliceLines } from "@shared/file-comment-anchor.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import {
   Markdown,
@@ -307,8 +309,7 @@ function FileWorkspaceBody({
   ref,
 }: FileWorkspaceProps): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
-  const readOnlyWorkspace = session.workspace?.authority === "provider"
-    && !session.workspace.capabilities.write;
+  const readOnlyWorkspace = isReadOnlyWorkspace(session);
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
@@ -659,37 +660,13 @@ function FileWorkspaceBody({
   }, [files, filter]);
 
   /*
-   * The durable row keeps a thread's identity; the selected file's current bytes decide
-   * where it is drawn. Delivery re-anchors queued comments on the daemon, but an answered
-   * thread can outlive an edit above its quote without entering that path again. Deriving
-   * its display anchor here keeps the marker and Preview click on the same current line,
-   * while the next human reply still uses the existing thread id and lets the daemon persist
-   * the move before delivery. The document revision keeps unchanged files on the cheap path;
-   * a newly loaded revision triggers the same bounded quote search the daemon uses.
+   * The selected file's current bytes decide where each thread is drawn, so the marker and a
+   * Preview click land on the same current line. See `reanchorThreadsForDisplay`.
    */
   const allFileThreads = useMemo(() => {
     const threads = threadsForFile(fileCommentThreads, session.id, selectedPath, true);
     if (!buffer || buffer.document.text === null) return threads;
-    const revision = buffer.document.revision;
-    return threads.map((thread) => {
-      const outcome = reanchor(thread, buffer.text, revision);
-      if (outcome.kind === "outdated") {
-        return thread.outdated ? thread : { ...thread, outdated: true };
-      }
-      if (
-        thread.startLine === outcome.startLine
-        && thread.endLine === outcome.endLine
-        && thread.revision === outcome.revision
-        && thread.outdated === false
-      ) return thread;
-      return {
-        ...thread,
-        startLine: outcome.startLine,
-        endLine: outcome.endLine,
-        revision: outcome.revision,
-        outdated: false,
-      };
-    });
+    return reanchorThreadsForDisplay(threads, buffer.text, buffer.document.revision);
   }, [
     buffer,
     fileCommentThreads,

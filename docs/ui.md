@@ -1315,6 +1315,33 @@ The exception is a comment you started and never submitted. A **draft** is not a
 comment - it is your composer with half a sentence in it, and the review queue does not list one
 - so pointing at its block reopens it with what you wrote still in it.
 
+#### Comment from the Diff tab
+
+The bar naming the file you are reading in the **Diff** tab carries the same **Comment**
+control (<kbd>m</kbd> while the diff reader owns focus). With it on, the new-side line number of
+every line that is in the working-tree file becomes a button; click one and the same box opens
+in a row directly under that line. Everything after that is the Files tab's: the draft is saved
+from the first keystroke, **Send** delivers it or queues it, <kbd>Esc</kbd> discards it, and the
+thread is the same row the Files tab draws. It anchors to the same Files-relative path, the same
+working-tree line and the same quoted text, so a comment written on a diff line shows as a
+marker on that line in the Files editor, and one written in Files shows in the diff whenever
+its line is part of a hunk. A marker in the diff expands the thread for a reply, **Resolve** or
+**Reopen**, and **Resolved** draws closed threads while comment mode is on. Comment mode stays
+on as you move between changed files, and is off again after a reload, as it is in Files.
+
+Only lines that exist in the working tree take a comment. A deleted line is text that is gone,
+and a hunk header belongs to git, so neither gets a button. The diff is a snapshot from when the
+tab loaded, so clicking a line re-reads the file first and the comment anchors to the file as it
+is on disk now. If the agent has rewritten that line since, the click says so instead of opening
+the box, and the line stops being clickable until you reload the diff. There is no Preview here;
+a diff is source, so every comment made from it is a line comment.
+
+The control says why when a file takes no comment, and stays focusable so the reason is
+reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
+working tree a comment anchors to), a **deleted** file, a **binary** file, and a file the Files
+tab cannot open because it is **outside the session's working directory**. The **Comments** rail
+and **Review (N)** queue stay in the Files tab.
+
 ### Comments go to the agent as you send them
 
 **Send** in the comment box delivers the comment. There is no separate step to start a review:
@@ -1621,7 +1648,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
-| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click | Integrated Files tab on a file with source |
+| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click; in the Diff tab, make the working-tree line numbers clickable | Integrated Files tab on a file with source, or the Diff reader on a file that takes comments |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the rendered file preview up or down. Preview claims <kbd>d</kbd> before the global Delete action | Integrated Files tab in Preview mode |
 | <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> | Return from the rendered file preview to the selected file; <kbd>Tab</kbd> enters Preview again | Focused integrated Files preview |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
@@ -1730,8 +1757,8 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 and can't be reassigned; neither can Fleet's twelve
 [session jump chords](#jumping-straight-to-a-session); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
-are in-surface keys rather than fleet chords - they only exist while their surface is active - so
+editor's four rows above, the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
+and the Diff reader's <kbd>m</kbd> are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
 are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
@@ -1752,7 +1779,7 @@ Editor and Comment controls; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure and its
 [jump key](#jumping-straight-to-a-session), which the Console rail row prints beside its state
 word; the Diff reader's
-Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
+Comment and Open in Files actions; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
 icon-only Delete controls name it in their tooltip. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.

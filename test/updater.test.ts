@@ -5,7 +5,6 @@ import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { UpdateApplyOutcome } from "../src/shared/update.ts";
 import {
   detachedUpdateHelperEnvironment,
-  detachedUpdateHelperSources,
   latestStableRelease,
   latestMainCommit,
   ALPHA_RECHECK_MS,
@@ -174,26 +173,6 @@ const release = (over: Partial<ReleaseInfo> = {}): ReleaseInfo => ({
   isPrerelease: false,
   body: "## Fixed\n\n- Safer updates",
   ...over,
-});
-
-test("the detached updater carries its narrowly scoped bundle-swap support module", () => {
-  assert.deepEqual(
-    detachedUpdateHelperSources(
-      "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
-    ),
-    [
-      "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/mac-app-lifecycle.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/update-lock.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/install-migration.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/migration-runtime.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/scripts/install-destination.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/src/shared/install-receipt-schema.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/src/shared/update-source.mjs",
-      "/Applications/Mission Control.app/Contents/Resources/src/shared/staged-bundle.mjs",
-    ],
-  );
 });
 
 test("the detached updater carries the login-shell PATH into the installer", () => {
@@ -455,7 +434,7 @@ test("Node remediation rechecks compatibility before offering and starting the b
   f.controller.stop();
 });
 
-test("a deferred intact update can install without npm but still validates Node", async () => {
+test("a deferred intact update installs without probing host Node or npm", async () => {
   for (const nodeCompatible of [true, false]) {
     const f = fixture();
     await f.controller.start();
@@ -472,11 +451,10 @@ test("a deferred intact update can install without npm but still validates Node"
     f.port.dialogs.available = async () => "apply";
     try {
       const snapshot = await f.controller.checkForUpdates();
-      assert.equal(snapshot.phase, nodeCompatible ? "applying" : "available");
-      assert.deepEqual(probes, nodeCompatible ? [false, false] : [false]);
+      assert.equal(snapshot.phase, "applying");
+      assert.deepEqual(probes, []);
       assert.equal(f.stageRequests.length, 1, "the deferred bundle must not rebuild");
-      assert.equal(f.handoffs.length, nodeCompatible ? 1 : 0);
-      if (snapshot.phase === "available") assert.equal(snapshot.blocker, "Node is incompatible");
+      assert.equal(f.handoffs.length, 1);
     } finally { f.controller.stop(); }
   }
 });

@@ -31,20 +31,28 @@ jobs:
       channel: ${{ steps.identity.outputs.channel }}
       tag: ${{ steps.identity.outputs.tag }}
     steps:
+      # The verifier must come from this trusted workflow revision, never from
+      # the candidate whose authority it is deciding.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+          path: .tmp/distribution-source
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-      - name: Pin identity and require successful CI for the exact commit
+      - name: Pin canonical tag identity and require successful CI for the exact commit and ref
         id: identity
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REF: ${{ github.event.workflow_run.head_branch || github.ref_name }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_DIRECTORY: ${{ github.workspace }}/.tmp/distribution-source
         run: node scripts/distribution-input.mjs
 
   package:

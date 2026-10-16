@@ -46,6 +46,13 @@ Release Please still owns stable versions, tags, changelogs and GitHub Releases.
 cancelled checks, and mismatched stable versions. `workflow_dispatch` can retry a main or
 stable-tag input only after the same exact commit and source ref have passed canonical push CI.
 A successful run for another branch or tag at that commit cannot qualify the selected input.
+Because a workflow run's ref name omits its namespace, stable inputs also resolve the
+canonical `refs/tags/vX.Y.Z` through the GitHub Git API (including annotated tags) and
+require that tag's commit to match both checkout and successful CI before signing.
+A v-prefixed branch cannot substitute a different commit or stand in for a missing tag.
+The input verifier is checked out from the trusted workflow revision. Candidate source
+is a separate data-only checkout used for version and commit reads; it cannot replace
+the verifier that decides whether the protected signing job may start.
 Canonical merged Release Please PRs are identified through their exact merge commit, release
 branch and `autorelease: pending`, `autorelease: tagged` or `autorelease: published` label.
 Their main CI run skips packaging; their stable tag CI owns binary production.

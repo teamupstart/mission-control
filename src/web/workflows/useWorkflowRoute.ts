@@ -102,7 +102,7 @@ export function isRunRecordPane(value: string): value is RunRecordPane {
  * The one surface whose asset ids are a CLOSED set that ships with the build.
  *
  * Every other Library surface deep-links to a row an operator created, so its id is opaque
- * here and the surface resolves it. Commands has four fixed slots and no way to make a
+ * here and the surface resolves it. Commands has fixed slots and no way to make a
  * fifth, so an id that is not one of them names nothing that could ever exist - it takes the
  * surface's default rather than being carried into the address bar as a link to nowhere. The
  * same rule makes `/new` inexpressible: there is no blank Command to draft.

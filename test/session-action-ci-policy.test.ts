@@ -45,6 +45,23 @@ test("CI policy is absent when disabled, omitted, or outside a workflow", () => 
   }
 });
 
+test("PR policy reaches frozen actions without changing their authored prompt or allowing CI promotion", () => {
+  const result = renderSessionAction({ ...packet, pullRequestPolicy: true, pullRequestCi: true });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.ok(result.payload.endsWith(legacyPrompt));
+  assert.match(result.payload, /get_pull_request_policy immediately before creating each PR/);
+  assert.match(result.payload, /alwaysDraftPr is true/);
+  assert.match(result.payload, /gh pr create --draft/);
+  assert.match(result.payload, /Only the human may promote/);
+  assert.match(result.payload, /even to trigger CI or finish this workflow/);
+  assert.match(result.payload, /If the policy cannot be read, stop/);
+  assert.match(result.payload, /Updating an existing PR preserves its draft or ready status/);
+  const ordinary = renderSessionAction(packet);
+  assert.equal(ordinary.ok, true);
+  if (ordinary.ok) assert.doesNotMatch(ordinary.payload, /Pull request creation policy/);
+});
+
 test("CI instructions count toward the whole-packet size limit", () => {
   const empty = renderSessionAction({ ...packet, promptMarkdown: "" });
   assert.equal(empty.ok, true);
@@ -69,6 +86,7 @@ test("a maximum authored prompt still fits with authorization and CI instruction
     skillCommand: `/${"s".repeat(WORKFLOW_LIMITS.sessionActionSkillId)}`,
     promptMarkdown,
     pullRequestCi: true,
+    pullRequestPolicy: true,
   });
   assert.equal(result.ok, true, "CI policy must not make existing maximum-size actions undeliverable");
   if (!result.ok) return;

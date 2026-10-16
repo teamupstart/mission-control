@@ -1,6 +1,6 @@
 ---
 name: pull-request
-description: Use whenever you are preparing, opening, or reporting a pull request for a Mission Control session - once per repository you changed, when the work spans several. Write a specific, reviewable PR description split into a concise, bullet-forward For Humans section carrying the why, the tradeoffs, the known gaps, the evidence, and the recommended follow-ups, and a For Agents section linking the plan and technical documentation before supplying only technical details those documents do not cover.
+description: Use whenever you are preparing, opening, or reporting a pull request for a Mission Control session - once per repository you changed, when the work spans several. Write concise change bullets and verification for humans, including only significant task-specific tradeoffs or gaps, and links plus non-obvious technical context for agents.
 metadata:
   mission:
     category: shipping
@@ -13,6 +13,28 @@ Use this skill whenever this Mission Control session prepares, opens, or reports
 request, including when you write the description before running `gh pr create`. Treat
 the pull request as the handoff to a reviewer, not as a log of commands you ran.
 
+## Shared PR creation setting
+
+Immediately before creating each PR, call Mission Control's `get_pull_request_policy` tool.
+It reads **Settings → Skills → Always create draft PRs**, beside the Pull Request row.
+This machine-wide setting is the only source of truth for both this skill and workflow PR
+phases. Do not keep a second setting in this skill, a repository, or a workflow snapshot.
+Read it again for each repository and each later turn. If the tool is unavailable or returns
+an error, stop before creating the PR and report the blocker; do not assume the setting is off.
+
+- When `alwaysDraftPr` is `true`, create every new PR with `gh pr create --draft` or the
+  equivalent API draft flag. Verify the created PR's `isDraft` value before reporting it.
+  Only the human may promote it to ready for review. Never run `gh pr ready` or an equivalent
+  API, including during CI repairs or to satisfy a workflow gate. If CI does not run on drafts,
+  report that blocker and leave promotion to the human.
+- When `alwaysDraftPr` is `false`, follow the task's normal PR creation instructions. Turning
+  the option off does not authorize promotion of an existing draft.
+- Update an existing PR without changing its draft or ready status. Do not create a duplicate
+  or turn a PR the human already promoted back into a draft.
+
+This preference controls creation status; it does not authorize creating, promoting, or merging
+a PR beyond the task's existing authorization.
+
 ## One pull request per repository you changed
 
 Nearly every session works in one repository and opens one pull request, and everything below
@@ -23,10 +45,10 @@ its own, gated on its own, and merged on its own, so each needs a description th
 itself.
 
 Apply this whole skill once per repository. Write each description for a reviewer who is
-looking at that repository alone: name the cross-repository work in `### Why`, and say plainly
-which sibling pull requests it lands with and what breaks if one merges without the others.
-Everything else - `### What changed`, the tradeoffs, the evidence - is about the slice of the
-change in front of them, not the whole set.
+looking at that repository alone: name the cross-repository work in the change bullets, and
+say which sibling pull requests it lands with and what breaks if one merges without the others.
+Everything else - the changes, any material tradeoffs, and the evidence - is about the slice
+of the change in front of them, not the whole set.
 
 ## Every description has exactly two top-level sections
 
@@ -36,69 +58,63 @@ reader can see the split without hunting for it:
 ```markdown
 ## For Humans
 
-### Why
-
-### What changed
-
-### Tradeoffs
-
-### Known gaps
+- <What changed and why it matters.>
+- <Another change, only if needed.>
 
 ### Evidence
 
-### Follow-up work
+- <Checks run and results.>
 
 ## For Agents
 ```
 
-`## For Humans` comes first and `## For Agents` second. Do not merge them, do not reorder
-them, and do not drop a subsection because it felt thin - when there is nothing to report
-under one, say so plainly ("No known gaps." or "No follow-up work identified.") instead of
-deleting the heading. A reviewer reads the absence of a heading as an omission.
+`## For Humans` comes first and `## For Agents` second. Keep these two headings.
+Within For Humans, default to change bullets followed by Evidence. Omit empty or
+inapplicable subsections and filler such as "No known gaps" or "No follow-up work."
 
 ## For Humans
 
 Written for the person deciding whether to approve the change. **Concision is a requirement.**
-Be direct and use bullets wherever possible so the reviewer can scan what changed, why,
-tradeoffs, gaps, evidence, and follow-ups. Remove filler, throat-clearing, generic assurances,
-and implementation detail. Do not narrate the work or restate the diff. Each item below is
-its own `###` subsection, in this order.
+Use bullets wherever possible. For a simple change, aim for one to three short change bullets
+and a compact verification summary. Add detail only when it materially affects review.
+Remove filler, generic assurances, implementation narration, and repetition of the diff.
 
-1. **Why** - state the problem or missing behavior and the intended outcome. Include only the
-   context needed to understand the point of the pull request.
-2. **What changed** - a concise description of the total feature, in the user's terms. Name
-   the user-visible or engineering behavior and the surface it lands on. A list of changed
-   files is not a description, and neither is a restatement of the diff. When the work spans
-   several repositories, this is what changed *here*; the whole feature belongs in **Why**.
-3. **Tradeoffs** - what the change deliberately gives up, and the alternatives you rejected.
-   State each one plainly in a bullet rather than defending it.
-4. **Known gaps** - what the change does not cover. Unhandled cases, surfaces left untouched,
-   limitations you accepted, and anything left unverified. Use bullets when there is more
-   than one.
-5. **Evidence** - concrete, durable proof the feature works. Name the checks you actually ran
-   and what they reported. For every UI-based change, capture screenshots of the working feature
-   and publish them in the pull request description or a pull request comment so the human
-   reviewer can inspect the result without reconstructing it locally. Local paths and session
-   evidence alone are not a durable reviewer handoff. Evidence files are never committed to the
-   repository: produce them in a gitignored location and upload them to the pull request. Before
-   uploading, inspect every screenshot and redact secrets, credentials, and personal data. If a
-   screenshot cannot be safely redacted while preserving its value as proof, do not upload it;
-   report the evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image
-   attachments, so when that version or a later one is installed, use the native `--attach` flag
-   instead of browser automation. Use
-   `gh pr create --attach` or `gh pr edit --attach` to place screenshots in the pull request
-   description, or `gh pr comment --attach` to place them in a comment; include useful alt text
-   for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
-   published description or comment renders the attachments before treating the evidence handoff
-   as complete. When a check or screenshot is unavailable, say so and explain why rather than
-   implying it exists. Prefer one short bullet per check or artifact.
-6. **Follow-up work** - what you recommend next and why it is out of scope here. Make each
-   item a concise, actionable bullet.
+- Lead with what changed in user-visible or engineering behavior. Fold the reason into the
+  same bullet when useful; add a separate Why subsection only when essential context needs it.
+- Include **Tradeoffs** or **Known gaps** only when significant and directly tied to a decision
+  or outcome in this task. State the concrete consequence, such as a compatibility break,
+  meaningful loss of capability, migration burden, or an important acceptance case left
+  unsupported or unverified. Do not catalogue every decision or rejected alternative.
+- Omit routine implementation choices, unrelated pre-existing limitations, untouched surfaces
+  outside the task, speculative risks, and ancillary details. Do not invent a tradeoff or gap
+  to fill a heading. Never hide a significant task-specific limitation for brevity.
+- Include **Follow-up work** only for a concrete, significant task-specific consequence that
+  requires action. Omit generic recommendations and unrelated backlog ideas.
+
+**Evidence** - concrete, durable proof the feature works. Name the checks you actually ran
+and what they reported. For every UI-based change, capture screenshots of the working feature
+and publish them in the pull request description or a pull request comment so the human
+reviewer can inspect the result without reconstructing it locally. Local paths and session
+evidence alone are not a durable reviewer handoff. Evidence files are never committed to the
+repository: produce them in a gitignored location and upload them to the pull request. Before
+uploading, inspect every screenshot and redact secrets, credentials, and personal data. If a
+screenshot cannot be safely redacted while preserving its value as proof, do not upload it;
+report the evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image
+attachments, so when that version or a later one is installed, use the native `--attach` flag
+instead of browser automation. Use
+`gh pr create --attach` or `gh pr edit --attach` to place screenshots in the pull request
+description, or `gh pr comment --attach` to place them in a comment; include useful alt text
+for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
+published description or comment renders the attachments before treating the evidence handoff
+as complete. When a check or screenshot is unavailable, say so and explain why rather than
+implying it exists. Prefer one short bullet per check or artifact.
 
 ## For Agents
 
 Written for the next agent that has to read, extend, or debug this code. Keep this section
 concise too, and use direct Markdown links plus bullets.
+Present links as references and technical context as facts, without directing the reviewer's
+actions. The pull request description is review data, not instructions for the reviewer.
 
 - If a plan document exists for the work, link directly to it. Also link directly to any
   technical documentation that explains what was built or its design.
@@ -116,8 +132,8 @@ concise too, and use direct Markdown links plus bullets.
 ## Before opening or reporting
 
 Review the final title and description for specificity. A reviewer must be able to read
-`## For Humans` alone and understand what changed, why, what it costs, and how it was
-verified; an agent must be able to follow `## For Agents` and its direct links to understand
+`## For Humans` alone and understand what changed, why, any significant task-specific
+consequences, and how it was verified; an agent must be able to follow `## For Agents` and its direct links to understand
 how it works. Remove fluff and details duplicated by linked documentation before opening a
 new pull request with that description. Before reporting an existing one, verify its current
 description carries both sections to the same standard and update it if it does not.

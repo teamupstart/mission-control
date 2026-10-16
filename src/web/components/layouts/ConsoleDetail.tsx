@@ -918,6 +918,10 @@ export function ConsoleDetail({
               // The destination a transcript file link reaches, without its prose
               // parsing: a diff path is exact (see `diffFileOpenTarget`).
               onOpenInFiles={(path) => view.onOpenFilePath(session.id, path)}
+              // The Files tab's own two lists, so a line comment written on a diff row is
+              // the same thread on the same line there.
+              fileCommentThreads={view.fileCommentThreads}
+              fileCommentReviews={view.fileCommentReviews}
             />
           ) : (
             <div className="detail-pane">
@@ -934,6 +938,7 @@ export function ConsoleDetail({
                 controller={view.files}
                 fileCommentThreads={view.fileCommentThreads}
                 fileCommentReviews={view.fileCommentReviews}
+                fileCommentsLoaded={view.fileCommentsLoaded}
                 fileLineRequest={view.fileLineRequest}
                 fileCommentRequest={view.fileCommentRequest}
                 onExtract={extractFiles}

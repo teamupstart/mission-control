@@ -66,6 +66,7 @@ test("every durable tuple this phase touches is APPENDED, never reordered", () =
     // person reads to work out why a run sat still has to keep them apart.
     "parked_repair_reminder",
     "evidence_readiness",
+    "evidence_capture_repair",
   ]);
   assert.deepEqual([...WORKFLOW_RUN_STATUSES], [
     "capturing", "running", "waiting_for_session", "waiting_for_pr", "waiting_for_inspector",

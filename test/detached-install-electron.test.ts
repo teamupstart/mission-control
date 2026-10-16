@@ -19,7 +19,7 @@ import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 ensureNativeStateLockAddon();
 const require = createRequire(import.meta.url);
 
-for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-detached-electron-')));
   const ownedProcesses: ProcessRecord[] = [];
@@ -106,7 +106,8 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     });
   `);
   execFileSync('/bin/cp', ['-R', current, candidate]);
-  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({...pkg, missionCommit: 'b'.repeat(40)}));
+  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({...pkg, missionCommit: 'b'.repeat(40),
+    ...(mode === 'legacy-staged-tamper' ? {missionInstallTransaction: undefined} : {})}));
   if (mode === 'readiness-failure') rmSync(join(candidate, 'Contents/Resources/app/dist/native/state-lock.node'));
   const receipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.26.0', installedVersion: '1.26.0',
     installedCommit: 'a'.repeat(40), sourceClone: join(root, 'source-does-not-exist'), appPath: current, installedAt: '2026-10-14T00:00:00.000Z'};
@@ -172,6 +173,14 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
       writeFileSync(state + '/fixture-preparation-retry.json', JSON.stringify({attempt}));
     }
     await spawnDetachedUpdateHelper(handoff);
+    if (${JSON.stringify(mode)} === 'legacy-staged-tamper') {
+      const accepted = inspectBundle(candidate);
+      const packageBytes = readFileSync(candidate + '/Contents/Resources/app/package.json');
+      writeFileSync(candidate + '/Contents/Resources/app/dist/web/index.html', 'changed after helper acceptance');
+      assert.equal(stagedBundleRevision(lstatSync(candidate)), handoff.stagedRevision);
+      assert.deepEqual(readFileSync(candidate + '/Contents/Resources/app/package.json'), packageBytes);
+      assert.notEqual(inspectBundle(candidate).digest, accepted.digest);
+    }
     const runtime = state + '/update-runtimes/' + readdirSync(state + '/update-runtimes')[0];
     writeFileSync(state + '/handoff.json', JSON.stringify({runtime, pid: process.pid}));
   `);
@@ -189,6 +198,24 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     'the same transaction retries preparation and acknowledges a real detached helper');
   const owner = JSON.parse(readFileSync(join(handed.runtime, 'owner.json'), 'utf8'));
   ownedProcesses.push(owner.helper);
+  if (mode === 'legacy-staged-tamper') {
+    await boundedMigrationWait(() => JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result === 'failure'
+      || JSON.parse(readFileSync(join(current, 'Contents/Resources/app/package.json'), 'utf8')).missionCommit === 'b'.repeat(40),
+    'legacy helper did not check the candidate', {timeout: 120_000});
+    assert.deepEqual(inspectBundle(current), priorBundle, 'edited legacy candidate must never replace the accepted installation');
+    assert.match(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).message, /accepted staged app bytes changed/);
+    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
+    await boundedMigrationWait(() => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
+    const restored = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
+    await boundedMigrationWait(() => !processIsAlive(restored.pid), 'prior app did not exit', {timeout: 10_000});
+    assert.equal(restored.receipt.installedCommit, 'a'.repeat(40));
+    assert.equal(restored.nodeFlag, null, 'prior GUI relaunch must clear run-as-node');
+    assert.deepEqual(readFileSync(join(state, 'install-receipt.json')), receiptBytes);
+    assert.equal(processIsAlive(handed.pid), false, 'original parent exited');
+    assert.equal(existsSync(join(root, 'trap-hits')), false, 'no node/npm/npx was invoked');
+    console.log('Legacy staged digest proof: candidate changed after handoff with identical root revision and package identity; detached helper refused it after parent exit; exact app and receipt retained; no host runtime traps.');
+    return;
+  }
   if (mode === 'interrupted-after-swap') {
     await boundedMigrationWait(() => {
       const journal = readMigrationJournal(state);

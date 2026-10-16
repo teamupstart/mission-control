@@ -9,7 +9,6 @@ import {
 } from "react";
 import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
-import { isParkedReview } from "@shared/file-comments.ts";
 import {
   hasUnwrittenEdits,
   isSavePending,
@@ -24,32 +23,34 @@ import {
 } from "./FileEditor.tsx";
 import { FileCommentComposer, FileCommentThreadCard } from "./FileCommentThread.tsx";
 import { FileCommentRail } from "./FileCommentRail.tsx";
+import { FileCommentBadge } from "./FileCommentBadge.tsx";
+import { FileCommentControls } from "./FileCommentControls.tsx";
 import { useFileCommentDraft } from "../lib/fileCommentDraft.ts";
+import { useFileCommentReview } from "../lib/fileCommentReview.ts";
 import {
   composerDeliveryHint,
   fileCommentQuoteForDisplay,
+  fileCommentSummaries,
   isCommentableDocument,
+  isReadOnlyWorkspace,
   markerLabel,
   markerTone,
-  outstandingThread,
-  reviewQueue,
+  reanchorThreadsForDisplay,
+  stepOutstandingFollow,
   threadForRenderedBlock,
+  type OutstandingFollow,
   threadsByLine,
   threadsForFile,
 } from "../lib/fileComments.ts";
-import { FileCommentQueue } from "./FileCommentQueue.tsx";
+import { FileCommentReviewPanel } from "./FileCommentQueue.tsx";
 import {
   appendFileCommentMessage,
-  controlFileCommentReview,
-  deleteFileComment,
-  editFileCommentMessage,
   markFileCommentRead,
-  reorderFileComments,
   resolveHtmlBlockAnchor,
   resolveHtmlBlockTarget,
   setFileCommentStatus,
 } from "../lib/api.ts";
-import { boundQuote, reanchor, sliceLines } from "@shared/file-comment-anchor.ts";
+import { boundQuote, sliceLines } from "@shared/file-comment-anchor.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
 import {
   Markdown,
@@ -250,6 +251,12 @@ export interface FileWorkspaceProps {
    * empty, so a derived "running" would flicker on every advance.
    */
   fileCommentReviews?: readonly FileCommentReview[];
+  /**
+   * Whether the two lists above hold the daemon's answer yet - the event stream's first
+   * snapshot - rather than the empty lists that stand in until it arrives. The walkthrough
+   * follows nothing until then. Defaults to known, for a caller that hands over a settled list.
+   */
+  fileCommentsLoaded?: boolean;
   /** A source line the reader deep-linked to. See `FileEditor`'s `scrollTo` for the nonce. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   /** A rendered file that should enter comment mode once its buffer is available. */
@@ -286,6 +293,7 @@ export function fileWorkspacePropsEqual(
     && previous.controller === next.controller
     && previous.fileCommentThreads === next.fileCommentThreads
     && previous.fileCommentReviews === next.fileCommentReviews
+    && previous.fileCommentsLoaded === next.fileCommentsLoaded
     && previous.fileLineRequest === next.fileLineRequest
     && previous.fileCommentRequest === next.fileCommentRequest
     && previous.onExtract === next.onExtract
@@ -299,6 +307,7 @@ function FileWorkspaceBody({
   controller,
   fileCommentThreads = [],
   fileCommentReviews = [],
+  fileCommentsLoaded = true,
   fileLineRequest = null,
   fileCommentRequest = null,
   onExtract,
@@ -307,8 +316,7 @@ function FileWorkspaceBody({
   ref,
 }: FileWorkspaceProps): React.JSX.Element {
   const workspaceRef = useRef<HTMLElement>(null);
-  const readOnlyWorkspace = session.workspace?.authority === "provider"
-    && !session.workspace.capabilities.write;
+  const readOnlyWorkspace = isReadOnlyWorkspace(session);
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
@@ -359,9 +367,6 @@ function FileWorkspaceBody({
   const [commentMode, setCommentMode] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const [showComments, setShowComments] = useState(false);
-  const [showQueue, setShowQueue] = useState(false);
-  const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewError, setReviewError] = useState<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadBusy, setThreadBusy] = useState(false);
   const [threadError, setThreadErrorState] = useState<FileThreadError | null>(null);
@@ -659,37 +664,13 @@ function FileWorkspaceBody({
   }, [files, filter]);
 
   /*
-   * The durable row keeps a thread's identity; the selected file's current bytes decide
-   * where it is drawn. Delivery re-anchors queued comments on the daemon, but an answered
-   * thread can outlive an edit above its quote without entering that path again. Deriving
-   * its display anchor here keeps the marker and Preview click on the same current line,
-   * while the next human reply still uses the existing thread id and lets the daemon persist
-   * the move before delivery. The document revision keeps unchanged files on the cheap path;
-   * a newly loaded revision triggers the same bounded quote search the daemon uses.
+   * The selected file's current bytes decide where each thread is drawn, so the marker and a
+   * Preview click land on the same current line. See `reanchorThreadsForDisplay`.
    */
   const allFileThreads = useMemo(() => {
     const threads = threadsForFile(fileCommentThreads, session.id, selectedPath, true);
     if (!buffer || buffer.document.text === null) return threads;
-    const revision = buffer.document.revision;
-    return threads.map((thread) => {
-      const outcome = reanchor(thread, buffer.text, revision);
-      if (outcome.kind === "outdated") {
-        return thread.outdated ? thread : { ...thread, outdated: true };
-      }
-      if (
-        thread.startLine === outcome.startLine
-        && thread.endLine === outcome.endLine
-        && thread.revision === outcome.revision
-        && thread.outdated === false
-      ) return thread;
-      return {
-        ...thread,
-        startLine: outcome.startLine,
-        endLine: outcome.endLine,
-        revision: outcome.revision,
-        outdated: false,
-      };
-    });
+    return reanchorThreadsForDisplay(threads, buffer.text, buffer.document.revision);
   }, [
     buffer,
     fileCommentThreads,
@@ -736,6 +717,11 @@ function FileWorkspaceBody({
     [allFileThreads, showResolved],
   );
   const allThreadLines = useMemo(() => threadsByLine(allFileThreads), [allFileThreads]);
+  // Every commented file in the session, for the file list's markers - not only the open one.
+  const commentSummaries = useMemo(
+    () => fileCommentSummaries(fileCommentThreads, session.id),
+    [fileCommentThreads, session.id],
+  );
   const threadLines = useMemo(() => threadsByLine(fileThreads), [fileThreads]);
   const resolvedCount = allFileThreads.filter((thread) => thread.status === "resolved").length;
   const openThread = allFileThreads.find((thread) => thread.id === openThreadId) ?? null;
@@ -757,75 +743,9 @@ function FileWorkspaceBody({
   }, [openThread]);
 
   // ---- the review queue ----
-  const queue = useMemo(
-    () => reviewQueue(fileCommentThreads, session.id),
-    [fileCommentThreads, session.id],
-  );
-  const review = useMemo(
-    () => fileCommentReviews.find((r) => r.sessionId === session.id) ?? null,
-    [fileCommentReviews, session.id],
-  );
-  /*
-   * The queue opens itself when a pause needs a person, and never closes itself again.
-   *
-   * NOT when delivery starts. Sending a comment starts it, so opening then would pop the panel
-   * over the file on every comment, while the reader is already writing the next one - the
-   * toolbar's marker says a comment is out instead. A pause that needs a person is the moment
-   * the panel's reason and Resume matter, so that is when it opens. A pause the reader chose
-   * themselves opens nothing: they pressed Pause in this panel, so it is already open.
-   *
-   * Closing on the pause clearing would be the wrong half of the pair, for the old reason:
-   * taking the panel away as it resolves hides what just happened.
-   */
-  const pauseNeedsPerson = review?.state === "paused" && review.pauseReason !== null && !isParkedReview(review);
-  useEffect(() => {
-    if (pauseNeedsPerson) setShowQueue(true);
-  }, [pauseNeedsPerson]);
-
-  const controlReview = useCallback(async (
-    action: "start" | "pause" | "dismiss",
-  ): Promise<void> => {
-    setReviewBusy(true);
-    const result = await controlFileCommentReview(session.id, action);
-    setReviewBusy(false);
-    setReviewError(result.ok ? null : result.error);
-  }, [session.id]);
-
-  /**
-   * Move one comment one place, by rewriting the whole order.
-   *
-   * The reorder route takes a list rather than a delta on purpose - it rewrites `queue_seq`
-   * in two passes so nothing reads a half-applied order - so a one-place move is expressed as
-   * the list it produces. The swap happens here, against the order currently on screen, which
-   * is the order the reader is looking at.
-   */
-  const moveInQueue = useCallback(async (threadId: string, direction: -1 | 1): Promise<void> => {
-    const order = queue.map((thread) => thread.id);
-    const at = order.indexOf(threadId);
-    const to = at + direction;
-    if (at < 0 || to < 0 || to >= order.length) return;
-    [order[at], order[to]] = [order[to]!, order[at]!];
-    setReviewBusy(true);
-    const result = await reorderFileComments(session.id, order);
-    setReviewBusy(false);
-    setReviewError(result.ok ? null : result.error);
-  }, [queue, session.id]);
-
-  const editQueued = useCallback(async (messageId: string, body: string): Promise<boolean> => {
-    setReviewBusy(true);
-    const result = await editFileCommentMessage(messageId, body);
-    setReviewBusy(false);
-    setReviewError(result.ok ? null : result.error);
-    return result.ok;
-  }, []);
-
-  const dropFromQueue = useCallback(async (threadId: string): Promise<void> => {
-    setReviewBusy(true);
-    const result = await deleteFileComment(threadId);
-    setReviewBusy(false);
-    setReviewError(result.ok ? null : result.error);
-    if (result.ok && openThreadId === threadId) setOpenThreadId(null);
-  }, [openThreadId]);
+  // Shared with the Diff tab, which drives the same review through the same hook.
+  const reviewState = useFileCommentReview(session.id, fileCommentThreads, fileCommentReviews);
+  const { queue, review, outstanding, setError: setReviewError } = reviewState;
 
   /** Take the reader to a queued comment, in the file it is about. */
   /*
@@ -841,7 +761,6 @@ function FileWorkspaceBody({
    * construction: a deep link is a click that already happened, and the walkthrough only asks
    * when a comment has actually gone out.
    */
-  const outstanding = useMemo(() => outstandingThread(queue), [queue]);
   const [followedOutstanding, setFollowedOutstanding] = useState<{ id: string; nonce: number } | null>(null);
   /**
    * The comment that just went out, followed ONCE - including into another file.
@@ -863,16 +782,25 @@ function FileWorkspaceBody({
    * them there would move the view out from under the comment they are writing. The comment is
    * marked followed anyway, so closing the composer later does not trigger a late jump to
    * something that went out minutes ago; its queue row and marker already show it went.
+   *
+   * **Never the comment already out when this workspace opens.** The tab mounts because the
+   * reader asked for it, usually for one file: a link, Open in Files, or the Diff tab's review
+   * queue opening a comment on a file the diff does not hold. That comment did not just go
+   * out, and following it on mount took the reader straight off the file they asked for. So
+   * the first look at the comment state counts whatever is out as followed - and that look
+   * waits for the state to be KNOWN (`fileCommentsLoaded`), because a workspace that mounted
+   * before its comment data arrived would otherwise see the outstanding comment arrive as if it
+   * had just gone out. See `stepOutstandingFollow`.
    */
-  const followedId = useRef<string | null>(null);
+  const followState = useRef<OutstandingFollow>({ armed: false, followedId: null });
   const writing = draft.composer !== null;
   useEffect(() => {
-    if (!outstanding || followedId.current === outstanding.id) return;
-    followedId.current = outstanding.id;
-    if (writing) return;
+    const step = stepOutstandingFollow(followState.current, fileCommentsLoaded, outstanding?.id ?? null);
+    followState.current = step.next;
+    if (!step.follow || !outstanding || writing) return;
     setFollowedOutstanding((prev) => ({ id: outstanding.id, nonce: (prev?.nonce ?? 0) + 1 }));
     if (outstanding.path !== selectedPath) controller.select(session.id, outstanding.path);
-  }, [controller, outstanding, selectedPath, session.id, writing]);
+  }, [controller, fileCommentsLoaded, outstanding, selectedPath, session.id, writing]);
   const scrollTo = useMemo(() => {
     if (threadJump) return { line: threadJump.line, nonce: threadJump.nonce };
     if (
@@ -2341,6 +2269,7 @@ function FileWorkspaceBody({
               {state?.buffers[file.path] && state.buffers[file.path]!.saveState !== "saved" && (
                 <span className={`file-row-mark is-${state.buffers[file.path]!.saveState}`} aria-hidden>●</span>
               )}
+              <FileCommentBadge summary={commentSummaries.get(file.path)} />
             </button>
             </Tooltip>
           ))}
@@ -2420,94 +2349,35 @@ function FileWorkspaceBody({
             appearance on three surfaces that have no comments at all.
           */}
           {buffer && (
-            <div className="file-comment-controls">
-              {!readOnlyWorkspace && (
-                <Tooltip
-                  label={commentable
-                    ? "Comment on a line: click a line number, or a block of the preview"
+            <FileCommentControls
+              mode={readOnlyWorkspace
+                ? null
+                : {
+                  active: commentsActive,
+                  blockReason: commentable
+                    ? null
                     : buffer.document.kind === "image"
                     ? "An image has no lines to comment on"
-                    : "This file has no source to comment on"}
-                >
-                  <button
-                    className={`file-comment-toggle${commentsActive ? " on" : ""}`}
-                    aria-label="Comment mode"
-                    aria-keyshortcuts={!extracted && commentable ? "m" : undefined}
-                    aria-pressed={commentsActive}
-                    disabled={!commentable}
-                    onClick={() => {
-                      if (commentsActive) setCommentMode(false);
-                      else enterCommentMode();
-                    }}
-                  >
-                    Comment
-                    {!extracted && commentable && showKeybindingHints && <kbd className="kb-hint">m</kbd>}
-                  </button>
-                </Tooltip>
-              )}
-              <Tooltip
-                label={showComments
-                  ? "Hide every comment on this file"
-                  : "Show every comment on this file, including resolved threads"}
-              >
-                <button
-                  className={`file-comment-toggle${showComments ? " on" : ""}`}
-                  aria-label="Comments"
-                  aria-expanded={showComments}
-                  onClick={() => setShowComments((value) => !value)}
-                >
-                  Comments ({allFileThreads.length})
-                </button>
-              </Tooltip>
-              {/*
-                The review's own control, beside the mode toggle rather than inside it: comment
-                mode is "what a click on a line does", and this is "what happens to what you
-                have already written". It is drawn whenever the session HAS a review to look
-                at, not only in comment mode - a review drains while you read another file, and
-                a control that vanished when you left the file you were commenting on would be
-                the one control you cannot find when it pauses.
-              */}
-              {(queue.length > 0 || review !== null) && (
-                <Tooltip
-                  label={showQueue
-                    ? "Hide the review queue"
-                    : outstanding
-                    ? `A comment is out with the agent, ${queue.length - 1} waiting. Show the review queue`
-                    : `Show the ${queue.length} comment${queue.length === 1 ? "" : "s"} in this session's review`}
-                >
-                  <button
-                    className={`file-comment-toggle${showQueue ? " on" : ""}`}
-                    aria-label="Review queue"
-                    aria-pressed={showQueue}
-                    onClick={() => setShowQueue((value) => !value)}
-                  >
-                    {/*
-                      The panel no longer opens itself when a comment goes, so this is where a
-                      comment out with the agent shows. Decorative: the queue's own status line
-                      is the announced account, and the accessible name stays the control's.
-                    */}
-                    {outstanding && <span className="file-review-live" aria-hidden="true" />}
-                    Review ({queue.length})
-                  </button>
-                </Tooltip>
-              )}
-              {commentsActive && resolvedCount > 0 && (
-                <Tooltip
-                  label={showResolved
-                    ? "Stop drawing closed threads on this file"
-                    : `Also show the ${resolvedCount} closed thread${resolvedCount === 1 ? "" : "s"} on this file`}
-                >
-                  <button
-                    className={`file-comment-toggle${showResolved ? " on" : ""}`}
-                    aria-label="Show resolved comments"
-                    aria-pressed={showResolved}
-                    onClick={() => setShowResolved((value) => !value)}
-                  >
-                    Resolved
-                  </button>
-                </Tooltip>
-              )}
-            </div>
+                    : "This file has no source to comment on",
+                  label: "Comment on a line: click a line number, or a block of the preview",
+                  shortcut: !extracted,
+                  onToggle: () => {
+                    if (commentsActive) setCommentMode(false);
+                    else enterCommentMode();
+                  },
+                }}
+              index={{
+                count: allFileThreads.length,
+                expanded: showComments,
+                onToggle: () => setShowComments((value) => !value),
+              }}
+              review={reviewState}
+              resolved={{
+                count: resolvedCount,
+                shown: showResolved,
+                onToggle: () => setShowResolved((value) => !value),
+              }}
+            />
           )}
           {buffer && (
             <Tooltip
@@ -2640,20 +2510,11 @@ function FileWorkspaceBody({
           )}
         </div>
 
-        {showQueue && (
-          <FileCommentQueue
-            queue={queue}
-            review={review}
-            busy={reviewBusy}
-            error={reviewError}
-            onResume={() => { void controlReview("start"); }}
-            onPause={() => { void controlReview("pause"); }}
-            onMove={(threadId, direction) => { void moveInQueue(threadId, direction); }}
-            onEdit={editQueued}
-            onDrop={(threadId) => { void dropFromQueue(threadId); }}
+        {reviewState.showQueue && (
+          <FileCommentReviewPanel
+            review={reviewState}
             onOpen={openQueued}
-            onDismissPause={() => { void controlReview("dismiss"); }}
-            onDismissError={() => setReviewError(null)}
+            onDropped={(threadId) => setOpenThreadId((current) => current === threadId ? null : current)}
           />
         )}
 

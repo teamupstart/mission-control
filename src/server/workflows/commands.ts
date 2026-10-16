@@ -13,7 +13,7 @@ export type WorkflowCommandMutation = WorkflowCommandStoreWrite;
  * Ownership of the Global Command catalog: what each portable workflow slot runs here.
  *
  * The `PersonaManager` / `SessionActionManager` shape, minus creation and archival, because
- * the four slots are built in: nothing here mints an id or retires a row. What it keeps is
+ * the slots are built in: nothing here mints an id or retires a row. What it keeps is
  * the part those two exist for - one place that turns a validated request into a committed
  * store write and exactly one Registry emit AFTER the commit, so no browser ever sees a slot
  * the database does not hold.
@@ -32,7 +32,7 @@ export class WorkflowCommandManager {
     registry.initializeWorkflowCommands(this.store.workflowCommandCatalog());
   }
 
-  /** All four built-in slots, in registry order, configured or not. */
+  /** All built-in slots, in registry order, configured or not. */
   list(): WorkflowCommandView[] {
     return this.store.workflowCommandCatalog();
   }

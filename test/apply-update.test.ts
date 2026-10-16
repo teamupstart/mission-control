@@ -1,10 +1,12 @@
 import { detachedUpdateHelperSources } from "../src/main/updater.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import test from "node:test";
+import { inspectBundle, prepareSourceUpdate } from "../scripts/install-staged-app.mjs";
+import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 import {
   acquireHelperLock,
   claimEntryName,
@@ -145,9 +147,10 @@ function operations(
       appsDir: string,
       stagedBundle: string | null = null,
       stagedRevision: string | null = null,
+      stagedDigest: string | null = null,
     ) => {
       actions.push(
-        `install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}:rev=${stagedRevision ?? "none"}`,
+        `install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}:rev=${stagedRevision ?? "none"}${stagedDigest ? `:digest=${stagedDigest}` : ""}`,
       );
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
     },
@@ -339,6 +342,7 @@ test("helper argv is explicit and complete", () => {
         // neither a bundle nor a pin, and still has to be applied.
         stagedBundle: null,
         stagedRevision: null,
+        stagedDigest: null,
         sourceClone: "/clone",
         targetTag: "v1.2.4",
         appPath: "/Applications/Mission Control.app",
@@ -1086,9 +1090,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
 
 
 test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", async (t) => {
-  // The app now builds before it quits, so the work left here is the swap. What proves it is
-  // the argument reaching the install script: `--from-staged` selects its swap-and-receipt
-  // half, and the minutes of `npm ci` never happen in the dark.
+  // The helper forwards the accepted bundle identity to the shared staged operation.
   const state = await mkdtemp(join(tmpdir(), "mission-apply-staged-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
@@ -1096,21 +1098,20 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   const f = operations();
 
   const result = await runApplyUpdate(
-    { ...args(state), stagedBundle: bundle, stagedRevision: "4242-1700000000000" },
+    { ...args(state), stagedBundle: bundle, stagedRevision: "4242-1700000000000", stagedDigest: "d".repeat(64) },
     f.ops,
   );
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.deepEqual(result, { ok: true, message: null });
   assert.equal(outcome.result, "success");
-  // The bundle AND the pin the app took when it verified it. This helper forwards both without
-  // interpreting either: the script that performs the swap is the last reader that can check.
+  // The bundle, root revision and content digest all reach the final installation boundary.
   assert.ok(
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
         action.endsWith(
-          `/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}:rev=4242-1700000000000`,
+          `/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}:rev=4242-1700000000000:digest=${"d".repeat(64)}`,
         ),
     ),
     f.actions.join("\n"),
@@ -1120,6 +1121,38 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   assert.ok(f.actions.includes("wait:42"));
   assert.ok(f.actions.some((action) => action.includes("previous-app.bundle")));
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
+});
+
+test("legacy staged handoff refuses edited bundle bytes even when revision and package identity are unchanged", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mission-legacy-digest-")));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const appPath = join(root, "apps/Mission Control.app");
+  const candidate = join(root, "candidate.app");
+  for (const bundle of [appPath, candidate]) {
+    await mkdir(join(bundle, "Contents/Resources/app"), {recursive: true});
+    await writeFile(join(bundle, "Contents/Info.plist"), '<key>CFBundleShortVersionString</key><string>1.2.4</string>');
+    await writeFile(join(bundle, "Contents/Resources/app/package.json"), JSON.stringify({version: "1.2.4", missionCommit: "a".repeat(40)}));
+    await writeFile(join(bundle, "Contents/Resources/app/payload.txt"), "accepted bytes");
+  }
+  const receipt = {schema: 1, repo: "teamupstart/mission-control", appPath, sourceClone: "/must-not-run",
+    installedVersion: "1.2.4", installedCommit: "a".repeat(40), releaseTag: "v1.2.4", installedAt: "2026-10-14T00:00:00.000Z"};
+  const receiptPath = join(root, "install-receipt.json");
+  const receiptBytes = `\n${JSON.stringify(receipt, null, 2)}\n\n`;
+  await writeFile(receiptPath, receiptBytes);
+  const descriptor = prepareSourceUpdate({receipt, bundle: candidate, targetTag: "v1.2.4"});
+  const prior = inspectBundle(appPath);
+  const packageBytes = await readFile(join(candidate, "Contents/Resources/app/package.json"));
+  await writeFile(join(candidate, "Contents/Resources/app/payload.txt"), "rejected bytes");
+  assert.equal(stagedBundleRevision(await lstat(candidate)), descriptor.revision);
+  assert.deepEqual(await readFile(join(candidate, "Contents/Resources/app/package.json")), packageBytes);
+  const ops = realApplyOperations(join(root, "update.log"));
+  assert.throws(() => ops.install(process.execPath, "/must-not-run/install-app.mjs", "v1.2.4", dirname(appPath),
+    candidate, descriptor.revision, descriptor.digest), /accepted staged app bytes changed/);
+  assert.deepEqual(inspectBundle(appPath), prior);
+  assert.equal(await readFile(receiptPath, "utf8"), receiptBytes);
+  await writeFile(join(candidate, "Contents/Resources/app/payload.txt"), "accepted bytes");
+  ops.install(process.execPath, "/must-not-run/install-app.mjs", "v1.2.4", dirname(appPath), candidate, descriptor.revision, descriptor.digest);
+  assert.equal(inspectBundle(appPath).digest, descriptor.digest, "unchanged accepted bytes still install");
 });
 
 test("a staged install rejects an absent receipt before executing a source installer", async (t) => {
@@ -1139,6 +1172,11 @@ test('migration helper argv rejects incomplete tuples and duplicate arguments wi
   assert.match(parseArgs([...base, '--source-app', '/Applications/Mission Control.app']).problem!, /complete/);
   assert.match(parseArgs([...base, '--app-path', '/other']).problem!, /invalid/);
   assert.equal(parseArgs([...base, '--source-app', '/Applications/Mission Control.app', '--target-app', '/Users/Fixture/Applications/Mission Control.app', '--migration-plan', '/private/plan.json', '--staged-bundle', '/build/app', '--staged-revision', 'pinned']).problem, null);
+  const staged = [...base, '--staged-bundle', '/build/app', '--staged-revision', 'pinned'];
+  assert.equal(parseArgs(staged).problem, null, 'older staged handoffs without a digest remain readable');
+  assert.equal(parseArgs([...staged, '--staged-digest', 'd'.repeat(64)]).args?.stagedDigest, 'd'.repeat(64));
+  assert.match(parseArgs([...staged, '--staged-digest', 'not-a-digest']).problem!, /SHA-256/);
+  assert.match(parseArgs([...base, '--staged-digest', 'd'.repeat(64)]).problem!, /pinned staged bundle/);
 });
 
 test("launch conflicts refuse the swap and never relaunch or remove the user's job", async (t) => {

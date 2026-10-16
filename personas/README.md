@@ -6,7 +6,8 @@ they reach the running app by different routes.
 ## The workflow persona sources
 
 `code-design-reviewer.md`, `code-quality-judge.md`, `code-risk-reviewer.md`,
-`documentation-steward.md`, `intent-conformance-judge.md`, `slop-filter.md`, and
+`documentation-steward.md`, `documentation-consistency-judge.md`,
+`conciseness-reference-judge.md`, `intent-conformance-judge.md`, `slop-filter.md`, and
 `test-coverage-judge.md`, `test-evidence-auditor.md`, `root-cause-regression-judge.md`,
 `plan-consistency-judge.md`, `phase-dependencies-judge.md`, and `plan-feasibility-judge.md`
 are the built-in review roles. They are

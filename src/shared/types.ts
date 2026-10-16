@@ -1858,6 +1858,7 @@ export interface SkillRow extends SkillCatalogEntry {
 
 /** Everything the skills panel draws, in one read. */
 export interface SkillsView {
+  alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
@@ -1903,7 +1904,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 

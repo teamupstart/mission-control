@@ -141,8 +141,14 @@ export interface CreatedDraftThread {
 
 export interface FileCommentDraftController {
   composer: FileCommentComposerState | null;
-  /** Open a fresh composer on a line, or false when the file has no text to anchor to. */
-  openLine: (line: number, text: string) => boolean;
+  /**
+   * Open a fresh composer on a line, or false when the file has no text to anchor to.
+   *
+   * `revision` is the revision `text` was read at, when the caller read it more recently than
+   * the workspace's own selection - the Diff tab re-reads the file on the click. Omitted, the
+   * composer takes the workspace's current revision, which is what the Files editor's buffer is.
+   */
+  openLine: (line: number, text: string, revision?: string | null) => boolean;
   /**
    * Open a fresh composer on a RANGE that a rendered surface already resolved.
    *
@@ -516,10 +522,12 @@ export function useFileCommentDraft(input: {
     return true;
   }, []);
 
-  const openLine = useCallback((line: number, text: string): boolean => {
+  const openLine = useCallback((line: number, text: string, revision?: string | null): boolean => {
     const anchor = anchorForLine(text, line);
     if (!anchor) return false;
-    return openAnchor(line, anchor, "editor");
+    // Quote and revision describe ONE snapshot, for `openRange`'s reason: a quote stamped with
+    // a revision it was not read at would tell `reanchor()` the file has not moved since.
+    return openAnchor(line, revision === undefined ? anchor : { ...anchor, revision }, "editor");
   }, [openAnchor]);
 
   const openRange = useCallback((anchor: FileCommentRangeAnchor): boolean => {

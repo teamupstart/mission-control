@@ -12,6 +12,7 @@ Every dispatch provides a choice for "After work". After work is a workflow that
 
 - **Ship:** Uses the machine default - No-Mistakes Review out of the box.
 - **Bugfix:** Defaults to Bug Fix Review, which adds a root-cause judge.
+- **Document:** Defaults to Documentation Review for accuracy, consistency, and concise references.
 - **Plan:** Defaults to Plan Validation, which reviews the plan instead of a diff.
 - **None:** Opts this one task out of review entirely.
 

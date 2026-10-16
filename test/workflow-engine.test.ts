@@ -1330,7 +1330,7 @@ const checkCatalog = (
     overrides: bySlot[slot] ?? [],
   });
 
-/** The catalog a machine that has configured nothing projects: four empty slots. */
+/** The catalog a machine that has configured nothing projects: the empty built-in slots. */
 const emptyCatalog = () => checkCatalog({});
 
 test("a passing check advances the graph and reaches the End through the Join", async () => {
@@ -2221,10 +2221,15 @@ test("stop() cancels a live check group instead of waiting out its command", {
 });
 
 // A pass is earned per node and run, and survives later evidence and daemon instances.
-for (const skipPassedJudges of [true, false]) {
-  test(`repair rounds ${skipPassedJudges ? "reuse" : "repeat"} judges according to workflow policy`, async () => {
-    const id = `judge-passes-${skipPassedJudges}`;
-    const store = seedSubmission(id, disableGraph());
+for (const [skipPassedJudges, recheckAfterRepair] of [[true, false], [false, false], [true, true]] as const) {
+  const reuse = skipPassedJudges && !recheckAfterRepair;
+  test(`repair rounds ${reuse ? "reuse" : "repeat"} judges with machine reuse=${skipPassedJudges}, node recheck=${recheckAfterRepair}`, async () => {
+    const id = `judge-passes-${skipPassedJudges}-${recheckAfterRepair}`;
+    const graph = disableGraph();
+    if (recheckAfterRepair) {
+      graph.nodes = graph.nodes.map(node => node.kind === "persona" ? { ...node, recheckAfterRepair: true } : node);
+    }
+    const store = seedSubmission(id, graph);
     const calls = { claude: 0, codex: 0 };
     const options = {
       concurrency: 3,
@@ -2264,16 +2269,16 @@ for (const skipPassedJudges of [true, false]) {
         engine.start();
         engine.activateSubmission(repair.submission.id);
         await waitFor(() => store.getRun(`run-${id}`)?.status ===
-          (skipPassedJudges && round === 3 ? "completed" : "waiting_for_session"));
+          (reuse && round === 3 ? "completed" : "waiting_for_session"));
         const attempt = store.latestAttemptForNode(repair.submission.id, "p1")!;
-        assert.equal(attempt.runner, skipPassedJudges ? null : "claude");
-        if (skipPassedJudges) {
+        assert.equal(attempt.runner, reuse ? null : "claude");
+        if (reuse) {
           assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: earned.id });
           assert.ok(store.listReceipts(repair.submission.id).some((receipt) =>
             receipt.edgeId === "p1-pass" && receipt.sourceAttemptId === attempt.id));
         }
       }
-      assert.deepEqual(calls, { claude: skipPassedJudges ? 1 : 3, codex: 3 });
+      assert.deepEqual(calls, { claude: reuse ? 1 : 3, codex: 3 });
       assert.deepEqual(store.getAttempt(earned.id)?.verdict, earned.verdict);
       assert.equal(store.priorPassedJudge(`run-${id}`, "p1", 1), null, "not within the same round");
       assert.equal(store.priorPassedJudge("another-run", "p1", 4), null, "not across runs");

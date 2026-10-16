@@ -153,6 +153,8 @@ test("the palette starts the tour, and it walks the demonstration run even over 
   await expect(dashboard.locator(".dispatch-workflow")).toHaveCSS("outline-width", "2px");
   await expect(dialog).toContainText("No-Mistakes Review out of the box");
   await expect(dialog).toContainText("Bug Fix Review");
+  await expect(dialog.getByText("Document", { exact: true })).toBeVisible();
+  await expect(dialog).toContainText("Defaults to Documentation Review for accuracy, consistency, and concise references.");
   await shoot(dashboard, "02-after-work");
   await dialog.getByRole("button", { name: "Open a session" }).click();
 

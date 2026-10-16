@@ -1,4 +1,4 @@
-import { withExecutionOverride } from "./workflow.ts";
+import { withExecutionOverride, withRecheckAfterRepair } from "./workflow.ts";
 import type {
   Persona,
   PersonaId,
@@ -64,6 +64,7 @@ export type StageMember =
        * exactly that key, which is why every edit below addresses `nodeId` or an index.
        */
       executionOverride?: WorkflowNodeExecutionOverride;
+      recheckAfterRepair?: boolean;
     }
   | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot };
 
@@ -99,6 +100,7 @@ function memberOf(node: StageMemberNode): StageMember {
         kind: "persona",
         personaId: personaIdOf(node),
         ...withExecutionOverride(node.executionOverride),
+        ...withRecheckAfterRepair(node.recheckAfterRepair),
       };
 }
 
@@ -717,6 +719,7 @@ export function compileStages(
             personaId: member.personaId,
             position,
             ...withExecutionOverride(member.executionOverride),
+            ...withRecheckAfterRepair(member.recheckAfterRepair),
           });
       return id;
     });

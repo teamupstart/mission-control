@@ -125,11 +125,22 @@ const LOCAL_PLAN_CONTRACT: TaskCompletionContract = {
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
- * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
+ * boundary is, including saying it has none. Ship, Bugfix, and Document defer post-completion work;
  * workflow-bound plans defer publication follow-through. Other kinds and unbound plans
  * are judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
+  document: {
+    ...SHIP_CONTRACT,
+    kind: "document",
+    boundary: "the initial documentation handoff of a dispatched document task",
+    complete: [
+      "the requested repository documentation is complete in its authoritative owner documents",
+      "changed documentation is accurate, consistent with relevant current references, and concise without duplicating maintained contracts",
+      "the focused documentation checks and verification the change requires have been run",
+      "current documentation and comparison context are registered as workflow evidence when an active Persona workflow accepts it",
+    ],
+  },
   ship: SHIP_CONTRACT,
   bugfix: { ...SHIP_CONTRACT, kind: "bugfix", boundary: "the initial implementation handoff of a dispatched bugfix task" },
   scout: null,
@@ -141,7 +152,7 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
 /**
  * The trusted initial completion contract for a durable task kind, or null.
  *
- * Ship/Bugfix keep a kind-only boundary. Plans defer PR work only when a workflow owns it;
+ * Ship/Bugfix/Document keep a kind-only boundary. Plans defer PR work only when a workflow owns it;
  * an unbound phased-plan skill retains its direct publication path. Callers resolve the
  * binding structurally, never from transcript prose or Persona evidence eligibility.
  */

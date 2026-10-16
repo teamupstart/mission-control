@@ -17,6 +17,8 @@ export interface ApplyUpdateArgs {
    * reader before the swap can refuse a bundle that changed in between.
    */
   stagedRevision?: string | null;
+  /** Accepted content digest for staged targets that predate transaction journals. */
+  stagedDigest?: string | null;
   sourceApp?: string;
   targetApp?: string;
   migrationPlan?: string;
@@ -68,6 +70,7 @@ export interface ApplyOperations {
     appsDir: string,
     stagedBundle?: string | null,
     stagedRevision?: string | null,
+    stagedDigest?: string | null,
   ): void;
   restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   bundleVersion(path: string): string | null;

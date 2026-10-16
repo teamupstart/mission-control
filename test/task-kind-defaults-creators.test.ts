@@ -266,6 +266,32 @@ function candidate(externalId: string, over: Partial<TaskCandidate> = {}): TaskC
 
 const resolveRepo = { resolveRepoRoot: async (p: string) => ({ ok: true as const, repoRoot: p }) };
 
+test("document missions and source sweeps create durable tasks with documentation review", async () => {
+  const workflowId = "builtin-workflow:documentation-review";
+  setHarnessesConfig({ kindDefaults: { document: { agent: "codex" } } });
+  const h = harness("document");
+  const created = await h.manager.create(definition({ template: { kind: "document", workflowId } }));
+  assert.ok(created.ok, JSON.stringify(created));
+  h.clock.now = NINE + 5_000;
+  await h.manager.tick();
+  const scheduled = scheduledTasks(created.schedule.id);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0]!.kind, "document");
+  assert.equal(scheduled[0]!.agent, "codex");
+  assert.equal(scheduled[0]!.workflowId, workflowId);
+
+  await ingestSweep(
+    source({ defaults: TaskSourceDefaultsSchema.parse({ kind: "document" }) }),
+    { items: [candidate("owner/repo#docs")], error: null },
+    tasks,
+    resolveRepo,
+  );
+  const imported = db.listTasks().find(task => task.source?.externalId === "owner/repo#docs");
+  assert.equal(imported?.kind, "document");
+  assert.equal(imported?.agent, "codex");
+  assert.equal(imported?.workflowId, workflowId);
+});
+
 test("a source left unset files on the kind's agent; one that names an agent pins it", async () => {
   setHarnessesConfig({ kindDefaults: { plan: { agent: "codex" } } });
 

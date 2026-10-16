@@ -8,10 +8,10 @@ import test from 'node:test';
 import { startBinaryEnrollment } from '../src/main/binary-enrollment.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 
-function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number) {
+function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, temporary = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'binary-enrollment-')));
   t.after(() => rmSync(root, {recursive: true, force: true}));
-  const bundle = join(root, 'Copied Apps/Mission Control.app');
+  const bundle = join(root, temporary ? 'AppTranslocation/fixture/d/Mission Control.app' : 'Copied Apps/Mission Control.app');
   const appRoot = join(bundle, 'Contents/Resources/app');
   mkdirSync(join(appRoot, 'scripts'), {recursive: true});
   const metadata = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
@@ -20,7 +20,7 @@ function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: num
   writeFileSync(join(appRoot, 'package.json'), JSON.stringify({missionBinary: metadata}));
   const bootstrap = join(appRoot, 'scripts/install.sh');
   // The real Bash child only prints fixture diagnostics. It cannot download or install.
-  writeFileSync(bootstrap, `printf '%s\\n' 'bootstrap stdout'
+  writeFileSync(bootstrap, `${temporary ? 'while [ ! -e "$MISSION_HOME/release-child" ]; do /bin/sleep 0.01; done\n' : ''}printf '%s\\n' 'bootstrap stdout'
 printf '%s\\n' 'bootstrap stderr' >&2
 printf 'state=%s\\n' "$MISSION_HOME"
 printf 'electron=%s\\n' "\${ELECTRON_RUN_AS_NODE-unset}"
@@ -46,13 +46,21 @@ exit ${exitCode}
     return {status: 0, stdout: '', stderr: 'source=Notarized Developer ID\n'};
   }) as typeof childProcess.spawnSync);
   const spawn = childProcess.spawn;
+  const children: {child: childProcess.ChildProcess; closed: Promise<number | null>; unrefs: () => number}[] = [];
   const launch = t.mock.method(childProcess, 'spawn', ((command: string, args: readonly string[], options: childProcess.SpawnOptions) => {
     assert.equal(command, '/bin/bash');
-    assert.deepEqual(args, [bootstrap, '--ref', channel === 'stable' ? 'v1.2.3' : metadata.commit, '--enroll', '--apps-dir', dirname(bundle)]);
-    assert.equal(options.detached, false, 'copied-app enrollment waits for the child result');
+    assert.deepEqual(args, [bootstrap, '--ref', channel === 'stable' ? 'v1.2.3' : metadata.commit,
+      ...(temporary ? [] : ['--enroll', '--apps-dir', dirname(bundle)])]);
+    assert.equal(options.detached, temporary);
     assert.equal(options.env?.MISSION_HOME, stateDirectory);
     assert.equal(options.env?.ELECTRON_RUN_AS_NODE, undefined);
-    return spawn(command, args, options);
+    const child = spawn(command, args, options);
+    const closed = new Promise<number | null>(resolve => child.once('close', resolve));
+    let unrefs = 0;
+    const unref = child.unref.bind(child);
+    t.mock.method(child, 'unref', () => {unrefs++; unref();});
+    children.push({child, closed, unrefs: () => unrefs});
+    return child;
   }) as typeof childProcess.spawn);
   syncBuiltinESMExports();
   t.after(() => {
@@ -61,7 +69,7 @@ exit ${exitCode}
     if (electronRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
     else process.env.ELECTRON_RUN_AS_NODE = electronRunAsNode;
   });
-  return {bundle, stateDirectory, logPath, launch,
+  return {bundle, stateDirectory, logPath, launch, children,
     expectedLog: `bootstrap stdout\nbootstrap stderr\nstate=${stateDirectory}\nelectron=unset\n`};
 }
 
@@ -73,6 +81,36 @@ for (const channel of ['stable', 'alpha'] as const) test(`copied-app ${channel} 
   assert.match(result.message, /copied app is now managed/);
   assert.equal(readFileSync(f.logPath, 'utf8'), f.expectedLog);
   assert.equal(statSync(f.logPath).mode & 0o777, 0o600, 'new enrollment logs are private');
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+test('temporary-app installation launches detached without enrollment or destination flags and returns the progress log before the child exits', {timeout: 15_000}, async t => {
+  const f = fixture(t, 'stable', 0, true);
+  const previous = inspectBundle(f.bundle);
+  const release = () => writeFileSync(join(f.stateDirectory, 'release-child'), 'continue');
+  // Bound a regression that incorrectly waits for completion; normally the test
+  // releases the child immediately after observing the returned handoff.
+  const safetyRelease = setTimeout(release, 5000);
+  let exitCodes: (number | null)[] = [];
+  try {
+    const result = await startBinaryEnrollment(f.bundle, f.stateDirectory);
+    assert.equal(f.launch.mock.callCount(), 1);
+    const launched = f.children[0]!;
+    assert.equal(launched.child.exitCode, null, 'the handoff returns while the real Bash child is still running');
+    assert.equal(launched.unrefs(), 1, 'the detached child does not hold the GUI open');
+    assert.deepEqual(result, {started: true, message: `Installation started. Progress and recovery details: ${f.logPath}`});
+    assert.equal(statSync(f.logPath).mode & 0o777, 0o600);
+  } finally {
+    for (const {child} of f.children) child.ref();
+    clearTimeout(safetyRelease);
+    release();
+    // Reap the exact fixture children before removing their temporary app/state.
+    exitCodes = await Promise.all(f.children.map(child => child.closed));
+  }
+  assert.deepEqual(exitCodes, [0]);
+  assert.equal(readFileSync(f.logPath, 'utf8'), f.expectedLog);
+  assert.deepEqual(inspectBundle(f.bundle), previous);
+  assert.equal(existsSync(join(f.stateDirectory, 'install-receipt.json')), false);
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });
 

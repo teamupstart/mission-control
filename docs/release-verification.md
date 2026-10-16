@@ -44,7 +44,8 @@ Release Please still owns stable versions, tags, changelogs and GitHub Releases.
 [`distribution.yml`](../.github/workflows/distribution.yml) consumes successful canonical
 **push** CI for an exact commit. It rejects PR CI, forks, arbitrary branches, failed or
 cancelled checks, and mismatched stable versions. `workflow_dispatch` can retry a main or
-stable-tag input only after the same exact commit has passed canonical push CI.
+stable-tag input only after the same exact commit and source ref have passed canonical push CI.
+A successful run for another branch or tag at that commit cannot qualify the selected input.
 Canonical merged Release Please PRs are identified through their exact merge commit, release
 branch and `autorelease: pending`, `autorelease: tagged` or `autorelease: published` label.
 Their main CI run skips packaging; their stable tag CI owns binary production.

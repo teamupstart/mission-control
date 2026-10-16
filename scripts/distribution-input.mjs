@@ -10,8 +10,8 @@ export function distributionInput({ref, commit, head, versions, ciRuns, releaseP
   if (head !== commit) throw new Error('Distribution source commit mismatch');
   const channel = ref === 'main' ? 'alpha' : 'stable';
   const metadata = distributionMetadata({channel, tag: ref, commit, versions});
-  if (!ciRuns.some((run) => run.head_sha === commit && run.event === 'push' && run.conclusion === 'success' && run.head_repository?.full_name === BINARY_REPO)) {
-    throw new Error('Distribution requires successful canonical push CI for this exact commit');
+  if (!ciRuns.some((run) => run.head_sha === commit && run.head_branch === ref && run.event === 'push' && run.conclusion === 'success' && run.head_repository?.full_name === BINARY_REPO)) {
+    throw new Error('Distribution requires successful canonical push CI for this exact commit and source ref');
   }
   // Release Please's merged PR is published by its stable tag CI, not twice as
   // both stable and alpha. Require the canonical merged PR and its owner label.

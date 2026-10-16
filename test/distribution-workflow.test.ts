@@ -10,12 +10,13 @@ import { BINARY_BUNDLE_ID, BINARY_REPO } from '../src/shared/binary-distribution
 
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
 const commit = 'a'.repeat(40);
-const push = {head_sha: commit, event: 'push', conclusion: 'success', head_repository: {full_name: 'teamupstart/mission-control'}};
+const push = {head_sha: commit, head_branch: 'main', event: 'push', conclusion: 'success', head_repository: {full_name: 'teamupstart/mission-control'}};
 const input = {ref: 'main', commit, head: commit, versions, ciRuns: [push]};
+const stableInput = {...input, ref: 'v1.26.0', ciRuns: [{...push, head_branch: 'v1.26.0'}]};
 
 test('only exact successful canonical push CI qualifies stable or alpha publication', () => {
   assert.deepEqual(distributionInput(input), {commit, channel: 'alpha', tag: ''});
-  assert.deepEqual(distributionInput({...input, ref: 'v1.26.0'}), {commit, channel: 'stable', tag: 'v1.26.0'});
+  assert.deepEqual(distributionInput(stableInput), {commit, channel: 'stable', tag: 'v1.26.0'});
   for (const ref of ['feature', 'alpha-latest', `alpha-${commit}`, 'v1.26.0-rc.1', 'v1.26.1']) {
     assert.throws(() => distributionInput({...input, ref}));
   }
@@ -25,12 +26,23 @@ test('only exact successful canonical push CI qualifies stable or alpha publicat
   assert.throws(() => distributionInput({...input, head: 'b'.repeat(40)}), /source commit/);
 });
 
+for (const selected of [input, stableInput]) {
+  test(`${selected.ref} distribution requires successful CI for that ref, not another ref at the same commit`, () => {
+    const matching = selected.ciRuns[0];
+    const other = selected.ref === 'main' ? stableInput.ciRuns[0] : push;
+    for (const ciRuns of [[other], [{...matching, conclusion: 'failure'}, other], [{...matching, head_branch: undefined}]]) {
+      assert.throws(() => distributionInput({...selected, ciRuns}), /successful canonical/);
+    }
+    assert.equal(distributionInput({...selected, ciRuns: [other, matching]}).channel, selected.ref === 'main' ? 'alpha' : 'stable');
+  });
+}
+
 test('Release Please merges wait for the stable tag and never also produce an alpha', () => {
   const pr = {merged_at: '2026-10-15T12:00:00Z', merge_commit_sha: commit,
     base: {ref: 'main', repo: {full_name: BINARY_REPO}}, head: {ref: 'release-please--branches--main--components--mission-control', repo: {full_name: BINARY_REPO}},
     labels: [{name: 'autorelease: tagged'}]};
   assert.deepEqual(distributionInput({...input, releasePulls: [pr]}), {commit, channel: 'skip', tag: ''});
-  assert.equal(distributionInput({...input, ref: 'v1.26.0', releasePulls: [pr]}).channel, 'stable');
+  assert.equal(distributionInput({...stableInput, releasePulls: [pr]}).channel, 'stable');
   assert.equal(distributionInput({...input, commitTags: ['v1.26.0']}).channel, 'skip', 'an existing stable tag remains authoritative after a PR label is removed');
   assert.equal(distributionInput({...input, commitTags: ['v1.25.0', `alpha-${commit}`]}).channel, 'alpha');
   for (const change of [{merged_at: null}, {merge_commit_sha: 'b'.repeat(40)}, {labels: []},

@@ -3,10 +3,11 @@ import test from 'node:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import childProcess, { spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { binaryInstallReceipt, readBinaryReceipt, assertPersistentDestination, parseBinaryInstallArgs } from '../scripts/binary-install-policy.mjs';
 import { installBinary, waitForInstalledDaemon } from '../scripts/install-binary.mjs';
-import { prepareStagedInstall, installStagedApp, verifyBinaryBuild } from '../scripts/install-staged-app.mjs';
+import { prepareStagedInstall, installStagedApp, verifyBinaryBuild, inspectBundle } from '../scripts/install-staged-app.mjs';
 import { resolveInstallDestination } from '../scripts/install-destination.mjs';
 import { binaryEnrollmentChoice } from '../src/shared/binary-enrollment.ts';
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
@@ -42,7 +43,8 @@ function fixture(t: test.TestContext) {
   const bundle = join(root, 'runtime.app');
   mkdirSync(join(bundle, 'Contents/Resources/app'), {recursive: true});
   writeFileSync(join(bundle, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.2.3</string>');
-  writeFileSync(join(bundle, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...identity, receiptSchema: 2}, missionCommit: identity.commit, version: identity.version}));
+  writeFileSync(join(bundle, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...identity, receiptSchema: 2}, missionCommit: identity.commit, version: identity.version,
+    missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, receiptSchemas: [1, 2]}}));
   const manifestPath = join(root, 'manifest.json'); writeFileSync(manifestPath, JSON.stringify(manifest));
   const verifyPublisher = () => {};
   const prepare = (args: Parameters<typeof prepareStagedInstall>[0]) => prepareStagedInstall(args, {verifyPublisher});
@@ -55,16 +57,128 @@ function fixture(t: test.TestContext) {
   return {root, home, stateDirectory, bundle, ports, args, installed, appPath: join(home, 'Applications/Mission Control.app')};
 }
 
-test('first binary install uses the shared swap/receipt writer, preserves state, and reruns as managed', async t => {
+function nextRelease(f: ReturnType<typeof fixture>) {
+  const next = {...manifest, releaseTag: 'v1.2.4', version: '1.2.4', commit: 'b'.repeat(40)};
+  const {assets: _assets, ...nextIdentity} = next;
+  const packagePath = join(f.bundle, 'Contents/Resources/app/package.json');
+  const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
+  writeFileSync(packagePath, JSON.stringify({...pkg, version: next.version, missionCommit: next.commit,
+    missionBinary: {...nextIdentity, receiptSchema: 2}}));
+  writeFileSync(join(f.bundle, 'Contents/Info.plist'), `<key>CFBundleShortVersionString</key><string>${next.version}</string>`);
+  writeFileSync(f.args.manifest, JSON.stringify(next));
+  return next;
+}
+
+function replacementPorts(t: test.TestContext, f: ReturnType<typeof fixture>) {
+  // Keep installBinary, prepareInPlaceInstall, runMigration, bundle copies and
+  // receipt publication real. Only Apple verification and lifecycle responses
+  // are simulated; this fixture does not qualify a signed release.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', {value: 'darwin'});
+  const exec = childProcess.execFileSync;
+  const signing = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[], options: childProcess.ExecFileSyncOptions) => {
+    if (command === '/usr/bin/codesign') {
+      assert.ok(args.at(-1)?.startsWith(`${f.root}/`));
+      return '';
+    }
+    assert.ok(command === '/bin/cp' || command === '/bin/ps', `Unexpected installer command: ${command}`);
+    return exec(command, args, options);
+  }) as typeof childProcess.execFileSync);
+  const assessment = t.mock.method(childProcess, 'spawnSync', ((command: string, args: readonly string[]) => {
+    assert.equal(command, '/usr/sbin/spctl');
+    assert.ok(args.at(-1)?.startsWith(`${f.root}/`));
+    return {status: 0, stdout: '', stderr: 'source=Notarized Developer ID\n'};
+  }) as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  t.after(() => {
+    signing.mock.restore(); assessment.mock.restore(); syncBuiltinESMExports();
+    Object.defineProperty(process, 'platform', platform);
+  });
+  const events: string[] = [];
+  return {...f.ports, events,
+    mac: {uid: process.getuid?.() ?? 501, now: Date.now, run: async (command: string) => {
+      if (command === '/bin/ps') return {code: 0, stdout: '1 0 S /sbin/launchd'};
+      if (command === '/bin/launchctl') return {code: 0, stdout: 'PID Status Label\n'};
+      assert.equal(command, '/usr/bin/lsappinfo');
+      return {code: 0, stdout: ''};
+    }},
+    runtime: {
+      waitForDaemonExit: async () => {},
+      launchTarget: async () => {events.push('launch'); return {pid: 987654, identity: 'fixture'};},
+      waitForReady: async () => {},
+      stopTarget: async () => {events.push('stop');},
+      launchSource: async (path: string) => {events.push(`restore:${path}`);},
+    }};
+}
+
+test('first binary install uses the shared swap/receipt writer and preserves state', async t => {
   const f = fixture(t); const result = await installBinary(f.args, f.ports);
   assert.equal(result.appPath, f.appPath);
   const receipt = readBinaryReceipt(f.stateDirectory)!;
   assert.equal(validateReceipt(receipt), null); assert.equal(receipt.kind, 'binary'); assert.equal(receipt.sourceClone, undefined);
   assert.equal(receipt.installScope, 'user'); assert.deepEqual(f.installed, [f.appPath]);
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
-  const calls: string[] = [];
-  await installBinary(f.args, {...f.ports, prepareInPlace: ({descriptor}: {descriptor: {receipt: unknown}}) => {calls.push('prepare'); assert.equal((descriptor.receipt as {appPath: string}).appPath, f.appPath); return {};}, runMigration: async () => {calls.push('journal'); return {committed: true};}});
-  assert.deepEqual(calls, ['prepare', 'journal']);
+});
+
+for (const scope of ['user', 'custom'] as const) test(`binary rerun replaces the managed ${scope} app and receipt while preserving destination, scope and state`, async t => {
+  const f = fixture(t);
+  const appsDir = join(f.root, 'custom-apps');
+  if (scope === 'custom') mkdirSync(appsDir);
+  const installed = await installBinary(scope === 'custom' ? {...f.args, appsDir} : f.args, f.ports);
+  const previous = inspectBundle(installed.appPath);
+  const receiptPath = join(f.stateDirectory, 'install-receipt.json');
+  const previousReceipt = readFileSync(receiptPath, 'utf8');
+  const next = nextRelease(f);
+  const expected = inspectBundle(f.bundle);
+  assert.notEqual(expected.digest, previous.digest);
+  const ports = replacementPorts(t, f);
+  let ready = false;
+  ports.runtime.waitForReady = async () => {
+    ready = true;
+    assert.deepEqual(inspectBundle(installed.appPath), expected, 'the new app is installed before readiness');
+    assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt, 'the prior receipt remains until readiness');
+  };
+  // No destination flags: the existing receipt must select the rerun destination.
+  assert.deepEqual(await installBinary(f.args, ports), {appPath: installed.appPath, dryRun: false});
+  assert.equal(ready, true);
+  assert.deepEqual(ports.events, ['launch']);
+  assert.deepEqual(inspectBundle(installed.appPath), expected);
+  const receipt = readBinaryReceipt(f.stateDirectory)!;
+  assert.equal(validateReceipt(receipt), null);
+  assert.equal(receipt.kind, 'binary');
+  assert.equal(receipt.appPath, installed.appPath);
+  assert.equal(receipt.installScope, scope);
+  assert.equal(receipt.installedVersion, next.version);
+  assert.equal(receipt.installedCommit, next.commit);
+  assert.deepEqual(receipt.provenance.manifest, next);
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+test('failed binary replacement restores the prior app and exact receipt bytes and preserves state', async t => {
+  const f = fixture(t);
+  await installBinary(f.args, f.ports);
+  const previous = inspectBundle(f.appPath);
+  const receiptPath = join(f.stateDirectory, 'install-receipt.json');
+  // Preserve formatting too, rather than accepting a reconstructed receipt.
+  const previousReceipt = `\n${JSON.stringify(readBinaryReceipt(f.stateDirectory), null, 4)}\n\n`;
+  writeFileSync(receiptPath, previousReceipt);
+  nextRelease(f);
+  const expected = inspectBundle(f.bundle);
+  assert.notEqual(expected.digest, previous.digest);
+  const ports = replacementPorts(t, f);
+  let swapped = false;
+  ports.runtime.waitForReady = async () => {
+    swapped = true;
+    assert.deepEqual(inspectBundle(f.appPath), expected, 'failure occurs after the real bundle swap');
+    assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt);
+    throw new Error('replacement readiness failed');
+  };
+  await assert.rejects(installBinary(f.args, ports), /replacement readiness failed/);
+  assert.equal(swapped, true);
+  assert.deepEqual(ports.events, ['launch', 'stop', `restore:${f.appPath}`]);
+  assert.deepEqual(inspectBundle(f.appPath), previous, 'all prior bundle bytes and modes are restored');
+  assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt);
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });
 
 test('copied signed app enrollment verifies exact published bytes and writes no source clone', async t => {
@@ -74,11 +188,30 @@ test('copied signed app enrollment verifies exact published bytes and writes no 
   assert.equal(readBinaryReceipt(f.stateDirectory)?.kind, 'binary'); assert.deepEqual(f.installed, []);
 });
 
-test('enrollment refuses a modified copied app and a different managed destination', async t => {
+test('enrollment refuses a modified copied app', async t => {
   const f = fixture(t); mkdirSync(join(f.home, 'Applications')); cpSync(f.bundle, f.appPath, {recursive: true});
   writeFileSync(join(f.appPath, 'extra'), 'not published');
   await assert.rejects(installBinary({...f.args, enroll: true}, f.ports), /exact published app bytes/);
   assert.equal(readBinaryReceipt(f.stateDirectory), null);
+});
+
+test('enrollment refuses a different managed destination without changing either app or the receipt', async t => {
+  const f = fixture(t);
+  await installBinary(f.args, f.ports);
+  const appsDir = join(f.root, 'copied-apps'); mkdirSync(appsDir);
+  const copiedApp = join(appsDir, 'Mission Control.app'); cpSync(f.bundle, copiedApp, {recursive: true});
+  const managed = inspectBundle(f.appPath);
+  const copied = inspectBundle(copiedApp);
+  const receiptPath = join(f.stateDirectory, 'install-receipt.json');
+  const previousReceipt = readFileSync(receiptPath, 'utf8');
+  assert.equal(validateReceipt(JSON.parse(previousReceipt)), null);
+  assert.equal(JSON.parse(previousReceipt).appPath, f.appPath);
+  assert.deepEqual(copied, inspectBundle(f.bundle), 'the copied app is an otherwise valid enrollment candidate');
+  await assert.rejects(installBinary({...f.args, appsDir, enroll: true}, f.ports), /different managed installation owns this state home/);
+  assert.deepEqual(inspectBundle(f.appPath), managed);
+  assert.deepEqual(inspectBundle(copiedApp), copied);
+  assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt);
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });
 
 test('unreadable, newer, foreign and symlink receipts never authorize replacement', t => {

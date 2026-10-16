@@ -789,6 +789,9 @@ async function smokeDetachedUpdateHelper() {
     const result = await run(process.execPath, [join(root, "scripts/apply-update.mjs"), "--target-tag", "v1.0.0"]);
     if (result.code !== 1 || !result.output.includes("missing sourceClone")) throw new Error("The detached helper could not load its complete dependency graph.");
     console.log("[smoke] detached update helper loads with only its packaged copy inventory");
+    const binary = await run(process.execPath, [join(root, "scripts/install-binary.mjs")]);
+    if (binary.code !== 1 || !binary.output.includes("Use scripts/install.sh")) throw new Error("The binary installer could not load its packaged dependency graph.");
+    console.log("[smoke] binary installer loads its packaged graph and refuses an unverified host-runtime launch");
   } catch (error) { fail(String(error)); }
   finally { await rm(root, {recursive: true, force: true}); }
 }

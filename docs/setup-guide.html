@@ -336,14 +336,14 @@
       </p>
 
       <table>
-        <caption>What you need before installing.</caption>
+        <caption>Tools for installation and agent work.</caption>
         <thead>
           <tr><th scope="col">Prerequisite</th><th scope="col">Why</th><th scope="col">Check it with</th></tr>
         </thead>
         <tbody>
           <tr>
             <td>Node.js 24 or newer</td>
-            <td>Required to install, and to install updates later.</td>
+            <td>Required for source development and source updates. Signed binary installation uses the app runtime.</td>
             <td class="cmd"><code>node --version</code></td>
           </tr>
           <tr>
@@ -353,7 +353,7 @@
           </tr>
           <tr>
             <td>GitHub CLI, signed in</td>
-            <td>Carries pull requests, reviews, and repository reads.</td>
+            <td>Downloads signed installer assets and carries pull requests, reviews, and repository reads.</td>
             <td class="cmd"><code>gh auth status</code></td>
           </tr>
           <tr>
@@ -380,6 +380,18 @@
     </section>
 
     <section id="install">
+      <div class="callout">
+        <p class="callout-title">Signed binary installation and manual recovery</p>
+        <p>The standard Bash installer uses native macOS tools and GitHub CLI, without host Node,
+          npm, Git or local compilation. Signed publication and clean-account qualification are
+          still pending; an unavailable binary is refused. Fresh installs use your personal
+          Applications folder, and reruns keep an existing receipt's destination and state.</p>
+        <p>Copied signed DMGs can enroll through Settings &rarr; Setup &rarr; Application updates.
+          Binary receipts use manual signed replacement until automatic binary updates arrive.
+          See <a href="desktop-and-packaging.md#binary-installation-and-manual-recovery">installation,
+          enrollment and recovery instructions</a>. The source commands below remain available
+          for developers with the listed development prerequisites.</p>
+      </div>
       <p class="eyebrow">Step 2</p>
       <h2>Install it</h2>
       <p class="section-note">
@@ -781,7 +793,7 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
       </ol>
 
       <p>
-        Updates need Node.js 24 or newer. If yours is older or missing, the banner explains why
+        Source updates need Node.js 24 or newer. If yours is older or missing, the banner explains why
         <strong>Update Now</strong> is unavailable and offers <strong>Check again</strong> once you
         have fixed it.
       </p>

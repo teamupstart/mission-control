@@ -1,3 +1,4 @@
+import { BINARY_UPDATE_UNAVAILABLE } from "../shared/binary-enrollment.ts";
 import { spawnBundledUpdateHelper } from "../../scripts/update-helper-runtime.mjs";
 import { prepareSourceUpdate } from "../../scripts/install-staged-app.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
@@ -540,7 +541,7 @@ function safeUpdateError(error: unknown): {
  */
 export function updateIneligibility(snapshot: InstallSnapshot): string | null {
   if (!snapshot.receipt) return "This app was not installed with the managed install command.";
-  if (snapshot.receipt.kind === "binary") return "Binary updates are not available in this build. Install a newer Mission Control build to update this installation.";
+  if (snapshot.receipt.kind === "binary") return BINARY_UPDATE_UNAVAILABLE;
   if (!isTrustedInstallRepo(snapshot.receipt.repo)) {
     return `Updates are disabled because this app was installed from ${snapshot.receipt.repo}.`;
   }

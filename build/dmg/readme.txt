@@ -1,41 +1,40 @@
 Mission Control
 ===============
 
-This disk image is the offline copy of Mission Control. Installing from here is
-UNMANAGED: the app will not update itself, because nothing on this image records
-where it came from.
+Install for yourself
+--------------------
+Copy Mission Control.app into the Applications folder inside your home folder,
+then open that copy. Create the folder in Finder if necessary. This personal
+location needs no administrator password. To share the app across accounts,
+copy it into /Applications instead; Finder may request administrator permission.
+A persistent custom application directory is also supported.
 
+Opening a signed distribution directly from this disk image offers an explicit
+Install Mission Control action before starting the daemon. It never updates or
+enrolls a copy inside the image or App Translocation.
 
-Install it for yourself
------------------------
+Enroll a copied signed app
+--------------------------
+In the copied app, open Settings > Setup > Application updates and select
+Enroll this copied app. Review the displayed destination. The native GitHub CLI
+(gh, authenticated for the canonical repository) retrieves the exact published
+build and verifies it before a managed binary receipt is written. Conflicting
+managed installations and modified copied apps are refused. State is preserved.
 
-1. Open a Finder window and choose Go > Home, then open the Applications folder
-   inside your home folder. Create one if it is not there yet.
-2. Drag "Mission Control.app" from this disk image into that folder.
-3. Open it from there.
+Manual replacement without Node
+-------------------------------
+Use the signed binary installer described at:
+https://github.com/teamupstart/mission-control#installation
 
-This is the recommended location. It needs no administrator password, it belongs
-to your account alone, and it is where a managed install puts the app too.
+Quit the existing app first. A rerun keeps its recorded destination and state,
+including older source installations, without invoking their source installer.
+No host Node, npm, npx, Git or compilation is required. Automatic binary updates
+arrive in a later build; this version links to the same manual recovery route.
+Unavailable signed assets are a refusal, never a local build fallback.
 
-
-Install it for everyone on this Mac
------------------------------------
-
-Drag "Mission Control.app" into the /Applications folder at the top level of your
-startup disk instead. macOS will ask for an administrator password.
-
-
-Turn on automatic updates
--------------------------
-
-The app updates itself only when it was installed by the managed install command,
-which builds from a clean checkout and records a receipt. From a checkout of the
-repository, run:
-
-    make install
-
-That installs into your own Applications folder by default, replacing whatever
-copy you dragged across, and keeps it current from then on. To install for every
-account on this Mac instead, run:
-
-    make install ARGS="--scope system"
+Developer builds
+----------------
+An ad-hoc DMG made with make app is UNMANAGED and cannot use signed enrollment.
+Use make install or scripts/install-source.sh with the documented development
+prerequisites. Signed distribution and clean-account qualification remain release
+gates; a developer package is not proof of Gatekeeper acceptance.

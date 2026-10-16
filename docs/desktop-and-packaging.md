@@ -46,7 +46,75 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 
 ## Managed install and the receipt
 
-`make install` and the [Bash installer](../scripts/install.sh) both use
+### Binary installation and manual recovery
+
+The standard [Bash installer](../scripts/install.sh) downloads canonical, immutable stable or
+exact-SHA alpha assets. Native macOS tools verify the size, SHA-256, product identity,
+arm64 executable, pinned Developer ID team and notarization before any downloaded code runs.
+It mounts the DMG read-only, checks its roots and links, copies the complete app to a private
+directory, verifies it again and unmounts the image. Only then does its embedded Electron Node
+engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, npm, npx, Git,
+Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
+or incomplete assets fail with a retry/recovery message; there is no source fallback.
+
+Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
+current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+installs default to the personal Applications directory. `--scope system` selects a fresh
+system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
+without destination flags keeps the exact receipt destination and scope. State follows
+`MISSION_HOME` and its existing aliases. Malformed, newer or foreign receipts stop the installer.
+Source-only flags explain how to use the explicit source command instead.
+
+Quit the old app before replacement. The installer waits for its exact bundle's processes to
+exit, refuses unsafe launch registrations, and probes the daemon's native state lock before
+writing. It never signals an unrelated process or opens SQLite. Schema-1 receipts naming either
+a clone or a retained compiled installer migrate through the existing in-place journal,
+readiness, receipt commit and recovery boundary. Old source support is retained. A running old
+GUI does not need a new handshake: only the newly installed target acknowledges readiness.
+On interruption, rerunning uses the existing journal for recovery before another attempt.
+
+This phase deliberately keeps legacy replacement at the existing destination. A request to
+move an existing managed installation is refused with in-place recovery guidance; the existing
+app relocation flow retains ownership of consent, login items and integration-path repair.
+No integration path changes during an in-place replacement or enrollment, so JSONC, disabled
+registrations, custom runtimes, login preferences and retained sessions remain untouched.
+
+First installs reuse the direct staged installer and atomic receipt writer. With no prior app
+to restore, receipt publication commits the install before the first verified GUI launch.
+Launch failures retain the app and receipt for forward recovery. Existing-install transactions
+retain their stronger pre-commit readiness and exact prior-receipt guarantees. A receipt-write
+failure on a first install can leave an unreceipted verified app; `--enroll` can finish that
+installation after verifying the exact published bytes again.
+
+A signed DMG can be downloaded manually from the canonical GitHub Release and copied to your
+personal Applications directory, `/Applications`, or a persistent custom folder. Open the
+copied app, then use **Settings > Setup > Application updates > Enroll this copied app**.
+Enrollment uses native `gh` to fetch and compare that exact publication, then writes a schema-2
+binary receipt under the shared writer lock. It refuses a different managed destination or
+modified copied bytes. The displayed destination makes system enrollment explicit. Launching
+from a mounted DMG or App Translocation instead offers **Install Mission Control** before any
+daemon starts; it never enrolls or updates the temporary copy. Developer/ad-hoc DMGs remain
+unmanaged and use the source installer.
+
+Binary receipts disable source-build updates and offer a signed-installer recovery link until
+Phase 4 supplies automatic binary updates. Phase 5 still owns the broader integration runtime
+change and universal Setup warning. Shell failures retain private material and print its path;
+GUI-started enrollment records details in `$MISSION_HOME/binary-install.log`.
+
+`install.sh` is generated from `install-bootstrap.sh` and the shipped publisher policy by
+`npm run build:installer`. Edit that template/policy and regenerate; never change the generated
+trust constants by hand. Packaging and the helper inventory include the complete installer
+import closure.
+
+**Qualification:** implementation proceeded with explicit operator approval before Phase 2's
+signed publication. No ready canonical manifest or controlled signed macOS installation was
+available. Fixture and browser checks do not establish minimum-macOS native-tool compatibility,
+Gatekeeper, first launch, successful signed replacement or signed system/custom installation.
+These remain release gates in [release verification](release-verification.md).
+
+### Explicit source installation
+
+`make install` and the [explicit source installer](../scripts/install-source.sh) both use
 [`scripts/install-app.mjs`](../scripts/install-app.mjs) for managed installation;
 `make app` and `make install-app` remain the developer path that packages the current
 worktree. The difference that matters is not the build - it is who owns the source tree the app
@@ -59,7 +127,7 @@ source directories. The managed clone is a full checkout with its own
 `node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
 deleting it costs the next install a fresh clone and nothing else.
 
-The Bash entry point forwards destination options to the shared installer. A fresh install
+The source Bash entry point forwards destination options to the shared installer. A fresh install
 defaults to `~/Applications`; a rerun preserves the location in an existing receipt. Moving
 to another destination requires an explicit `--scope` or `--apps-dir` option.
 
@@ -488,8 +556,8 @@ handoff carries the accepted content digest, which the helper checks before inst
 the candidate's root revision and package identity have not changed. Older handoffs without this
 field remain readable. An old
 source installer without staging support retains its explicit source-build fallback and host
-prerequisites. Binary descriptors never take this fallback. There is no binary downloader,
-bootstrap, DMG enrollment or publishing entry point in this transaction layer.
+prerequisites. Binary descriptors never take this fallback. Binary bootstrap and enrollment call this
+shared transaction layer; they do not add another bundle-swap or receipt implementation.
 
 The legacy source fallback also preserves its backup if a live process prevents safe rollback.
 It retains the failed attempt in `failed-update/`; if retention cannot be written, its temporary

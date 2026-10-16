@@ -1,13 +1,34 @@
+import childProcess from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+import { dirname, join } from 'node:path';
+import { temporaryInstallLocation } from '../../scripts/binary-install-policy.mjs';
 import { binaryEnrollmentChoice, BINARY_UPDATE_UNAVAILABLE } from '../../src/shared/binary-enrollment.ts';
 import { expect, test } from '../fixtures/test.ts';
 
-for (const kind of ['copied', 'mounted', 'conflict'] as const) {
+function mountedImage(bundle: string): boolean {
+  // Feed native inventory responses into the same policy used before daemon
+  // startup; do not arrange the temporary-location verdict in the bridge.
+  const exec = childProcess.execFileSync;
+  childProcess.execFileSync = ((command: string) => {
+    if (command === '/usr/bin/hdiutil') return 'fixture plist';
+    if (command === '/usr/bin/plutil') return JSON.stringify({images: [{'system-entities': [{'mount-point': dirname(bundle)}]}]});
+    throw new Error(`Unexpected image inventory command: ${command}`);
+  }) as typeof childProcess.execFileSync;
+  syncBuiltinESMExports();
+  try { return temporaryInstallLocation(bundle); }
+  finally { childProcess.execFileSync = exec; syncBuiltinESMExports(); }
+}
+
+for (const kind of ['copied', 'mounted', 'custom-mounted', 'conflict'] as const) {
   test(`binary installation ${kind} presents the safe action and recovery route`, async ({dashboard}) => {
+    const mounted = kind === 'mounted' || kind === 'custom-mounted';
+    const bundle = kind === 'mounted' ? '/Volumes/Mission Control/Mission Control.app'
+      : kind === 'custom-mounted' ? '/private/tmp/mission-custom-mount-ui-fixture/Mission Control.app'
+        : '/Users/operator/Applications/Mission Control.app';
     const state = binaryEnrollmentChoice({
-      bundle: kind === 'mounted' ? '/Volumes/Mission Control/Mission Control.app' : '/Users/operator/Applications/Mission Control.app',
-      home: '/Users/operator', managedPath: kind === 'conflict' ? '/Applications/Mission Control.app' : null, temporary: kind === 'mounted',
+      bundle, home: '/Users/operator', managedPath: kind === 'conflict' ? '/Applications/Mission Control.app' : null,
+      temporary: mounted && mountedImage(bundle),
     });
     let calls = 0;
     await dashboard.exposeFunction('beginBinaryInstallation', async () => {
@@ -43,7 +64,7 @@ for (const kind of ['copied', 'mounted', 'conflict'] as const) {
         ? 'Verify this copied app and record its current destination for managed installation.'
         : 'Install the verified app at the displayed persistent destination.');
       await expect(dashboard.locator('.tooltip')).toBeVisible();
-      if (kind === 'mounted') {
+      if (mounted) {
         await expect(panel.getByRole('button', {name: 'Enroll this copied app'})).toHaveCount(0);
         await expect(panel).toContainText('Destination: /Users/operator/Applications/Mission Control.app');
       }

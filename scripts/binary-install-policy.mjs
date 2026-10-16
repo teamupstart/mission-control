@@ -55,17 +55,21 @@ export function binaryInstallReceipt(manifestText, destination, previous, instal
 }
 
 export function temporaryInstallLocation(path) {
-  if (path.includes('/AppTranslocation/')) return true;
-  if (!path.startsWith('/Volumes/')) return false;
-  // /Volumes also holds persistent external disks. Only an actual mounted image
-  // is temporary; never revoke supported custom destinations by path spelling.
+  const canonical = value => existsSync(value) ? realpathSync(value) : resolve(value);
+  const location = canonical(path);
+  if (location.includes('/AppTranslocation/')) return true;
+  // Disk images may be mounted anywhere, while /Volumes also holds persistent
+  // external disks. Check the image inventory for every location and resolve
+  // aliases on both sides before comparing directory membership.
   const plist = execFileSync('/usr/bin/hdiutil', ['info', '-plist'], {timeout: 10_000, maxBuffer: 1024 * 1024});
   const json = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], {input: plist, encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024});
   const info = JSON.parse(json);
   if (!Array.isArray(info.images)) throw new Error('Cannot determine whether this destination is a mounted image');
   return info.images.some(image => Array.isArray(image['system-entities']) && image['system-entities'].some(entity => {
     const mount = entity['mount-point'];
-    return typeof mount === 'string' && (path === mount || path.startsWith(`${mount}/`));
+    if (typeof mount !== 'string') return false;
+    const root = canonical(mount);
+    return location === root || location.startsWith(root === '/' ? root : `${root}/`);
   }));
 }
 

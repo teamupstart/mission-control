@@ -8,10 +8,12 @@ import test from 'node:test';
 import { startBinaryEnrollment } from '../src/main/binary-enrollment.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 
-function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, temporary = false) {
+function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, location: 'copied' | 'translocated' | 'mounted-image' = 'copied') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'binary-enrollment-')));
   t.after(() => rmSync(root, {recursive: true, force: true}));
-  const bundle = join(root, temporary ? 'AppTranslocation/fixture/d/Mission Control.app' : 'Copied Apps/Mission Control.app');
+  const temporary = location !== 'copied';
+  const bundle = join(root, location === 'translocated' ? 'AppTranslocation/fixture/d/Mission Control.app'
+    : location === 'mounted-image' ? 'MC-image/Mission Control.app' : 'Copied Apps/Mission Control.app');
   const appRoot = join(bundle, 'Contents/Resources/app');
   mkdirSync(join(appRoot, 'scripts'), {recursive: true});
   const metadata = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
@@ -33,9 +35,12 @@ exit ${exitCode}
   const electronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
   Object.defineProperty(process, 'platform', {value: 'darwin'});
   process.env.ELECTRON_RUN_AS_NODE = '1';
-  // Only native signature responses are simulated. Keep enrollment selection,
+  // Only native signature and image inventory responses are simulated. Keep enrollment selection,
   // argument construction, logging, spawn and child exit handling real.
   const signing = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[]) => {
+    if (command === '/usr/bin/hdiutil') return 'fixture plist';
+    if (command === '/usr/bin/plutil') return JSON.stringify({images: location === 'mounted-image'
+      ? [{'system-entities': [{'mount-point': dirname(bundle)}]}] : []});
     assert.equal(command, '/usr/bin/codesign');
     assert.equal(args.at(-1), bundle);
     return '';
@@ -84,8 +89,8 @@ for (const channel of ['stable', 'alpha'] as const) test(`copied-app ${channel} 
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });
 
-test('temporary-app installation launches detached without enrollment or destination flags and returns the progress log before the child exits', {timeout: 15_000}, async t => {
-  const f = fixture(t, 'stable', 0, true);
+for (const location of ['translocated', 'mounted-image'] as const) test(`${location} app installation launches detached without enrollment or destination flags and returns the progress log before the child exits`, {timeout: 15_000}, async t => {
+  const f = fixture(t, 'stable', 0, location);
   const previous = inspectBundle(f.bundle);
   const release = () => writeFileSync(join(f.stateDirectory, 'release-child'), 'continue');
   // Bound a regression that incorrectly waits for completion; normally the test

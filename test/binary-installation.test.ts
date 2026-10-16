@@ -46,6 +46,19 @@ function fixture(t: test.TestContext) {
   writeFileSync(join(bundle, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...identity, receiptSchema: 2}, missionCommit: identity.commit, version: identity.version,
     missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, receiptSchemas: [1, 2]}}));
   const manifestPath = join(root, 'manifest.json'); writeFileSync(manifestPath, JSON.stringify(manifest));
+  const exec = childProcess.execFileSync;
+  const native = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[], options: childProcess.ExecFileSyncOptions) => {
+    if (command === '/usr/bin/hdiutil') return 'fixture plist';
+    if (command === '/usr/bin/plutil') return JSON.stringify({images: []});
+    if (command === '/usr/bin/codesign') {
+      assert.ok(args.at(-1)?.startsWith(`${root}/`));
+      return '';
+    }
+    assert.ok(command === '/bin/cp' || command === '/bin/ps', `Unexpected installer command: ${command}`);
+    return exec(command, args, options);
+  }) as typeof childProcess.execFileSync);
+  syncBuiltinESMExports();
+  t.after(() => {native.mock.restore(); syncBuiltinESMExports();});
   const verifyPublisher = () => {};
   const prepare = (args: Parameters<typeof prepareStagedInstall>[0]) => prepareStagedInstall(args, {verifyPublisher});
   const installed: string[] = [];
@@ -75,15 +88,6 @@ function replacementPorts(t: test.TestContext, f: ReturnType<typeof fixture>) {
   // are simulated; this fixture does not qualify a signed release.
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
   Object.defineProperty(process, 'platform', {value: 'darwin'});
-  const exec = childProcess.execFileSync;
-  const signing = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[], options: childProcess.ExecFileSyncOptions) => {
-    if (command === '/usr/bin/codesign') {
-      assert.ok(args.at(-1)?.startsWith(`${f.root}/`));
-      return '';
-    }
-    assert.ok(command === '/bin/cp' || command === '/bin/ps', `Unexpected installer command: ${command}`);
-    return exec(command, args, options);
-  }) as typeof childProcess.execFileSync);
   const assessment = t.mock.method(childProcess, 'spawnSync', ((command: string, args: readonly string[]) => {
     assert.equal(command, '/usr/sbin/spctl');
     assert.ok(args.at(-1)?.startsWith(`${f.root}/`));
@@ -91,7 +95,7 @@ function replacementPorts(t: test.TestContext, f: ReturnType<typeof fixture>) {
   }) as typeof childProcess.spawnSync);
   syncBuiltinESMExports();
   t.after(() => {
-    signing.mock.restore(); assessment.mock.restore(); syncBuiltinESMExports();
+    assessment.mock.restore(); syncBuiltinESMExports();
     Object.defineProperty(process, 'platform', platform);
   });
   const events: string[] = [];

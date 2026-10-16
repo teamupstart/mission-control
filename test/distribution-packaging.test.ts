@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test, { after, before, mock, type TestContext } from 'node:test';
+import { FuseV1Options } from '@electron/fuses';
 import { packageDistribution } from '../scripts/package-distribution.mjs';
 import { qualifiedDistribution } from '../scripts/publish-distribution.mjs';
 import { distributionNames } from '../scripts/distribution-contract.mjs';
@@ -100,9 +101,13 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
         put(join(app, 'Contents/Resources/app/package.json'), JSON.stringify({version: metadata.version, ...options.config.extraMetadata}));
         put(join(app, 'Contents/MacOS/Mission Control'), 'fixture executable');
         put(join(app, 'Contents/Info.plist'), 'fixture plist');
-        // Actual @electron/fuses parsing, including a disabled-fuse regression.
+        // Actual @electron/fuses parsing, including each required fuse policy.
+        const fuseWire = Buffer.from([49, 48, 48, 48, 48, 48, 48, 48]);
+        if (failure === 'fuse') fuseWire[FuseV1Options.RunAsNode] = 48;
+        if (failure === 'node-options-fuse') fuseWire[FuseV1Options.EnableNodeOptionsEnvironmentVariable] = 49;
+        if (failure === 'inspector-fuse') fuseWire[FuseV1Options.EnableNodeCliInspectArguments] = 49;
         put(join(app, 'Contents/Frameworks/Electron Framework.framework/Electron Framework'),
-          Buffer.concat([Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'), Buffer.from([1, 8, failure === 'fuse' ? 48 : 49, 48, 48, 48, 48, 48, 48, 48])]));
+          Buffer.concat([Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'), Buffer.from([1, fuseWire.length]), fuseWire]));
       } else {
         stages.push('build-dmg'); assert.equal(options.prepackaged, app);
         snapshot(join(output, distributionNames(metadata).dmg), 'dmg');
@@ -228,6 +233,8 @@ for (const [failure, reason] of [
   ['gatekeeper', /notarized Developer ID policy/],
   ['app-staple', /Distribution verification failed: \/usr\/bin\/xcrun/],
   ['fuse', /RunAsNode must remain enabled/],
+  ['node-options-fuse', /NodeOptions environment variable must remain disabled/],
+  ['inspector-fuse', /Node CLI inspector arguments must remain disabled/],
   ['parent', /signed parent must acknowledge/],
   ['mcp', /MCP refused the qualification handshake/],
   ['host-runtime', /Host runtime traps must never execute/],

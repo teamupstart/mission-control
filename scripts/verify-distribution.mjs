@@ -34,6 +34,8 @@ export async function verifyDistributionApp(app, metadata, policy) {
   for (const path of UPDATE_HELPER_FILES) assert.ok(existsSync(join(app, 'Contents/Resources/app', path)), `Missing packaged helper ${path}`);
   const fuses = await getCurrentFuseWire(app);
   assert.equal(fuses[FuseV1Options.RunAsNode], 49, 'RunAsNode must remain enabled');
+  assert.equal(fuses[FuseV1Options.EnableNodeOptionsEnvironmentVariable], 48, 'NodeOptions environment variable must remain disabled');
+  assert.equal(fuses[FuseV1Options.EnableNodeCliInspectArguments], 48, 'Node CLI inspector arguments must remain disabled');
   assert.equal(fuses[FuseV1Options.OnlyLoadAppFromAsar], 48, 'Plain-file satellites and helpers require asar disabled');
 }
 

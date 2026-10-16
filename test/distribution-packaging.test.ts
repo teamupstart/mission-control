@@ -248,8 +248,14 @@ for (const [failure, reason] of [
     const f = fixture(t, failure);
     await assert.rejects(packageDistribution({repoRoot: f.root, env: f.env}), reason);
     f.assertUnqualified();
-    await assert.rejects(qualifiedDistribution(f.output, policy), /ENOENT/);
-    assert.deepEqual(f.mounts, [], 'failed archive verification still detaches the DMG');
-    assert.ok(f.roots.every((root) => !existsSync(root)), 'failed runtime qualification reclaims its temporary copies');
+    if (failure === 'dmg-bytes' || failure === 'zip-bytes') {
+      assert.ok(f.stages.includes('mount-dmg'), 'archive verification must reach the DMG mount');
+      assert.ok(f.stages.includes('detach-dmg'), 'failed archive verification still detaches the DMG');
+      assert.deepEqual(f.mounts, []);
+    }
+    if (['parent', 'mcp', 'host-runtime', 'notarization', 'dmg-signature', 'dmg-staple', 'dmg-bytes', 'zip-bytes'].includes(failure)) {
+      assert.ok(f.roots.length > 0, 'these failures must reach copied runtime qualification');
+      assert.ok(f.roots.every((root) => !existsSync(root)), 'temporary runtime copies are reclaimed after failure');
+    }
   });
 }

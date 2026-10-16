@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.27.0](https://github.com/teamupstart/mission-control/compare/v1.26.0...v1.27.0) (2026-10-16)
+
+
+### Features
+
+* **board:** collapse, normal, and expanded widths for every column ([#1150](https://github.com/teamupstart/mission-control/issues/1150)) ([4c95a8f](https://github.com/teamupstart/mission-control/commit/4c95a8fbccc864e5458defc7a8790b6360d6c3f0))
+* **cost:** name the host a managed Claude Code policy sends metrics to ([#1169](https://github.com/teamupstart/mission-control/issues/1169)) ([8930afa](https://github.com/teamupstart/mission-control/commit/8930afa1715a331ec347c2f8b46dfe8ef7225c3a))
+* default Upstart managed telemetry on ([#1173](https://github.com/teamupstart/mission-control/issues/1173)) ([e00afcc](https://github.com/teamupstart/mission-control/commit/e00afccb68d3426d433501039fe6f98b875b8158))
+* **diff:** comment on a line from the Diff tab ([#1185](https://github.com/teamupstart/mission-control/issues/1185)) ([3fe0e6d](https://github.com/teamupstart/mission-control/commit/3fe0e6da1ec1a08edaf4854e3c9b6e3a3ac00ccc))
+* **diff:** read and find comments from the Diff tab, at parity with Files ([#1189](https://github.com/teamupstart/mission-control/issues/1189)) ([c98bef7](https://github.com/teamupstart/mission-control/commit/c98bef7aa56c540c6d00349c642b02b851b60065))
+* **document:** add documentation tasks and review workflow ([#1186](https://github.com/teamupstart/mission-control/issues/1186)) ([8b761c0](https://github.com/teamupstart/mission-control/commit/8b761c0ca50af2a20b312a025e7c0066e2643a59))
+* export delta telemetry and wait through Cloudflare refusals ([#1162](https://github.com/teamupstart/mission-control/issues/1162)) ([b606a18](https://github.com/teamupstart/mission-control/commit/b606a188c3dd0d4b50a576546f4adf4703f9815d))
+* **files:** publish the open file as a Claude artifact from the Files toolbar ([#1181](https://github.com/teamupstart/mission-control/issues/1181)) ([76d9e9e](https://github.com/teamupstart/mission-control/commit/76d9e9e9c6946eadc75c96a6f5e8290f614f0e2b))
+* **files:** send line comments as they are written ([#1157](https://github.com/teamupstart/mission-control/issues/1157)) ([f560bbf](https://github.com/teamupstart/mission-control/commit/f560bbf876d3e82583b574d2d93fbf6a9d508fba))
+* **handoff:** preserve tasks and workflows through terminal transfers ([#1161](https://github.com/teamupstart/mission-control/issues/1161)) ([6b2dc2c](https://github.com/teamupstart/mission-control/commit/6b2dc2cea0d78b3897882f2bdb909f6f8d2d41cd))
+* **mcp:** configure, edit, and delete backlog tasks ([#1176](https://github.com/teamupstart/mission-control/issues/1176)) ([ce218d2](https://github.com/teamupstart/mission-control/commit/ce218d2d917d382267ee65b8749555ba4f6a69cf))
+* **plans:** default managed plans to Markdown-only Git output ([#1174](https://github.com/teamupstart/mission-control/issues/1174)) ([168c170](https://github.com/teamupstart/mission-control/commit/168c17052acbc12247ceb81f6539172119570794))
+* **plans:** support local publication and exact phase inputs ([#1177](https://github.com/teamupstart/mission-control/issues/1177)) ([a9d182e](https://github.com/teamupstart/mission-control/commit/a9d182eb26989b2cd95c87e791a4b99b58371fd9))
+* publish signed stable and exact-commit alpha distributions ([cf069ac](https://github.com/teamupstart/mission-control/commit/cf069aca707268f551e1f97780cd43873976df8c))
+* **scouts:** publish multiple reports from one session ([#1156](https://github.com/teamupstart/mission-control/issues/1156)) ([cb93361](https://github.com/teamupstart/mission-control/commit/cb9336168d0e0e4545339cb25157a5745532bbd4))
+* **skills:** add a shared draft PR policy ([#1188](https://github.com/teamupstart/mission-control/issues/1188)) ([8793cc0](https://github.com/teamupstart/mission-control/commit/8793cc09d754af094826c1ccb73c47401d6588c0))
+* **telemetry:** add per-destination export shapes with a cost-bounded Datadog lean shape ([#1164](https://github.com/teamupstart/mission-control/issues/1164)) ([2012e91](https://github.com/teamupstart/mission-control/commit/2012e91bf7a1b398a04eb099957a86ffa8279703))
+* **telemetry:** recognize Upstart-managed Macs and manage their Product analytics lane ([#1167](https://github.com/teamupstart/mission-control/issues/1167)) ([a7273f6](https://github.com/teamupstart/mission-control/commit/a7273f63ec965305ccd21a4ce5213a20d96d23df))
+* **ui:** always show a task's kind in the console header and on board cards ([#1178](https://github.com/teamupstart/mission-control/issues/1178)) ([4b9ea92](https://github.com/teamupstart/mission-control/commit/4b9ea92eceb52048333cf2736cf6431469da1237))
+* **updater:** detach installs with a bundled Electron transaction ([#1183](https://github.com/teamupstart/mission-control/issues/1183)) ([6dd7b32](https://github.com/teamupstart/mission-control/commit/6dd7b32b6f9e361d497302f66a24ec05f7a6f69c))
+* **workflows:** show how long each run stage member has run ([#1155](https://github.com/teamupstart/mission-control/issues/1155)) ([0eba7ca](https://github.com/teamupstart/mission-control/commit/0eba7caba4429fae988183e58b11ba72ca80ef5b))
+
+
+### Bug Fixes
+
+* allow switching session workflows ([#1182](https://github.com/teamupstart/mission-control/issues/1182)) ([8af2ad2](https://github.com/teamupstart/mission-control/commit/8af2ad2c3743678b8a03cd7d7d9712b748a09200))
+* **docs:** Update Readme to be not-awful and read like a human wrote it. ([#1168](https://github.com/teamupstart/mission-control/issues/1168)) ([1e98dce](https://github.com/teamupstart/mission-control/commit/1e98dce7877b09b92911775b39ebc6a11adc4a73))
+* **files:** keep comment threads going after the agent edits their text ([#1160](https://github.com/teamupstart/mission-control/issues/1160)) ([5a23448](https://github.com/teamupstart/mission-control/commit/5a23448a741902327c157588adbb8732a6e37666))
+* **handoff:** preserve tools and managed resume environments ([#1153](https://github.com/teamupstart/mission-control/issues/1153)) ([47fe759](https://github.com/teamupstart/mission-control/commit/47fe759e26e37f086ff2e21363c25a5a749d8d46))
+* **mcp:** run the MCP server on Mission Control's own Node runtime ([#1163](https://github.com/teamupstart/mission-control/issues/1163)) ([f96d566](https://github.com/teamupstart/mission-control/commit/f96d5667024b77bcaad077837d84df7dddd81768))
+* **security:** remediate 4 vulnerabilities ([#1166](https://github.com/teamupstart/mission-control/issues/1166)) ([be37a78](https://github.com/teamupstart/mission-control/commit/be37a7842b9dae3af1e922077f511c7bcc780b71))
+* **security:** remediate 4 vulnerabilities ([#1171](https://github.com/teamupstart/mission-control/issues/1171)) ([789d09e](https://github.com/teamupstart/mission-control/commit/789d09e631e5cb92ae8214212881a3c3424a79ed))
+* **tasks:** drain background cleanup and retire test managers ([#1154](https://github.com/teamupstart/mission-control/issues/1154)) ([6a01669](https://github.com/teamupstart/mission-control/commit/6a01669be4c353870dd205822bba3c4c51cd0e3e))
+* **updater:** guard bundle replacement and verify macOS relaunch ([#1180](https://github.com/teamupstart/mission-control/issues/1180)) ([ef72684](https://github.com/teamupstart/mission-control/commit/ef726841eaba474a684f285d130dac03b9959184))
+* **updater:** preserve accepted digest for legacy staged installs ([#1184](https://github.com/teamupstart/mission-control/issues/1184)) ([9801d52](https://github.com/teamupstart/mission-control/commit/9801d52e7bebea4c95a3930bf71af9a9e0d0f18d))
+* **workflows:** recover evidence preparation before review ([#1187](https://github.com/teamupstart/mission-control/issues/1187)) ([cfa65d4](https://github.com/teamupstart/mission-control/commit/cfa65d4deb93e6818c92007e855a216bcd014d0b))
+* **workflows:** reset mapping budgets for manual retries ([#1158](https://github.com/teamupstart/mission-control/issues/1158)) ([e2c87b1](https://github.com/teamupstart/mission-control/commit/e2c87b1f28114e3ccf796523ad6cb41173165d69))
+* **workflows:** retry provider failures for up to ten minutes ([#1170](https://github.com/teamupstart/mission-control/issues/1170)) ([d9a9196](https://github.com/teamupstart/mission-control/commit/d9a9196ac29f5020969d6c01511adb7025eebbb0))
+
 ## [1.26.0](https://github.com/teamupstart/mission-control/compare/v1.25.0...v1.26.0) (2026-09-29)
 
 

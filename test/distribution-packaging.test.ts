@@ -10,7 +10,7 @@ import test, { after, before, mock, type TestContext } from 'node:test';
 import { FuseV1Options } from '@electron/fuses';
 import { packageDistribution } from '../scripts/package-distribution.mjs';
 import { qualifiedDistribution } from '../scripts/publish-distribution.mjs';
-import { distributionNames } from '../scripts/distribution-contract.mjs';
+import { distributionNames, localDistributionAssets } from '../scripts/distribution-contract.mjs';
 import { binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
 import { UPDATE_HELPER_FILES } from '../scripts/update-helper-files.mjs';
 
@@ -65,7 +65,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
   const app = join(output, 'mac-arm64/Mission Control.app');
   const roots: string[] = [], mounts: string[] = [], stages: string[] = [], mcpMethods: string[] = [];
   const snapshots = new Map<string, string>();
-  let metadata: any, dmgNotarized = false;
+  let metadata: any, dmgNotarized = false, recovery = false;
   const env = {CSC_NAME: `Developer ID Application: Fixture (${policy.teamId})`, CSC_LINK: 'fixture', CSC_KEY_PASSWORD: 'fixture',
     APPLE_API_KEY: join(root, 'key.p8'), APPLE_API_KEY_ID: 'fixture', APPLE_API_ISSUER: 'fixture',
     GITHUB_SHA: commit, MISSION_DISTRIBUTION_CHANNEL: channel, MISSION_DISTRIBUTION_TAG: channel === 'stable' ? 'v1.26.0' : ''};
@@ -77,6 +77,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
     assert.equal(existsSync(join(output, 'qualification.json')), false, 'publication input must not exist before all checks finish');
     assert.equal(existsSync(join(output, 'build-metadata.json')), false);
   };
+  const assertQualificationBoundary = () => {if (!recovery) assertUnqualified();};
   function snapshot(archive: string, kind: string) {
     const copy = join(root, `${kind}-contents/Mission Control.app`);
     cpSync(app, copy, {recursive: true}); snapshots.set(archive, copy);
@@ -89,8 +90,9 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
     return proc;
   }
   const f = {root, output, app, roots, mounts, stages, mcpMethods, env, assertUnqualified,
+    beginRecovery(reason = '') {recovery = true; failure = reason;},
     async build(options: any) {
-      assertUnqualified();
+      assertQualificationBoundary();
       if (!options.prepackaged) {
         stages.push('sign-app');
         if (failure === 'signing') throw new Error('fixture signing failed');
@@ -115,14 +117,14 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
       return [];
     },
     async notarize(options: any) {
-      assertUnqualified(); stages.push('notarize-dmg');
+      assertQualificationBoundary(); stages.push('notarize-dmg');
       assert.equal(options.appPath, join(output, distributionNames(metadata).dmg));
       assert.ok(existsSync(options.appPath), 'notarize the generated DMG, not a future path');
       if (failure === 'notarization') throw new Error('fixture notarization failed');
       dmgNotarized = true;
     },
     exec(command: string, args: string[]) {
-      assertUnqualified();
+      assertQualificationBoundary();
       if (command === 'git') return args[0] === 'status' ? '' : commit;
       if (command === 'npm') {stages.push('build'); return '';}
       if (command === '/usr/bin/codesign') {
@@ -138,7 +140,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
       throw new Error(`Unexpected external command: ${command}`);
     },
     run(command: string, args: string[]) {
-      assertUnqualified();
+      assertQualificationBoundary();
       let stdout = '', stderr = '', status = 0;
       if (command === '/usr/sbin/spctl') {
         stderr = failure === 'gatekeeper' ? 'source=Unnotarized Developer ID' : 'source=Notarized Developer ID';
@@ -167,7 +169,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
       return {status, stdout, stderr};
     },
     spawn(command: string, args: string[], options: any) {
-      assertUnqualified();
+      assertQualificationBoundary();
       assert.equal(basename(command), 'Mission Control');
       assert.equal(options.env.ELECTRON_RUN_AS_NODE, '1');
       assert.equal(Object.keys(options.env).some((key) => /^(CSC_|APPLE_|GH_|GITHUB_)/.test(key)), false);
@@ -206,6 +208,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
 for (const channel of ['stable', 'alpha']) test(`${channel} packaging qualifies final archives before exposing publication input`, async (t) => {
   const f = fixture(t, '', channel);
   await packageDistribution({repoRoot: f.root, env: f.env});
+  f.beginRecovery();
   const ready = await qualifiedDistribution(f.output, policy);
   assert.equal(ready.metadata.channel, channel);
   assert.equal(ready.metadata.commit, commit);
@@ -213,7 +216,7 @@ for (const channel of ['stable', 'alpha']) test(`${channel} packaging qualifies 
   assert.equal(qualification.copiedRuntime, true);
   assert.equal(qualification.notarized, true);
   assert.equal(qualification.assets.length, 2);
-  assert.deepEqual(f.mcpMethods, ['initialize', 'notifications/initialized', 'tools/list']);
+  assert.deepEqual(f.mcpMethods, [...Array(2)].flatMap(() => ['initialize', 'notifications/initialized', 'tools/list']));
   let previous = -1;
   for (const stage of ['sign-app', 'verify-app-signature', 'validate-app-staple', 'quarantine-copy', 'copied-parent', 'mcp',
     'build-dmg', 'notarize-dmg', 'verify-dmg-signature', 'validate-dmg-staple', 'archive-zip', 'mount-dmg', 'extract-zip', 'detach-dmg']) {
@@ -259,3 +262,27 @@ for (const [failure, reason] of [
     }
   });
 }
+
+for (const [failure, reason] of [
+  ['app-signature', /fixture app signature invalid/],
+  ['app-staple', /Distribution verification failed/],
+  ['gatekeeper', /Notarized Developer ID/],
+  ['dmg-signature', /Distribution verification failed/],
+  ['dmg-staple', /Distribution verification failed/],
+  ['dmg-bytes', /DMG must contain the exact signed app/],
+  ['zip-bytes', /ZIP must contain the exact signed app/],
+  ['mcp', /MCP refused the qualification handshake/],
+] as const) test(`recovery rechecks ${failure} even with matching edited qualification hashes`, async (t) => {
+  const f = fixture(t);
+  await packageDistribution({repoRoot: f.root, env: f.env});
+  f.beginRecovery(failure);
+  const path = join(f.output, 'qualification.json');
+  const qualification = JSON.parse(readFileSync(path, 'utf8'));
+  const names = distributionNames(qualification.metadata);
+  const files = {'app-zip': join(f.output, names['app-zip']), dmg: join(f.output, names.dmg)};
+  // Model a retained artifact edited together with its local attestation.
+  for (const file of Object.values(files)) writeFileSync(file, 'changed retained bytes');
+  qualification.assets = await localDistributionAssets(qualification.metadata, files);
+  writeFileSync(path, JSON.stringify(qualification));
+  await assert.rejects(qualifiedDistribution(f.output, policy), reason);
+});

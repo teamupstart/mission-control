@@ -17,7 +17,7 @@ real binary manifest to give to Phases 3 or 4 yet. Local fixture results cannot 
 Apple identity, GitHub write permission, or Gatekeeper acceptance.
 
 During setup on 2026-10-15, the operator created and installed
-`Developer ID Application: Jordan Mance (S2FPCQK39Z)`. macOS `security find-identity -v
+`Developer ID Application: <Name> (S2FPCQK39Z)`. macOS `security find-identity -v
 -p codesigning` now recognizes that certificate with its private key as a valid signing
 identity. This supersedes the earlier empty-keychain observation. It establishes the local
 signer, but does not establish exported credentials, notarization or signed-app qualification.
@@ -108,8 +108,8 @@ GitHub destroys the hosted job's virtual machine afterward. See
    the checkout. This team key is not limited to one app; do not reuse a personal key or
    share its contents in chat. See [Apple's key management guide](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api).
 4. A repository **admin** creates **Settings > Environments > desktop-distribution** and
-   configures its protections before adding secrets. Require approval by Jordan7265 or a
-   designated release reviewer. Enable **Prevent self-review** only when another reviewer
+   configures its protections before adding secrets. Require approval by a designated
+   release reviewer. Enable **Prevent self-review** only when another reviewer
    is available. Select deployment branches/tags explicitly: branch `main` and tags `v*`.
    The workflow's input checks still enforce the exact source identity; the environment
    alone does not validate the commit checked out by a `workflow_run` job. Maintain access
@@ -191,8 +191,12 @@ node scripts/publish-distribution.mjs /absolute/path/to/retained-distribution
 ```
 
 The CLI verifies `build-metadata.json` and `qualification.json` against the final local
-archive bytes and the pinned team. These local files are producer evidence, not client
-trust roots. It resolves the canonical release tag back to the exact commit. Stable
+archive bytes and the pinned team, then rechecks DMG signing/notarization and both archived
+apps with Apple tools, validates their signed metadata/fuses and matching bundle digests,
+and reruns the copied-runtime probe. Recovery therefore runs on macOS with the same
+verification tools as production. Editing the local JSON and hashes cannot bypass these
+checks. These local files are producer evidence, not client trust roots. It resolves the
+canonical release tag back to the exact commit. Stable
 publication requires an existing non-draft, non-prerelease Release Please release. Alpha
 requires the exact commit to be on canonical main and uses a dedicated prerelease
 `alpha-<full-40-character-sha>`, never GitHub's mutable latest pointer. Alpha C1 metadata
@@ -225,17 +229,17 @@ identity; issue a new explicit release/commit identity through the normal owner.
 Stable recovery releases remain available indefinitely. Alpha publication keeps only the
 newest complete ready build by Git ancestry, not release creation time. After verifying the
 replacement's actual archive bytes, the publisher marks each older ancestor release retired,
-removes its ready manifest, confirms readiness is gone, and deletes its ZIP/DMG. Small empty
-release/tag records remain as retirement markers so an old retry cannot recreate a different
-asset identity. Unrelated assets, stable releases, divergent commits, and unverified newer
+removes its ready manifest, confirms readiness is gone, deletes its ZIP/DMG, and removes
+the empty release record. The tag remains as the retirement marker; a tag without a release
+refuses republication so an old retry cannot recreate a different asset identity.
+Unrelated assets, stable releases, divergent commits, and unverified newer
 builds are never deletion targets. Interrupted cleanup is resumable; it can temporarily retain
 extra bytes but cannot advertise a partial old set. A job that finishes out of order verifies
 the newer ready build and retires its own older identity.
 
-Release discovery is bounded to 1,000 records, including retired markers. Exceeding that
-limit refuses retention rather than deleting from an incomplete inventory. The limit must
-be reviewed before the repository reaches that size; retirement markers must not be
-manually removed to work around it.
+Release discovery is bounded to 1,000 live release records. Retired alpha tags do not
+consume this inventory. Exceeding the limit refuses retention rather than deleting from
+an incomplete inventory. Retirement tags must not be removed to reuse an old identity.
 
 All Actions alpha jobs share one non-cancelling concurrency group for publication and
 retirement. GitHub may replace an older pending job with a newer queued job. A local manual

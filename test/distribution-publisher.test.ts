@@ -7,7 +7,7 @@ import test, { type TestContext } from 'node:test';
 import { distributionManifest, distributionMetadata, distributionNames, localDistributionAssets } from '../scripts/distribution-contract.mjs';
 import { publishDistribution, qualifiedDistribution, retainLatestAlpha } from '../scripts/publish-distribution.mjs';
 import type { DistributionTransport, RemoteAsset } from '../scripts/distribution-github.mjs';
-import { binaryReleaseTag, BINARY_MANIFEST_NAME } from '../src/shared/binary-publisher-policy.mjs';
+import { binaryPublisherPolicy, binaryReleaseTag, BINARY_MANIFEST_NAME } from '../src/shared/binary-publisher-policy.mjs';
 
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
 const metadata = (channel = 'stable') => distributionMetadata({channel, tag: 'v1.26.0', commit: 'a'.repeat(40), versions});
@@ -115,13 +115,12 @@ test('producer rejects mismatched metadata and requires both archive kinds witho
 
 test('publication input binds qualification to the final archive bytes and approved team', async (t) => {
   const f = fixture(t);
-  const policy = {teamId: 'TESTTEAM01'};
+  const policy = {...binaryPublisherPolicy(), teamId: 'TESTTEAM01'};
   writeFileSync(join(f.root, 'build-metadata.json'), JSON.stringify(f.build));
   const qualification = {metadata: f.build, teamId: policy.teamId, assets: await localDistributionAssets(f.build, f.files),
     appDigest: 'a'.repeat(64), notarized: true, copiedRuntime: true, recovery: 'forward-only-after-receipt-commit'};
   writeFileSync(join(f.root, 'qualification.json'), JSON.stringify(qualification));
-  assert.deepEqual(await qualifiedDistribution(f.root, policy), {metadata: f.build, files: f.files});
-  await assert.rejects(qualifiedDistribution(f.root, {teamId: 'OTHERTEAM1'}), /qualification/);
+  await assert.rejects(qualifiedDistribution(f.root, {...policy, teamId: 'OTHERTEAM1'}), /qualification/);
   writeFileSync(f.files.dmg, 'bytes changed after qualification');
   await assert.rejects(qualifiedDistribution(f.root, policy), /qualification/);
 });

@@ -47,24 +47,29 @@ export function verifyDistributionDmg(dmg, policy) {
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);
 }
 
-export async function verifyDistributionArchives({app, files, metadata, policy}) {
+export async function verifyDistributionArchives({app, appDigest, files, metadata, policy, requalifyRuntime = false}) {
   const root = mkdtempSync(join(tmpdir(), 'mission-archive-verification-'));
   const mount = join(root, 'image'); mkdirSync(mount);
   let mounted = false;
   try {
-    const digest = inspectBundle(app).digest;
+    const digest = app ? inspectBundle(app).digest : appDigest;
+    assert.match(digest ?? '', /^[a-f0-9]{64}$/);
     macTool('/usr/bin/hdiutil', ['attach', files.dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
     mounted = true;
     const dmgApp = join(mount, 'Mission Control.app');
     assert.equal(inspectBundle(dmgApp).digest, digest, 'DMG must contain the exact signed app');
     await verifyDistributionApp(dmgApp, metadata, policy);
     const extracted = join(root, 'zip'); mkdirSync(extracted);
-    // These bytes were produced locally in this process. This is not the later
+    // Locally produced or retained producer artifacts, not the later client
     // untrusted-download extractor or an installer entry point.
     macTool('/usr/bin/ditto', ['-x', '-k', files['app-zip'], extracted]);
     const zipApp = join(extracted, 'Mission Control.app');
     assert.equal(inspectBundle(zipApp).digest, digest, 'ZIP must contain the exact signed app');
     await verifyDistributionApp(zipApp, metadata, policy);
+    if (requalifyRuntime) {
+      const {qualifySignedRuntime} = await import('./qualify-signed-runtime.mjs');
+      await qualifySignedRuntime(zipApp, metadata, policy);
+    }
   } finally {
     if (mounted) macTool('/usr/bin/hdiutil', ['detach', mount]);
     rmSync(root, {recursive: true, force: true});

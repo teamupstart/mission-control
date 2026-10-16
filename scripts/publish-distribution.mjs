@@ -9,6 +9,7 @@ import { distributionManifest, distributionNames, localDistributionAssets, asser
 import { binaryPublisherPolicy, BINARY_MANIFEST_NAME, MAX_BINARY_MANIFEST_BYTES } from '../src/shared/binary-publisher-policy.mjs';
 import { githubDistributionTransport } from './distribution-github.mjs';
 import { validateBinaryManifest } from '../src/shared/binary-distribution.mjs';
+import { verifyDistributionDmg, verifyDistributionArchives } from './verify-distribution.mjs';
 
 function namedAsset(assets, name) {
   const matches = assets.filter((a) => a.name === name);
@@ -142,6 +143,10 @@ export async function qualifiedDistribution(directory, policy) {
       !isDeepStrictEqual(qualification.assets, await localDistributionAssets(metadata, files))) {
     throw new Error('Local qualification does not match the approved publisher and final archive bytes');
   }
+  // Retained JSON and hashes are not a trust root. Reassess the actual archives
+  // with Apple tools and the shipped publisher policy on every publication retry.
+  verifyDistributionDmg(files.dmg, policy);
+  await verifyDistributionArchives({appDigest: qualification.appDigest, files, metadata, policy, requalifyRuntime: true});
   return {metadata, files};
 }
 

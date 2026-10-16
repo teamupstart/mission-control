@@ -44,6 +44,11 @@ export function githubDistributionTransport({command = 'gh', env = process.env} 
       }
       let release = json(`${repo}/releases/tags/${tag}`, undefined, true);
       if (!release && metadata.channel === 'alpha') {
+        // Retirement keeps the tag but removes its release record. Never attach
+        // newly built bytes to that unavailable immutable identity.
+        if (json(`${repo}/git/ref/tags/${tag}`, undefined, true)) {
+          throw new Error('This exact alpha identity has been retired; request a new explicit offer');
+        }
         release = json(`${repo}/releases`, {tag_name: tag, target_commitish: metadata.commit,
           name: `Mission Control alpha ${metadata.commit}`, prerelease: true, draft: false, make_latest: 'false',
           body: 'Exact-commit alpha. Ready only with mission-control-manifest.json. Replaced after a newer complete alpha is verified; retired identities are unavailable.'});
@@ -74,7 +79,6 @@ export function githubDistributionTransport({command = 'gh', env = process.env} 
           if (!ALPHA_TAG.test(release.tag_name) || release.draft || release.prerelease !== true) continue;
           if (!Number.isSafeInteger(release.id) || release.id < 1) throw new Error('Invalid alpha release id');
           const retired = release.body === RETIRED_ALPHA;
-          if (retired && Array.isArray(release.assets) && release.assets.length === 0) continue;
           if (json(`${repo}/commits/${release.tag_name}`).sha !== release.tag_name.slice(6)) throw new Error('Alpha release tag does not match its exact commit');
           releases.push({id: release.id, tag: release.tag_name, retired});
         }
@@ -100,8 +104,7 @@ export function githubDistributionTransport({command = 'gh', env = process.env} 
         return assets;
       };
       let assets = await checkedAssets();
-      // Keep a small tombstone so a retry can never recreate different bytes under
-      // a retired commit. Remove readiness before deleting any referenced archive.
+      // Mark interrupted cleanup, then remove readiness before referenced bytes.
       if (found.body !== RETIRED_ALPHA) json(`${repo}/releases/${release.id}`, {body: RETIRED_ALPHA}, false, 'PATCH');
       const ready = assets.find((asset) => asset.name === BINARY_MANIFEST_NAME);
       if (ready) json(`${repo}/releases/assets/${ready.id}`, undefined, true, 'DELETE');
@@ -109,6 +112,9 @@ export function githubDistributionTransport({command = 'gh', env = process.env} 
       if (assets.some((asset) => asset.name === BINARY_MANIFEST_NAME)) throw new Error('Alpha readiness remained after retirement');
       for (const asset of assets) json(`${repo}/releases/assets/${asset.id}`, undefined, true, 'DELETE');
       if ((await checkedAssets()).length) throw new Error('Alpha retirement is incomplete; retry with the retained current build');
+      // The surviving tag is the permanent tombstone. Empty release records must
+      // not accumulate in the bounded inventory used by every future publisher.
+      json(`${repo}/releases/${release.id}`, undefined, true, 'DELETE');
     },
     async upload(release, path) {
       const result = spawnSync(command, ['release', 'upload', release.tag, path, '--repo', BINARY_REPO],

@@ -39,6 +39,7 @@ function fakeGh(t: TestContext, responses: Record<string, unknown>, mode = '') {
           fs.writeFileSync(${JSON.stringify(join(root, 'failed'))}, 'failed');
           process.stderr.write('denied (HTTP 403)');process.exit(1);
         }
+        if (endpoint.split('/').at(-2) === 'releases') delete responses[endpoint];
         for (const key of Object.keys(responses)) if (key.includes('/assets?')) responses[key] = responses[key].filter(asset => asset.id !== id);
         fs.writeFileSync(${JSON.stringify(responsePath)}, JSON.stringify(responses));
         process.exit(0);
@@ -122,13 +123,16 @@ for (const mode of ['retire', 'retire-fail-once']) test(`alpha ${mode} removes r
   assert.deepEqual(await f.transport.listAssets({id: 7, tag}), []);
   const deletes = f.calls().filter((call) => call.args.includes('DELETE'));
   assert.equal(deletes[0].args[3], `${prefix}/releases/assets/13`);
-  assert.ok(!deletes.some((call) => call.args[3] === `${prefix}/releases/7`), 'retirement preserves an identity tombstone');
+  assert.equal(deletes.at(-1).args[3], `${prefix}/releases/7`, 'retirement removes the empty release from pagination');
+  assert.equal(f.responses()[`${prefix}/releases/7`], undefined);
+  assert.ok(!deletes.some((call) => call.args[3].includes('/git/refs/')), 'the alpha tag remains as the identity tombstone');
   // A later producer recognizes the persisted retirement marker through the API.
   const tombstone = fakeGh(t, {[`${prefix}/compare/${commit}...main`]: {status: 'identical', merge_base_commit: {sha: commit}},
-    [`${prefix}/releases/tags/${tag}`]: f.responses()[`${prefix}/releases/7`],
-    [`${prefix}/releases?per_page=100&page=1`]: [{...f.responses()[`${prefix}/releases/7`], assets: []}]});
+    [`${prefix}/git/ref/tags/${tag}`]: {ref: `refs/tags/${tag}`, object: {sha: commit}},
+    [`${prefix}/releases?per_page=100&page=1`]: []});
   await assert.rejects(tombstone.transport.ensureRelease(metadata('alpha')), /retired/);
   assert.deepEqual(await tombstone.transport.listAlphaReleases(), []);
+  assert.ok(!tombstone.calls().some((call) => call.args.includes('POST')), 'a retained tag cannot create a replacement release');
   await assert.rejects(f.transport.retireAlphaRelease({id: 7, tag: 'v1.26.0'}), /Only an exact-commit alpha/);
 });
 

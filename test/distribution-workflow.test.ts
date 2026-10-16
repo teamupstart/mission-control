@@ -30,6 +30,7 @@ for (const selected of [input, stableInput]) {
   test(`${selected.ref} distribution requires successful CI for that ref, not another ref at the same commit`, () => {
     const matching = selected.ciRuns[0];
     const other = selected.ref === 'main' ? stableInput.ciRuns[0] : push;
+    assert.ok(matching && other);
     for (const ciRuns of [[other], [{...matching, conclusion: 'failure'}, other], [{...matching, head_branch: undefined}]]) {
       assert.throws(() => distributionInput({...selected, ciRuns}), /successful canonical/);
     }

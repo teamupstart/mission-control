@@ -1,0 +1,122 @@
+name: Signed distribution
+
+# Consume only successful push CI for an exact trusted source identity. A PR's
+# workflow_run must never enter a job, environment, or checkout with signing secrets.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  input:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    if: >-
+      github.repository == 'teamupstart/mission-control' &&
+      ((github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == 'teamupstart/mission-control' &&
+        (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v'))) ||
+       (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))))
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      channel: ${{ steps.identity.outputs.channel }}
+      tag: ${{ steps.identity.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Pin identity and require successful CI for the exact commit
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: node scripts/distribution-input.mjs
+
+  package:
+    needs: input
+    if: needs.input.outputs.channel != 'skip'
+    # Pin a supported arm64 image; macOS 14 retires on 2026-11-02.
+    runs-on: macos-15
+    environment: desktop-distribution
+    timeout-minutes: 60
+    # Serialize alpha publication and retirement. A newer queued alpha may replace
+    # an older pending job, but must never interrupt publication already in flight.
+    concurrency:
+      group: ${{ needs.input.outputs.channel == 'alpha' && 'distribution-alpha' || format('distribution-stable-{0}', needs.input.outputs.commit) }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.input.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Require approved publisher policy before accessing signing credentials
+        run: node --input-type=module -e "import {binaryPublisherPolicy} from './src/shared/binary-publisher-policy.mjs'; binaryPublisherPolicy()"
+      - name: Assert stable release versions
+        if: needs.input.outputs.channel == 'stable'
+        env:
+          TAG: ${{ needs.input.outputs.tag }}
+        run: node scripts/assert-release-version.mjs "$TAG"
+      - name: Materialize the notarization key privately
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          node --input-type=module -e "import {writeFileSync} from 'node:fs'; if (!process.env.APPLE_API_KEY_BASE64) throw new Error('APPLE_API_KEY_BASE64 is not provisioned'); writeFileSync(process.env.RUNNER_TEMP + '/mission-notarization.p8', Buffer.from(process.env.APPLE_API_KEY_BASE64, 'base64'), {mode: 0o600})"
+      - name: Build, sign, notarize and qualify the exact bytes
+        env:
+          GITHUB_SHA: ${{ needs.input.outputs.commit }}
+          MISSION_DISTRIBUTION_CHANNEL: ${{ needs.input.outputs.channel }}
+          MISSION_DISTRIBUTION_TAG: ${{ needs.input.outputs.tag }}
+          CSC_NAME: ${{ vars.CSC_NAME }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/mission-notarization.p8
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
+        run: npm run package:distribution
+      - name: Remove the temporary key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/mission-notarization.p8"
+      - name: Bundle smoke
+        run: npm run smoke
+      - name: Retain original qualified bytes for publication retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-${{ needs.input.outputs.channel }}-${{ needs.input.outputs.commit }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            release/distribution/*.zip
+            release/distribution/*.dmg
+            release/distribution/*.json
+      - name: Mint the existing release App token for asset publication
+        id: release-app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          repositories: mission-control
+      - name: Publish verified assets, then the ready manifest
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: npm run publish:distribution

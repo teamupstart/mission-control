@@ -48,6 +48,7 @@ Mission Control's product reference is organized by feature below.
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
 - [Desktop shell and packaging](desktop-and-packaging.md)
+- [Signed release production and verification](release-verification.md)
 
 ## Contributing and setup
 

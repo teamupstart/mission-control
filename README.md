@@ -351,6 +351,11 @@ and control surface stay coherent.
 
 ## Get started
 
+Release maintainers: [signed binary production and verification](docs/release-verification.md)
+documents stable and exact-commit alpha assets. Distribution remains gated on approved Apple
+credentials and real signed qualification; installation and in-app updates still use the
+existing source workflow.
+
 The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
 install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
 the optional ones, and keep the app current. The short version is two paths through this

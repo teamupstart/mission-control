@@ -208,8 +208,10 @@ signed metadata never embeds its containing archive's digest.
 
 Shape validation does not authenticate a publisher. A binary staged operation requires matching
 signed metadata and a trusted caller-supplied Developer ID team and notarization policy. That
-policy cannot come from the downloaded manifest. Distribution signing, credentials, archive
-transport and real signed-runtime qualification belong to subsequent distribution work.
+policy cannot come from the downloaded manifest. The [signed distribution producer](release-verification.md)
+owns signing, notarization, immutable ZIP/DMG publication and manifest-last readiness. Its
+trust policy pins the operator-approved Apple team `S2FPCQK39Z`. Credential provisioning
+and real signed qualification remain required before that producer can advertise a release.
 
 Receipt schema 1 remains the legacy source form, including retained compiled installers and
 absent legacy scope. New readers also accept schema-2 `source` and `binary` forms. Binary receipts
@@ -696,6 +698,12 @@ they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks th
 package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
 release build check; the dmg is not attached to the GitHub Release. The package job can also be run
 manually through `workflow_dispatch`.
+
+The separate [signed distribution producer](release-verification.md) consumes successful
+canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,
+and uploads the ready manifest last. It also owns exact-SHA alpha prereleases. This path
+pins the approved Apple team and remains gated on credential provisioning and real
+signing/publication qualification. It does not switch the installed app to binary updates.
 
 Proving that the whole journey works - clone, install, be offered a real update, accept it, and
 come back on the new version, plus a failed update that leaves the previous app running - is a

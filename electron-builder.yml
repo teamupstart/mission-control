@@ -59,6 +59,7 @@ files:
   - scripts/update-helper-files.mjs
   - scripts/install-staged-app.mjs
   - src/shared/binary-distribution.mjs
+  - src/shared/binary-publisher-policy.mjs
   - src/shared/owned-runtime.mjs
   - src/shared/install-receipt.mjs
   - src/shared/harness-runtime.mjs

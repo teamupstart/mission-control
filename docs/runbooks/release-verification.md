@@ -1,5 +1,10 @@
 # Release verification
 
+For signed stable and exact-commit alpha **asset production**, use the
+[signed distribution verification guide](../release-verification.md). Its signing and
+publication prerequisites are separate from the source-updater journey below. No signed
+publication has been qualified yet, and the installed updater still builds from source.
+
 How to prove, against a real GitHub Release, that someone can clone Mission Control, install it,
 be offered an update, accept it, and come back running the new version - and that a failed update
 leaves the previous app working.

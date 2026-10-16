@@ -13,6 +13,7 @@ test("a vX.Y.Z tag names its version", () => {
   assert.equal(versionFromTag("v1.2.3-rc.1"), null);
   assert.equal(versionFromTag("1.2.3"), null);
   assert.equal(versionFromTag("mission-control-v1.2.3"), null);
+  assert.equal(versionFromTag(`alpha-${"a".repeat(40)}`), null);
   assert.equal(versionFromTag(""), null);
 });
 

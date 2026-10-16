@@ -72,15 +72,21 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
       {enrollment && <div>
         <p className="settings-hint">{enrollment.message}</p>
         <p>Destination: {enrollment.destination}</p>
-        {enrollment.action && <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => {
+        {enrollment.action && <Tooltip label={enrollment.action === "install"
+          ? "Install the verified app at the displayed persistent destination."
+          : "Verify this copied app and record its current destination for managed installation."}>
+          <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => {
           setSaving(true); setError(null);
           void installation?.enroll().then(result => {
             setEnrollmentResult(result.message);
             if (result.started) setEnrollment({...enrollment, action: null});
           }).catch(error => setError(String(error))).finally(() => setSaving(false));
-        }}>{enrollment.action === "install" ? "Install Mission Control" : "Enroll this copied app"}</button>}
+          }}>{enrollment.action === "install" ? "Install Mission Control" : "Enroll this copied app"}</button>
+        </Tooltip>}
       </div>}
-      {snapshot?.phase === "disabled" && <p><a className="btn btn-ghost" href={BINARY_RECOVERY_URL} target="_blank" rel="noreferrer">Signed installer and recovery instructions</a></p>}
+      {snapshot?.phase === "disabled" && <p><Tooltip label="Open signed installation and manual replacement instructions.">
+        <a className="btn btn-ghost" href={BINARY_RECOVERY_URL} target="_blank" rel="noreferrer">Signed installer and recovery instructions</a>
+      </Tooltip></p>}
       {enrollmentResult && <p role="status">{enrollmentResult}</p>}
       {error && <p role="alert">{error}</p>}
     </section>

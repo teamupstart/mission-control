@@ -10,6 +10,14 @@ import { prepareStagedInstall, installStagedApp, verifyBinaryBuild } from '../sc
 import { resolveInstallDestination } from '../scripts/install-destination.mjs';
 import { binaryEnrollmentChoice } from '../src/shared/binary-enrollment.ts';
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
+import { binaryInstallationPage } from '../src/main/startup-page.ts';
+
+test('the local installation page treats paths and diagnostics as text, not markup', () => {
+  const page = binaryInstallationPage({action: 'install', destination: '/Users/<operator & tools>/Applications/Mission Control.app', message: '<script>untrusted()</script>'});
+  assert.match(page, /&lt;operator &amp; tools&gt;/);
+  assert.match(page, /&lt;script&gt;untrusted\(\)&lt;\/script&gt;/);
+  assert.doesNotMatch(page, /<script>/);
+});
 
 const identity = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app', channel: 'stable', releaseTag: 'v1.2.3', version: '1.2.3', commit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}};
 const manifest = {...identity, assets: [

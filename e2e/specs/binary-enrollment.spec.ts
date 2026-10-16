@@ -30,18 +30,28 @@ for (const kind of ['copied', 'mounted', 'conflict'] as const) {
     await expect(panel).not.toContainText('Updates are built while you work');
     await expect(panel.getByRole('button', {name: 'Check for updates'})).toBeDisabled();
     await expect(panel.getByRole('link', {name: 'Signed installer and recovery instructions'})).toHaveAttribute('href', /github.com\/teamupstart\/mission-control/);
+    await panel.getByRole('link', {name: 'Signed installer and recovery instructions'}).focus();
+    await expect(panel.getByRole('link', {name: 'Signed installer and recovery instructions'})).toHaveAccessibleDescription('Open signed installation and manual replacement instructions.');
+    await expect(dashboard.locator('.tooltip')).toBeVisible();
     await expect(panel).toContainText(state.message);
     if (kind === 'conflict') {
       await expect(panel.getByRole('button', {name: 'Enroll this copied app'})).toHaveCount(0);
       expect(calls).toBe(0);
     } else {
+      await panel.getByRole('button', {name: kind === 'copied' ? 'Enroll this copied app' : 'Install Mission Control'}).focus();
+      await expect(panel.getByRole('button', {name: kind === 'copied' ? 'Enroll this copied app' : 'Install Mission Control'})).toHaveAccessibleDescription(kind === 'copied'
+        ? 'Verify this copied app and record its current destination for managed installation.'
+        : 'Install the verified app at the displayed persistent destination.');
+      await expect(dashboard.locator('.tooltip')).toBeVisible();
       if (kind === 'mounted') {
         await expect(panel.getByRole('button', {name: 'Enroll this copied app'})).toHaveCount(0);
         await expect(panel).toContainText('Destination: /Users/operator/Applications/Mission Control.app');
       }
       if (process.env.MC_E2E_EVIDENCE === '1') {
         const dir = join(process.cwd(), 'e2e/.artifacts/binary-enrollment'); await mkdir(dir, {recursive: true});
+        if (kind === 'copied') await dashboard.screenshot({path: join(dir, 'copied-tooltip.png'), fullPage: true});
         await dashboard.mouse.move(1, 1);
+        await panel.getByRole('button', {name: kind === 'copied' ? 'Enroll this copied app' : 'Install Mission Control'}).blur();
         await dashboard.screenshot({path: join(dir, `${kind}.png`), fullPage: true});
       }
       await panel.getByRole('button', {name: kind === 'copied' ? 'Enroll this copied app' : 'Install Mission Control'}).click();

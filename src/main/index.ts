@@ -53,6 +53,7 @@ import {
 import { runningBundlePath, startPackagedShell } from "./startup-handover.ts";
 import { readBinaryEnrollment, startBinaryEnrollment } from "./binary-enrollment.ts";
 import { temporaryInstallLocation } from "../../scripts/binary-install-policy.mjs";
+import { confirmBinaryInstallation } from "./binary-install-window.ts";
 
 app.setName("Mission Control");
 
@@ -315,11 +316,7 @@ app.whenReady().then(async () => {
     try {
       const enrollment = readBinaryEnrollment(runningBundle, stateDir());
       if (!enrollment?.action) throw new Error(enrollment?.message ?? "Copy this developer app into Applications before opening it.");
-      const choice = await dialog.showMessageBox({type: "question", title: "Install Mission Control",
-        message: "Install Mission Control before using this temporary copy.",
-        detail: `${enrollment.message}\nDestination: ${enrollment.destination}\nInstallation progress is saved in binary-install.log in your state home.`,
-        buttons: ["Install Mission Control", "Quit"], defaultId: 0, cancelId: 1});
-      if (choice.response === 0) await startBinaryEnrollment(runningBundle, stateDir());
+      if (await confirmBinaryInstallation(enrollment)) await startBinaryEnrollment(runningBundle, stateDir());
     } catch (error) { dialog.showErrorBox("Installation needs attention", error instanceof Error ? error.message : String(error)); }
     app.exit(0);
     return;

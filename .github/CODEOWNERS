@@ -1,3 +1,17 @@
 # Default owners for every path; team access is managed separately.
 # When code-owner review is required, approval from any one listed owner is sufficient.
 * @teamupstart/delivery-squad @teamupstart/developer-platform @mancej
+
+# Third party dependency checks
+Gemfile                 @teamupstart/infosec
+Gemfile.lock            @teamupstart/infosec
+yarn.lock               @teamupstart/infosec
+package.json            @teamupstart/infosec
+requirements.in         @teamupstart/infosec
+requirements.txt        @teamupstart/infosec
+Pipfile                 @teamupstart/infosec
+Pipfile.lock            @teamupstart/infosec
+poetry.lock             @teamupstart/infosec
+versions.properties     @teamupstart/infosec
+package-lock.json       @teamupstart/infosec
+**/.yarn/cache/**       @teamupstart/infosec

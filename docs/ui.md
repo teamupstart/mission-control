@@ -1085,8 +1085,10 @@ flight when you move on, or publish a second file, never replaces another file's
   on claude.ai is the file on disk. A new artifact is private to you until you share it
   from its page header. Artifacts need a Pro, Max, Team or Enterprise plan, a claude.ai
   sign-in rather than an API key, and the Anthropic API rather than Bedrock or Vertex. The
-  Agent SDK runtime has them off by default. When the tool is not available, the prompt
-  asks Claude to say so and stop rather than publish something else.
+  Agent SDK has them off by default, so Mission Control launches embedded sessions with
+  `CLAUDE_CODE_ARTIFACT=1` unless you set that variable yourself; `enableArtifact: false`
+  in your Claude Code settings still turns the tool off. When the tool is not available,
+  the prompt asks Claude to say so and stop rather than publish something else.
 - **Codex and Pi cannot publish.** The button is drawn disabled with the reason. OpenAI's
   nearest equivalent, Sites, is managed only from ChatGPT on the web or the desktop app, and
   a Sites deploy may change a project to make it deployable.

@@ -680,8 +680,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // content comes only from `file_path` - the vendor schema has no inline-content
     // parameter (`ArtifactInput`, `sdk-tools.d.ts`) - so naming the file and forbidding a
     // copy is what keeps the shared page byte-for-byte the file on disk. The extensions are
-    // the tool's documented source types. Whether the tool is enabled is the account's and
-    // settings' decision, which a session can only find out by asking, hence the stop rule.
+    // the tool's documented source types. The SDK driver lifts the CLI's SDK default-off
+    // (`withArtifactTool`, `claude/sdk.ts`); past that, whether the tool is enabled is the
+    // account's and settings' decision, which a session can only find out by asking, hence
+    // the stop rule.
     artifactPublishing: {
       publishes: true,
       label: "Claude artifact",

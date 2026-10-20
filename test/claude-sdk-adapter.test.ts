@@ -240,6 +240,20 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.ok(events.some((e) => e.kind === "state" && e.state === "working"));
 });
 
+test("an embedded session opts in to the Artifact tool, unless the operator set it", async () => {
+  // The CLI withholds `Artifact` from SDK entrypoints by default, so without this the Files
+  // tab's Publish request reaches a session that has no tool to carry it out.
+  const plain = fakeDeps();
+  await claudeSdkSpec(plain.deps).launch(launchOpts());
+  assert.deepEqual((await plain.started).options.env, { PATH: "/usr/bin", CLAUDE_CODE_ARTIFACT: "1" });
+
+  // An operator's explicit off stays off.
+  const off = fakeDeps();
+  off.deps.env = () => ({ PATH: "/usr/bin", CLAUDE_CODE_ARTIFACT: "0" });
+  await claudeSdkSpec(off.deps).launch(launchOpts());
+  assert.equal((await off.started).options.env.CLAUDE_CODE_ARTIFACT, "0");
+});
+
 test("secondary worktrees reach the driver as additionalDirectories, and only when there are any", async () => {
   // The multi-repo write grant on the embedded runtime. `additionalDirectories` is the
   // vendor's own option name at the pinned SDK version; getting it wrong produces a session

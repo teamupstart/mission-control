@@ -39,11 +39,15 @@ export function gitPrerequisiteMessage(installed) {
  * The two phrasings are copied verbatim from `preflight` in
  * `src/server/task-sources/github-issues.ts`, which is the only other place this application
  * tells someone their `gh` is not usable. One wording, so the installer and the running app
- * cannot describe the same broken dependency differently.
+ * cannot describe the same broken dependency differently. `detail` is gh's own output from the
+ * credential probe, appended on a second line so the shared sentence stays identical.
  */
-export function ghPrerequisiteMessage({ installed, authenticated }) {
+export function ghPrerequisiteMessage({ installed, authenticated, detail = "" }) {
   if (!installed) return "the gh CLI is not installed - install it and run `gh auth login`";
-  if (!authenticated) return "gh is not authenticated - run `gh auth login`";
+  if (!authenticated) {
+    const why = String(detail ?? "").trim();
+    return `gh is not authenticated - run \`gh auth login\`${why ? `\ngh said: ${why}` : ""}`;
+  }
   return null;
 }
 

@@ -82,3 +82,8 @@ test("the Xcode toolchain is asked for only where a native build actually happen
     null,
   );
 });
+
+test("the gh message appends gh's own output without changing the shared sentence", () => {
+  const message = ghPrerequisiteMessage({ installed: true, authenticated: false, detail: "HTTP 401\n" });
+  assert.equal(message, "gh is not authenticated - run `gh auth login`\ngh said: HTTP 401");
+});

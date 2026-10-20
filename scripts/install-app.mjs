@@ -175,7 +175,9 @@ const GH_BIN = "gh";
  * is precisely the case it exists to stop.
  */
 export const GH_ARGS = {
-  authStatus: () => ["auth", "status"],
+  // Probes the ACTIVE credential (GITHUB_TOKEN or the active account). `gh auth status` exits
+  // non-zero when any stored account is stale, which blocked setups whose active one is fine.
+  authProbe: () => ["api", "user", "--jq", ".login"],
   releaseList: (repo = CANONICAL_REPO) => [
     "release",
     "list",
@@ -191,6 +193,27 @@ export const GH_ARGS = {
     "tagName",
   ],
 };
+
+/**
+ * The `gh` prerequisite: null when usable, else the sentence to show.
+ *
+ * Asks whether the active credential works (`gh api user`), not whether every stored account
+ * does, and carries gh's own output into the message. The probe is bounded by
+ * `GH_PROBE_TIMEOUT_MS`; an expired timeout gets its own message. `run` is injected like
+ * `newestStableRelease`'s, so tests need no gh binary, network or credential.
+ */
+export const GH_PROBE_TIMEOUT_MS = 15_000;
+
+export function ghCredentialProblem({ run }) {
+  const version = run(GH_BIN, ["--version"]);
+  if (version.status !== 0) return ghPrerequisiteMessage({ installed: false, authenticated: false });
+  const probe = run(GH_BIN, GH_ARGS.authProbe(), { timeout: GH_PROBE_TIMEOUT_MS });
+  // Decided from the spawn error, not from gh's text: an unanswered probe says nothing about
+  // the credential, so it must not read as "not authenticated".
+  if (probe.timedOut) return `gh did not respond within ${GH_PROBE_TIMEOUT_MS / 1000} seconds (network?)`;
+  const detail = String(probe.stderr || probe.stdout || "").trim().slice(0, 500);
+  return ghPrerequisiteMessage({ installed: true, authenticated: probe.status === 0, detail });
+}
 
 /** Parse a git remote URL into its repository slug and transport. */
 export function parseRemote(url) {
@@ -608,6 +631,8 @@ function capture(command, args, opts = {}) {
     status: result.error ? 127 : (result.status ?? 1),
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? (result.error ? result.error.message : ""),
+    // spawnSync reports an expired `timeout` as an ETIMEDOUT spawn error, never as output.
+    timedOut: result.error?.code === "ETIMEDOUT",
   };
 }
 
@@ -641,12 +666,7 @@ function checkPrerequisites({ needsBuildTools }) {
   if (xcodeProblem) fail(xcodeProblem);
   ok("Xcode command line tools available");
 
-  const ghVersion = capture(GH_BIN, ["--version"]);
-  const ghAuth = ghVersion.status === 0 ? capture(GH_BIN, GH_ARGS.authStatus()) : null;
-  const ghProblem = ghPrerequisiteMessage({
-    installed: ghVersion.status === 0,
-    authenticated: ghAuth?.status === 0,
-  });
+  const ghProblem = ghCredentialProblem({ run: capture });
   if (ghProblem) fail(ghProblem);
   ok("gh authenticated");
 }

@@ -19,7 +19,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * reason, on a file the vendor tool would refuse and on a harness that has no such tool.
  *
  * No model tokens: every agent binary is the fake from `fake-agents.ts`, which answers a
- * turn with "Mock reply to: <text>".
+ * turn with "Mock reply to: <text>", except a publish request, which it answers through
+ * Claude Code's own `Artifact` gate with a link derived from the file or the CLI's refusal.
  */
 
 const EVIDENCE = artifactsDir("file-publish-artifact");
@@ -177,9 +178,65 @@ test("Publish sends the open report to Claude as one turn asking for an unchange
     .filter({ hasText: `Publish ${REPORT} as a Claude artifact.` });
   await expect(humanTurn).toHaveCount(1);
   await expect(card.locator("article.turn-assistant .turn-text").filter({
-    hasText: `Mock reply to: Publish ${REPORT} as a Claude artifact.`,
+    hasText: `Published ${REPORT} as a Claude artifact: https://claude.ai/artifact/`,
   })).toHaveCount(1);
   observed("the agent received the publish request as a single conversation turn");
+});
+
+test("an embedded session has the Artifact tool, so the report's link reaches the conversation", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The reported failure: on the Agent SDK runtime Claude Code withholds `Artifact` unless
+  // the launch opts in, and the session answered "this session doesn't have the Artifact
+  // tool". The fake applies that same gate, so this fails on a driver that drops the opt-in.
+  const report = "docs/reports/submission-job-run-relationship/report.html";
+  await dispatch(dashboard, daemon, "map the submission and job run relationship", "claude");
+  const { id: sessionId, cwd } = await onlySession(daemon);
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
+    id: string;
+    runtime: string;
+  }[];
+  expect(sessions.find((s) => s.id === sessionId)?.runtime, "dispatched on the Agent SDK").toBe("sdk");
+  mkdirSync(join(cwd, "docs", "reports", "submission-job-run-relationship"), { recursive: true });
+  writeFileSync(
+    join(cwd, report),
+    "<!doctype html>\n<html><head><title>Submission and job run</title></head>\n" +
+      "<body><h1>Submission and job run relationship</h1></body></html>\n",
+  );
+
+  const config = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  expect(config.ok, "the daemon accepted the Console layout").toBe(true);
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
+  await tabs.getByRole("tab", { name: /Files$/ }).click();
+  await dashboard.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: report }).click();
+  await expect(
+    dashboard.frameLocator(`iframe[title="Preview of ${report}"]`)
+      .getByRole("heading", { name: "Submission and job run relationship" }),
+  ).toBeVisible();
+  await dashboard
+    .locator(".file-main > .file-toolbar")
+    .getByRole("button", { name: "Publish as Claude artifact" })
+    .click();
+  await expect(dashboard.getByRole("status").filter({ hasText: "Sent a request to publish" }))
+    .toContainText(`Sent a request to publish ${report} as a Claude artifact.`);
+
+  await tabs.getByRole("tab", { name: /Conversation$/ }).click();
+  const card = dashboard.locator(".console-detail");
+  const reply = card.locator("article.turn-assistant .turn-text").filter({
+    hasText: `Published ${report} as a Claude artifact: https://claude.ai/artifact/`,
+  });
+  await expect(reply).toHaveCount(1);
+  await expect(card.getByText("doesn't have the Artifact tool")).toHaveCount(0);
+  observed(`the embedded session published ${report} and its claude.ai link is in the conversation`);
+  await reply.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "embedded-session-published-link");
 });
 
 test("a Codex session draws Publish disabled and says why", async ({ dashboard, daemon }) => {

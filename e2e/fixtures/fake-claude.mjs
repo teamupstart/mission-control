@@ -864,7 +864,32 @@ emit({ type: "system", subtype: "init", session_id: SESSION_ID, model: MODEL });
  * ever rendered.
  */
 function replyTo(prompt) {
+  const publish = /^Publish (\S+) as a Claude artifact\./.exec(prompt);
+  if (publish) return publishReply(publish[1]);
   return `Mock reply to: ${prompt}`;
+}
+
+/**
+ * Claude Code's `Artifact` gate, as measured against the real CLI: an SDK entrypoint (the
+ * Agent SDK sets `sdk-ts` when the launch did not) withholds the tool unless
+ * `CLAUDE_CODE_ARTIFACT` is truthy, and an explicit falsy value withholds it everywhere. So
+ * the Files tab's Publish request only reaches a link in a session whose launch env opted in,
+ * which is the contract the Agent SDK driver has to keep. Nothing is uploaded: the link is
+ * derived from the file's bytes, and a file that is not on disk is refused like the tool would.
+ */
+function publishReply(path) {
+  const flag = (process.env.CLAUDE_CODE_ARTIFACT ?? "").trim().toLowerCase();
+  const sdk = ["sdk-ts", "sdk-py", "sdk-cli"].includes(process.env.CLAUDE_CODE_ENTRYPOINT ?? "");
+  const available = ["0", "false", "no", "off"].includes(flag)
+    ? false
+    : !sdk || ["1", "true", "yes", "on"].includes(flag);
+  if (!available) {
+    return "I couldn't publish it: this session doesn't have the Artifact tool, so there's no claude.ai link.";
+  }
+  const file = resolve(process.cwd(), path);
+  if (!existsSync(file)) return `I couldn't publish it: ${path} does not exist.`;
+  const id = createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 32);
+  return `Published ${path} as a Claude artifact: https://claude.ai/artifact/${id}`;
 }
 
 // ---------------------------------------------------------------------------

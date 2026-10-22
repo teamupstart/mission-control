@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.27.1](https://github.com/teamupstart/mission-control/compare/v1.27.0...v1.27.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **claude:** enable the Artifact tool in embedded SDK sessions ([#1196](https://github.com/teamupstart/mission-control/issues/1196)) ([4c9ab4b](https://github.com/teamupstart/mission-control/commit/4c9ab4b8415328445a1e6d9a853767bef7a5f85a))
+* **installer:** probe the active gh credential (DEVPLAT-542) ([#1198](https://github.com/teamupstart/mission-control/issues/1198)) ([30d67bf](https://github.com/teamupstart/mission-control/commit/30d67bf81c2382a1599c46fc4da5ed844efbe0b4))
+* **plans:** submit local validation with an empty Git diff ([#1199](https://github.com/teamupstart/mission-control/issues/1199)) ([47c2c6c](https://github.com/teamupstart/mission-control/commit/47c2c6cc2788dc41c8331d98e48e9d837490b6c2))
+* show closed session pull requests in red ([#1200](https://github.com/teamupstart/mission-control/issues/1200)) ([e75f8cb](https://github.com/teamupstart/mission-control/commit/e75f8cb1b55c06f5df76b85f46d119c6a22ee44b))
+* **trust:** keep the add picker usable under a long trust matrix ([#1201](https://github.com/teamupstart/mission-control/issues/1201)) ([5ba9b16](https://github.com/teamupstart/mission-control/commit/5ba9b166087673a541eb62409ac13055a9247a88))
+* **workflows:** complete the pull request action from an earlier adoption ([#1203](https://github.com/teamupstart/mission-control/issues/1203)) ([2d249ee](https://github.com/teamupstart/mission-control/commit/2d249eefea7393fb4471c69facb23afe0007bfb7))
+
 ## [1.27.0](https://github.com/teamupstart/mission-control/compare/v1.26.0...v1.27.0) (2026-10-19)
 
 

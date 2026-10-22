@@ -357,10 +357,5 @@ working tree, so it is safe to run on dirty state.
 
 ## Binary desktop installation
 
-The signed binary installer honors the existing `MISSION_HOME` state-home resolution and
-keeps a valid receipt's destination and scope on rerun. Fresh destinations support
-`--scope user`, `--scope system`, or `--apps-dir DIR`; these choices are mutually exclusive.
-Only the canonical personal Applications directory is created automatically.
-`--ref vX.Y.Z` selects stable bytes; `--ref FULL_SHA` or `--channel alpha` selects an exact main
-identity. Binary installs do not consult host Node/npm overrides or execute `sourceClone`.
-They retain legacy source support for recovery. See [installation and qualification limits](desktop-and-packaging.md#binary-installation-and-manual-recovery).
+See [Binary installation and manual recovery](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for installer options, recovery behavior, and qualification limits.

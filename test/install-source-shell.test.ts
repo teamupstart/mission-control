@@ -248,7 +248,6 @@ test("temporary sources cannot be requested for either half of a staged update",
 test("the explicit source bootstrap creates ~/Applications and installs there without destination options", (t) => {
   const f = fixture(t);
   const command = `script=$(curl -fsSL https://raw.githubusercontent.com/${CANONICAL_REPO}/main/scripts/install-source.sh) && /bin/bash -c "$script"`;
-  assert.ok(command);
   const personalApps = join(f.home, "Applications");
   assert.equal(existsSync(personalApps), false);
   const result = spawnSync("/bin/bash", ["-c", command], {
@@ -315,7 +314,6 @@ for (const scope of ["user", "system"] as const) {
 test("the source command propagates a failed download without creating install state", (t) => {
   const f = fixture(t, "download");
   const command = `script=$(curl -fsSL https://raw.githubusercontent.com/${CANONICAL_REPO}/main/scripts/install-source.sh) && /bin/bash -c "$script"`;
-  assert.ok(command);
   const result = spawnSync("/bin/bash", ["-c", command], {
     env: f.env, cwd: f.directory, encoding: "utf8", timeout: 30_000,
   });

@@ -68,6 +68,8 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   assert.equal(upgraded.skipScoutWrapup, true);
   assert.equal(upgraded.skipReviewArtifactWrapup, true);
   assert.equal(upgraded.keepShipTasksMoving, true);
+  assert.equal(upgraded.trackReviewFeedback, true);
+  assert.equal(upgraded.trackCiFailures, true);
   assert.equal(upgraded.shipRecoveryMinutes, 20);
 });
 
@@ -101,6 +103,23 @@ test("Foreman persists review-comment and CI follow-through independently", () =
   const bothOff = setForemanConfig({ trackReviewFeedback: false });
   assert.equal(bothOff.trackReviewFeedback, false);
   assert.equal(bothOff.trackCiFailures, false);
+});
+
+test("Foreman preserves every combination of the three PR preferences on unrelated updates", () => {
+  for (const keepShipTasksMoving of [false, true]) {
+    for (const trackReviewFeedback of [false, true]) {
+      for (const trackCiFailures of [false, true]) {
+        const saved = { keepShipTasksMoving, trackReviewFeedback, trackCiFailures };
+        setAppConfig(APP_CONFIG_ENTRIES.foreman, saved);
+        // Updating a different setting must not replace an explicit opt-out with a default.
+        setForemanConfig({ shipRecoveryMinutes: 37 });
+        const reread = getForemanConfig();
+        for (const key of Object.keys(saved) as (keyof typeof saved)[]) {
+          assert.equal(reread[key], saved[key], `${key}: ${JSON.stringify(saved)}`);
+        }
+      }
+    }
+  }
 });
 
 test("Foreman preserves the old combined PR follow-through answer when adding CI", () => {

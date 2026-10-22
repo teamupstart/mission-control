@@ -651,8 +651,9 @@ differ:
 | **PR on another repo** | Historical state from older daemon versions; a repository mismatch now completes with a warning. |
 | **PR on another branch** | Historical state from older daemon versions; a branch mismatch now completes with a warning. |
 
-Mission Control attributes an adoption to this action only when the pull request belongs to the
-bound session and was adopted after the instruction was delivered. Once that durable fact exists,
+Mission Control attributes an adoption opened during this action to it only when the pull request
+belongs to the bound session and was adopted after the instruction was delivered. A pull request
+adopted earlier is covered by the separate rule below. Once that durable fact exists,
 a closed or merged state, a moved checkout, a changed pushed ref, or missing provider metadata is
 reported on the completed action. None sends a repair packet or spends a repair round.
 

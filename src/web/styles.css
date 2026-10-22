@@ -23596,13 +23596,23 @@ button.sc-row:focus-visible {
 }
 /* One grid for the whole table so every column line stays true down the rows: repo path
    takes the flexible track, the three grants are fixed to their label widths, and the
-   remove button gets a hairline column of its own. */
+   remove button gets a hairline column of its own.
+
+   The grid is also the table's scrollport. Uncapped, every trusted repo added a row to the
+   settings pane, which pushed the add picker to the pane's bottom edge where its list had no
+   room to open. Past the cap the rows scroll here, under a header that stays put. */
 .trust-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px 140px 168px 130px 44px;
   align-items: stretch;
+  max-height: min(460px, 55vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .trust-h {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 9px 12px;
   background: var(--panel-2);
   font-size: 10px;

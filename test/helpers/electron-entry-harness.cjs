@@ -94,19 +94,21 @@ const electron = new Proxy(
   },
 );
 
-if (launchRegistration) {
-  // Reach the real packaged macOS startup branch on every test host. Only the OS
-  // inventory and Electron boundary are simulated; detection, logging, startup
-  // page construction and dialog routing all remain in the production bundle.
-  Object.defineProperty(process, "platform", {value: "darwin"});
-  process.getuid = () => 501;
-  process.kill = (pid, signal) => { observed.signals.push({pid, signal}); return true; };
+/**
+ * The macOS LaunchServices inventory startup reads, simulated for `registration`.
+ *
+ * Every fixture that can reach that probe installs this, not only the ones asserting on it:
+ * on a macOS host the probe runs for real otherwise, and real `lsappinfo` and `launchctl`
+ * calls took long enough to push a startup past the deadline above - a failure that only
+ * ever appeared on a Mac, since everywhere else the probe is skipped by platform.
+ */
+function simulateLaunchInventory(registration) {
   const bundle = resolve(process.env.HARNESS_APP_PATH, "../../..");
   const binary = `${bundle}/Contents/MacOS/Mission Control`;
   childProcess.execFile = (command, args, _options, callback) => {
     observed.inspection.push({command, args});
     let stdout;
-    if (command === "/usr/bin/lsappinfo") stdout = launchRegistration === "foreground"
+    if (command === "/usr/bin/lsappinfo") stdout = registration === "foreground"
       ? `1) "Mission Control" ASN:0x0-0x123:\n bundleID="com.mission-control.app"\n bundle path="${bundle}"\n pid = ${process.pid} type="Foreground"\n` : "";
     else if (command === "/bin/ps") stdout = `${process.pid} 1 S ${binary}\n`;
     else if (command === "/bin/launchctl" && args[0] === "list") stdout = "PID\tStatus\tLabel\n-\t0\tcom.fixture.startup-respawner\n";
@@ -114,6 +116,16 @@ if (launchRegistration) {
     else throw new Error(`Unexpected startup subprocess: ${command}`);
     callback(null, stdout);
   };
+}
+
+if (launchRegistration) {
+  // Reach the real packaged macOS startup branch on every test host. Only the OS
+  // inventory and Electron boundary are simulated; detection, logging, startup
+  // page construction and dialog routing all remain in the production bundle.
+  Object.defineProperty(process, "platform", {value: "darwin"});
+  process.getuid = () => 501;
+  process.kill = (pid, signal) => { observed.signals.push({pid, signal}); return true; };
+  simulateLaunchInventory(launchRegistration);
   // The existing development-server ownership seam prevents any real daemon or
   // Foreman spawn. No network or login shell can escape this fixture either.
   process.env.MISSION_DEV_SERVER_URL = "http://127.0.0.1:1";
@@ -172,6 +184,8 @@ if (process.env.HARNESS_BACKGROUND_FAILURE === "1") {
   // then the real daemon supervisor refuses this old daemon's health response.
   childProcess.spawn = () => { throw new Error("fixture login shell unavailable"); };
   global.fetch = async () => Response.json({service: "mission-control", capabilities: []});
+  // Registered, so the launch probe passes quietly and this stays about the daemon refusal.
+  simulateLaunchInventory("foreground");
 }
 
 const logged = [];

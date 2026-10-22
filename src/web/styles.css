@@ -69,6 +69,7 @@
 
   --pr-open: #3fb950;
   --pr-merged: var(--purple);
+  --pr-closed: var(--danger);
 
   /* Task priority. Reuses the session-state ramp rather than inventing a fifth hue,
      so "orange means look at me" reads the same on a card and on a backlog chip.
@@ -10423,6 +10424,16 @@ mark.find-hit.is-current {
 .pr-merged:hover {
   background: color-mix(in oklab, var(--pr-merged) 24%, var(--panel-2));
   border-color: color-mix(in oklab, var(--pr-merged) 62%, transparent);
+}
+
+.pr-closed {
+  color: color-mix(in oklab, var(--pr-closed) 80%, var(--fg));
+  background: color-mix(in oklab, var(--pr-closed) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-closed) 34%, transparent);
+}
+.pr-closed:hover {
+  background: color-mix(in oklab, var(--pr-closed) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-closed) 58%, transparent);
 }
 
 /* "A CI check failed" alert - sits right after the PR chip and links to the same
@@ -26145,6 +26156,9 @@ span.line-run-prov {
   font-weight: 650;
   color: var(--pr-open);
 }
+.rail-pr.pr-closed {
+  color: var(--pr-closed);
+}
 .rail-pr.pr-merged {
   color: var(--pr-merged);
 }
@@ -30076,6 +30090,10 @@ span.line-run-prov {
 .tile-flag.pr-open {
   border-color: color-mix(in oklab, var(--pr-open) 45%, var(--border));
   color: var(--pr-open);
+}
+.tile-flag.pr-closed {
+  border-color: color-mix(in oklab, var(--pr-closed) 45%, var(--border));
+  color: var(--pr-closed);
 }
 .tile-flag.pr-merged {
   border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));

@@ -98,8 +98,8 @@ test("reconcilePrs clears the chip once the branch has no matching PR", () => {
   reg.reconcilePrs(new Map([["feat", match()]]), new Set());
   assert.equal(reg.getSession("feat")!.prUrl, PR);
 
-  // Next sweep: gh finds no open/merged PR for the branch (branch moved, or the
-  // PR was closed unmerged) -> absent from `found` -> cleared.
+  // Next sweep: gh finds no matching PR for the branch after it moved
+  // -> absent from `found` -> cleared.
   reg.reconcilePrs(new Map(), new Set());
 
   assert.equal(reg.getSession("feat")!.prUrl, null);
@@ -167,4 +167,15 @@ test("prPollTargets drops sessions without a cwd and exited sessions", () => {
 test("prNumberFromUrl parses the PR number, else null", () => {
   assert.equal(prNumberFromUrl("https://github.com/o/r/pull/123"), 123);
   assert.equal(prNumberFromUrl("https://github.com/o/r/tree/main"), null);
+});
+
+
+test("reconcilePrs retains closed PRs and follows reopening", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+  for (const state of ["open", "closed", "open"] as const) {
+    reg.reconcilePrs(new Map([["feat", match({ state })]]), new Set());
+    assert.equal(reg.getSession("feat")!.prUrl, PR);
+    assert.equal(reg.getSession("feat")!.prState, state);
+  }
 });

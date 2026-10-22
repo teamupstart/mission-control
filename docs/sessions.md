@@ -36,6 +36,9 @@ one call per checkout. Those do not crowd the chip, which keeps naming the sessi
 checkout; they appear as the session detail's per-repository lines, and it is those the completion
 quorum and Foreman's [PR follow-through](work-queues.md#keeping-a-pr-on-track) read.
 
+PR links are green while open, purple when merged, and red when closed without merging.
+Closed links remain visible until the session moves to a branch with no matching PR.
+
 ### The title bar stays compact at half-screen
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it

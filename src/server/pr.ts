@@ -8,14 +8,14 @@ import { run } from "./util/exec.ts";
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
 // session's current branch. It is the source of truth behind the chip: it
 // discovers PRs the hook never saw (Codex sessions, PRs opened in the web UI),
-// surfaces whether that PR is open or merged, and retracts the chip only when the
+// surfaces whether that PR is open, merged, or closed, and retracts the chip only when the
 // session moves to a branch that no longer matches the PR's head. The hook only
 // ever sets a link optimistically; nothing but this poller can confirm a merge,
 // because a merge happens outside the session where no hook can observe it.
 //
 // A merged PR is deliberately kept (not cleared): once your work lands you can
 // still see the PR that carried it, right up until the session is reset onto a
-// different branch. Only a *closed-unmerged* PR is treated as "no PR".
+// different branch. Closed-unmerged PRs are kept too, with their closed state.
 //
 // Cheap by construction: live sessions cost one `gh` call per distinct worktree;
 // persisted links are concurrency-limited and back off independently.
@@ -84,8 +84,8 @@ async function forEachConcurrent<T>(
 /**
  * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
  * resolves the repo from that checkout's `origin`. Prefers a still-open PR, else
- * falls back to a merged one (so a landed PR keeps showing). Returns `null` when
- * the branch has provably no open/merged PR (only closed-unmerged, or none), or
+ * falls back to a merged one, then a closed one. Returns `null` when
+ * the branch has provably no matching PR, or
  * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
  * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
  */
@@ -115,9 +115,10 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const arr = JSON.parse(res.stdout || "[]") as unknown;
     if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"
     // `gh` lists newest-first; prefer an open PR, else the most recent merged one.
-    // A closed-unmerged PR is ignored, so the chip drops like there's no PR.
+    // Keep closed PRs visible when no open or merged PR supersedes them.
     const open = arr.find((p) => prStateOf(p) === "open");
-    const match = open ?? arr.find((p) => prStateOf(p) === "merged");
+    const match = open ?? arr.find((p) => prStateOf(p) === "merged")
+      ?? arr.find((p) => prStateOf(p) === "closed");
     if (!match) return null;
     const { url, number, createdAt, mergedAt, headRefOid } = match as {
       url?: unknown;
@@ -171,7 +172,9 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
   try {
     const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };
     const state = prStateOf(parsed);
-    if (state === null) return parsed.state === "CLOSED" ? null : "error";
+    // This lookup serves merge dependencies, where closure remains an unmerged result.
+    if (state === "closed") return null;
+    if (state === null) return "error";
     if (state === "open") return { state, mergedAt: null };
     const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
     return Number.isFinite(mergedAt) ? { state, mergedAt } : "error";
@@ -180,12 +183,13 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
   }
 }
 
-/** Map `gh`'s uppercase PR state to our surfaced states; closed-unmerged -> null. */
+/** Map `gh`'s uppercase PR state to our surfaced states; including closed-unmerged. */
 function prStateOf(p: unknown): PrState | null {
   const raw = (p as { state?: unknown })?.state;
   if (raw === "OPEN") return "open";
   if (raw === "MERGED") return "merged";
-  return null; // CLOSED (unmerged) or anything unexpected
+  if (raw === "CLOSED") return "closed";
+  return null; // unexpected state
 }
 
 // CheckRun conclusions and StatusContext states that we count as a failed check.
@@ -343,7 +347,7 @@ export async function pollAndReconcilePrs(
         episodeId: t.episodeId,
       });
     }
-    // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
+    // r === null (no matching PR) -> omitted from both -> reconcile clears the chip
   }
   for (const t of repoQueryable) {
     const r = results.get(t.cwd);

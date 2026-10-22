@@ -6399,8 +6399,8 @@ export interface TaskRepoPrRecord {
  *
  * `prState` is derived rather than stored: a binding exists only for a pull request this
  * task opened, and the only transition the daemon records against it is the merge. A pull
- * request closed unmerged therefore still reads `open` here, which is the same thing the
- * session chip does with one - the poller simply stops reporting it.
+ * request closed unmerged therefore still reads `open` in this binding-only projection.
+ * Session summaries overlay the matching live poll observation to surface closure.
  */
 export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
   const current = taskWorkEpisodeForTask(taskId);

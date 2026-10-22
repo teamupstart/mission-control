@@ -4981,7 +4981,7 @@ export class Registry extends EventEmitter {
   private repoPrSummaryFor(s: Session): TaskSummary | null {
     const task = this.activeTaskFor(s.id, s.cwd);
     if (!task || task.extraRepos.length === 0) return s.task;
-    return this.taskSummaryFor(s.id, s.cwd);
+    return this.taskSummaryFor(s.id, s.cwd, s.pipeline, s);
   }
 
   /**
@@ -5135,14 +5135,14 @@ export class Registry extends EventEmitter {
 
   /**
    * Reconcile each session's PR chip against what `gh` reported this tick.
-   * `found` holds the open-or-merged PR for every session that has one right now;
+   * `found` holds the open, merged, or closed PR for every session that has one right now;
    * `skip` holds sessions whose `gh` query failed (missing/unauthenticated `gh`, a
    * timeout) so their existing chip is left untouched rather than wrongly wiped.
    * Every other session is set to "no PR": that single rule retracts the chip when
    * the session is reset onto a branch with no matching PR (the branch drops out
    * of `found`) - so a reused session never carries a stale chip from its previous
    * branch. A merged PR stays in `found` (the poller keeps reporting it) and so
-   * lingers until the branch changes; only a closed-unmerged PR falls out.
+   * lingers until the branch changes, as does a closed-unmerged PR.
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
@@ -5230,7 +5230,7 @@ export class Registry extends EventEmitter {
       // request hangs off - so without this the card would go on saying "open" until some
       // unrelated event happened to rebuild it. Identical for a single-repo session, which
       // gets back the summary it already had.
-      const task = this.repoPrSummaryFor(live);
+      const task = this.repoPrSummaryFor({ ...live, prUrl: url, prState: state });
       const taskMoved = JSON.stringify(task) !== JSON.stringify(live.task);
       if (
         !taskMoved &&
@@ -6895,8 +6895,19 @@ export class Registry extends EventEmitter {
     sessionId: string,
     cwd: string | null,
     sessionPipeline: SessionPipelineLink | null = this.sessions.get(sessionId)?.pipeline ?? null,
+    session: Session | undefined = this.sessions.get(sessionId),
   ): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
+    const primaryPr = t && t.extraRepos.length > 0 ? primaryRepoPrForTask(t.id) : null;
+    // Bindings retain merge outcomes; the matching live observation also knows closure.
+    if (
+      primaryPr &&
+      primaryPr.mergedAt === null &&
+      session?.prUrl === primaryPr.prUrl &&
+      session?.prState
+    ) {
+      primaryPr.prState = session.prState;
+    }
     return t
       ? {
           id: t.id,
@@ -6924,7 +6935,7 @@ export class Registry extends EventEmitter {
           repoPrs:
             t.extraRepos.length === 0
               ? []
-              : taskRepoPrSummaries(t, primaryRepoPrForTask(t.id), (repoRoot, prUrl) =>
+              : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
         }
       : null;

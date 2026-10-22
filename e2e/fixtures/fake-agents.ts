@@ -109,7 +109,7 @@ export interface FakePullRequest {
   cwd: string;
   url: string;
   number: number;
-  state: "OPEN" | "MERGED";
+  state: "OPEN" | "MERGED" | "CLOSED";
   /** ISO instant. Must be after the session's work episode started, or adoption refuses it. */
   createdAt: string;
   mergedAt: string | null;

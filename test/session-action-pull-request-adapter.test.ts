@@ -505,3 +505,106 @@ test("the persisted expectation and the resolver agree on what a full commit id 
     );
   }
 });
+
+// ---- a pull request this session adopted before the action was delivered ---------------------
+//
+// The Inspector poller fills branch, head and state, and it does not run while the Inspector is
+// disabled. A session that finds its existing pull request and opens no duplicate must still
+// complete, so an earlier adoption by the same session counts unless something KNOWN contradicts.
+
+const earlier = (patch: Partial<SessionActionAdoptedPullRequest> = {}) =>
+  pr({
+    adoptedAt: 1,
+    branch: null,
+    observedHeadOid: null,
+    observedState: null,
+    observedAt: null,
+    checkout: null,
+    ...patch,
+  });
+
+test("an unobserved pull request adopted before delivery by the same session completes", () => {
+  const decision = decide([earlier()]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  const details = (decision.warnings ?? []).map((w) => w.detail).join(" ");
+  assert.match(details, /not available for comparison/);
+  // No recorded checkout: the looser rule is stated rather than silent.
+  assert.match(details, /no checkout was recorded/);
+});
+
+test("a recorded checkout that matches this one completes without the looseness note", () => {
+  const decision = decide([earlier({ checkout: REPO })]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  const details = (decision.warnings ?? []).map((w) => w.detail).join(" ");
+  assert.doesNotMatch(details, /no checkout was recorded/);
+});
+
+test("a recorded checkout that differs from this one does not complete", () => {
+  assert.deepEqual(decide([earlier({ checkout: "/somewhere/else" })]), {
+    kind: "waiting",
+    reason: "awaiting_pull_request",
+  });
+});
+
+test("an earlier adoption by a different session does not complete", () => {
+  assert.deepEqual(decide([earlier({ sessionId: "sess-2" })]), {
+    kind: "waiting",
+    reason: "awaiting_pull_request",
+  });
+  assert.deepEqual(decide([earlier({ sessionId: null })]), {
+    kind: "waiting",
+    reason: "awaiting_pull_request",
+  });
+});
+
+test("an earlier adoption already observed as closed or merged does not complete", () => {
+  for (const observedState of ["CLOSED", "MERGED"] as const) {
+    assert.deepEqual(decide([earlier({ observedState })]), {
+      kind: "waiting",
+      reason: "awaiting_pull_request",
+    });
+  }
+});
+
+test("an earlier adoption on a different observed branch does not complete", () => {
+  assert.deepEqual(decide([earlier({ branch: "other/branch" })]), {
+    kind: "waiting",
+    reason: "awaiting_pull_request",
+  });
+});
+
+test("an earlier adoption must resolve to this checkout's repository", () => {
+  // `repositoryRoot` here is the resolved repository identity, in the spelling of
+  // `repository.repositoryId`. Equal completes; a different or unresolved one waits.
+  assert.equal(decide([earlier({ repositoryRoot: REPO })]).kind, "complete");
+  for (const repositoryRoot of ["/other-repo", null]) {
+    assert.deepEqual(decide([earlier({ repositoryRoot })]), {
+      kind: "waiting",
+      reason: "awaiting_pull_request",
+    });
+  }
+  // A linked worktree: the checkout's toplevel differs from the repository identity, and the
+  // identity is still what is compared.
+  assert.equal(
+    decide([earlier()], {
+      repository: { repositoryId: REPO, root: "/worktrees/s1", branch: BRANCH, headOid: HEAD, headCommittedAt: 4_000 },
+    }).kind,
+    "complete",
+  );
+});
+
+test("several earlier adoptions resolve to the lowest-numbered one", () => {
+  const decision = decide([
+    earlier({ key: "owner/repo#9", number: 9, url: "https://github.com/owner/repo/pull/9" }),
+    earlier({ key: "owner/repo#4", number: 4, url: "https://github.com/owner/repo/pull/4" }),
+  ]);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.equal(
+    decision.continuationExpectation.kind === "pull_request"
+      && decision.continuationExpectation.pullRequestNumber,
+    4,
+  );
+});

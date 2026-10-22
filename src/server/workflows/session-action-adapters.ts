@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import {
   SESSION_ACTION_COMPLETION_CAPABILITIES,
   SESSION_ACTION_COMPLETION_KINDS,
@@ -144,6 +145,12 @@ export interface SessionActionAdoptedPullRequest {
   sessionId: string | null;
   /** When Mission Control adopted it. Bounds a mismatch to THIS action's turn. */
   adoptedAt: number;
+  /**
+   * The checkout the creating session was working in when it was adopted, as recorded, or
+   * null when the ledger holds none. Optional so a row built without it reads as "not
+   * recorded". Only the earlier-adoption arm of the Pull Request completion reads it.
+   */
+  checkout?: string | null;
 }
 
 /**
@@ -285,6 +292,47 @@ function openedByThisTurn(
   deliveredAt: number,
 ): boolean {
   return pr.sessionId === sessionId && pr.adoptedAt >= deliveredAt;
+}
+
+/** A path as git and the filesystem would spell it, or the input when it cannot be resolved. */
+function resolvedPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * An open pull request this same session adopted BEFORE the instruction was delivered, and
+ * that nothing observed contradicts.
+ *
+ * Adoption proves the session opened it; the Inspector poller is what would later record its
+ * branch and state, and it does not run while the Inspector is disabled. Without this arm a
+ * session that correctly found its existing pull request and opened no duplicate would wait
+ * forever. Every comparison here is "known and different disqualifies, unknown does not".
+ *
+ * `looseCheckout` is true when the ledger recorded no checkout to compare, which the warning
+ * then says plainly.
+ */
+function earlierAdoption(
+  pr: SessionActionAdoptedPullRequest,
+  sessionId: string,
+  repository: SessionActionRepositoryFacts,
+  sessionCwd: string | null,
+): { matches: boolean; looseCheckout: boolean } {
+  const no = { matches: false, looseCheckout: false };
+  if (pr.sessionId !== sessionId) return no;
+  if (pr.repositoryRoot === null || pr.repositoryRoot !== repository.repositoryId) return no;
+  if (pr.observedState !== null && pr.observedState !== "OPEN") return no;
+  if (pr.branch !== null && pr.branch !== repository.branch) return no;
+  if (!pr.checkout) return { matches: true, looseCheckout: true };
+  const recorded = resolvedPath(pr.checkout);
+  const candidates = [repository.root, sessionCwd].filter((p): p is string => !!p);
+  return {
+    matches: candidates.some((candidate) => resolvedPath(candidate) === recorded),
+    looseCheckout: false,
+  };
 }
 
 function pullRequestExpectation(
@@ -481,6 +529,25 @@ const pullRequest: SessionActionAdapter = {
     // still durable proof that this turn opened a PR, so complete with the generated metadata
     // warning rather than waiting for an optional provider poll.
     if (adoptedThisTurn) return completePullRequest(adoptedThisTurn, context, null);
+    // An open pull request this session adopted earlier, which the Inspector has not
+    // observed (it is disabled, or has not polled yet). Same session, same repository, and
+    // nothing known contradicts it, so adopt it rather than wait for a second one.
+    const earlier = context.adoptedPullRequests
+      .map((pr) => ({ pr, verdict: earlierAdoption(pr, context.session.id, repository, context.session.cwd ?? null) }))
+      .filter((entry) => entry.verdict.matches);
+    if (earlier.length > 0) {
+      const { pr: chosen, verdict } = earlier.reduce(
+        (best, entry) => (entry.pr.number < best.pr.number ? entry : best),
+      );
+      return completePullRequest(
+        chosen,
+        context,
+        `${chosen.url} was opened by this session before this action, and its branch and state `
+          + "were not available for comparison"
+          + (verdict.looseCheckout ? ", and no checkout was recorded to match against this one" : "")
+          + ". The workflow continued; run it again to review the published ref.",
+      );
+    }
     // No pull request was adopted for this turn or identified on the checked branch.
     return { kind: "waiting", reason: "awaiting_pull_request" };
   },

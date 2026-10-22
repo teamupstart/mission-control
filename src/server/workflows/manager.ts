@@ -5867,6 +5867,7 @@ export class WorkflowManager {
       observedAt: pr.observedAt,
       sessionId: pr.sessionId,
       adoptedAt: pr.adoptedAt,
+      checkout: pr.cwd,
     }));
   }
 

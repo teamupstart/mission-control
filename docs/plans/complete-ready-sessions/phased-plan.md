@@ -19,8 +19,6 @@ The operator chose ready-only sessions, verified delivery, the whole Fleet inclu
 
 ## Size and phase-count rationale
 
-Estimated gross non-test production additions or material changes: **600-950 lines**. Planning estimate, not measured diff size.
-
 Assumptions for this estimate: approximately 250-400 lines for eligibility readers, guards, and lifecycle integration; 100-170 for shared wire shapes and route/API adapters; 250-380 for the shared Fleet control, confirmation/results, state refresh, and styles. Tests and documentation are excluded from this estimate. The implementation may reuse more existing code.
 
 Create **one coherent vertical phase**. The readiness rule, race-safe execution, count, confirmation, and honest results are one operation. Splitting by application layer would ship an unused API or a control whose policy is incomplete. Existing closure, publication, archive, merge, and resource owners make the combined slice feasible without a separate migration or infrastructure milestone. All tests and documentation travel with the behavior.

@@ -397,13 +397,14 @@ test("a login-shell grandchild holding output cannot outlive the discovery deadl
 test("a verbose login shell cannot block PATH discovery on stderr backpressure", async () => {
   const f = fixture();
   const shell = f.env.SHELL!;
+  // Fill an undrained pipe before reporting PATH, without putting another Node
+  // startup inside the discovery deadline when the test suite runs under load.
   writeFileSync(
     shell,
     [
-      `#!${process.execPath}`,
-      `process.stderr.write("x".repeat(1024 * 1024), () => {`,
-      `  process.stdout.write("__MISSION_PATH__/verbose/bin__MISSION_PATH__");`,
-      `});`,
+      "#!/bin/sh",
+      "/bin/dd if=/dev/zero bs=1048576 count=1 >&2 2>/dev/null || exit 1",
+      "printf '__MISSION_PATH__/verbose/bin__MISSION_PATH__'",
       "",
     ].join("\n"),
   );

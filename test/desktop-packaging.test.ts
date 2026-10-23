@@ -46,16 +46,15 @@ test("the disk image ships the app and an offline Read Me, and no Applications a
   assert.doesNotMatch(dmg, /\/Users\//u);
 });
 
-test("the disk image Read Me explains personal install, system install, and managed updates", () => {
-  // The dmg is an UNMANAGED distribution artifact: dragging the app across records no receipt,
-  // so the app cannot update itself afterwards. The Read Me is the only place that can say so,
-  // because the alias it replaced said nothing at all.
+test("the disk image Read Me distinguishes signed enrollment from developer installs", () => {
   const readme = repoFile("build/dmg/readme.txt");
   assert.match(readme, /UNMANAGED/u);
-  assert.match(readme, /Applications folder\n {3}inside your home folder/u);
-  assert.match(readme, /\/Applications folder at the top level/u);
+  assert.match(readme, /Applications folder inside your home folder/u);
+  assert.match(readme, /copy it into \/Applications/u);
   assert.match(readme, /make install/u);
-  assert.match(readme, /--scope system/u);
+  assert.match(readme, /Enroll this copied app/u);
+  assert.match(readme, /No host Node, npm, npx, Git or compilation/u);
+  assert.match(readme, /Automatic binary updates\narrive in a later build/u);
   assert.doesNotMatch(readme, /\/Users\//u, "no build account's home may reach a recipient");
 });
 

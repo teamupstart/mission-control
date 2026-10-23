@@ -354,3 +354,8 @@ contributor execution mechanics; they are deliberately not restated here.
 for a pre-fix revision beside it, so a change to what the GitHub Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the
 working tree, so it is safe to run on dirty state.
+
+## Binary desktop installation
+
+See [Binary installation and manual recovery](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for installer options, recovery behavior, and qualification limits.

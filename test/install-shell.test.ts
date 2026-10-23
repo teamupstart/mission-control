@@ -70,7 +70,9 @@ else {process.exit(99);}
   let input = shell;
   // Fixture-only OS substitution. Production has no environment bypass for trust checks.
   for (const tool of mocked.filter(t => t !== 'gh')) input = input.replaceAll(`/usr/bin/${tool}`, join(bin, tool)).replaceAll(`/usr/sbin/${tool}`, join(bin, tool));
-  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: `${bin}:/usr/bin:/bin`, PROBE_LOG: log}, encoding: 'utf8', timeout: 30_000})};
+  // Missing fixture tools must stay missing even on hosts with gh installed.
+  // Production OS utilities use absolute paths; PATH contains only our probes.
+  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: 30_000})};
 }
 
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { executableChildEnv } from "../server/executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
 import { binaryEnrollmentChoice, type BinaryEnrollment } from "../shared/binary-enrollment.ts";
 import { validateBinaryBuildMetadata } from "../shared/binary-distribution.mjs";
@@ -41,8 +42,7 @@ export async function startBinaryEnrollment(bundle: string, stateDirectory: stri
   mkdirSync(stateDirectory, {recursive: true, mode: 0o700});
   const logPath = join(stateDirectory, "binary-install.log");
   const fd = openSync(logPath, "a", 0o600);
-  const env: NodeJS.ProcessEnv = {...process.env, MISSION_HOME: stateDirectory};
-  delete env.ELECTRON_RUN_AS_NODE;
+  const env = executableChildEnv({...process.env, MISSION_HOME: stateDirectory}, ["ELECTRON_RUN_AS_NODE"]);
   const executable = FIXED_OS_EXECUTABLES.bash;
   let child;
   try { child = spawn(executable, args, {env, detached: status.action === "install", stdio: ["ignore", fd, fd]}); }

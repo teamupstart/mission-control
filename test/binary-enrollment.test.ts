@@ -6,6 +6,7 @@ import os, { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { startBinaryEnrollment } from '../src/main/binary-enrollment.ts';
+import { ExecutableLocator, executableLocator } from '../src/server/executables/locator.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 
 function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, location: 'copied' | 'personal' | 'personal-alias' | 'translocated' | 'mounted-image' = 'copied') {
@@ -82,7 +83,7 @@ exit ${exitCode}
     if (electronRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
     else process.env.ELECTRON_RUN_AS_NODE = electronRunAsNode;
   });
-  return {bundle, stateDirectory, logPath, launch, children,
+  return {bundle, home, bootstrap, stateDirectory, logPath, launch, children,
     expectedLog: `bootstrap stdout\nbootstrap stderr\nstate=${stateDirectory}\nelectron=unset\n`};
 }
 
@@ -149,4 +150,36 @@ for (const location of ['personal', 'personal-alias'] as const) test(`${location
   assert.equal(f.launch.mock.callCount(), 1);
   assert.equal(result.started, true);
   assert.equal(readFileSync(f.logPath, 'utf8'), f.expectedLog);
+});
+
+for (const location of ['copied', 'translocated'] as const) test(`Finder-launched ${location} handoff finds native gh through the shared child environment`, async t => {
+  const f = fixture(t, 'stable', 0, location);
+  const inheritedPath = process.env.PATH;
+  const finderPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+  process.env.PATH = finderPath;
+  t.after(() => {
+    if (inheritedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = inheritedPath;
+  });
+  // Isolate the shared path policy from this test host and its cached environment.
+  // Use a real supported per-user gh; never invoke the operator's CLI or network.
+  const locator = new ExecutableLocator({env: {HOME: f.home, PATH: finderPath}, platform: 'darwin'});
+  t.mock.method(executableLocator, 'environment', (base?: NodeJS.ProcessEnv, drop?: readonly string[]) => locator.environment(base, drop));
+  const gh = join(f.home, '.local/bin/gh');
+  mkdirSync(dirname(gh), {recursive: true});
+  writeFileSync(gh, "#!/bin/sh\nprintf '%s\\n' 'fixture gh reached'\n", {mode: 0o755});
+  const bootstrap = readFileSync(f.bootstrap, 'utf8');
+  writeFileSync(f.bootstrap, `located=$(command -v gh) || exit 71
+[ "$located" = "${gh}" ] || exit 72
+"$located" --version
+${bootstrap}`);
+  writeFileSync(join(f.stateDirectory, 'release-child'), 'continue');
+  const result = await startBinaryEnrollment(f.bundle, f.stateDirectory);
+  for (const {child} of f.children) child.ref();
+  assert.equal(result.started, true);
+  assert.deepEqual(await Promise.all(f.children.map(child => child.closed)), [0]);
+  const childPath = f.launch.mock.calls[0]!.arguments[2].env!.PATH!.split(':');
+  assert.ok(childPath.includes('/opt/homebrew/bin'), 'the shared supported defaults include Homebrew');
+  assert.ok(childPath.includes(dirname(gh)), 'the real Bash child can reach the supported per-user installation');
+  assert.equal(readFileSync(f.logPath, 'utf8'), `fixture gh reached\n${f.expectedLog}`);
 });

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
@@ -7,6 +7,7 @@ import { binaryEnrollmentChoice, type BinaryEnrollment } from "../shared/binary-
 import { validateBinaryBuildMetadata } from "../shared/binary-distribution.mjs";
 import { binaryPublisherPolicy } from "../shared/binary-publisher-policy.mjs";
 import { verifyBinaryPublisher } from "../../scripts/install-staged-app.mjs";
+import { userAppsDir } from "../../scripts/install-destination.mjs";
 import { readBinaryReceipt, temporaryInstallLocation } from "../../scripts/binary-install-policy.mjs";
 
 export function readBinaryEnrollment(bundle: string, stateDirectory: string): BinaryEnrollment | null {
@@ -29,7 +30,11 @@ export async function startBinaryEnrollment(bundle: string, stateDirectory: stri
   const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).missionBinary;
   const args = [join(root, "scripts/install.sh"), "--ref", metadata.releaseTag ?? metadata.commit];
   if (status.action === "enroll") {
-    args.push("--enroll", ...(dirname(bundle) === "/Applications" ? ["--scope", "system"] : ["--apps-dir", dirname(bundle)]));
+    const directory = dirname(bundle);
+    const personal = userAppsDir();
+    const isPersonal = existsSync(personal) && realpathSync(directory) === realpathSync(personal);
+    args.push("--enroll", ...(directory === "/Applications" ? ["--scope", "system"]
+      : isPersonal ? ["--scope", "user"] : ["--apps-dir", directory]));
   }
   // No destination override on mounted installs: the shared resolver preserves a
   // current receipt, or chooses the canonical personal directory for a fresh user.

@@ -27,7 +27,7 @@ function acquireInstallerState(directory, bundle) {
   const path = join(directory, 'daemon.lock');
   const previous = existsSync(path) ? readFileSync(path, 'utf8') : '';
   try {
-    const handle = binding.acquire(path, previous);
+    const handle = binding.acquire(path, previous || `${JSON.stringify({pid: process.pid, role: 'binary-installer'})}\n`);
     return () => binding.release(handle);
   } catch (error) {
     if (error.code === 'ELOCKED') throw new Error('A daemon still owns this state home. Quit that Mission Control installation or stop its standalone daemon, then retry. No process was signalled.');
@@ -79,6 +79,8 @@ export async function installBinary(options, ports = {}) {
   const mac = ports.mac ?? realMacAppOps(stateDirectory);
   const runtime = ports.runtime ?? migrationRuntimePorts({port: PORT, mac});
   let releaseState = () => {};
+  const releaseProbe = () => { releaseState(); releaseState = () => {}; };
+  const launchSource = async source => { releaseProbe(); await runtime.launchSource(source); };
   let sourceExited = false;
   const stopBoundary = async () => {
     console.log('Quit the installation being replaced to continue. Standalone or unrelated daemons must be stopped separately.');
@@ -88,7 +90,10 @@ export async function installBinary(options, ports = {}) {
     sourceExited = true;
   };
   const transactionPorts = {...runtime, waitForParent: stopBoundary,
-    launchSource: async source => { if (sourceExited) await runtime.launchSource(source); }, waitForDaemonExit: async () => {
+    // The transaction retains its receipt/journal ownership. Only the daemon
+    // probe must yield before either the replacement or restored app can start.
+    launchTarget: async plan => { releaseProbe(); return runtime.launchTarget(plan); },
+    launchSource: async source => { if (sourceExited) await launchSource(source); }, waitForDaemonExit: async () => {
     await runtime.waitForDaemonExit();
     releaseState = (ports.acquireState ?? acquireInstallerState)(stateDirectory, bundle);
   }};
@@ -96,7 +101,7 @@ export async function installBinary(options, ports = {}) {
     const pending = readMigrationJournal(stateDirectory);
     if (pending && !['restored', 'complete'].includes(pending.stage)) {
       // Reuse the original journal and recovery owner; never create a competing writer.
-      await recoverMigration(stateDirectory, {...transactionPorts, waitForParent: async () => {}, launchSource: runtime.launchSource});
+      await recoverMigration(stateDirectory, {...transactionPorts, waitForParent: async () => {}, launchSource});
       throw new Error('The previous installation was recovered. Reopen the managed app or rerun this installer after inspecting its outcome.');
     }
     if (previous && !options.enroll) {
@@ -128,7 +133,7 @@ export async function installBinary(options, ports = {}) {
     // A first install has no prior executable to restore. Receipt publication uses
     // the direct staged-install owner; launch failures retain the managed app for
     // forward recovery instead of guessing at the compatibility of existing state.
-    releaseState(); releaseState = () => {};
+    releaseProbe();
     if (!options.enroll) {
       if (ports.launch) { await ports.launch(receipt.appPath, stateDirectory); return {appPath: receipt.appPath, dryRun: false}; }
       const nonce = randomBytes(16).toString('hex');
@@ -141,7 +146,7 @@ export async function installBinary(options, ports = {}) {
       await waitForInstalledDaemon(receipt, stateDirectory, mac);
     }
     return {appPath: receipt.appPath, dryRun: false};
-  } finally { releaseState(); }
+  } finally { releaseProbe(); }
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {

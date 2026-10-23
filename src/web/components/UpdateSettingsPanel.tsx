@@ -84,7 +84,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
           }}>{enrollment.action === "install" ? "Install Mission Control" : "Enroll this copied app"}</button>
         </Tooltip>}
       </div>}
-      {snapshot?.phase === "disabled" && <p><Tooltip label="Open signed installation and manual replacement instructions.">
+      {binary && snapshot?.phase === "disabled" && <p><Tooltip label="Open signed installation and manual replacement instructions.">
         <a className="btn btn-ghost" href={BINARY_RECOVERY_URL} target="_blank" rel="noreferrer">Signed installer and recovery instructions</a>
       </Tooltip></p>}
       {enrollmentResult && <p role="status">{enrollmentResult}</p>}

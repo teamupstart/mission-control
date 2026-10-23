@@ -25,8 +25,9 @@ download() {
 }
 
 verify_app() {
-  local app=$1 link target count=0 size
+  local app=$1 link target count=0 size depth value
   [[ -d "$app" && ! -L "$app" ]] || fail "The image has no regular Mission Control.app."
+  app=$(cd -P -- "$app" && pwd) || fail "Could not resolve the app root."
   size=$(/usr/bin/du -sk "$app"); size=${size%%[[:space:]]*}
   [[ $size -le 8388608 ]] || fail "The app exceeds the unpacked size limit."
   # Framework links are expected, but every resolved target must stay inside this app.
@@ -40,6 +41,11 @@ verify_app() {
         value=$(/usr/bin/readlink "$target")
         if [[ "$value" == /* ]]; then target=$value; else target="$(/usr/bin/dirname "$target")/$value"; fi
       done
+      # A final directory component can itself be . or .., so resolving only
+      # its parent leaves an apparent app prefix on an escaping target.
+      if [[ -d "$target" ]]; then
+        target=$(cd -P -- "$target" && pwd) || fail "Could not resolve an app link."
+      fi
       [[ $depth -lt 40 && -e "$target" && "$target" == "$app/"* ]] || fail "The app contains an escaping or invalid link."
     fi
   done < <(/usr/bin/find "$app" -print0)
@@ -163,7 +169,7 @@ main() {
   # synchronous children. Failures retain it for recovery; no candidate runs mounted.
   ELECTRON_RUN_AS_NODE=1 "$mission_tmp/Mission Control.app/Contents/MacOS/Mission Control" \
     "$mission_tmp/Mission Control.app/Contents/Resources/app/scripts/install-binary.mjs" \
-    --bundle "$mission_tmp/Mission Control.app" --manifest "$manifest" "${forwarded[@]}"
+    --bundle "$mission_tmp/Mission Control.app" --manifest "$manifest" ${forwarded[@]+"${forwarded[@]}"}
   trap - EXIT
   /bin/rm -rf -- "$mission_tmp"
 }

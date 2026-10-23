@@ -4,13 +4,16 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import childProcess, { spawnSync } from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { binaryInstallReceipt, readBinaryReceipt, assertPersistentDestination, parseBinaryInstallArgs } from '../scripts/binary-install-policy.mjs';
 import { installBinary, waitForInstalledDaemon } from '../scripts/install-binary.mjs';
 import { prepareStagedInstall, installStagedApp, verifyBinaryBuild, inspectBundle } from '../scripts/install-staged-app.mjs';
 import { resolveInstallDestination } from '../scripts/install-destination.mjs';
 import { binaryEnrollmentChoice } from '../src/shared/binary-enrollment.ts';
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
+import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
+import { validateNativeStateLockBinding } from '../src/server/state-ownership-native.ts';
+import { claimInstallReceiptWriter } from '../scripts/install-migration.mjs';
 import { binaryInstallationPage } from '../src/main/startup-page.ts';
 
 test('the local installation page treats paths and diagnostics as text, not markup', () => {
@@ -20,6 +23,7 @@ test('the local installation page treats paths and diagnostics as text, not mark
   assert.doesNotMatch(page, /<script>/);
 });
 
+const nativeAddon = ensureNativeStateLockAddon();
 const identity = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app', channel: 'stable', releaseTag: 'v1.2.3', version: '1.2.3', commit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}};
 const manifest = {...identity, assets: [
   {kind: 'dmg', id: '1', name: 'app.dmg', bytes: 100, sha256: 'a'.repeat(64)},
@@ -356,4 +360,81 @@ test('first-launch readiness requires the expected daemon, state lock and instal
   await assert.rejects(waitForInstalledDaemon(receipt, f.stateDirectory, {run: async () => ({code: 0, stdout: '123 1 S /another/app'})}, {probe, timeout: 1}), /did not become ready/);
   writeFileSync(join(f.stateDirectory, 'daemon.lock'), JSON.stringify({pid: 456, port: PORT}));
   await assert.rejects(waitForInstalledDaemon(receipt, f.stateDirectory, mac, {probe, timeout: 1}), /did not become ready/);
+});
+
+for (const outcome of ['commit', 'rollback', 'recovery'] as const) test(`binary replacement releases its native state probe before ${outcome} launch while retaining receipt ownership`, async t => {
+  const f = fixture(t);
+  const native = join(f.bundle, 'Contents/Resources/app/dist/native/state-lock.node');
+  mkdirSync(join(native, '..'), {recursive: true});
+  cpSync(nativeAddon, native);
+  const binding = validateNativeStateLockBinding(createRequire(import.meta.url)(native));
+  await installBinary(f.args, f.ports);
+  const previous = inspectBundle(f.appPath);
+  const previousReceipt = readFileSync(join(f.stateDirectory, 'install-receipt.json'), 'utf8');
+  nextRelease(f);
+  const ports = replacementPorts(t, f);
+  const lockPath = join(f.stateDirectory, 'daemon.lock');
+  writeFileSync(lockPath, JSON.stringify({pid: 987653, port: 4242}));
+  let probed = false;
+  let launches = 0;
+  const launch = async () => {
+    // This is the same native acquisition a replacement or restored daemon needs.
+    const handle = binding.acquire(lockPath, 'fixture daemon');
+    binding.release(handle);
+    launches++;
+    assert.throws(() => claimInstallReceiptWriter(f.stateDirectory), /lock|owned|another|progress/i,
+      'releasing the daemon probe must not release the install transaction');
+  };
+  const runtime = {...ports.runtime,
+    checkpoint: (stage: string) => {
+      if (stage !== 'target-launching') return;
+      probed = true;
+      assert.throws(() => binding.acquire(lockPath, 'intruder'), {code: 'ELOCKED'},
+        'hold the daemon probe until the staged target is validated');
+      if (outcome !== 'commit') throw Object.assign(new Error('before launch failure'), {migrationCrash: outcome === 'recovery'});
+    },
+    launchTarget: async () => {await launch(); return {pid: 987654, identity: 'fixture'};},
+    launchSource: launch,
+  };
+  // Exercise the production acquireInstallerState, using a real native addon in
+  // a disposable app. Apple signature and GUI responses remain fixture ports.
+  const run = () => installBinary(f.args, {...ports, runtime, acquireState: undefined});
+  if (outcome === 'commit') await run();
+  else {
+    await assert.rejects(run(), /before launch failure/);
+    if (outcome === 'recovery') await assert.rejects(run(), /previous installation was recovered/);
+    assert.deepEqual(inspectBundle(f.appPath), previous);
+    assert.equal(readFileSync(join(f.stateDirectory, 'install-receipt.json'), 'utf8'), previousReceipt);
+  }
+  assert.equal(probed, true);
+  assert.equal(launches, 1);
+  assert.equal(readBinaryReceipt(f.stateDirectory)?.installedVersion, outcome === 'commit' ? '1.2.4' : '1.2.3');
+  const finalProbe = binding.acquire(lockPath, 'after transaction');
+  binding.release(finalProbe);
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+for (const initialLock of ['missing', 'released'] as const) test(`first install acquires a ${initialLock} native state lock and releases it before launch`, async t => {
+  const f = fixture(t);
+  const native = join(f.bundle, 'Contents/Resources/app/dist/native/state-lock.node');
+  mkdirSync(join(native, '..'), {recursive: true});
+  cpSync(nativeAddon, native);
+  const binding = validateNativeStateLockBinding(createRequire(import.meta.url)(native));
+  const lockPath = join(f.stateDirectory, 'daemon.lock');
+  if (initialLock === 'released') writeFileSync(lockPath, '');
+  let launched = false;
+  await installBinary(f.args, {...f.ports, acquireState: undefined,
+    runtime: {waitForDaemonExit: async () => {
+      assert.throws(() => binding.acquire(lockPath, 'contender'), {code: 'ELOCKED'});
+    }},
+    launch: async () => {
+      const handle = binding.acquire(lockPath, 'new daemon');
+      binding.release(handle);
+      launched = true;
+    },
+  });
+  assert.equal(launched, true);
+  assert.equal(readBinaryReceipt(f.stateDirectory)?.appPath, f.appPath);
+  assert.deepEqual(inspectBundle(f.appPath), inspectBundle(f.bundle));
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });

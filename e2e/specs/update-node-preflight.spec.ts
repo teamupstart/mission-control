@@ -159,6 +159,23 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     await dashboard.mouse.move(1, 1);
     await expect(dashboard.locator(".tooltip")).toHaveCount(0);
     await capture("binary-source-fallback-refused.png");
+    for (const kind of ["source", "unmanaged"] as const) {
+      controller.stop();
+      port.installSnapshot = () => ({problem: null, receipt: kind === "source" ? {...prior, repo: "fixture/source-fork"} : null});
+      controller = new UpdateController(port);
+      await controller.start();
+      await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+      await dashboard.getByRole("button", {name: "Settings"}).click();
+      await dashboard.getByRole("tab", {name: "Setup"}).click();
+      await expect(updates).toContainText(kind === "source"
+        ? "Updates are disabled because this app was installed from fixture/source-fork."
+        : "This app was not installed with the managed install command.");
+      await expect(updates.getByRole("button", {name: "Check for updates"})).toBeDisabled();
+      await expect(updates.getByRole("link", {name: "Signed installer and recovery instructions"})).toHaveCount(0);
+      await dashboard.mouse.move(1, 1);
+      await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+      await capture(`${kind}-without-binary-recovery.png`);
+    }
   } finally {
     controller.stop();
   }

@@ -1,19 +1,26 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { startBinaryEnrollment } from '../src/main/binary-enrollment.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 
-function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, location: 'copied' | 'translocated' | 'mounted-image' = 'copied') {
+function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, location: 'copied' | 'personal' | 'personal-alias' | 'translocated' | 'mounted-image' = 'copied') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'binary-enrollment-')));
   t.after(() => rmSync(root, {recursive: true, force: true}));
-  const temporary = location !== 'copied';
+  const home = join(root, 'home');
+  mkdirSync(join(home, 'Applications'), {recursive: true});
+  symlinkSync(join(home, 'Applications'), join(root, 'Personal Apps'));
+  const homeMock = t.mock.method(os, 'homedir', () => home);
+  t.after(() => {homeMock.mock.restore(); syncBuiltinESMExports();});
+  const temporary = location === 'translocated' || location === 'mounted-image';
   const bundle = join(root, location === 'translocated' ? 'AppTranslocation/fixture/d/Mission Control.app'
-    : location === 'mounted-image' ? 'MC-image/Mission Control.app' : 'Copied Apps/Mission Control.app');
+    : location === 'mounted-image' ? 'MC-image/Mission Control.app'
+    : location === 'personal' ? 'home/Applications/Mission Control.app'
+    : location === 'personal-alias' ? 'Personal Apps/Mission Control.app' : 'Copied Apps/Mission Control.app');
   const appRoot = join(bundle, 'Contents/Resources/app');
   mkdirSync(join(appRoot, 'scripts'), {recursive: true});
   const metadata = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
@@ -55,7 +62,8 @@ exit ${exitCode}
   const launch = t.mock.method(childProcess, 'spawn', ((command: string, args: readonly string[], options: childProcess.SpawnOptions) => {
     assert.equal(command, '/bin/bash');
     assert.deepEqual(args, [bootstrap, '--ref', channel === 'stable' ? 'v1.2.3' : metadata.commit,
-      ...(temporary ? [] : ['--enroll', '--apps-dir', dirname(bundle)])]);
+      ...(temporary ? [] : ['--enroll', ...(location === 'personal' || location === 'personal-alias'
+        ? ['--scope', 'user'] : ['--apps-dir', dirname(bundle)])])]);
     assert.equal(options.detached, temporary);
     assert.equal(options.env?.MISSION_HOME, stateDirectory);
     assert.equal(options.env?.ELECTRON_RUN_AS_NODE, undefined);
@@ -133,4 +141,12 @@ test('copied-app enrollment reports a nonzero bootstrap exit with its appended l
   assert.deepEqual(inspectBundle(f.bundle), previous);
   assert.equal(existsSync(join(f.stateDirectory, 'install-receipt.json')), false);
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+for (const location of ['personal', 'personal-alias'] as const) test(`${location} copied app enrollment preserves canonical user scope`, async t => {
+  const f = fixture(t, 'stable', 0, location);
+  const result = await startBinaryEnrollment(f.bundle, f.stateDirectory);
+  assert.equal(f.launch.mock.callCount(), 1);
+  assert.equal(result.started, true);
+  assert.equal(readFileSync(f.logPath, 'utf8'), f.expectedLog);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -11,7 +11,7 @@ const root = process.cwd();
 const shell = renderInstallBootstrap();
 const commit = 'a'.repeat(40);
 function fixture(t: test.TestContext, failure = '') {
-  const dir = mkdtempSync(join(tmpdir(), 'binary-bootstrap-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'binary-bootstrap-')));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const candidate = join(dir, 'candidate.app');
@@ -23,6 +23,15 @@ function fixture(t: test.TestContext, failure = '') {
   writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {commit: failure === 'identity' ? 'b'.repeat(40) : commit, version: '1.2.3'}}));
   writeFileSync(join(candidate, 'Contents/MacOS/Mission Control'), '#!/bin/bash\nprintf "runtime:%s\\n" "$@" >> "$PROBE_LOG"\n[[ $ELECTRON_RUN_AS_NODE == 1 ]]\n', {mode: 0o755});
   if (failure === 'symlink') symlinkSync('/etc/passwd', join(candidate, 'Contents/escape'));
+  if (failure === 'symlink-parent') symlinkSync('..', join(candidate, 'escape'));
+  if (failure === 'internal-links') {
+    const framework = join(candidate, 'Contents/Frameworks/Fixture.framework');
+    mkdirSync(join(framework, 'Versions/A'), {recursive: true});
+    writeFileSync(join(framework, 'Versions/A/Fixture'), 'framework fixture');
+    symlinkSync('A', join(framework, 'Versions/Current'));
+    symlinkSync('Versions/Current/Fixture', join(framework, 'Fixture'));
+    symlinkSync('MacOS/../MacOS/Mission Control', join(candidate, 'Contents/internal'));
+  }
   // The fake gh also writes diagnostics under the download's per-file limit.
   // An 18-byte DMG caps that growing log at 1 KiB on Linux; use a realistic
   // minimum payload so logging cannot fail before the fixture downloads it.
@@ -59,8 +68,8 @@ else if(tool==='stat') console.log(statSync(args.at(-1)).size);
 else if(tool==='od') console.log(fail==='architecture'?'ce fa ed fe 07 00 00 00':'cf fa ed fe 0c 00 00 01');
 else if(tool==='codesign') {if(fail==='signer')process.exit(1);}
 else if(tool==='spctl') {console.error(fail==='notarization'?'source=Developer ID':'source=Notarized Developer ID');}
-else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true});}}
-else if(tool==='ditto') cpSync(args[0],args[1],{recursive:true});
+else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true,verbatimSymlinks:true});}}
+else if(tool==='ditto') cpSync(args[0],args[1],{recursive:true,verbatimSymlinks:true});
 else {process.exit(99);}
 `;
   const mocked = ['gh', 'plutil', 'uname', 'sw_vers', 'mktemp', 'stat', 'od', 'codesign', 'spctl', 'hdiutil', 'ditto'];
@@ -103,6 +112,7 @@ for (const [failure, message] of Object.entries({
   architecture: /app is not an arm64 executable/,
   mount: /Could not mount the DMG read-only/,
   symlink: /app contains an escaping or invalid link/,
+  'symlink-parent': /app contains an escaping or invalid link/,
 })) {
   test(`bootstrap refuses ${failure} before executing downloaded code`, t => {
     const f = fixture(t, failure); const result = f.run();
@@ -124,4 +134,10 @@ test('alpha bootstrap pins the selected full main SHA without falling back to st
   const log = readFileSync(f.log, 'utf8');
   assert.match(log, /commits\/main/); assert.ok(log.includes(`releases/tags/alpha-${commit}`));
   assert.doesNotMatch(log, /releases\/latest|forbidden:/);
+});
+
+test('bootstrap accepts internal framework link chains and normalized internal file targets', t => {
+  const f = fixture(t, 'internal-links'); const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(readFileSync(f.log, 'utf8'), /runtime:/);
 });

@@ -59,6 +59,9 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  * reads the server's own `registerTool` calls and fails if the two drift.
  */
 export const MISSION_MCP_TOOLS = [
+  "list_workflow_runs",
+  "get_workflow_run",
+  "trigger_workflow_action",
   "share_plan",
   PLAN_DECISIONS_TOOL,
   "request_review",

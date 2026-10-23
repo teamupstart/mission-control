@@ -640,7 +640,7 @@ export function ConsoleDetail({
         <CostChip cost={session.cost} />
       </header>
 
-      <SessionControlToggle key={session.id} session={session} />
+      {tab === "conversation" && <SessionControlToggle key={session.id} session={session} />}
 
       {pipelineCommission && (
         <div className="detail-pipeline-meter">

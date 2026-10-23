@@ -1935,7 +1935,7 @@ rollouts do not currently expose every separately billed hosted-tool fee.
 
 ### Let a session steer other sessions
 
-In the Mission Control desktop app, open a session's detail and enable **Control other sessions** to let that session act on
+In the Mission Control desktop app, open a session's Conversation tab and enable **Control other sessions** to let that session act on
 your behalf across the other live sessions. The checkbox always starts off. It grants the
 controller permission, so targets do not need their own checkbox enabled. You can revoke it
 at any time; subsequent reads and actions refuse immediately. An action already accepted

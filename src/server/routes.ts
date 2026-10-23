@@ -5396,19 +5396,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
     // The twin of /inject's backstop, and the reason `origin` exists on this schema at
     // all: the Foreman worker splits one delivery across the two routes, sending a
     // SUBMITTED answer through /inject and an unsubmitted one - a draft the model asked to
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
+    if (origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
@@ -5420,7 +5421,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         parsed.data.text,
         undefined,
-        parsed.data.origin,
+        origin,
       );
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
@@ -5429,7 +5430,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "send",
         outcome: sent.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(
@@ -5454,7 +5455,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // is a different operation from a send and is recorded as one.
       operation: parsed.data.submit ? "send" : "queued",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
@@ -5629,18 +5630,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+    if (origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.
@@ -5648,7 +5650,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "queued",
         outcome: result.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(result, result.ok ? 200 : 409);
@@ -5665,7 +5667,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // place. Claiming afterwards left it open on exactly the deliveries that matter most.
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
-    const daemonOrigin = parsed.data.origin === "human" ? null : parsed.data.origin;
+    const daemonOrigin = origin === "human" ? null : origin;
     if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
     const r = await injectPromptForRuntime(
       sdkSessions,
@@ -5673,7 +5675,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       undefined,
       () => registry.promptResourceBlockerForSession(session.id),
-      parsed.data.origin,
+      origin,
     );
     if (daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
@@ -5695,7 +5697,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       operation: "send",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);

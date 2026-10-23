@@ -42,7 +42,7 @@ export function controlRequest(target: string, command: SessionControlAction): {
   const base = `/api/sessions/${encodeURIComponent(target)}`;
   const post = (suffix: string, body?: unknown) => ({ path: `${base}/${suffix}`, method: "POST", body });
   switch (command.action) {
-    case "message": return post("inject", { text: command.text, origin: "session", buffer: false });
+    case "message": return post("inject", { text: command.text, buffer: false });
     case "interrupt": return post("interrupt");
     case "select_option": return post("select-option", { requestId: command.requestId, number: command.number, label: command.label });
     case "submit_options": return post("submit-options", command.form);

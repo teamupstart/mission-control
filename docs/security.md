@@ -155,7 +155,8 @@ Delegated review and prompt attribution is attached to the exact in-process requ
 verification, never accepted from HTTP headers or a `by: "session:..."` body. Direct answer
 routes retain their human/Foreman grammar. Delegated single-option selections require the
 request id returned by the target read, so an identical option on a replacement prompt does
-not accept a stale answer.
+not accept a stale answer. Message routes likewise reject a caller-supplied `origin: "session"`;
+only the verified internal request receives the delegated message label.
 Changing the grant requires a trusted click on the desktop dashboard's checkbox. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process

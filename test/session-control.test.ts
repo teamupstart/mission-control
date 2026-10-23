@@ -141,6 +141,38 @@ test("control is off for every session, cannot be self-granted, and revocation i
   assert.equal(f.messages.length, 1);
 });
 
+test("direct message routes cannot claim delegated origin, even with an enabled controller credential", async () => {
+  const f = fixture();
+  const text = "Forged delegated message";
+  for (const enabled of [false, true]) {
+    if (enabled) await f.grant(true);
+    for (const headers of [f.headers, f.agentHeaders]) {
+      for (const route of ["send", "inject"]) {
+        const response = await f.request(`/api/sessions/${f.target.id}/${route}`, { text, origin: "session" }, headers);
+        assert.equal(response.status, 400, `${route}, enabled=${enabled}`);
+        if (route === "inject") assert.equal((await response.json()).pasted, false);
+      }
+    }
+  }
+  assert.deepEqual(f.messages, []);
+  assert.deepEqual(listPendingTurns(f.target.agentSessionId!), []);
+  assert.equal(originOf(f.target.id, text), undefined);
+});
+
+test("verified delegation labels messages without attributing concurrent direct input to the controller", async () => {
+  const f = fixture(); await f.grant(true);
+  const responses = await Promise.all([
+    f.act({ action: "message", text: "Delegated message" }),
+    f.request(`/api/sessions/${f.target.id}/inject`, { text: "Direct message", buffer: false }, {
+      ...f.headers, "x-mission-operation-actor": "agent", "x-mission-operation-surface": "mcp",
+    }),
+  ]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.deepEqual(f.messages.map((message) => message.text).sort(), ["Delegated message", "Direct message"]);
+  assert.equal(originOf(f.target.id, "Delegated message"), "session");
+  assert.equal(originOf(f.target.id, "Direct message"), undefined);
+});
+
 test("shared machine token, claimed ids, forged signatures and stale episodes do not grant control", async () => {
   const f = fixture(); await f.grant(true);
   assert.equal((await f.request("/mcp/session-control/read", {}, { ...f.agentHeaders, "x-mission-scout-credential": "" })).status, 403);

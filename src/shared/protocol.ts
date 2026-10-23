@@ -352,7 +352,8 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
  * reason `InjectPromptSchema.origin` states at length: a caller that forgets the field
  * should under-claim, never over-claim, and almost every caller IS a human.
  */
-const PromptOriginSchema = z.enum(["human", "foreman", "workflow", "session"]).default("human");
+// Delegated session origin is server-owned, just like delegated answer identity.
+const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({

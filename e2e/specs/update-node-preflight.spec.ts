@@ -150,7 +150,9 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     await dashboard.reload();
     await dashboard.getByRole("button", {name: "Settings"}).click();
     await dashboard.getByRole("tab", {name: "Setup"}).click();
-    await expect(dashboard.getByRole("region", {name: "Application updates"})).toContainText("Binary updates are not available in this build");
+    const updates = dashboard.getByRole("region", {name: "Application updates"});
+    await expect(updates).toContainText("Automatic binary updates are not available in this build.");
+    await expect(updates.getByRole("link", {name: "Signed installer and recovery instructions"})).toBeVisible();
     await expect(status).toHaveCount(0);
     expect(builds).toBe(1);
     expect(handoffs).toBe(1);

@@ -23,7 +23,10 @@ function fixture(t: test.TestContext, failure = '') {
   writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {commit: failure === 'identity' ? 'b'.repeat(40) : commit, version: '1.2.3'}}));
   writeFileSync(join(candidate, 'Contents/MacOS/Mission Control'), '#!/bin/bash\nprintf "runtime:%s\\n" "$@" >> "$PROBE_LOG"\n[[ $ELECTRON_RUN_AS_NODE == 1 ]]\n', {mode: 0o755});
   if (failure === 'symlink') symlinkSync('/etc/passwd', join(candidate, 'Contents/escape'));
-  const dmg = Buffer.from('signed dmg fixture');
+  // The fake gh also writes diagnostics under the download's per-file limit.
+  // An 18-byte DMG caps that growing log at 1 KiB on Linux; use a realistic
+  // minimum payload so logging cannot fail before the fixture downloads it.
+  const dmg = Buffer.alloc(64 * 1024, 'signed dmg fixture');
   const manifest = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
     channel: alpha ? 'alpha' : 'stable', releaseTag: alpha ? null : 'v1.2.3', version: '1.2.3', commit, platform: 'darwin', arch: failure === 'manifest-arch' ? 'x64' : 'arm64',
     minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}, assets: [
@@ -83,10 +86,26 @@ test('native bootstrap verifies twice, unmounts, and forwards quoted options wit
   assert.ok(log.indexOf('hdiutil:["detach"') < log.indexOf('runtime:'));
   assert.equal((log.match(/codesign:/g) ?? []).length, 3);
 });
-for (const failure of ['missing-gh', 'identity', 'oversize', 'truncated', 'no-manifest', 'malformed', 'manifest-arch', 'digest', 'incomplete', 'signer', 'notarization', 'architecture', 'mount', 'symlink']) {
+for (const [failure, message] of Object.entries({
+  'missing-gh': /GitHub CLI \(gh\) is required/,
+  identity: /signed app differs from the selected release/,
+  oversize: /Canonical download failed|Download exceeds its size limit/,
+  truncated: /DMG size or SHA-256 mismatch/,
+  'no-manifest': /no ready binary/,
+  malformed: /Missing or invalid metadata/,
+  'manifest-arch': /Unexpected manifest identity or protocol/,
+  digest: /DMG size or SHA-256 mismatch/,
+  incomplete: /ready release is incomplete/,
+  signer: /DMG publisher verification failed/,
+  notarization: /DMG is not notarized/,
+  architecture: /app is not an arm64 executable/,
+  mount: /Could not mount the DMG read-only/,
+  symlink: /app contains an escaping or invalid link/,
+})) {
   test(`bootstrap refuses ${failure} before executing downloaded code`, t => {
     const f = fixture(t, failure); const result = f.run();
     assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, message);
     assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
   });
 }

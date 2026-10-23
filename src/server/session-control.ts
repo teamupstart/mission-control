@@ -13,6 +13,13 @@ import { parseBody } from "./http-body.ts";
 import { SESSION_CONTROL_DESKTOP_REQUIRED } from "@shared/session-control-authorization.ts";
 import { sessionControlAuthorization, type AuthorizeSessionControl } from "./session-control-authorization.ts";
 
+// Bound to the exact in-process Request, not headers or inherited async context.
+// Only the verified control endpoint can populate this map; direct HTTP cannot.
+const delegatedActors = new WeakMap<Request, `session:${string}`>();
+export function sessionControlActor(request: Request): `session:${string}` | undefined {
+  return delegatedActors.get(request);
+}
+
 /** The signed Registry credential identifies the caller, never a body id or cwd. */
 export function sessionController(registry: Registry, credential: string | undefined): string | null {
   const authority = verifyScoutSubmissionCredential(credential);
@@ -29,18 +36,17 @@ export function sessionController(registry: Registry, credential: string | undef
 }
 
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
-export function controlRequest(target: string, command: SessionControlAction, actor: string): {
+export function controlRequest(target: string, command: SessionControlAction): {
   path: string; method: string; body?: unknown;
 } {
   const base = `/api/sessions/${encodeURIComponent(target)}`;
   const post = (suffix: string, body?: unknown) => ({ path: `${base}/${suffix}`, method: "POST", body });
-  const by = `session:${actor}`;
   switch (command.action) {
     case "message": return post("inject", { text: command.text, origin: "session", buffer: false });
     case "interrupt": return post("interrupt");
-    case "select_option": return post("select-option", { requestId: command.requestId, number: command.number, label: command.label, by });
-    case "submit_options": return post("submit-options", { ...command.form, by });
-    case "resolve_review": return { path: `/api/reviews/${encodeURIComponent(command.reviewId)}/resolve`, method: "POST", body: { ...command.resolution, by } };
+    case "select_option": return post("select-option", { requestId: command.requestId, number: command.number, label: command.label });
+    case "submit_options": return post("submit-options", command.form);
+    case "resolve_review": return { path: `/api/reviews/${encodeURIComponent(command.reviewId)}/resolve`, method: "POST", body: command.resolution };
     case "pending_deliver": return post(`pending-turns/${encodeURIComponent(command.turnId)}/deliver`, { revision: command.revision, action: command.delivery });
     case "pending_recall": return post(`pending-turns/${encodeURIComponent(command.turnId)}/recall`, { revision: command.revision });
     case "pending_retry": return post(`pending-turns/${encodeURIComponent(command.turnId)}/retry`, { revision: command.revision });
@@ -124,13 +130,19 @@ export function registerSessionControlRoutes(
       if (!review || review.sessionId !== sessionId) return c.json({ error: "Review does not belong to the target session" }, 404);
       if (review.status !== "pending") return c.json({ error: "Review is already resolved" }, 409);
     }
-    const request = controlRequest(sessionId, command, caller);
-    const response = await app.request(`http://localhost${request.path}`, {
+    const request = controlRequest(sessionId, command);
+    const delegatedRequest = new Request(`http://localhost${request.path}`, {
       method: request.method,
       headers: { host: "localhost", "content-type": "application/json", "x-mission-operation-surface": "mcp", "x-mission-operation-actor": "agent" },
       ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
     });
-    logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
-    return response;
+    delegatedActors.set(delegatedRequest, `session:${caller}`);
+    try {
+      const response = await app.request(delegatedRequest);
+      logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
+      return response;
+    } finally {
+      delegatedActors.delete(delegatedRequest);
+    }
   });
 }

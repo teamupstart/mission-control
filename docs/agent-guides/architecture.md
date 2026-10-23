@@ -226,6 +226,10 @@ actions belong in the shared discriminated schema and the exhaustive route trans
 there is no arbitrary-path proxy. Grant changes and actions use the existing session event
 ledger. Delegated reviews are conversation history, while human approval queries keep their
 human-only meaning.
+The verified controller is associated with the exact internal `Request` through a private
+WeakMap in `session-control.ts`, removed when dispatch finishes. Answer handlers read that
+association separately from their public human/Foreman schemas, so concurrent direct requests
+cannot inherit delegated attribution. Delegated single-option commands require a prompt id.
 
 ```mermaid
 flowchart LR

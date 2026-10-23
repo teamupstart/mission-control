@@ -151,6 +151,11 @@ machine token alone cannot select a controller. The daemon checks the current gr
 live credential binding on every request, then translates a closed set of typed operations
 into the same handlers the dashboard uses. It verifies review ownership before resolution,
 retains item ownership and revision guards, and stamps the controller's identity itself.
+Delegated review and prompt attribution is attached to the exact in-process request after
+verification, never accepted from HTTP headers or a `by: "session:..."` body. Direct answer
+routes retain their human/Foreman grammar. Delegated single-option selections require the
+request id returned by the target read, so an identical option on a replacement prompt does
+not accept a stale answer.
 Changing the grant requires a trusted click on the desktop dashboard's checkbox. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process

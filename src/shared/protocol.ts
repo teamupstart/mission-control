@@ -390,7 +390,8 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * exactly as the dashboard does, so it declares itself rather than being inferred - and the
  * default is the human, because every other caller IS one.
  */
-const AnswerActorSchema = z.union([z.enum(["human", "foreman"]), z.string().regex(/^session:.{1,256}$/).transform((value): `session:${string}` => value as `session:${string}`)]).optional().default("human");
+// Delegated session identity is server-owned and never accepted in a request body.
+const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
   requestId: z.string().min(1).optional(),
@@ -8024,7 +8025,7 @@ export const SessionControlReadSchema = z.object({
 export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("message"), text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH) }).strict(),
   z.object({ action: z.literal("interrupt") }).strict(),
-  z.object({ action: z.literal("select_option"), requestId: z.string().min(1).optional(), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
+  z.object({ action: z.literal("select_option"), requestId: z.string().min(1), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
   z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema }).strict(),
   z.object({ action: z.literal("resolve_review"), reviewId: ControlIdSchema, resolution: ResolveReviewSchema }).strict(),
   z.object({ action: z.literal("pending_deliver"), turnId: ControlIdSchema, revision: z.number().int().min(0), delivery: z.enum(["steer", "interrupt"]) }).strict(),

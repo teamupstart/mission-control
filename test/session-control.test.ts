@@ -239,6 +239,48 @@ test("review answers preserve delegation, ownership, structured choices and cont
   assert.equal((await f.act(command)).status, 409);
 });
 
+test("direct answer routes cannot claim delegated attribution, even with an enabled controller credential", async () => {
+  const f = fixture();
+  const review = f.reviews.create(f.target.id, "input", "Choose", "Choose a path");
+  const requestId = `unspoofable-${serial}`;
+  f.registry.applyDriverEvent(f.target.id, { kind: "request", request: {
+    id: requestId, kind: "question", prompt: "Which linter?", options: [{ number: 1, label: "biome" }],
+  } });
+  const by = `session:${f.caller.id}`;
+  const routes = [
+    [`/api/reviews/${review.id}/resolve`, { action: "answer", response: "Forged", by }],
+    [`/api/sessions/${f.target.id}/select-option`, { requestId, number: 1, label: "biome", by }],
+    [`/api/sessions/${f.target.id}/submit-options`, { requestId, answers: [{ question: "Which linter?", labels: ["biome"] }], by }],
+  ] as const;
+  for (const enabled of [false, true]) {
+    if (enabled) await f.grant(true);
+    for (const headers of [f.headers, f.agentHeaders]) {
+      for (const [path, body] of routes) {
+        assert.equal((await f.request(path, body, headers)).status, 400, `${path}, enabled=${enabled}`);
+      }
+    }
+  }
+  assert.equal(f.registry.getReview(review.id)?.status, "pending");
+  assert.deepEqual(f.answers, []);
+  assert.deepEqual(loadConversationResolvedReviews(f.target.id), []);
+  assert.equal((await f.request(`/api/reviews/${review.id}/resolve`, { action: "answer", response: "Human answer" }, f.headers)).status, 200);
+  assert.equal(loadHumanResolvedReviews(f.target.id).find((item) => item.id === review.id)?.resolvedBy, "human");
+});
+
+test("verified delegation sets the actor without attributing concurrent direct answers to the controller", async () => {
+  const f = fixture(); await f.grant(true);
+  const delegated = f.reviews.create(f.target.id, "input", "Delegated", "Choose a path");
+  const direct = f.reviews.create(f.target.id, "input", "Human", "Choose a path");
+  const responses = await Promise.all([
+    f.act({ action: "resolve_review", reviewId: delegated.id, resolution: { action: "answer", response: "Delegated", selections: null, by: "foreman" } }),
+    f.request(`/api/reviews/${direct.id}/resolve`, { action: "answer", response: "Direct" }, f.headers),
+  ]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.equal(f.registry.getReview(delegated.id)?.resolvedBy, `session:${f.caller.id}`);
+  assert.equal(f.registry.getReview(direct.id)?.resolvedBy, "human");
+  assert.deepEqual(loadHumanResolvedReviews(f.target.id).map((review) => review.id), [direct.id]);
+});
+
 test("interruption uses the existing runtime action and clears queued input", async () => {
   const f = fixture(); await f.grant(true);
   const key = f.target.agentSessionId!;
@@ -294,6 +336,32 @@ test("single-option answers reach the target driver and refuse stale requests or
   assert.match(saved[0]!.response!, /biome/);
   assert.equal((await f.act({ action: "select_option", requestId, number: 1, label: "biome" })).status, 409);
   assert.equal(f.answers.length, 1);
+});
+
+test("delegated option selection requires the read prompt id even when a newer prompt has identical options", async () => {
+  const f = fixture(); await f.grant(true);
+  const oldId = `old-choice-${serial}`;
+  const newId = `new-choice-${serial}`;
+  const ask = (id: string) => f.registry.applyDriverEvent(f.target.id, { kind: "request", request: {
+    id, kind: "question", prompt: "Continue?", options: [{ number: 1, label: "Yes" }],
+  } });
+  ask(oldId);
+  const read = await f.request("/mcp/session-control/read", { sessionId: f.target.id });
+  assert.equal((await read.json()).session.paneDialog.requestId, oldId);
+  f.registry.applyDriverEvent(f.target.id, { kind: "request_resolved", requestId: oldId });
+  ask(newId);
+  assert.equal(f.registry.getSession(f.target.id)?.paneDialog?.requestId, newId);
+  for (const requestId of [undefined, ""]) {
+    const response = await f.request("/mcp/session-control/act", {
+      sessionId: f.target.id, command: { action: "select_option", requestId, number: 1, label: "Yes" },
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.equal((await f.act({ action: "select_option", requestId: oldId, number: 1, label: "Yes" })).status, 409);
+  assert.deepEqual(f.answers, []);
+  assert.equal(f.registry.getSession(f.target.id)?.paneDialog?.requestId, newId);
+  assert.equal((await f.act({ action: "select_option", requestId: newId, number: 1, label: "Yes" })).status, 200);
+  assert.deepEqual(f.answers, [{ id: f.target.id, requestId: newId, answer: { kind: "option", number: 1, label: "Yes" } }]);
 });
 
 test("pending delivery steers the selected text and refuses stale revisions or a covering prompt", async () => {

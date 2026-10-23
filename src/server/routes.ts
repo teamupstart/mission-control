@@ -1,4 +1,4 @@
-import { registerSessionControlRoutes } from "./session-control.ts";
+import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
 import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
@@ -5348,6 +5348,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
     // on whether its session could be resolved cheaply. It can: a review record names its
     // `sessionId`, so this is two map lookups and no I/O.
@@ -5359,7 +5360,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, parsed.data.by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -5369,7 +5370,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         c.req.param("id"),
         parsed.data.action,
         parsed.data.response,
-        parsed.data.by,
+        by,
         parsed.data.selections,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
@@ -5471,10 +5472,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5491,15 +5493,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverOptionAnswer(dialog, parsed.data),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
     const r = await selectPaneOption(session, parsed.data, panes);
-    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-    observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+    observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -5514,8 +5516,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5538,10 +5541,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -5553,11 +5556,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const r = await submitPaneForm(session, options, panes);
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
-    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
     // `formDelivered`, not `ok`, for the same reason the retirement above uses it: a pane form
     // reports `ok` for two states that sent the child nothing, and recording those as answered
     // questions would count decisions that are still owed.
-    observeQuestionResponse(session, formDelivered(r), parsed.data.by, c.req.raw.headers);
+    observeQuestionResponse(session, formDelivered(r), by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 

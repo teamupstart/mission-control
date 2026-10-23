@@ -1933,6 +1933,47 @@ model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex
 rollouts do not currently expose every separately billed hosted-tool fee.
 
+### Let a session steer other sessions
+
+In the Mission Control desktop app, open a session's Conversation tab and enable **Control other sessions** to let that session act on
+your behalf across the other live sessions. The checkbox always starts off. It grants the
+controller permission, so targets do not need their own checkbox enabled. You can revoke it
+at any time; subsequent reads and actions refuse immediately. An action already accepted
+may finish. The grant lasts only for the current conversation, task and work episode in this
+daemon run. A reset, replacement conversation, different task, session removal or Mission
+Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+
+Changing the checkbox requires a real desktop click. Browser dashboards show it disabled.
+The desktop app must own its daemon: if it reused a standalone daemon, stop that daemon and
+reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
+forged browser headers.
+
+The session uses two Mission Control tools:
+
+- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+  pending review prompts, native approval/question dialog, outbox and work queue. Set
+  `transcript: true` to include a bounded recent conversation window.
+- `control_session` takes that target's `sessionId` and a typed `command`. It supports
+  messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
+  outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
+  and model, effort and permission-mode changes. Use current request ids, option labels and
+  revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
+
+For example, after inspecting the target:
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"message","text":"Focus on the failing parser test first."}}
+```
+
+Messages are marked **Delegated session** in the live conversation. Review answers retain
+`session:<controller-id>` attribution and remain visible after reload. They are not recorded
+as direct human approvals for managed plan publication. The daemon's session event ledger
+records the controller, target, action and HTTP outcome without recording the message body.
+
+These tools cannot change the controller grant, global settings, delete sessions, or reset
+worktrees. The target's normal runtime and resource guards continue to apply. See
+[Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
+
 ### Review channel (MCP)
 
 ```sh

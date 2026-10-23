@@ -360,13 +360,12 @@ test("a task's pull requests keep the band even with both cells hidden", async (
 
 test("the collapsed band leaves nothing behind in its place", async () => {
   // Nothing structural hung off `.detail-sub`: both neighbours own their own bottom rule, so
-  // its absence must leave no spacer, no empty wrapper and no compensating element. Stated
-  // as "what follows the header is what used to follow the band", which is the same claim
-  // without naming whichever element that happens to be.
+  // its absence must leave no spacer, no empty wrapper and no compensating element.
+  // Preserve every other sibling, including the session-control setting before the band.
   const session = silentTaskSession();
   const withBand = render(session);
-  const afterBand = withBand.slice(withBand.indexOf("</dl>") + "</dl>".length);
+  const existingBand = band(withBand);
+  assert.ok(existingBand);
   const collapsed = await renderHiding(BOTH_OFF, session);
-  const afterHead = collapsed.slice(collapsed.indexOf("</header>") + "</header>".length);
-  assert.equal(afterHead, afterBand);
+  assert.equal(collapsed, withBand.replace(`${existingBand}</dl>`, ""));
 });

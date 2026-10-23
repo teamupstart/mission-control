@@ -30,6 +30,7 @@ import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
+import { armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -232,6 +233,12 @@ function registerIpc(updateController: UpdateController): void {
     const mainContents = getMainWindow()?.webContents;
     if (!mainContents || event.sender !== mainContents) return;
     event.returnValue = armProductIssueAuthorization(input);
+  });
+  ipcMain.on("mission:session-control-click", (event, input: unknown) => {
+    event.returnValue = false;
+    const mainContents = getMainWindow()?.webContents;
+    if (!mainContents || event.sender !== mainContents) return;
+    event.returnValue = armSessionControlAuthorization(input);
   });
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));

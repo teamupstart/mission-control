@@ -35794,3 +35794,11 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-scouts-archive { margin-top: 6px; }
 .scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .scouts-source-session > span { font-size: 12px; color: var(--muted); }
+
+
+.session-control-setting { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 4px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.session-control-setting label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.session-control-setting input { accent-color: var(--select); }
+.session-control-setting input:focus-visible { outline: 2px solid var(--select); outline-offset: 3px; }
+.session-control-setting p { margin: 0; color: var(--muted); }
+.session-control-setting [role="alert"] { color: var(--danger); }

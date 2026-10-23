@@ -7,6 +7,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
+import type { SessionControlAuthorization } from "../shared/session-control-authorization.ts";
 
 interface ProductIssueAuthorizationInput {
   requestId: string;
@@ -17,12 +18,14 @@ interface ProductIssueAuthorizationInput {
 // former Node implementation intended.
 const productIssueAuthorizationCapability = globalThis.crypto.randomUUID();
 let productIssueAuthorizationClaimed = false;
+const sessionControlAuthorizationCapability = globalThis.crypto.randomUUID();
+let sessionControlAuthorizationClaimed = false;
 // Transient user activation starts on mouse-down and can expire before a held press
 // produces its trusted click. Keep the actual dispatch instead: its eventPhase returns
 // to NONE afterward, so a past gesture cannot authorize a later script call either.
-let productIssueClick: MouseEvent | null = null;
+let trustedClick: MouseEvent | null = null;
 window.addEventListener("click", (event) => {
-  productIssueClick = event;
+  trustedClick = event;
 }, true);
 
 contextBridge.exposeInMainWorld("missionDesktop", {
@@ -45,10 +48,20 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     if (
       !productIssueAuthorizationClaimed ||
       capability !== productIssueAuthorizationCapability ||
-      productIssueClick?.isTrusted !== true ||
-      productIssueClick.eventPhase === Event.NONE
+      trustedClick?.isTrusted !== true ||
+      trustedClick.eventPhase === Event.NONE
     ) return false;
     return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
+  },
+  claimSessionControlAuthorization: (): string | null => {
+    if (sessionControlAuthorizationClaimed) return null;
+    sessionControlAuthorizationClaimed = true;
+    return sessionControlAuthorizationCapability;
+  },
+  authorizeSessionControl: (capability: string, input: SessionControlAuthorization): boolean => {
+    if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
+      || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
+    return ipcRenderer.sendSync("mission:session-control-click", input) === true;
   },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),

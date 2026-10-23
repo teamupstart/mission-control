@@ -352,6 +352,7 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
  * reason `InjectPromptSchema.origin` states at length: a caller that forgets the field
  * should under-claim, never over-claim, and almost every caller IS a human.
  */
+// Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
 /** A message the user sends into a session from the dashboard. */
@@ -390,6 +391,7 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * exactly as the dashboard does, so it declares itself rather than being inferred - and the
  * default is the human, because every other caller IS one.
  */
+// Delegated session identity is server-owned and never accepted in a request body.
 const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
@@ -874,7 +876,7 @@ export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
-  by: z.enum(["human", "foreman"]).optional().default("human"),
+  by: AnswerActorSchema,
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -8010,3 +8012,39 @@ export const SessionTransferQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });
+
+
+/** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
+export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().uuid().optional() }).strict();
+const ControlIdSchema = z.string().min(1).max(256);
+export const SessionControlReadSchema = z.object({
+  sessionId: ControlIdSchema.optional(),
+  transcript: z.boolean().optional().default(false),
+}).strict();
+
+/** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
+export const SessionControlActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("message"), text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH) }).strict(),
+  z.object({ action: z.literal("interrupt") }).strict(),
+  z.object({ action: z.literal("select_option"), requestId: z.string().min(1), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
+  z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema }).strict(),
+  z.object({ action: z.literal("resolve_review"), reviewId: ControlIdSchema, resolution: ResolveReviewSchema }).strict(),
+  z.object({ action: z.literal("pending_deliver"), turnId: ControlIdSchema, revision: z.number().int().min(0), delivery: z.enum(["steer", "interrupt"]) }).strict(),
+  z.object({ action: z.literal("pending_recall"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_retry"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_resolve"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("queue_add"), intent: AddWorkItemSchema.shape.intent }).strict(),
+  z.object({ action: z.literal("queue_edit"), itemId: ControlIdSchema, intent: EditWorkItemSchema.shape.intent, revision: EditWorkItemSchema.shape.revision }).strict(),
+  z.object({ action: z.literal("queue_remove"), itemId: ControlIdSchema }).strict(),
+  z.object({ action: z.literal("queue_approve"), itemId: ControlIdSchema }).strict(),
+  z.object({ action: z.literal("queue_reorder"), ids: ReorderQueueSchema.shape.ids }).strict(),
+  z.object({ action: z.literal("rename"), name: RenameSchema.shape.name }).strict(),
+  z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),
+  z.object({ action: z.literal("set_effort"), effort: SetSessionEffortSchema.shape.effort }).strict(),
+  z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
+]);
+export const SessionControlRequestSchema = z.object({
+  sessionId: ControlIdSchema,
+  command: SessionControlActionSchema,
+}).strict();
+export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;

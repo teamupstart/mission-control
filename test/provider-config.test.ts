@@ -29,9 +29,10 @@ beforeEach(() => openDb().exec("DELETE FROM app_config"));
  * is consulted only when the key is ABSENT, so it reaches the operator who never opened the
  * panel and not the one who answered.
  *
- * What is deliberately NOT flipped is asserted alongside, because "Foreman is on by default"
- * reads far more alarming than it is: `mode` still ships `dry-run` and the allowlist still ships
- * empty, so Foreman on a fresh install drafts and types nothing anywhere.
+ * What keeps that safe is asserted alongside, because "Foreman is on and Live by default" reads
+ * far more alarming than it is: the repository allowlist still ships empty, and Live acts only
+ * in an allowlisted repository, so Foreman on a fresh install drafts and types nothing anywhere
+ * until a human grants one in Trust.
  */
 test("Foreman ships enabled and Live with both wrap-up triggers, and still authorises nothing", () => {
   const fresh = getForemanConfig();

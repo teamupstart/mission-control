@@ -212,6 +212,34 @@ flow and tool contracts. `plans/inputs.ts` verifies pinned inputs at dispatch an
 WorkflowManager owns its notification/recovery lifetime. Receipts update only plan artifact edges;
 TaskManager retains completion and eviction ownership. Foreman and MCP never write SQLite.
 
+## Delegated session control
+
+The Registry owns the transient per-controller grant and its session projection.
+The desktop preload arms a single-use authorization from a trusted checkbox click. Main
+consumes it over the private utility-process channel; HTTP supplies only the request id,
+session id and setting, never the authorization. The daemon rechecks the same Registry
+identity used by the grant after the asynchronous check. Standalone daemons fail closed.
+`session-control.ts` authenticates the current signed session credential and checks that
+grant before translating typed commands to the existing dashboard routes. It introduces no
+second driver, terminal write policy, queue owner or review lifecycle. New session-control
+actions belong in the shared discriminated schema and the exhaustive route translator;
+there is no arbitrary-path proxy. Grant changes and actions use the existing session event
+ledger. Delegated reviews are conversation history, while human approval queries keep their
+human-only meaning.
+
+```mermaid
+flowchart LR
+  Operator[Trusted desktop checkbox click] --> Shell[Private preload and Electron shell]
+  Shell -->|Single-use private reply| Auth[Daemon authorization and identity check]
+  Auth --> Registry[Registry grant]
+  Agent[Controller MCP tools] --> Gate[Live credential and grant check]
+  Registry --> Gate
+  Gate --> Routes[Existing dashboard action routes]
+  Routes --> Runtime[SDK or terminal]
+  Routes --> Reviews[Review and queue owners]
+  Registry --> SSE[Session upsert to dashboard]
+```
+
 ## Harnesses and terminals
 
 Harness capabilities split by purity:

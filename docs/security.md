@@ -136,3 +136,35 @@ there is no signing and no trust badge.
 What that does not cover is the content itself. Mission Control does not encrypt the scout
 library, an archive can hold whatever the investigation touched, and a synchronised folder
 takes its contents wherever it goes. Deletion is explicit and local.
+
+
+## Delegated session control
+
+The per-session **Control other sessions** grant is opt-in and held by the Registry for the
+current daemon run. Its identity includes the process, native conversation id, working
+directory, work episode and task. Neither dispatch defaults nor a session-control tool can
+create a grant. Resetting or replacing that identity revokes it.
+
+The MCP read/action endpoints require both the machine token and the existing signed
+Registry session credential. A public session id, working directory, task credential, or
+machine token alone cannot select a controller. The daemon checks the current grant and
+live credential binding on every request, then translates a closed set of typed operations
+into the same handlers the dashboard uses. It verifies review ownership before resolution,
+retains item ownership and revision guards, and stamps the controller's identity itself.
+Changing the grant requires a trusted click on the desktop dashboard's checkbox. A private
+preload capability arms the exact session id, desired setting and one-use request id in the
+Electron shell. The daemon consumes that authorization over its private utility-process
+channel and rechecks the conversation identity before applying it. Authorizations expire
+after 15 seconds and cannot be replayed. Headerless local HTTP, forged browser headers,
+the shared machine token and signed agent credentials cannot create a grant.
+
+The standalone browser dashboard cannot change this setting. A desktop app that adopted
+an independently launched daemon also refuses changes, because it has no private channel
+to that daemon. Stop the standalone daemon and reopen the app to use the checkbox.
+
+This is an authorization boundary for Mission Control tools within the existing single-user
+local trust model. It is not a sandbox against arbitrary shell code running as the operator,
+which already has access to other local dashboard actions and operator-owned files. The
+private click boundary specifically prevents local HTTP from self-granting this capability;
+it does not protect against OS-level UI automation or a compromised desktop process. Revocation
+refuses new requests; it does not undo an action already accepted by a runtime.

@@ -20,6 +20,7 @@ import {
 } from "@shared/daemon-protocol.ts";
 import { executableChildEnv } from "../server/executables/locator.ts";
 import { serveProductIssueAuthorization } from "./product-issue-authorization.ts";
+import { serveSessionControlAuthorization } from "./session-control-authorization.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
 
 export interface DaemonController {
@@ -88,7 +89,10 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     env: executableChildEnv({ ...process.env, MISSION_WEB_DIR: opts.webDir }),
     // A Report click is armed in the shell over IPC and consumed here over the private
     // utility-process port. A loopback caller has access to neither side of that handoff.
-    onSpawn: serveProductIssueAuthorization,
+    onSpawn: (child) => {
+      serveProductIssueAuthorization(child);
+      serveSessionControlAuthorization(child);
+    },
   });
   return {
     adopted: false,

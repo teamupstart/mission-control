@@ -60,6 +60,8 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  */
 export const MISSION_MCP_TOOLS = [
   "share_plan",
+  "read_sessions",
+  "control_session",
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,

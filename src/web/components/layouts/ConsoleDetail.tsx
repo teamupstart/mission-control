@@ -1,3 +1,4 @@
+import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { featureVisit } from "../../lib/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
@@ -638,6 +639,8 @@ export function ConsoleDetail({
         <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
+
+      <SessionControlToggle key={session.id} session={session} />
 
       {pipelineCommission && (
         <div className="detail-pipeline-meter">

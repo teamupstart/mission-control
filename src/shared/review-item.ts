@@ -54,6 +54,12 @@ export function isHumanResolvedReview(review: ReviewItem): boolean {
   return review.resolvedBy === "human" && HUMAN_REVIEW_STATUSES.has(review.status);
 }
 
+/** Delegated answers are conversational records, but never evidence of direct human approval. */
+export function isConversationResolvedReview(review: ReviewItem): boolean {
+  return (review.resolvedBy === "human" || review.resolvedBy?.startsWith("session:") === true)
+    && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
 /**
  * The semantic result a blocking review tool hands back to its caller.
  *
@@ -62,6 +68,13 @@ export function isHumanResolvedReview(review: ReviewItem): boolean {
  * which transport happened to deliver it.
  */
 export function reviewToolResult(review: ReviewItem): { text: string; isError: boolean } {
+  const result = reviewResolutionResult(review);
+  return review.resolvedBy?.startsWith("session:")
+    ? { ...result, text: `Delegated response from session ${review.resolvedBy.slice(8)}:\n${result.text}` }
+    : result;
+}
+
+function reviewResolutionResult(review: ReviewItem): { text: string; isError: boolean } {
   if (review.status === "orphaned") {
     return { text: "Review channel went away before a human answered.", isError: true };
   }

@@ -1,3 +1,6 @@
+import { registerSessionControlRoutes } from "./session-control.ts";
+import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { parseBody } from "./http-body.ts";
 import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
@@ -477,7 +480,7 @@ import {
   forgetTaskSourceSeen,
   retryWritebacks,
   getSkillsAcks,
-  loadHumanResolvedReviews,
+  loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   getInspectorPr,
@@ -746,25 +749,6 @@ export const WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES =
   + 8 * 1024;
 
 /**
- * Parse + validate a JSON request body against a schema. Returns the typed data,
- * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
- * every write endpoint otherwise repeats.
- */
-// `error` is carried alongside the ready-made `res` so a route with extra facts to
-// report on a refusal can build its own body without re-reading this one's. /inject
-// is that route: its contract is that EVERY refusal states whether text was pasted.
-async function parseBody<S extends ZodTypeAny>(
-  c: Context,
-  schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
-  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
-  }
-  return { ok: true, data: parsed.data };
-}
-
-/**
  * The same, for a body whose SIZE is part of the contract.
  *
  * `parseBody` above buffers whatever arrives and hands it to Zod. That is right for every
@@ -858,7 +842,7 @@ interface ForemanWriteRefusal {
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
@@ -1131,6 +1115,8 @@ export interface RouteDeps {
    * embedded session can exist.
    */
   sdkSessions?: SdkSupervisor;
+  /** Private desktop authorization; defaults to the owning utility-process channel. */
+  authorizeSessionControl?: AuthorizeSessionControl;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1229,6 +1215,7 @@ export const ROUTE_DEP_NAMES = [
   "schedules",
   "ensembles",
   "sdkSessions",
+  "authorizeSessionControl",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1519,6 +1506,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     schedules,
     ensembles,
     sdkSessions,
+    authorizeSessionControl,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -1868,6 +1856,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
+  registerSessionControlRoutes(app, registry, authorizeSessionControl);
+
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
@@ -6249,7 +6239,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadHumanResolvedReviews(session.id));
+    return c.json(loadConversationResolvedReviews(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -8614,10 +8604,11 @@ function trustedLoopbackJsonRequest(c: Context): boolean {
  * origin rather than assuming one.
  */
 function promptActor(
-  origin: "human" | "foreman" | "workflow",
+  origin: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): TelemetryActor {
   const context = resolveOperationContext(headers);
+  if (origin === "session" || origin.startsWith("session:")) return { kind: "agent", origin: "mcp", basis: "declared" };
   if (context.actor.kind !== "unknown" && context.actor.kind !== origin) {
     return { kind: "unknown", origin: context.actor.origin, basis: "unknown" };
   }
@@ -8636,7 +8627,7 @@ function promptActor(
 function observeQuestionResponse(
   session: Session,
   delivered: boolean,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): void {
   observeSessionOperation({

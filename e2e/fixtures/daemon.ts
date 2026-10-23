@@ -145,6 +145,8 @@ export interface DaemonHandle {
    * organization no longer manages.
    */
   restart(envChanges?: Record<string, string | undefined>): Promise<void>;
+  /** After crash(), let a desktop fixture own this same isolated daemon via utilityProcess. */
+  desktopLaunchConfig(): { entry: string; env: Record<string, string> };
   stop(): Promise<void>;
 }
 
@@ -818,6 +820,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     startForeman,
     crash,
     restart,
+    desktopLaunchConfig: () => {
+      if (!exited) throw new Error("Crash the fixture daemon before transferring its home to Electron");
+      return { entry: daemonBundle, env: Object.fromEntries(Object.entries(isolatedEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)) };
+    },
     stop,
   };
 }

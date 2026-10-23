@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReviewItem } from "@shared/types.ts";
-import { isHumanResolvedReview } from "@shared/review-item.ts";
+import { isConversationResolvedReview } from "@shared/review-item.ts";
 import { api } from "./api.ts";
 
 /**
@@ -79,13 +79,13 @@ export function timelineReviewsFor(
   stored: ReviewItem[],
   live: ReviewItem[],
 ): ReviewItem[] {
-  // One test, applied identically to both sources. `isHumanResolvedReview` is the same
+  // One test, applied identically to both sources. `isConversationResolvedReview` is the same
   // predicate the daemon's SQL filter mirrors, and it matters most for the LIVE list, which
   // carries every review of every status - including the pending one whose card is still on
   // screen. Admitting that would put an unanswered question in the log as though it had been
   // answered.
   const keep = (r: ReviewItem): boolean =>
-    r.sessionId === sessionId && isHumanResolvedReview(r);
+    r.sessionId === sessionId && isConversationResolvedReview(r);
 
   const byId = new Map<string, ReviewItem>();
   // Stored first so the live copy overwrites it, not the other way round: a review in both is

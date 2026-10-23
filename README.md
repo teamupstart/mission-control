@@ -266,6 +266,11 @@ against.
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
 
+Agents can operate the same workflow run controls through Mission Control's MCP:
+`list_workflow_runs` finds runs, `get_workflow_run` inspects their state and recovery options,
+and `trigger_workflow_action` grants rounds, cancels, retries, restarts, and performs the other
+dashboard recovery actions. The existing server checks and explicit acknowledgements still apply.
+
 ![Mission Control workflow run](docs/images/workflows.png)
 
 Read more in [Workflows and Personas](docs/workflows.md) and

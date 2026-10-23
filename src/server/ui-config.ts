@@ -21,7 +21,7 @@ const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
 /**
  * Cards was persisted as `grid` before that layout was retired. Keep the compatibility
  * seam here, at the durable store boundary: the public schema rejects new `grid` writes,
- * while a machine upgrading from an older build is rewritten to the supported Console
+ * while a machine upgrading from an older build is rewritten to the shipped default
  * layout the first time its config is read.
  */
 function migrateRetiredLayout(raw: unknown): unknown {

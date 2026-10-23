@@ -2326,9 +2326,14 @@ export interface WorkflowBindingDefaults {
   maxRepairRounds: number;
 }
 
+/**
+ * What a NEW draft's binding defaults to. Live, matching the built-in workflows: delivery is
+ * still gated on `liveEnabled` plus a Trust grant for the session's repository, and a binding
+ * that lacks either is refused with that reason rather than silently downgraded.
+ */
 export const DEFAULT_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
   triggerMode: "foreman_complete",
-  deliveryMode: "preview",
+  deliveryMode: "live",
   maxRepairRounds: 5,
 };
 

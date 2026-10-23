@@ -10,6 +10,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getForemanConfig, setForemanConfig } = await import("../src/server/foreman/config.ts");
+const { foremanMayActLive } = await import("../src/server/foreman/verdict.ts");
 const { getInspectorConfig, inspectorModel, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
@@ -32,14 +33,22 @@ beforeEach(() => openDb().exec("DELETE FROM app_config"));
  * reads far more alarming than it is: `mode` still ships `dry-run` and the allowlist still ships
  * empty, so Foreman on a fresh install drafts and types nothing anywhere.
  */
-test("Foreman ships enabled with both wrap-up triggers, and still authorises nothing", () => {
+test("Foreman ships enabled and Live with both wrap-up triggers, and still authorises nothing", () => {
   const fresh = getForemanConfig();
   assert.equal(fresh.enabled, true);
   assert.deepEqual(fresh.wrapupTriggers, ["drain", "prompted"]);
   assert.equal(fresh.skipScoutWrapup, true);
   assert.equal(fresh.skipReviewArtifactWrapup, true);
-  assert.equal(fresh.mode, "dry-run", "enabled must not imply may-act");
-  assert.deepEqual(fresh.repoAllowlist, [], "enabled must not imply an authorised repository");
+  assert.equal(fresh.mode, "live");
+  // Live is only half the gate. The allowlist is the consent and ships empty, so a fresh
+  // install may act in no repository until a human grants one.
+  assert.deepEqual(fresh.repoAllowlist, [], "Live must not imply an authorised repository");
+  assert.equal(foremanMayActLive(fresh, "/work/repo", "/work/repo"), false);
+  assert.equal(
+    foremanMayActLive({ ...fresh, repoAllowlist: ["/work/repo"] }, "/work/repo", "/work/repo"),
+    true,
+    "a Trust grant alone is what makes a fresh install act",
+  );
   assert.equal(fresh.wrapup, "ask", "a wrap-up moment must still ask rather than type");
   assert.equal(fresh.trackReviewFeedback, true);
   assert.equal(fresh.trackCiFailures, true);
@@ -63,6 +72,8 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   // the case the flip is FOR.
   setAppConfig(APP_CONFIG_ENTRIES.foreman, { mode: "dry-run" });
   const upgraded = getForemanConfig();
+  // A persisted mode is an answer, so the Live default never reaches it.
+  assert.equal(upgraded.mode, "dry-run");
   assert.equal(upgraded.enabled, true);
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
   assert.equal(upgraded.skipScoutWrapup, true);

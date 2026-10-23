@@ -189,7 +189,9 @@ one press per layer - and a click anywhere outside it, or a scroll, puts it away
 **The footer says whether anything is going to act on that order at all.** It carries the
 backlog autopilot's switch and a live readout: `Autopilot on · 2/3 agents · takes the top row
 on its own`, or `full, waiting for one to free up`, or `nothing ready to take`, or - armed
-behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`.
+behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`, or -
+Live with no repository granted in Trust, which is a fresh install's state -
+`nothing launches until a repository is trusted for Foreman`.
 It is **the same switch** as **Auto-schedule the backlog** in the
 [Foreman popover](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet): one config field, one
 route, either surface. The readout deliberately does not repeat the header's
@@ -734,14 +736,15 @@ second probe or polling loop. The daemon binds dismissal to the displayed checks
 tab cannot suppress a repair-regression sequence that another tab already observed.
 
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-lets you switch live between them, and the choice persists per machine:
+lets you switch live between them, and the choice persists per machine. A fresh install opens
+on **Board**; an install that already stored a layout keeps it:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
+| **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
-| **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Stored preferences for the retired `grid` layout migrate to Console when loaded. New
+Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is

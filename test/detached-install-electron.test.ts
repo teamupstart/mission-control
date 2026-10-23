@@ -19,12 +19,48 @@ import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 ensureNativeStateLockAddon();
 const require = createRequire(import.meta.url);
 
+/**
+ * What the helper and fixture left behind, for a wait that timed out.
+ *
+ * `t.after` deletes the whole tree, so without this a timeout reports only which boundary was
+ * missed and never why: a slow copy, a launch the helper refused, and a target that crashed
+ * before registering all read as the same sentence.
+ */
+function fixtureDiagnostic(state: string): string {
+  const read = (name: string, tail = 4_000): string => {
+    const path = join(state, name);
+    if (!existsSync(path)) return '(absent)';
+    const text = readFileSync(path, 'utf8');
+    return text.length > tail ? `...${text.slice(-tail)}` : text;
+  };
+  let journal = '(absent)';
+  try {
+    const parsed = readMigrationJournal(state);
+    if (parsed) journal = JSON.stringify({stage: parsed.stage, ownerRole: parsed.ownerRole, targetProcess: parsed.targetProcess});
+  } catch (error) { journal = `(unreadable: ${String(error)})`; }
+  return [`journal: ${journal}`, `fixture-target-waiting: ${read('fixture-target-waiting')}`,
+    `fixture-error.txt: ${read('fixture-error.txt')}`, `update-outcome.json: ${read('update-outcome.json')}`,
+    `update.log: ${read('update.log')}`].join('\n');
+}
+
+async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boundedMigrationWait>): Promise<void> {
+  try {
+    await boundedMigrationWait(...args);
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\n${fixtureDiagnostic(state)}`, {cause: error});
+  }
+}
+
 for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-detached-electron-')));
   const ownedProcesses: ProcessRecord[] = [];
   let interruptedTarget: ProcessRecord | null = null;
+  let completed = false;
   t.after(() => {
+    // A test-level timeout cancels whichever wait was running, so its own diagnostic never
+    // prints. Say what the tree held before deleting it.
+    if (!completed && existsSync(join(root, 'state'))) console.error(`[${mode}] incomplete:\n${fixtureDiagnostic(join(root, 'state'))}`);
     const runtimes = join(root, 'state/update-runtimes');
     if (existsSync(runtimes)) for (const name of readdirSync(runtimes)) {
       const marker = join(runtimes, name, 'owner.json');
@@ -205,7 +241,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     assert.deepEqual(inspectBundle(current), priorBundle, 'edited legacy candidate must never replace the accepted installation');
     assert.match(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).message, /accepted staged app bytes changed/);
     await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
-    await boundedMigrationWait(() => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
     const restored = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
     await boundedMigrationWait(() => !processIsAlive(restored.pid), 'prior app did not exit', {timeout: 10_000});
     assert.equal(restored.receipt.installedCommit, 'a'.repeat(40));
@@ -214,10 +250,11 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     assert.equal(processIsAlive(handed.pid), false, 'original parent exited');
     assert.equal(existsSync(join(root, 'trap-hits')), false, 'no node/npm/npx was invoked');
     console.log('Legacy staged digest proof: candidate changed after handoff with identical root revision and package identity; detached helper refused it after parent exit; exact app and receipt retained; no host runtime traps.');
+    completed = true;
     return;
   }
   if (mode === 'interrupted-after-swap') {
-    await boundedMigrationWait(() => {
+    await waitWithDiagnostic(state, () => {
       const journal = readMigrationJournal(state);
       return journal?.stage === 'target-staged' && journal.targetProcess !== null && existsSync(join(state, 'fixture-target-waiting'));
     }, 'fixture never reached the post-swap interruption boundary', {timeout: 120_000});
@@ -274,4 +311,5 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     'a completed matching transaction reclaims its recovery copy; failures retain it');
   console.log(`Detached complete-bundle proof: parent exited; original replaced; ${failure ? `${mode} restored exact prior app and receipt` : 'GUI readiness before state, durable success, dead snapshot reclaimed'}; no host runtime traps.`);
   if (mode === 'preparation-retry') console.log('Snapshot preparation proof: partial copy and digest-verification failures reclaimed; app and receipt unchanged; pre-existing attempt retained; same transaction retried to completion.');
+  completed = true;
 });

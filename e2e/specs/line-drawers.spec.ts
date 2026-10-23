@@ -1737,12 +1737,12 @@ test("the drawer's autopilot switch is the Foreman panel's own, not a copy of it
     .poll(async () => (await api<{ autoBacklog: boolean }>(daemon, "/api/foreman/config")).autoBacklog)
     .toBe(true);
   await expect(auto).toHaveAttribute("aria-checked", "true");
-  // Foreman is on but not live on a fresh daemon, so the honest readout is the gate, not a
-  // promise that something is about to launch. The `active/max` half comes from the status
-  // poll rather than from the config write, so this waits longer than the default: one
-  // missed 4s tick is a slow daemon, not a broken readout.
+  // Foreman is on and Live on a fresh daemon, but no repository is granted, so the honest
+  // readout is the gate, not a promise that something is about to launch. The `active/max`
+  // half comes from the status poll rather than from the config write, so this waits longer
+  // than the default: one missed 4s tick is a slow daemon, not a broken readout.
   await expect(readout).toHaveText(
-    /^Autopilot on · \d+\/\d+ agents · nothing launches until Foreman is live$/,
+    /^Autopilot on · \d+\/\d+ agents · nothing launches until a repository is trusted for Foreman$/,
     { timeout: 15_000 },
   );
   await shoot(dashboard, "backlog-autopilot-on");

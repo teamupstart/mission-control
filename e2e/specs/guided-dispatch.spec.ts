@@ -252,7 +252,9 @@ test("a fresh profile gets the guided pass, and Tab hands back the working form"
   await page.keyboard.press("Control+Enter");
 
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row")).toHaveCount(1);
+  // A fresh profile inherits the shipped Board layout too, so the dispatched session lands
+  // as a Board tile rather than a Console rail row.
+  await expect(page.locator("main.board .tile:not(.pend-tile)")).toHaveCount(1);
 });
 
 // ---- the Repo question -----------------------------------------------------------------

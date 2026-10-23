@@ -16,7 +16,12 @@ import {
   POP_WIDTH,
   placePlanner,
 } from "../src/web/components/line/NextUpPlanner.tsx";
-import { autopilotReadout, plannerFacts } from "../src/web/lib/backlog-copy.ts";
+import {
+  autopilotGate,
+  autopilotReadout,
+  plannerFacts,
+  type AutopilotGate,
+} from "../src/web/lib/backlog-copy.ts";
 import {
   LINE_DRAWER_STAGES,
   isLineDrawerStage,
@@ -908,7 +913,7 @@ const mkPlan = (order: string[], deps: Record<string, string[]> = {}): BacklogPl
 interface AutopilotProps {
   autoBacklog?: boolean | null;
   autopilot?: ForemanStatus["autopilot"] | null;
-  autopilotLaunches?: boolean;
+  autopilotGate?: AutopilotGate;
 }
 
 const backlogDrawer = (
@@ -924,7 +929,7 @@ const backlogDrawer = (
     // has to draw, and `?? false` would quietly turn every test of it into a test of off.
     autoBacklog: "autoBacklog" in auto ? (auto.autoBacklog ?? null) : false,
     autopilot: auto.autopilot ?? null,
-    autopilotLaunches: auto.autopilotLaunches ?? true,
+    autopilotGate: auto.autopilotGate ?? "launches",
     onClose: () => {},
     onEditTask: () => {},
     onOpenSitrep: () => {},
@@ -1225,21 +1230,21 @@ test("the footer says whether anything is going to act on this queue", () => {
   // Off is the shipped default, so this is the sentence most fleets see - and it has to
   // be a statement rather than a warning: nothing is wrong with a backlog you drive.
   assert.equal(
-    autopilotReadout({ on: false, status: null, launches: true }),
+    autopilotReadout({ on: false, status: null, gate: "launches" }),
     "Autopilot off - nothing starts unless you start it",
   );
   const status = { on: true, active: 2, max: 3, ready: 4, blocked: 1, disabled: 1 };
   assert.equal(
-    autopilotReadout({ on: true, status, launches: true }),
+    autopilotReadout({ on: true, status, gate: "launches" }),
     "Autopilot on · 2/3 agents · takes the top row on its own",
   );
   // The three states that answer "why is nothing launching?" without opening a log.
   assert.equal(
-    autopilotReadout({ on: true, status: { ...status, active: 3 }, launches: true }),
+    autopilotReadout({ on: true, status: { ...status, active: 3 }, gate: "launches" }),
     "Autopilot on · 3/3 agents · full, waiting for one to free up",
   );
   assert.equal(
-    autopilotReadout({ on: true, status: { ...status, ready: 0 }, launches: true }),
+    autopilotReadout({ on: true, status: { ...status, ready: 0 }, gate: "launches" }),
     "Autopilot on · 2/3 agents · nothing ready to take",
   );
   // Armed, and gated: the machine takes nothing unless Foreman is on AND in live mode, so
@@ -1247,12 +1252,31 @@ test("the footer says whether anything is going to act on this queue", () => {
   // is the one sentence that would send somebody hunting through a log for a machine
   // behaving exactly as configured.
   assert.equal(
-    autopilotReadout({ on: true, status, launches: false }),
+    autopilotReadout({ on: true, status, gate: "not-live" }),
     "Autopilot on · 2/3 agents · nothing launches until Foreman is live",
+  );
+  // Live, but no repository granted: a fresh install's state, since Foreman ships Live with
+  // an empty allowlist. The fix is a Trust grant, not the mode, so the sentence says so.
+  assert.equal(
+    autopilotReadout({ on: true, status, gate: "untrusted" }),
+    "Autopilot on · 2/3 agents · nothing launches until a repository is trusted for Foreman",
   );
   // Before the first status poll the switch's own state is still known, so the line says
   // that much and no numbers it does not have.
-  assert.equal(autopilotReadout({ on: true, status: null, launches: true }), "Autopilot on");
+  assert.equal(autopilotReadout({ on: true, status: null, gate: "launches" }), "Autopilot on");
+});
+
+test("the autopilot gate names which half is shut", () => {
+  const live = { enabled: true, mode: "live" as const, repoAllowlist: ["/work/repo"] };
+  assert.equal(autopilotGate(live), "launches");
+  // A fresh install: Live by default, nothing granted yet.
+  assert.equal(autopilotGate({ ...live, repoAllowlist: [] }), "untrusted");
+  // The worker's own short-circuit wins over the allowlist, because it is checked first.
+  assert.equal(autopilotGate({ ...live, mode: "dry-run" }), "not-live");
+  assert.equal(autopilotGate({ ...live, mode: "semi-auto", repoAllowlist: [] }), "not-live");
+  assert.equal(autopilotGate({ ...live, enabled: false }), "not-live");
+  // Before the config read lands nothing is proven able to launch.
+  assert.equal(autopilotGate(null), "not-live");
 });
 
 test("the footer's switch is the config's own, and never repeats the header's counts", () => {

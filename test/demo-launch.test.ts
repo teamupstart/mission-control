@@ -54,15 +54,12 @@ test("the layout write is a body the route's own schema accepts, and asks for no
   assert.deepEqual(Object.keys(body), ["layout"]);
 });
 
-test("the demo layout is a deliberate override, not the shipped default restated", () => {
-  // If these ever agree, the launcher's write has become a no-op and this file should say which
-  // one moved - the point of the write is that a demo daemon does NOT open the way a fresh
-  // install does.
-  assert.notEqual(
-    UI_CONFIG_DEFAULTS.layout,
-    DEMO_LAYOUT,
-    "the app default now matches the demo's; the launcher's PUT is redundant and should be revisited",
-  );
+test("the demo layout matches the shipped default and is still reasserted on every boot", () => {
+  // The two agree since Board became the shipped default, and the launcher's PUT is NOT
+  // redundant for it: a demo state root persists, so a layout switched during one demo is
+  // what the next boot would read. The write is what puts the Board back.
+  assert.equal(UI_CONFIG_DEFAULTS.layout, DEMO_LAYOUT);
+  assert.deepEqual(demoUiConfigBody(), { layout: DEMO_LAYOUT });
 });
 
 test("the demo pins Claude's print transport to its local one-shot player", () => {

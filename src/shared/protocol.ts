@@ -1740,10 +1740,10 @@ export const ForemanConfigSchema = z.object({
    * Whether Foreman is switched on at all. On by default, and that authorises far less than
    * it sounds like.
    *
-   * `mode` still ships `dry-run`, so Foreman drafts and never sends; `repoAllowlist` still
-   * ships empty, so `mayActLive` is false everywhere; and the worker is a SEPARATE PROCESS
-   * (`npm run foreman`) that nothing here starts. Enabled with no worker running is enabled
-   * and idle.
+   * `repoAllowlist` still ships empty, so `mayActLive` is false everywhere even though `mode`
+   * ships `live`, and Foreman drafts rather than sends until a human grants a repository in
+   * Trust. The worker is a SEPARATE PROCESS (`npm run foreman`) that nothing here starts.
+   * Enabled with no worker running is enabled and idle.
    *
    * It flipped because it had become a gate in front of something else: `bindingModeBlock`
    * refuses a `foreman_complete` binding outright when this is false, so the automatic repair
@@ -1752,7 +1752,16 @@ export const ForemanConfigSchema = z.object({
    * persisted `false` and keeps it - this default is only read when nobody ever answered.
    */
   enabled: z.boolean().default(true),
-  mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
+  /**
+   * Ships `live`, on `liveEnabled`'s reasoning in `@shared/workflow.ts`: the allowlist is the
+   * consent, and it ships empty, so a fresh install still types into no session until a
+   * repository is granted in Trust. A `dry-run` default in front of that grant meant the
+   * grant alone never made Foreman act, and the operator had to find a second switch.
+   *
+   * Only read when nobody ever answered. `setForemanConfig` persists the whole parsed blob,
+   * so an install that has saved any Foreman setting keeps the mode it already had.
+   */
+  mode: z.enum(["dry-run", "live", "semi-auto"]).default("live"),
   /**
    * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
    *
@@ -3373,7 +3382,15 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
 }
 
 export const UI_CONFIG_DEFAULTS = {
-  layout: "console",
+  /**
+   * Board, which is the product's intended first view. Retiring Cards (#706) moved this to
+   * Console by accident, and fresh installs opened in Console from then on.
+   *
+   * Only a profile that never stored a layout reads this. Any write to `app_config.ui`
+   * persists the whole parsed blob, so an install that has saved any preference keeps the
+   * layout it already had, including a Console it was handed by the old default.
+   */
+  layout: "board",
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the

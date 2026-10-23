@@ -128,6 +128,15 @@ export function parseArgs(argv: string[]): {
 export function sanitizeDiagnostic(value: unknown): string;
 export function installFailureSummary(output: unknown): string;
 export function writeOutcome(path: string, outcome: Record<string, unknown>): void;
+export function openAppForRelaunch(
+  appPath: string,
+  nonce: string | null | undefined,
+  spawn?: (
+    command: string,
+    args: string[],
+    options: { encoding: "utf8"; timeout: number; env: NodeJS.ProcessEnv },
+  ) => { error?: Error; status: number | null },
+): void;
 export function realApplyOperations(
   logPath: string,
   installTimeoutMs?: number,

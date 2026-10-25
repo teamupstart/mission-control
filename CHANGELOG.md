@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.2](https://github.com/teamupstart/mission-control/compare/v1.27.1...v1.27.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* ship Board layout and Live Foreman and Workflow defaults ([#1204](https://github.com/teamupstart/mission-control/issues/1204)) ([9e6a7c3](https://github.com/teamupstart/mission-control/commit/9e6a7c3f4d8a53d7fbc7a3b9f67b8cc8a7a5d3d2))
+
 ## [1.27.1](https://github.com/teamupstart/mission-control/compare/v1.27.0...v1.27.1) (2026-10-22)
 
 

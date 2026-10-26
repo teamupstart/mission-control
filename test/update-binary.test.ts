@@ -10,8 +10,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { latestStableBinary, binaryForCommit } from "../src/main/update-binary-release.ts";
 import { downloadBinaryAsset } from "../src/main/update-binary-download.ts";
 import { extractBinaryArchive } from "../src/main/update-binary-archive.ts";
-import { stageBinaryUpdate } from "../src/main/update-binary.ts";
-import { binaryOffer } from "./helpers/binary-update.ts";
+import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff } from "../src/main/update-binary.ts";
+import { binaryOffer, binaryStaged } from "./helpers/binary-update.ts";
 import type { GhRunner } from "../src/main/updater.ts";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -99,6 +99,29 @@ test("alpha resolves only the exact observed main SHA; pending and retired ident
   assert.ok(f.calls.every(args => !args[3]!.startsWith("repos/teamupstart/mission-control/releases?")));
 });
 
+test("stable scans past 300 ineligible releases and orders eligible releases across pages", async () => {
+  const f = fakeGithub();
+  const calls: number[] = [];
+  const selected = await latestStableBinary(async args => {
+    const page = args[3]!.match(/\/releases\?per_page=30&page=(\d+)$/);
+    if (!page) return f.run(args);
+    const number = Number(page[1]); calls.push(number);
+    const batch = number <= 10 ? Array.from({length: 30}, (_, index) => {
+      const entry = release("v9.9.9", number * 30 + index);
+      if (index % 3 === 0) entry.draft = true;
+      else if (index % 3 === 1) entry.prerelease = true;
+      else entry.tag_name = "not-a-version";
+      return entry;
+    }) : number === 11 ? [release("v1.2.3", 3), ...Array.from({length: 29}, () => release("alpha-old", 2))]
+      : [release("v1.2.4", 4)];
+    return {code: 0, stdout: JSON.stringify(batch), stderr: ""};
+  });
+  assert.deepEqual(calls, Array.from({length: 12}, (_, index) => index + 1));
+  assert.equal(selected?.tagName, "v1.2.4");
+  assert.deepEqual(selected?.binary?.manifest, f.offer.manifest);
+  assert.equal(selected?.binary?.manifestSha256, digest(f.text));
+});
+
 test("incomplete stable sets remain visibly unavailable and substituted tag/protocol/platform fail closed", async () => {
   const unavailable = await latestStableBinary(fakeGithub({incomplete: true}).run);
   assert.match(unavailable?.unavailable ?? "", /pending or unavailable/);
@@ -110,7 +133,10 @@ test("incomplete stable sets remain visibly unavailable and substituted tag/prot
 test("discovery bounds pagination and preserves authentication and rate-limit errors without leaking stderr", async () => {
   let calls = 0;
   await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("v1.2.4", 4))), stderr: ""};}), /inventory limit/);
-  assert.equal(calls, 10);
+  assert.equal(calls, 11);
+  calls = 0;
+  await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("alpha-old", 4))), stderr: ""};}), /inventory limit/);
+  assert.equal(calls, 100);
   for (const [stderr, expected] of [["HTTP 401 secret-token", /not authenticated/], ["HTTP 429 secret-token", /rate limit/]] as const) {
     await assert.rejects(latestStableBinary(async () => ({code: 1, stdout: "", stderr})), error => error instanceof Error && expected.test(error.message) && !error.message.includes("secret-token"));
   }
@@ -224,6 +250,37 @@ test("download cleanup preserves live, unknown and handed-off attempts", async t
   }
   cleanupBinaryDownloads(root);
   assert.deepEqual((await readdir(store)).sort(), ["attempt-handoff", "attempt-live", "attempt-unknown"]);
+});
+
+test("discard protects uncertain helper handoffs but removes candidates when no helper started", async t => {
+  const {realpath} = await import("node:fs/promises");
+  for (const scenario of ["unhanded", "orphan", "live", "unknown", "invalid"] as const) {
+    await t.test(scenario, async t => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "mission-binary-discard-")));
+      t.after(() => rm(root, {recursive: true, force: true}));
+      const directory = join(root, "update-downloads", "attempt-candidate");
+      const bundle = join(directory, "extracted", "Mission Control.app");
+      await mkdir(bundle, {recursive: true});
+      await writeFile(join(bundle, "candidate"), "accepted binary");
+      const descriptor = binaryStaged({offer: binaryOffer(), receipt: {schema: 1, repo: "teamupstart/mission-control",
+        appPath: "/tmp/Mission Control.app", sourceClone: "/missing", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-25T00:00:00Z"}}, bundle).descriptor;
+      const nonce = "a".repeat(64);
+      if (scenario !== "unhanded") retainBinaryHandoff(descriptor, root, nonce);
+      if (scenario === "live" || scenario === "unknown") {
+        const runtime = join(root, "update-runtimes", `attempt-${nonce}`);
+        await mkdir(runtime, {recursive: true});
+        if (scenario === "live") {
+          const {processIdentity} = await import("../scripts/update-lock.mjs");
+          await writeFile(join(runtime, "owner.json"), JSON.stringify({protocol: 1, nonce, path: runtime,
+            helper: {pid: process.pid, identity: processIdentity(process.pid)}}));
+        }
+      }
+      if (scenario === "invalid") await writeFile(join(directory, "handoff.json"), "{}");
+      await discardBinaryUpdate(descriptor, root);
+      if (scenario === "unhanded" || scenario === "orphan") await assert.rejects(lstat(directory), {code: "ENOENT"});
+      else assert.equal(await readFile(join(bundle, "candidate"), "utf8"), "accepted binary");
+    });
+  }
 });
 
 test("native platform checks reject old macOS, wrong architecture and conflicting bundle metadata", async () => {

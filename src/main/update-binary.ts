@@ -116,6 +116,19 @@ export async function discardBinaryUpdate(descriptor: StagedInstallDescriptor, s
   const directory = dirname(dirname(descriptor.bundle));
   const store = join(await realpath(stateDirectory), "update-downloads");
   if (dirname(directory) !== store || !/^attempt-[A-Za-z0-9]+$/.test(directory.slice(store.length + 1)) || await realpath(directory) !== directory) return;
+  try {
+    const journal = readMigrationJournal(stateDirectory);
+    if (journal?.plan.stagedBundle.startsWith(`${directory}/`)) return;
+    if (lstatSync(join(directory, "handoff.json"), {throwIfNoEntry: false})) {
+      const {nonce} = readMigrationJson(join(directory, "handoff.json"));
+      if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) return;
+      // A failed acknowledgement does not mean the helper stopped. Its runtime
+      // attempt survives every uncertain spawn; startup cleanup owns reclamation.
+      // A marker without a runtime or journal is safe to discard: spawn failed
+      // before creating a child and removed its partial runtime while locked.
+      if (lstatSync(join(stateDirectory, "update-runtimes", `attempt-${nonce}`), {throwIfNoEntry: false}) || journal?.plan.nonce === nonce) return;
+    }
+  } catch { return; /* Unknown handoff or recovery ownership retains the candidate. */ }
   await rm(directory, {recursive: true, force: true});
 }
 

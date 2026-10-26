@@ -31,12 +31,13 @@ async function query(run: GhRunner, endpoint: string, missing = false): Promise<
   catch { throw new BinaryUpdateError("GitHub returned unreadable binary availability. Check again."); }
 }
 
-async function pages<T>(run: GhRunner, endpoint: string): Promise<T[]> {
+async function pages<T>(run: GhRunner, endpoint: string, options: {include?: (item: T) => boolean; maxPages?: number} = {}): Promise<T[]> {
   const result: T[] = [];
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= (options.maxPages ?? 10); page++) {
     const batch = await query(run, `${endpoint}?per_page=30&page=${page}`);
-    if (!Array.isArray(batch)) throw new BinaryUpdateError("GitHub returned an invalid binary inventory.");
-    result.push(...batch);
+    if (!Array.isArray(batch) || batch.length > 30) throw new BinaryUpdateError("GitHub returned an invalid binary inventory.");
+    result.push(...(options.include ? batch.filter(options.include) : batch));
+    if (result.length > 300) break;
     if (batch.length < 30) return result;
   }
   throw new BinaryUpdateError("Binary discovery exceeded its inventory limit. Use the signed installer or check again later.");
@@ -71,8 +72,11 @@ async function readyOffer(run: GhRunner, release: Release, channel: "stable" | "
 }
 
 export async function latestStableBinary(run: GhRunner): Promise<ReleaseInfo | null> {
-  const releases = (await pages<Release>(run, "releases"))
-    .filter((release) => !release.draft && !release.prerelease && typeof release.tag_name === "string" && versionFromReleaseTag(release.tag_name))
+  // Ineligible records do not consume the 300-candidate budget. Bound the scan
+  // separately at 100 pages; GitHub's inventory order is not semver order, so
+  // only a complete scan can establish the newest eligible stable release.
+  const releases = (await pages<Release>(run, "releases", {maxPages: 100,
+    include: release => Boolean(release && !release.draft && !release.prerelease && typeof release.tag_name === "string" && versionFromReleaseTag(release.tag_name))}))
     // isNewerVersion(current, candidate): a newer b must sort before a.
     .sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? 1 : isNewerVersion(b.tag_name, a.tag_name) ? -1 : 0);
   let unavailable: ReleaseInfo | null = null;

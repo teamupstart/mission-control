@@ -523,6 +523,8 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /** Explicit controller grant for this live work episode; absent means off. */
+  sessionControlEnabled?: boolean;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -2481,7 +2483,7 @@ export type ReviewStatus =
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
  */
-export type ReviewActor = "human" | "foreman";
+export type ReviewActor = "human" | "foreman" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3401,7 +3403,7 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
 
 /**
  * Messages on the per-session transcript SSE stream

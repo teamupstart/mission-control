@@ -57,6 +57,9 @@ files:
   # The bundle-swap module owns the narrowly scoped in-place macOS authorization prompt.
   - scripts/update-helper-runtime.mjs
   - scripts/update-helper-files.mjs
+  - scripts/install.sh
+  - scripts/install-binary.mjs
+  - scripts/binary-install-policy.mjs
   - scripts/install-staged-app.mjs
   - src/shared/binary-distribution.mjs
   - src/shared/binary-publisher-policy.mjs

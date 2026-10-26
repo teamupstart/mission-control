@@ -404,7 +404,8 @@ test("as shipped, the live row holds the bottom edge while scrolled back, and th
   );
 
   // The terminal drawing keeps both, and its surface matches too.
-  await detail.getByRole("button", { name: "Terminal view" }).click();
+  await detail.getByRole("button", { name: "Conversation view" }).click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   const termRow = log.locator(".turn-progress");
   await expect(termRow).toHaveClass(/pty-entry/);
@@ -440,7 +441,8 @@ test("the reply box bar sweeps while the session works, and holds still as a ste
   // after a rule of its own resets `background`, and so does its reduced-motion override.
   for (const view of ["chat", "terminal"] as const) {
     if (view === "terminal") {
-      await detail.getByRole("button", { name: "Terminal view" }).click();
+      await detail.getByRole("button", { name: "Conversation view" }).click();
+      await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
       await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
     }
     const reply = detail.getByPlaceholder(

@@ -281,3 +281,23 @@ recovery assets remain retained. C1, receipts, install transactions, Setup and u
 remain unchanged. The probe exercises a safe, real detached failure after parent removal rather
 than launching an unqualified full app against a live installation. These deviations and
 the unfulfilled signing/publication gate must be carried into the eventual pull request.
+
+## Phase 3 consumer qualification still required
+
+The operator authorized implementing the binary bootstrap and enrollment before real signed
+qualification. On 2026-10-16, canonical main was `cf069aca707268f551e1f97780cd43873976df8c`;
+all 37 release records lacked `mission-control-manifest.json`, and `distribution.yml` had
+no runs. No production publication or installation is claimed by the consumer implementation.
+
+After publishing a complete signed set, run the standard `scripts/install.sh` in a fresh
+macOS account or VM with synthetic `MISSION_HOME`, fake agents and Node/npm/npx/git/Xcode
+commands absent, then repeat with recording trap executables. Exercise default personal,
+explicit system and custom destinations, managed launch, rerun, copied-app enrollment,
+mounted-DMG refusal, and in-place replacement of a schema-1 clone/retained-installer receipt.
+Capture exact app/receipt identity, unchanged state, process identity, native command versions,
+and readiness/rollback outcomes. Include malformed/truncated assets, wrong signer/architecture,
+occupied destination, escaping symlink, permissions, concurrent attempts, receipt-write failure
+and interrupted replacement. Preserve quarantine. Repeat native bootstrap verification on the
+minimum supported macOS 12; fixtures substituting native tools cannot establish that support.
+Never use the operator's installed app or live state. These results remain required before
+calling the no-Node recovery route qualified or releasing Phase 4 against it.

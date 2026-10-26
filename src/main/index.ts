@@ -30,6 +30,7 @@ import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
+import { armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -51,6 +52,9 @@ import {
   type InstallIdentity,
 } from "./install-identity.ts";
 import { runningBundlePath, startPackagedShell } from "./startup-handover.ts";
+import { readBinaryEnrollment, startBinaryEnrollment } from "./binary-enrollment.ts";
+import { temporaryInstallLocation } from "../../scripts/binary-install-policy.mjs";
+import { confirmBinaryInstallation } from "./binary-install-window.ts";
 
 app.setName("Mission Control");
 
@@ -233,6 +237,12 @@ function registerIpc(updateController: UpdateController): void {
     if (!mainContents || event.sender !== mainContents) return;
     event.returnValue = armProductIssueAuthorization(input);
   });
+  ipcMain.on("mission:session-control-click", (event, input: unknown) => {
+    event.returnValue = false;
+    const mainContents = getMainWindow()?.webContents;
+    if (!mainContents || event.sender !== mainContents) return;
+    event.returnValue = armSessionControlAuthorization(input);
+  });
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
   ipcMain.handle("mission:update-set-alpha", (event, alpha: boolean) => {
@@ -242,6 +252,11 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-apply", () => updateController.apply());
   ipcMain.handle("mission:update-install", () => updateController.install());
   ipcMain.handle("mission:update-keep-system", (event) => event.sender === getMainWindow()?.webContents ? updateController.keepSystem() : false);
+  ipcMain.handle("mission:binary-install-state", (event) => event.sender === getMainWindow()?.webContents && runningBundle ? readBinaryEnrollment(runningBundle, stateDir()) : null);
+  ipcMain.handle("mission:binary-install-enroll", (event) => {
+    if (event.sender !== getMainWindow()?.webContents || !runningBundle) throw new Error("Enrollment requires the packaged application window");
+    return startBinaryEnrollment(runningBundle, stateDir());
+  });
   ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair() : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
@@ -298,6 +313,21 @@ function stopShell(): void {
 app.on("before-quit", stopShell);
 
 app.whenReady().then(async () => {
+  let temporaryInstall = false;
+  try { temporaryInstall = !!runningBundle && temporaryInstallLocation(runningBundle); }
+  catch (error) {
+    dialog.showErrorBox("Installation location needs attention", error instanceof Error ? error.message : String(error));
+    app.exit(1); return;
+  }
+  if (runningBundle && temporaryInstall) {
+    try {
+      const enrollment = readBinaryEnrollment(runningBundle, stateDir());
+      if (!enrollment?.action) throw new Error(enrollment?.message ?? "Copy this developer app into Applications before opening it.");
+      if (await confirmBinaryInstallation(enrollment)) await startBinaryEnrollment(runningBundle, stateDir());
+    } catch (error) { dialog.showErrorBox("Installation needs attention", error instanceof Error ? error.message : String(error)); }
+    app.exit(0);
+    return;
+  }
   if (process.argv.includes("--mission-migration-remove-login")) {
     try {
       if (!runningBundle) throw new Error("Login cleanup requires a packaged source app.");
@@ -311,7 +341,7 @@ app.whenReady().then(async () => {
     const gate = await startupGate();
     if (!gate.proceed) { app.exit(0); return; }
     migratedStartup = gate.committed;
-    requireFreshDaemon = gate.fresh;
+    requireFreshDaemon = gate.fresh || process.argv.includes("--mission-binary-first-launch");
     const startup = startPackagedShell({app, identity: () => readInstallState().identity, log: (line) => console.error(line)});
     if (!startup.proceed) return;
     if (gate.committed && readInstallState().receipt?.appPath !== runningBundle) {

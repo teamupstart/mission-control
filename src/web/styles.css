@@ -3902,6 +3902,7 @@ body {
    assumption every entry above was added after breaking, and the cost of listing it is
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
 .is-desktop .launch-pop,
+.is-desktop .session-toolbar-menu,
 /* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
@@ -9145,18 +9146,7 @@ mark.find-hit.is-current {
   border-radius: 0;
   background: none;
 }
-/* The rendering switch, at the head of the button run. It wears `.launch-btn` because it
-   IS one of that row's buttons visually - the difference is only that it acts on the pane
-   you are looking at rather than opening the session somewhere else. Pressed state carries
-   the accent, the way the launcher buttons carry it while their menu is open. */
-.conv-view-btn[aria-pressed="true"] {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
-  background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
-}
-.conv-view-btn[aria-pressed="true"] .launch-glyph-lead {
-  color: var(--working);
-}
+/* The view menu changes the reading of this conversation, alongside the launchers. */
 /* The mark that says this session is being read differently from the rest of the fleet -
    a choice that lives in this tab only. Without it, an operator who flipped one session a
    while ago has no way to tell that from having changed the global default.
@@ -26633,8 +26623,7 @@ span.line-run-prov {
    console detail ~940px, which is the most common desktop width this pane is read at. So
    ONE rung fires there, and the choice is what a reader loses for the ~60px: five chord
    hints for chords that keep working, or the NAMES off three buttons. Shedding the hints
-   costs 120px and buys back both - the tabs keep every word, and `Terminal view`,
-   `Terminal` and the agent's own name survive to the next rung.
+   costs 120px and buys back both - the tabs keep every word, and the launcher labels survive to the next rung.
 
    A keycap is not a control's name. It is a hint about a chord that works at every width,
    that `docs/ui.md` documents, and that Settings can turn off across the whole app anyway.
@@ -26642,19 +26631,10 @@ span.line-run-prov {
 .detail-tabs[data-rung~="1"] .detail-tab .kb-hint {
   display: none;
 }
-/* Rung 2: the Terminal-view toggle drops to its glyph. First of the three toolbar controls
-   because it is the one that acts on the pane you are already looking at rather than opening
-   the session somewhere else, and because its state survives the collapse intact -
-   `aria-pressed` for a reader, the accent fill and the override dot for everyone else. */
-.detail-tabs[data-rung~="2"] .conv-view-btn .launch-word {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
+/* Rung 2: the view and control menus already use icons. Tighten their spacing before
+   the launchers give up their words. */
+.detail-tabs[data-rung~="2"] .conv-launch { gap: 4px; }
+.detail-tabs[data-rung~="2"] .session-toolbar-btn { padding-inline: 6px; }
 /* Rung 3: the two launchers drop to their glyphs, giving up their keycaps and carets with
    the word - a chord hint floating beside a bare glyph reads as a second glyph, and the
    caret's promise is already carried by `aria-haspopup`. Split from rung 2 deliberately:
@@ -35794,3 +35774,22 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-scouts-archive { margin-top: 6px; }
 .scouts-source-session { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .scouts-source-session > span { font-size: 12px; color: var(--muted); }
+
+
+
+/* Compact session menus share the toolbar row; their panels never consume transcript height. */
+.session-toolbar-btn { min-width: 38px; justify-content: center; gap: 5px; }
+.session-toolbar-btn svg { flex: none; }
+.session-toolbar-caret { font-size: 12px; color: var(--muted); }
+.session-control-btn.is-active { color: var(--working); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 10%, var(--panel-2)); }
+.session-toolbar-menu { position: fixed; z-index: 40; width: min(272px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--fg); box-shadow: 0 10px 30px #0005; }
+.session-toolbar-menu > .tt-anchor { display: block; width: 100%; }
+.session-toolbar-heading { display: block; padding: 7px 8px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.session-toolbar-option { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.session-toolbar-option[aria-checked="true"] { background: var(--panel-2); }
+.session-toolbar-option:hover:not(:disabled), .session-toolbar-option:focus-visible { background: var(--panel-2); outline: 1px solid var(--select); outline-offset: -1px; }
+.session-toolbar-option:disabled { opacity: .5; cursor: default; }
+.session-toolbar-option > span:last-child { margin-left: auto; }
+.session-toolbar-note { margin: 0; padding: 4px 8px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
+.session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }

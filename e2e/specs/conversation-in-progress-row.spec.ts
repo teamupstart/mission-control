@@ -277,7 +277,8 @@ test("the terminal drawing keeps the row inside its stream", async ({ dashboard,
   const target = await session(daemon);
   const detail = await openDetail(dashboard, daemon);
 
-  await detail.getByRole("button", { name: "Terminal view" }).click();
+  await detail.getByRole("button", { name: "Conversation view" }).click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
 
   await hook(daemon, target, "PreToolUse", { toolName: "Bash" });

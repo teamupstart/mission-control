@@ -1,3 +1,4 @@
+import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -228,6 +229,31 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
 }
 
 const server = new McpServer({ name: "mission-control", version: "0.1.0" });
+
+server.registerTool(
+  "read_sessions",
+  {
+    title: "Inspect sessions for delegated control",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions; supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    inputSchema: SessionControlReadSchema.shape,
+  },
+  async (args) => {
+    const res = await http("/mcp/session-control/read", "POST", args, true);
+    return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
+server.registerTool(
+  "control_session",
+  {
+    title: "Steer another session on the operator's behalf",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    inputSchema: SessionControlRequestSchema.shape,
+  },
+  async (args) => {
+    const res = await http("/mcp/session-control/act", "POST", args, true);
+    return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
+  },
+);
 
 server.registerTool(
   "share_plan",

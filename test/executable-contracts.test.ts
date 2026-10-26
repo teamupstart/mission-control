@@ -57,6 +57,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
+  "src/main/binary-enrollment.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "OS-provided Bash launches the verified app's binary-install bootstrap before daemon startup without a host Node runtime or locator snapshot" },
+  ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },

@@ -1,3 +1,4 @@
+import { SessionControlToggle } from "../SessionControlToggle.tsx";
 import { featureVisit } from "../../lib/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
@@ -769,14 +770,17 @@ export function ConsoleDetail({
           leading={
             // Only on Conversation, because unlike the launchers this control is about the
             // pane you are reading rather than about somewhere else to open the session.
-            // On Files or Diff it would be an `aria-pressed` toggle over a surface that is
+            // On Files or Diff it would choose a rendering for a surface that is
             // not on screen, changing nothing a reader can see.
             tab === "conversation" ? (
-              <ConversationViewToggle
-                terminal={conversationView.view === "terminal"}
-                overridden={conversationView.overridden}
-                onChange={conversationView.setView}
-              />
+              <>
+                <SessionControlToggle key={session.id} session={session} />
+                <ConversationViewToggle
+                  terminal={conversationView.view === "terminal"}
+                  overridden={conversationView.overridden}
+                  onChange={conversationView.setView}
+                />
+              </>
             ) : null
           }
         />

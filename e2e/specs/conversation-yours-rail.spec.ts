@@ -482,7 +482,8 @@ test("the jump works in the terminal rendering too", async ({ dashboard, daemon 
   // so a rail that could only address one of them would be broken by default and working
   // only for people who had switched.
   const card = await conversationWithMessages(dashboard, daemon);
-  await card.getByRole("button", { name: "Terminal view" }).click();
+  await card.getByRole("button", { name: "Conversation view" }).click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
 
   // The terminal rendering relabels the composer with its own prompt metaphor, which is
   // how a reader knows the switch landed.

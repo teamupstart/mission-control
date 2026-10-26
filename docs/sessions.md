@@ -1331,8 +1331,8 @@ no exit code and no duration for any of them. Where it shows an elapsed time, th
 span between the run's first and last recorded turn, and its tooltip says so.
 
 **Settings → Display → Conversation** chooses the default for every session. Any single
-conversation can be flipped on its own with the **Terminal view** button in the detail's
-tab strip in Console and Board, where it appears only while the
+conversation can choose **Chat** or **Terminal** from the **Conversation view** icon menu
+in the detail's tab strip in Console and Board, where it appears only while the
 Conversation tab is the one you are reading. It
 wins over that default for that session until you close the tab - so one agent can be
 read as a chat log while the rest stay in the terminal stream. Nothing about the
@@ -1932,6 +1932,52 @@ including dated ids and long-context variants, use Claude Code's reported cost w
 model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex
 rollouts do not currently expose every separately billed hosted-tool fee.
+
+### Let a session steer other sessions
+
+In the Mission Control desktop app, open a session's Conversation tab and open the **Session control** icon menu,
+to the left of the chat/terminal view menu. Choose **On** under **Control other sessions**
+to let that session act on your behalf across the other live sessions. It always starts off.
+The grant belongs to the controller, so targets do not need their own control enabled. You can revoke it
+at any time; subsequent reads and actions refuse immediately. An action already accepted
+may finish. The grant lasts only for the current conversation, task and work episode in this
+daemon run. A reset, replacement conversation, different task, session removal or Mission
+Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+
+Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
+The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
+The desktop app must own its daemon: if it reused a standalone daemon, stop that daemon and
+reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
+forged browser headers.
+
+The session uses two Mission Control tools:
+
+- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+  pending review prompts, native approval/question dialog, outbox and work queue. The top-level
+  `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
+  when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
+- `control_session` takes that target's `sessionId` and a typed `command`. It supports
+  messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
+  outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
+  and model, effort and permission-mode changes. Use current request ids, option labels and
+  revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
+  `queue_approve` requires the inspected item revision. A changed proposal invalidates that
+  revision and any earlier approval, so read the new text before approving it.
+
+For example, after inspecting the target:
+
+```json
+{"sessionId":"sdk:target-id","command":{"action":"message","text":"Focus on the failing parser test first."}}
+```
+
+Messages are marked **Delegated session** in the live conversation. Review answers retain
+`session:<controller-id>` attribution and remain visible after reload. They are not recorded
+as direct human approvals for managed plan publication. The daemon's session event ledger
+records the controller, target, action and HTTP outcome without recording the message body.
+
+These tools cannot change the controller grant, global settings, delete sessions, or reset
+worktrees. The target's normal runtime and resource guards continue to apply. See
+[Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
 
 ### Review channel (MCP)
 

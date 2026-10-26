@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
+  binaryInstallation: {
+    getState: () => ipcRenderer.invoke("mission:binary-install-state"),
+    enroll: () => ipcRenderer.invoke("mission:binary-install-enroll"),
+  },
   claimProductIssueAuthorization: (): string | null => {
     if (productIssueAuthorizationClaimed) return null;
     productIssueAuthorizationClaimed = true;

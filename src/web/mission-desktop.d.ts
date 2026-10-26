@@ -15,6 +15,10 @@ declare global {
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;
     removeIntegrations(): Promise<{ ok: boolean; message: string }>;
+    binaryInstallation?: {
+      getState(): Promise<import("@shared/binary-enrollment.ts").BinaryEnrollment | null>;
+      enroll(): Promise<{started: boolean; message: string}>;
+    };
     /** Claim the renderer module's private capability once. */
     claimProductIssueAuthorization?(): string | null;
     claimSessionControlAuthorization?(): string | null;

@@ -447,7 +447,7 @@ test("target reads expose only that session's full queue for subsequent delegate
   const proposed = (await readQueue()).items[0]!;
   assert.equal(proposed.state, "proposed");
   assert.equal(proposed.proposedPayload, "Exact proposed instruction");
-  assert.equal((await f.act({ action: "queue_approve", itemId: proposed.id })).status, 200);
+  assert.equal((await f.act({ action: "queue_approve", itemId: proposed.id, revision: proposed.revision })).status, 200);
   assert.equal(typeof (await readQueue()).items[0]!.approvedAt, "number");
   assert.equal((await f.act({ action: "queue_reorder", ids: [second!.id, proposed.id] })).status, 200);
   const reordered = await readQueue();
@@ -664,13 +664,13 @@ test("queue approval requires a drafted proposal and reordering rejects another 
   const foreignResponse = await f.act({ action: "queue_add", intent: "Another session's item" }, f.other.id);
   for (const response of [firstResponse, secondResponse, foreignResponse]) assert.equal(response.status, 200);
   const first = await firstResponse.json(); const second = await secondResponse.json(); const foreign = await foreignResponse.json();
-  assert.equal((await f.act({ action: "queue_approve", itemId: first.id })).status, 409);
+  assert.equal((await f.act({ action: "queue_approve", itemId: first.id, revision: first.revision })).status, 409);
   f.registry.putQueueItem({ ...f.registry.getQueueItem(first.id)!, state: "proposed" });
-  assert.equal((await f.act({ action: "queue_approve", itemId: first.id })).status, 409, "no drafted text to approve");
+  assert.equal((await f.act({ action: "queue_approve", itemId: first.id, revision: first.revision })).status, 409, "no drafted text to approve");
   assert.equal(f.registry.getQueueItem(first.id)?.approvedAt, null);
   f.registry.putQueueItem({ ...f.registry.getQueueItem(first.id)!, proposedPayload: "Exact prompt to send" });
-  assert.equal((await f.act({ action: "queue_approve", itemId: first.id }, f.other.id)).status, 404);
-  assert.equal((await f.act({ action: "queue_approve", itemId: first.id })).status, 200);
+  assert.equal((await f.act({ action: "queue_approve", itemId: first.id, revision: first.revision }, f.other.id)).status, 404);
+  assert.equal((await f.act({ action: "queue_approve", itemId: first.id, revision: first.revision })).status, 200);
   const approved = f.registry.getQueueItem(first.id)!;
   assert.equal(typeof approved.approvedAt, "number");
   assert.equal(approved.state, "proposed");
@@ -680,6 +680,57 @@ test("queue approval requires a drafted proposal and reordering rejects another 
   assert.equal((await f.act({ action: "queue_reorder", ids: [second.id, first.id] })).status, 200);
   assert.deepEqual(f.registry.getQueue(f.target.id)?.items.map((item) => item.id), [second.id, first.id]);
   assert.deepEqual(f.registry.getQueue(f.other.id)?.items.map((item) => item.id), [foreign.id]);
+});
+
+test("delegated queue approval requires the revision of the inspected proposal", async () => {
+  const f = fixture(); await f.grant(true);
+  const added = await f.act({ action: "queue_add", intent: "Review a proposed instruction" });
+  const item = await added.json();
+  const draft = async (text: string) => {
+    const response = await f.request(`/api/sessions/${f.target.id}/queue/${item.id}/state`, {
+      state: "proposed", proposedPayload: text,
+    }, f.headers, "PUT");
+    assert.equal(response.status, 200);
+  };
+  const readItem = async () => {
+    const response = await f.request("/mcp/session-control/read", { sessionId: f.target.id });
+    assert.equal(response.status, 200);
+    return ((await response.json()).queue as SessionQueue).items[0]!;
+  };
+  await draft("The instruction the controller inspected");
+  const inspected = await readItem();
+  for (const revision of [undefined, -1, 0.5]) {
+    const response = await f.request("/mcp/session-control/act", {
+      sessionId: f.target.id, command: { action: "queue_approve", itemId: inspected.id, revision },
+    });
+    assert.equal(response.status, 400);
+    assert.equal(f.registry.getQueueItem(item.id)?.approvedAt, null);
+  }
+  await draft("A replacement the controller has not inspected");
+  const approve = (revision: number) => f.act({ action: "queue_approve", itemId: inspected.id, revision });
+  const stale = await approve(inspected.revision);
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json()).error, /changed since you loaded/);
+  const replacement = await readItem();
+  assert.ok(replacement.revision > inspected.revision);
+  assert.equal(replacement.proposedPayload, "A replacement the controller has not inspected");
+  assert.equal(replacement.approvedAt, null);
+  assert.equal((await approve(replacement.revision)).status, 200);
+  assert.equal(typeof (await readItem()).approvedAt, "number");
+
+  // An identical draft update keeps its revision and approval; genuinely new text
+  // invalidates both the old approval and the token used to give it.
+  await draft(replacement.proposedPayload!);
+  const unchanged = await readItem();
+  assert.equal(unchanged.revision, replacement.revision);
+  assert.equal(typeof unchanged.approvedAt, "number");
+  await draft("A third proposal needs fresh approval");
+  const latest = await readItem();
+  assert.ok(latest.revision > replacement.revision);
+  assert.equal(latest.approvedAt, null);
+  assert.equal((await approve(replacement.revision)).status, 409);
+  assert.equal((await f.request(`/api/sessions/${f.target.id}/queue/${item.id}/approve`, undefined, f.headers)).status, 200,
+    "the existing direct-user approval route retains its bodyless request contract");
 });
 
 test("delegated renaming updates the live card and durable SDK row and refuses blank names", async () => {

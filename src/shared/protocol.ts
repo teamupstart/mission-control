@@ -4361,6 +4361,11 @@ export const EditWorkItemSchema = z.object({
 });
 export type EditWorkItem = z.infer<typeof EditWorkItemSchema>;
 
+/** Delegated approval binds consent to the proposal the controller inspected. */
+export const ApproveWorkItemSchema = z.object({
+  revision: EditWorkItemSchema.shape.revision,
+}).strict();
+
 /** Reorder a queue: the full id list in the new authored order, renumbered in a txn. */
 export const ReorderQueueSchema = z.object({
   ids: z.array(z.string().min(1)).min(1),
@@ -8039,7 +8044,7 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("queue_add"), intent: AddWorkItemSchema.shape.intent }).strict(),
   z.object({ action: z.literal("queue_edit"), itemId: ControlIdSchema, intent: EditWorkItemSchema.shape.intent, revision: EditWorkItemSchema.shape.revision }).strict(),
   z.object({ action: z.literal("queue_remove"), itemId: ControlIdSchema }).strict(),
-  z.object({ action: z.literal("queue_approve"), itemId: ControlIdSchema }).strict(),
+  z.object({ action: z.literal("queue_approve"), itemId: ControlIdSchema, revision: ApproveWorkItemSchema.shape.revision }).strict(),
   z.object({ action: z.literal("queue_reorder"), ids: ReorderQueueSchema.shape.ids }).strict(),
   z.object({ action: z.literal("rename"), name: RenameSchema.shape.name }).strict(),
   z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),

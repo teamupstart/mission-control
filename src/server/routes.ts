@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import {
   AddWorkItemSchema,
+  ApproveWorkItemSchema,
   AssignTaskSchema,
   AwayConfigPatchSchema,
   BacklogPlanSchema,
@@ -6300,10 +6301,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
+  app.post("/api/sessions/:id/queue/:itemId/approve", async (c) => {
+    let revision: number | undefined;
+    if (sessionControlActor(c.req.raw)) {
+      const parsed = await parseBody(c, ApproveWorkItemSchema);
+      if (!parsed.ok) return parsed.res;
+      revision = parsed.data.revision;
+    }
     const owned = ownedItem(registry, queues, c);
     if (!owned.ok) return owned.res;
-    const r = queues.approve(owned.item.id);
+    const r = queues.approve(owned.item.id, Date.now(), revision);
     return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
   });
 

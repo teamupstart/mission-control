@@ -54,7 +54,7 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "queue_add": return post("queue", { intent: command.intent });
     case "queue_edit": return { path: `${base}/queue/${encodeURIComponent(command.itemId)}`, method: "PATCH", body: { intent: command.intent, revision: command.revision } };
     case "queue_remove": return { path: `${base}/queue/${encodeURIComponent(command.itemId)}`, method: "DELETE" };
-    case "queue_approve": return post(`queue/${encodeURIComponent(command.itemId)}/approve`);
+    case "queue_approve": return post(`queue/${encodeURIComponent(command.itemId)}/approve`, { revision: command.revision });
     case "queue_reorder": return { path: `${base}/queue/order`, method: "PUT", body: { ids: command.ids } };
     case "rename": return post("rename", { name: command.name });
     case "set_model": return post("model", { model: command.model });

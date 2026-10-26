@@ -246,7 +246,7 @@ server.registerTool(
   "control_session",
   {
     title: "Steer another session on the operator's behalf",
-    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
     inputSchema: SessionControlRequestSchema.shape,
   },
   async (args) => {

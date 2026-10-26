@@ -1961,6 +1961,8 @@ The session uses two Mission Control tools:
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
   and model, effort and permission-mode changes. Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
+  `queue_approve` requires the inspected item revision. A changed proposal invalidates that
+  revision and any earlier approval, so read the new text before approving it.
 
 For example, after inspecting the target:
 

@@ -2,8 +2,17 @@
 
 ## Workflow controls through MCP
 
-Mission Control's MCP exposes the same workflow runtime controls as the dashboard, across
-local runs. `list_workflow_runs` accepts optional `status`, `workflowId`, `session`, `limit`
+Mission Control's MCP exposes the same workflow runtime controls as the dashboard. A session
+can read and control its own workflow without delegation. Reading or controlling another
+session's workflows requires the operator to enable **Control other sessions** on the calling
+session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
+All three tools require a current signed Registry session credential alongside the machine token.
+Caller identity comes from that credential, never from a supplied session id or working directory.
+Bindings must match both the current session and its conversation identity. Reattachment checks
+both the source binding and destination; delivery actions also check the packet's original destination.
+An orphaned or historical binding that cannot establish current ownership requires delegation.
+
+`list_workflow_runs` accepts optional `status`, `workflowId`, `session`, `limit`
 (1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
 `get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
 submissions, deliveries, and current recovery options. Inspect that state before taking an action.
@@ -45,7 +54,9 @@ the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery
 `DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
 review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
 
-These tools call the existing localhost dashboard endpoints with MCP/agent telemetry attribution.
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
+use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
 They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
 retains ownership of state transitions, round limits, idempotency, evidence policy, confirmation
 checks, and delivery/session matching. Failed calls return the daemon's error without an automatic

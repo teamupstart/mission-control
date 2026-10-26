@@ -1069,6 +1069,7 @@ export class WorkflowManager {
     status?: WorkflowRun["status"];
     workflowId?: string;
     session?: string;
+    owner?: { sessionId: string; noteKey: string };
   }): WorkflowRunPage {
     return this.store.listRunSummaryPage(input);
   }

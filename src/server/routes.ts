@@ -1,4 +1,5 @@
 import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
 import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
@@ -1911,6 +1912,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  registerWorkflowMcpRoutes(app, registry, workflowManager);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;

@@ -54,7 +54,7 @@ function concrete(path: string): string {
 }
 
 test("every route registered in source is present in the composed surface", () => {
-  const source = ["routes.ts", "session-control.ts"].map((file) => readFileSync(
+  const source = ["routes.ts", "session-control.ts", "workflows/mcp.ts"].map((file) => readFileSync(
     fileURLToPath(new URL(`../src/server/${file}`, import.meta.url)),
     "utf8",
   )).join("\n");

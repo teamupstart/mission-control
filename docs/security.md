@@ -168,6 +168,14 @@ The standalone browser dashboard cannot change this setting. A desktop app that 
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
 
+Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
+are available without the grant; cross-session access requires **Control other sessions** on
+the caller. The daemon checks binding session and conversation identity, filters ownership
+before list pagination, and checks both ends of reattachment plus delivery packet destinations.
+Unknown or historical targets require delegation. The shared machine token alone grants no
+workflow MCP access. Existing manager checks still enforce submission/run matching, replay keys,
+round budgets, confirmation phrases, and evidence policy.
+
 This is an authorization boundary for Mission Control tools within the existing single-user
 local trust model. It is not a sandbox against arbitrary shell code running as the operator,
 which already has access to other local dashboard actions and operator-owned files. The

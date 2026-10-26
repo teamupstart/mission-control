@@ -42,7 +42,7 @@ import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowActionRequestSchema, workflowActionPath } from "./workflow-actions.ts";
+import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -232,15 +232,11 @@ async function responseResult(res: Response): Promise<{ status: number; body: un
 const server = new McpServer({ name: "mission-control", version: "0.1.0" });
 
 server.registerTool("list_workflow_runs", {
-  description: "List Mission Control workflow runs, with optional status, workflowId and session filters. Follow nextCursor for more results. Use get_workflow_run to inspect a run's recovery actions before changing it.",
+  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
   inputSchema: ListWorkflowRunsSchema,
 }, async (input) => {
   try {
-    const query = new URLSearchParams();
-    for (const [key, value] of Object.entries(input)) {
-      if (value !== undefined) query.set(key, String(value));
-    }
-    const res = await http(`/api/workflow-runs?${query}`, "GET");
+    const res = await http("/mcp/workflows/list", "POST", input, true);
     return textResult(await res.text(), !res.ok);
   } catch (error) {
     return textResult(String(error), true);
@@ -248,11 +244,11 @@ server.registerTool("list_workflow_runs", {
 });
 
 server.registerTool("get_workflow_run", {
-  description: "Inspect a Mission Control workflow run, its binding, submissions, deliveries and available recovery actions. Returns the dashboard's run detail, including IDs needed by trigger_workflow_action.",
+  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires the operator's Control other sessions opt-in on your session. Returns IDs needed by trigger_workflow_action.",
   inputSchema: GetWorkflowRunSchema,
 }, async ({ runId }) => {
   try {
-    const res = await http(`/api/workflow-runs/${encodeURIComponent(runId)}`, "GET");
+    const res = await http("/mcp/workflows/read", "POST", { runId }, true);
     return textResult(await res.text(), !res.ok);
   } catch (error) {
     return textResult(String(error), true);
@@ -260,11 +256,11 @@ server.registerTool("get_workflow_run", {
 });
 
 server.registerTool("trigger_workflow_action", {
-  description: "Execute the dashboard's workflow controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Operates across local workflow runs. Use only for operator-authorized actions; inspect get_workflow_run first. Supply parameters matching the selected action. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmation strings, acknowledgedRisk, expected session/note keys, limits and all dashboard state checks remain enforced. A failure is returned without an automatic retry or fallback.",
-  inputSchema: z.object({ request: WorkflowActionRequestSchema }).strict(),
+  description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
+  inputSchema: WorkflowMcpActionSchema,
 }, async ({ request }) => {
   try {
-    const res = await http(workflowActionPath(request), "POST", request.parameters);
+    const res = await http("/mcp/workflows/act", "POST", { request }, true);
     return textResult(await res.text(), !res.ok);
   } catch (error) {
     return textResult(String(error), true);

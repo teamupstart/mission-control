@@ -234,6 +234,14 @@ cannot inherit delegated attribution. Delegated single-option commands and SDK f
 require the current prompt id. Pane form rows retain their existing request-id compatibility. Authenticated revocation
 still removes the grant if the live session identity changes while authorization is pending.
 
+Workflow tools reuse the identity-only `sessionControlCaller` verifier through
+`workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
+other targets require the existing Registry grant. The daemon enforces ownership for list,
+detail and all action target families before invoking dashboard handlers. List scope is a
+store SQL predicate applied before pagination. Shared request contracts and the closed endpoint
+translator live in `src/shared/workflow-mcp.ts`; the stdio child supplies the signed credential
+and never falls back to an unscoped dashboard route. WorkflowManager remains the state owner.
+
 ```mermaid
 flowchart LR
   Operator[Trusted desktop menu selection] --> Shell[Private preload and Electron shell]

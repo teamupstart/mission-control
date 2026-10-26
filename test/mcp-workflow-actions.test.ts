@@ -1,16 +1,17 @@
 // Exercise the agent-facing stdio protocol through HTTP to the real workflow owner and SQLite.
 import assert from "node:assert/strict";
 import { after, test, type TestContext } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:net";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
-import { WorkflowActionRequestSchema } from "../src/mcp/workflow-actions.ts";
+import { WorkflowActionRequestSchema, workflowActionPath } from "../src/shared/workflow-mcp.ts";
 import { WORKFLOW_ACTION_ROUTES } from "../src/shared/workflow-actions.ts";
 import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type { WorkflowBinding, WorkflowCompletionPolicy, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
@@ -19,6 +20,15 @@ import type { LlmRunner } from "../src/shared/llm.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-workflow-"));
 const successfulActions = new Set<string>();
 process.env.MISSION_HOME = home;
+// Capabilities are namespaced by daemon port. Reserve the fixture's port before
+// importing runtime constants so the daemon and its MCP children use the same namespace.
+const reservation = createServer();
+await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+const reservedAddress = reservation.address();
+assert.ok(reservedAddress && typeof reservedAddress !== "string");
+const port = reservedAddress.port;
+await new Promise<void>((resolve, reject) => reservation.close((err) => err ? reject(err) : resolve()));
+process.env.MISSION_PORT = String(port);
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -32,15 +42,23 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { fallbackWorkflowContext, compactWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { workflowJson } = await import("../src/server/workflows/store.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
+const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
+const { sessionScoutCredentialPath, sessionScoutCredentialDirectory } = await import("../src/shared/harness-runtime.mjs");
+after(() => rmSync(sessionScoutCredentialDirectory(), { recursive: true, force: true }));
 
-async function fixture(t: TestContext, options: WorkflowManagerOptions = {}) {
+async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, credentialLocator?: string) {
   const registry = new Registry();
+  const releaseCredentials = maintainScoutSessionCredentials(registry);
+  const caller = registry.registerSdkSession({ id: `sdk:workflow-caller-${randomUUID()}`,
+    agent: "claude", name: "Workflow controller", cwd: home, agentSessionId: `native-${randomUUID()}` });
+  registry.setSessionControlEnabled(caller.id, true);
   const workflows = new WorkflowManager(registry, undefined, options);
   const store = workflows.store;
   const app = buildApp({ registry, workflows, tasks: new TaskManager(registry),
     queues: new QueueManager(registry), reviews: new ReviewManager(registry) });
   const requests: Array<{ path: string; method: string; body: unknown; actor: string | null; surface: string | null }> = [];
-  const server = serve({ hostname: "127.0.0.1", port: 0, fetch: async (req) => {
+  const server = serve({ hostname: "127.0.0.1", port, fetch: async (req) => {
     requests.push({ path: new URL(req.url).pathname, method: req.method,
       body: req.method === "POST" ? await req.clone().json() : null,
       actor: req.headers.get("x-mission-operation-actor"), surface: req.headers.get("x-mission-operation-surface") });
@@ -51,13 +69,15 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}) {
     await client.close();
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     await workflows.stop();
+    releaseCredentials();
   });
   await new Promise<void>((resolve) => server.listening ? resolve() : server.once("listening", resolve));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   await client.connect(new StdioClientTransport({ command: process.execPath,
     args: ["--import", "tsx", fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url))],
-    env: { ...process.env, MISSION_HOME: home, MISSION_API_TOKEN: ensureToken(), MISSION_PORT: String(address.port) } as Record<string, string>,
+    env: { ...process.env, MISSION_HOME: home, MISSION_API_TOKEN: ensureToken(), MISSION_PORT: String(address.port),
+      MISSION_SCOUT_SESSION_LOCATOR: credentialLocator ?? sessionScoutCredentialLocator(caller.id) } as Record<string, string>,
     stderr: "pipe" }));
   async function call(name: string, args: Record<string, unknown>, error?: RegExp) {
     const result = await client.callTool({ name, arguments: args });
@@ -67,12 +87,13 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}) {
     if (name === "trigger_workflow_action") successfulActions.add((args.request as { action: string }).action);
     return JSON.parse(text);
   }
-  function seed() {
+  function seed(ownerSessionId?: string) {
     const key = randomUUID();
     const version = store.getWorkflowVersionById(BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!)!;
     const binding = store.insertBinding({ id: `binding-${key}`, workflowVersionId: version.id,
-      noteKey: key, sessionId: key, sessionAgent: "claude", sessionName: "MCP test", sessionCwd: "/repo",
-      sessionRepoRoot: "/repo", triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
+      noteKey: ownerSessionId === caller.id ? caller.agentSessionId! : key,
+      sessionId: ownerSessionId ?? key, sessionAgent: "claude", sessionName: "MCP test", sessionCwd: "/repo",
+      sessionRepoRoot: "/repo", repoRoot: `/repo/${key}`, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
     const { run, submission } = store.createInitialSubmission({ id: key, binding, intent: FIXTURE_RUN_INTENT,
       triggerSource: "manual", triggerKey: key, now: Date.now() },
     { id: `submission-${key}`, triggerSource: "manual", triggerKey: key, context: {}, evidence: {}, now: Date.now() });
@@ -81,7 +102,8 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}) {
     store.blockForRoundLimit(store.getRun(run.id)!);
     return { run, submission, version };
   }
-  return { client, call, seed, requests, store, workflows, registry };
+  const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
+  return { client, call, seed, requests, store, workflows, registry, caller, app, credential };
 }
 
 /** Fake only external work. Actions still use the real MCP child, routes, manager and store. */
@@ -146,7 +168,7 @@ async function runtimeFixture(t: TestContext, readiness = false) {
       transcriptPath: null, modelId: null, pid: null });
     return sessionId;
   }
-  function bind(completionPolicy: WorkflowCompletionPolicy = { kind: "none" }) {
+  function bind(completionPolicy: WorkflowCompletionPolicy = { kind: "none" }, sessionId = session()) {
     const key = randomUUID();
     const personaId = `persona-${key}`;
     f.store.insertPersona({ id: personaId, name: personaId, normalizedName: personaId, description: "",
@@ -165,7 +187,7 @@ async function runtimeFixture(t: TestContext, readiness = false) {
     assert.ok(created.ok);
     const published = f.store.publishWorkflow(key, 1, `version-${key}`, 2);
     assert.ok(published.ok);
-    const attached = f.workflows.createBinding({ workflowVersionId: published.version.id, sessionId: session() });
+    const attached = f.workflows.createBinding({ workflowVersionId: published.version.id, sessionId });
     assert.ok(attached.ok);
     return attached.value;
   }
@@ -211,7 +233,120 @@ test("MCP discovers runs, grants rounds exactly once, and durably cancels with a
   }
 });
 
-test("every dashboard runtime action routes missing-target errors and retains its payload", async (t) => {
+test("MCP self-control works with delegation off, but cross-session grants require opt-in", async (t) => {
+  const f = await fixture(t);
+  const own = f.seed(f.caller.id);
+  const other = f.seed();
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  await f.call("trigger_workflow_action", { request: { action: "grant-rounds", runId: own.run.id,
+    parameters: { requestId: "self-grant", rounds: 2 } } });
+  assert.equal(f.store.getRun(own.run.id)?.maxRepairRounds, 3);
+  const request = { action: "grant-rounds", runId: other.run.id, parameters: { requestId: "cross-grant", rounds: 2 } };
+  await f.call("trigger_workflow_action", { request }, /Control other sessions|session control/i);
+  assert.equal(f.store.getRun(other.run.id)?.maxRepairRounds, 1);
+  f.registry.setSessionControlEnabled(f.caller.id, true);
+  await f.call("trigger_workflow_action", { request });
+  assert.equal(f.store.getRun(other.run.id)?.maxRepairRounds, 3);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  await f.call("trigger_workflow_action", { request: { action: "cancel", runId: other.run.id,
+    parameters: { requestId: "revoked" } } }, /Control other sessions|session control/i);
+  assert.notEqual(f.store.getRun(other.run.id)?.status, "cancelled");
+});
+
+test("MCP run reads and pagination are scoped before limiting, and credentials cannot be spoofed", async (t) => {
+  const f = await fixture(t);
+  const own = [f.seed(f.caller.id), f.seed(f.caller.id)];
+  const other = f.seed();
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const page = await f.call("list_workflow_runs", { limit: 1 });
+  const next = await f.call("list_workflow_runs", { limit: 1, cursor: page.nextCursor });
+  assert.deepEqual([page.items[0].id, next.items[0].id].sort(), own.map(({ run }) => run.id).sort());
+  assert.equal(next.nextCursor, null);
+  assert.deepEqual((await f.call("list_workflow_runs", { session: f.store.getBinding(other.run.bindingId)!.sessionId })).items, []);
+  assert.equal((await f.call("get_workflow_run", { runId: own[0]!.run.id })).run.id, own[0]!.run.id);
+  await f.call("get_workflow_run", { runId: other.run.id }, /Control other sessions/i);
+  f.registry.setSessionControlEnabled(f.caller.id, true);
+  assert.equal((await f.call("get_workflow_run", { runId: other.run.id })).run.id, other.run.id);
+  const visible = (await f.call("list_workflow_runs", {})).items.map((run: { id: string }) => run.id);
+  for (const { run } of [...own, other]) assert.ok(visible.includes(run.id));
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const signed = f.credential();
+  const request = { request: { action: "cancel", runId: own[0]!.run.id, parameters: { requestId: "forged" } } };
+  for (const credential of [undefined, "forged", `${signed}tampered`]) {
+    const response = await f.app.request("/mcp/workflows/act", { method: "POST",
+      headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+        ...(credential ? { "x-mission-scout-credential": credential } : {}) }, body: JSON.stringify(request) });
+    assert.equal(response.status, 403);
+  }
+  assert.notEqual(f.store.getRun(own[0]!.run.id)?.status, "cancelled");
+  f.registry.applyDriverEvent(f.caller.id, { kind: "bound", agentSessionId: "replacement-conversation",
+    transcriptPath: null, modelId: null, pid: null });
+  const stale = await f.app.request("/mcp/workflows/read", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": signed }, body: JSON.stringify({ runId: own[0]!.run.id }) });
+  assert.equal(stale.status, 403);
+  // A refreshed credential also cannot claim the previous conversation's binding.
+  await f.call("get_workflow_run", { runId: own[0]!.run.id }, /Control other sessions/i);
+});
+
+test("MCP requires daemon-issued caller identity even when the machine token and grant are present", async (t) => {
+  const f = await fixture(t, {}, "not-a-private-locator");
+  const { run } = f.seed(f.caller.id);
+  await f.call("list_workflow_runs", {}, /signed session credential/i);
+  await f.call("get_workflow_run", { runId: run.id }, /signed session credential/i);
+  await f.call("trigger_workflow_action", { request: { action: "cancel", runId: run.id,
+    parameters: { requestId: "missing-identity" } } }, /signed session credential/i);
+  assert.notEqual(f.store.getRun(run.id)?.status, "cancelled");
+});
+
+test("MCP self-control covers bindings, submissions, deliveries and session targets", async (t) => {
+  const f = await runtimeFixture(t, true);
+  const ownBinding = f.bind({ kind: "none" }, f.caller.id);
+  const otherBinding = f.bind();
+  f.registry.setSessionControlEnabled(otherBinding.sessionId!, true);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = await f.act("submit", { bindingId: ownBinding.id });
+  assert.equal(f.store.getRun(own.run.id)?.status, "waiting_for_evidence_readiness");
+  await f.act("submit", { bindingId: otherBinding.id }, {}, /Control other sessions/i);
+  assert.equal(f.store.latestRunForBinding(otherBinding.id), null);
+  await f.act("reattach", { bindingId: ownBinding.id }, { sessionId: otherBinding.sessionId! }, /Control other sessions/i);
+  await f.act("reattach", { bindingId: otherBinding.id }, { sessionId: f.caller.id }, /Control other sessions/i);
+  assert.equal(f.store.getBinding(ownBinding.id)?.sessionId, f.caller.id);
+  const target = { runId: own.run.id, submissionId: own.submission.id };
+  await f.act("override-evidence-readiness", target, { reason: "Accept the fixture gap", acknowledgedRisk: true });
+  assert.equal(f.store.getSubmission(own.submission.id)?.readiness?.status, "overridden");
+  const other = f.seedRun(otherBinding);
+  await f.act("override-evidence-readiness", { runId: other.run.id, submissionId: other.submission.id },
+    { reason: "Accept the fixture gap", acknowledgedRisk: true }, /Control other sessions/i);
+  // Cross-run submission IDs retain the manager's ownership check.
+  await f.act("override-evidence-readiness", { runId: own.run.id, submissionId: other.submission.id },
+    { reason: "Accept the fixture gap", acknowledgedRisk: true }, /not found|does not belong|No such/i);
+  function packet(runId: string, submissionId: string, sessionId: string, noteKey: string) {
+    const delivery = f.store.prepareDelivery({ id: randomUUID(), runId, submissionId, kind: "persona_feedback",
+      sessionId, noteKey, payload: "Fixture feedback", payloadSha256: "a".repeat(64) }).delivery;
+    f.store.claimDeliverySend(delivery.id);
+    f.store.setDeliveryState(delivery.id, "uncertain", "fixture transport ambiguity");
+    return delivery;
+  }
+  const delivery = packet(own.run.id, own.submission.id, f.caller.id, ownBinding.noteKey);
+  await f.act("resolve-delivery", { deliveryId: delivery.id }, { resolution: "mark_delivered" });
+  assert.equal(f.store.getDelivery(delivery.id)?.state, "delivered");
+  const foreign = packet(other.run.id, other.submission.id, otherBinding.sessionId!, otherBinding.noteKey);
+  await f.act("resolve-delivery", { deliveryId: foreign.id }, { resolution: "mark_delivered" }, /Control other sessions/i);
+  assert.equal(f.store.getDelivery(foreign.id)?.state, "uncertain");
+  // A binding move cannot turn a packet addressed to another conversation into a self action.
+  await f.act("cancel", { runId: own.run.id });
+  f.store.updateBinding(ownBinding.id, { state: "archived" });
+  f.store.reattachBinding(otherBinding.id, { noteKey: ownBinding.noteKey, sessionId: f.caller.id,
+    sessionAgent: "claude", sessionName: f.caller.name, sessionCwd: home, sessionRepoRoot: null });
+  await f.act("resolve-delivery", { deliveryId: foreign.id }, { resolution: "mark_delivered" }, /Control other sessions/i);
+  await f.act("start-review", { sessionId: otherBinding.sessionId! }, {}, /Control other sessions/i);
+  f.store.updateBinding(otherBinding.id, { state: "archived" });
+  const review = await f.act("start-review", { sessionId: f.caller.id });
+  assert.equal(f.store.getBinding(review.run.bindingId)?.sessionId, f.caller.id);
+});
+
+test("every dashboard action denies unowned targets without delegation and retains its payload with delegation", async (t) => {
   const f = await fixture(t);
   const parameters = { requestId: "action-intent" };
   const cases = [
@@ -230,11 +365,16 @@ test("every dashboard runtime action routes missing-target errors and retains it
   const paths = new Set<string>();
   for (const [action, extra, suffix] of cases) {
     const request = { action, runId: "missing", ...("submissionId" in WorkflowActionRequestSchema.optionsMap.get(action)!.shape ? { submissionId: "sub" } : {}), parameters: { ...parameters, ...extra } };
+    f.registry.setSessionControlEnabled(f.caller.id, false);
+    await f.call("trigger_workflow_action", { request }, /Control other sessions/i);
+    f.registry.setSessionControlEnabled(f.caller.id, true);
     await f.call("trigger_workflow_action", { request }, /not found|No such|no such|No active/i);
     const sent = f.requests.at(-1)!;
-    assert.equal(sent.path, `/api/workflow-runs/missing/${suffix}`);
-    assert.deepEqual(sent.body, request.parameters);
-    paths.add(sent.path.replace("missing", ":id").replace("/sub/", "/:submissionId/"));
+    assert.equal(sent.path, "/mcp/workflows/act");
+    assert.deepEqual(sent.body, { request });
+    const path = workflowActionPath(WorkflowActionRequestSchema.parse(request));
+    assert.equal(path, `/api/workflow-runs/missing/${suffix}`);
+    paths.add(path.replace("missing", ":id").replace("/sub/", "/:submissionId/"));
   }
   for (const [action, target, extra, path] of [
     ["retry-delivery", { deliveryId: "missing" }, { expectedSessionId: "session", expectedNoteKey: "note" }, "/api/workflow-deliveries/missing/retry"],
@@ -244,9 +384,13 @@ test("every dashboard runtime action routes missing-target errors and retains it
     ["start-review", { sessionId: "missing" }, { evidence: [] }, "/api/sessions/missing/workflow-review"],
   ] as const) {
     const body = action === "reattach" ? extra : { ...parameters, ...extra };
+    f.registry.setSessionControlEnabled(f.caller.id, false);
+    await f.call("trigger_workflow_action", { request: { action, ...target, parameters: body } }, /Control other sessions/i);
+    f.registry.setSessionControlEnabled(f.caller.id, true);
     await f.call("trigger_workflow_action", { request: { action, ...target, parameters: body } }, /not found|No such|no such|unavailable|not available/i);
-    assert.equal(f.requests.at(-1)?.path, path);
-    assert.deepEqual(f.requests.at(-1)?.body, body);
+    assert.equal(f.requests.at(-1)?.path, "/mcp/workflows/act");
+    assert.deepEqual(f.requests.at(-1)?.body, { request: { action, ...target, parameters: body } });
+    assert.equal(workflowActionPath(WorkflowActionRequestSchema.parse({ action, ...target, parameters: body })), path);
     paths.add(path.replace("missing", ":id"));
   }
   // Adding a dashboard runtime action must not silently leave the MCP behind.
@@ -312,7 +456,9 @@ test("MCP mutation paths cannot be redirected with IDs or arbitrary endpoint inp
   const f = await fixture(t);
   const hostileId = "missing/../cancel?force=true#fragment";
   await f.call("trigger_workflow_action", { request: { action: "cancel", runId: hostileId, parameters: { requestId: "r" } } }, /No such workflow run/i);
-  assert.equal(f.requests.at(-1)?.path, `/api/workflow-runs/${encodeURIComponent(hostileId)}/cancel`);
+  assert.equal(f.requests.at(-1)?.path, "/mcp/workflows/act");
+  assert.equal(workflowActionPath(WorkflowActionRequestSchema.parse({ action: "cancel", runId: hostileId,
+    parameters: { requestId: "r" } })), `/api/workflow-runs/${encodeURIComponent(hostileId)}/cancel`);
   assert.equal(WorkflowActionRequestSchema.safeParse({ action: "cancel", runId: "run", path: "/api/tasks", parameters: { requestId: "r" } }).success, false);
 });
 

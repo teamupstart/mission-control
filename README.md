@@ -279,7 +279,9 @@ Pull Request instructions also ask the agent to follow CI and repair failures on
 Agents can operate the same workflow run controls through Mission Control's MCP:
 `list_workflow_runs` finds runs, `get_workflow_run` inspects their state and recovery options,
 and `trigger_workflow_action` grants rounds, cancels, retries, restarts, and performs the other
-dashboard recovery actions. The existing server checks and explicit acknowledgements still apply.
+dashboard recovery actions. Sessions can control their own workflows by default. Access to another
+session's workflows requires the operator's **Control other sessions** opt-in on the caller.
+Signed session identity, existing server checks, and explicit acknowledgements still apply.
 
 ![Mission Control workflow run](docs/images/workflows.png)
 

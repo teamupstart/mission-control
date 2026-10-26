@@ -4971,9 +4971,14 @@ export class WorkflowStore {
     status?: WorkflowRun["status"];
     workflowId?: string;
     session?: string;
+    owner?: { sessionId: string; noteKey: string };
   }): WorkflowRunPage {
     const where: string[] = [];
     const params: Array<string | number> = [];
+    if (input.owner) {
+      where.push(`b.session_id = ? AND b.note_key = ?`);
+      params.push(input.owner.sessionId, input.owner.noteKey);
+    }
     if (input.cursor) {
       where.push(`(r.updated_at < ? OR (r.updated_at = ? AND r.id < ?))`);
       params.push(input.cursor.updatedAt, input.cursor.updatedAt, input.cursor.id);

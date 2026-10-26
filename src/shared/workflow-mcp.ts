@@ -1,3 +1,4 @@
+/** Shared request contracts for the MCP client and its daemon-owned authorization boundary. */
 import { z } from "zod";
 import {
   CancelWorkflowRunSchema,
@@ -60,6 +61,7 @@ export const ListWorkflowRunsSchema = z.object({
 }).strict();
 
 export const GetWorkflowRunSchema = z.object({ runId: id }).strict();
+export const WorkflowMcpActionSchema = z.object({ request: WorkflowActionRequestSchema }).strict();
 
 /** Only known dashboard endpoints, never a caller-supplied URL or arbitrary method. */
 export function workflowActionPath(request: z.infer<typeof WorkflowActionRequestSchema>): string {

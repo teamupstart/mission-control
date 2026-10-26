@@ -21,7 +21,7 @@ export function sessionControlActor(request: Request): `session:${string}` | und
 }
 
 /** The signed Registry credential identifies the caller, never a body id or cwd. */
-export function sessionController(registry: Registry, credential: string | undefined): string | null {
+export function sessionControlCaller(registry: Registry, credential: string | undefined): string | null {
   const authority = verifyScoutSubmissionCredential(credential);
   if (!authority?.sessionId || !authority.episodeId) return null;
   const session = registry.getSession(authority.sessionId);
@@ -31,8 +31,14 @@ export function sessionController(registry: Registry, credential: string | undef
     || session.pid !== authority.pid || session.agentSessionId !== authority.agentSessionId
     || authority.taskId !== (task && isActiveTask(task.status) ? task.id : null)
     || session.cwd !== authority.cwd || episode.episodeId !== authority.episodeId
-    || !registry.sessionControlEnabled(session.id)) return null;
+    || !registry.sessionControlIdentity(session.id)) return null;
   return session.id;
+}
+
+/** Delegation adds the existing operator grant to the same caller identity check. */
+export function sessionController(registry: Registry, credential: string | undefined): string | null {
+  const caller = sessionControlCaller(registry, credential);
+  return caller && registry.sessionControlEnabled(caller) ? caller : null;
 }
 
 /** Translate only supported actions to the existing dashboard handlers and their guards. */

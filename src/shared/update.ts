@@ -74,12 +74,11 @@ export type UpdateSnapshot =
       blocker?: string;
     })
   /**
-   * The new version is being built while this app keeps running.
+   * The binary update is being prepared while this app keeps running.
    *
-   * The build touches only the updater-owned clone, so nothing about it needs the app gone -
-   * and the app is the only thing that can show a person it is happening at all. `stage` is
-   * what the install script last reported, and is the whole of what a surface needs: it names
-   * the step and, through `updatePrepareProgress`, places the bar.
+   * Download and verification use a private attempt directory without changing the installed
+   * app. `stage` is what the preparation worker last reported; together with `transfer`, it
+   * supplies the step and progress that `updatePrepareProgress` renders.
    */
   | (SnapshotBase & {
       phase: "preparing";
@@ -90,11 +89,11 @@ export type UpdateSnapshot =
       /** Actual downloaded bytes; absent on older bridges and non-download stages. */
       transfer?: UpdateTransfer;
       /**
-       * Cancel was pressed and the build is being torn down.
+       * Cancel was pressed and binary preparation is stopping.
        *
-       * Still `preparing`, because the work is still happening - the difference is that it is
-       * now shutting down, nothing new can start until it has, and there is nothing left to
-       * cancel. The offer comes back when the process group is actually gone.
+       * Remain `preparing` until the attempt's worker and subprocess group have settled and
+       * its private directory has been cleaned up. Only then does the offer return and a new
+       * attempt become available; cancellation never changes the installed app or receipt.
        */
       cancelling: boolean;
     })

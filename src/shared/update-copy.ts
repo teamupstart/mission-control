@@ -43,9 +43,9 @@ export const UPDATE_COPY: {
   },
   cancelling: {
     title: (version) => `Cancelling the Mission Control ${version} update`,
-    // Not "cancelled": the build is being torn down, and the offer comes back when it is
-    // actually gone. Starting another one before that would put a fresh checkout and install
-    // into the directory the dying processes are still writing to.
+    // Each binary preparation owns a private attempt directory. Cancellation waits for its
+    // worker and subprocess group to settle and for the attempt to be cleaned up before
+    // returning the offer, so retry cannot overlap work that is still shutting down.
     detail: "Waiting for the download and verification to stop. The update will be offered again in a moment.",
   },
   ready: {

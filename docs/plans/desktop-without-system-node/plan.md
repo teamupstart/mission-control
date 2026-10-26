@@ -2,6 +2,10 @@
 
 Status: approved direction for phased planning. On 2026-10-13 the operator requested: "use phased plan skill to fully plan and schedule the work". This authorizes the phase plans and dependency-linked backlog tasks. This planning session does not implement the application or provision release credentials. See [the implementation index](phased-plan.md) for the executable task boundaries.
 
+## Approved forward rollout, 2026-10-26
+
+The operator approved starting binary installation with newly produced releases on 2026-10-26. The [forward-rollout contract](forward-rollout.md) owns the baseline, implementation acceptance and release qualification rules.
+
 ## Outcome and scope
 
 A supported macOS Apple Silicon user can install Mission Control, launch it, install Mission Control-owned integrations, receive stable and alpha updates, and recover from a failed update without installing or selecting system Node.js, npm, npx, or a local build toolchain.
@@ -112,11 +116,11 @@ The detailed, audited merge units are in [phased-plan.md](phased-plan.md). The o
 | 4 | Binary desktop updates and progress/recovery UI | Phase 3 |
 | 5 | Mission-owned integrations, honest Setup and completed Node-free journey | Phase 4 |
 
-Every phase also depends directly on this planning session's publication. This plan keeps the five original work packages but moves the working binary installation route ahead of mass updater transition. Signing proof belongs with the distribution phase; the helper phase proves its local lifetime before a signed distribution build exists. Publication of assets and credential provisioning are future implementation work, never actions of this planning turn.
+Every phase also depends directly on this planning session's publication. This plan keeps the five original work packages but moves the working binary installation route ahead of mass updater transition. Signing proof remains required for each distribution artifact; the first binary release and later update qualification follow the approved forward rollout, independently of implementation merge acceptance. Publication of assets and credential provisioning are future implementation work, never actions of this planning turn.
 
 ## Verification matrix
 
-| Criterion | Required proof for implementation |
+| Criterion | Required implementation and rollout proof |
 | --- | --- |
 | NC-1: no system Node for first install and launch | Fresh macOS test account/VM with node/npm/npx absent; signed download installs and app/daemon start |
 | NC-2: no system Node for stable or alpha update | Packaged old/new app transaction with sentinel Node/npm/npx commands that fail and record invocation; exact target identity installed; no sentinel hit |
@@ -125,13 +129,13 @@ Every phase also depends directly on this planning session's publication. This p
 | NC-5: integrations independent of external Node | Real shipped MCP handshake and hook/helper execution in a checkout pinning old Node, plus repair of old registrations without touching unrelated settings |
 | NC-6: honest UI | Playwright covering download/verification progress, pending alpha binary, cancellation, retry, app runtime info and no universal Node Setup gap; modal inset checks if new modals appear |
 
-Use existing node:test suites around updater, apply-update, migration, install identity and receipts, plus the packaged macOS journey. Unit fixtures alone do not prove helper lifetime or Gatekeeper behavior. Keep agent binaries faked in browser tests. For changed runtime/UI code run typecheck, lint, build, smoke and relevant E2E checks; capture focused output and screenshots as gitignored workflow evidence.
+Use existing node:test suites around updater, apply-update, migration, install identity and receipts, plus the packaged macOS journey. Unit fixtures do not prove Gatekeeper behavior. Real signed NC-1 through NC-5 journeys remain explicit release follow-ups under forward-rollout.md; their missing inputs do not block implementation completion. Keep agent binaries faked in browser tests. For changed runtime/UI code run typecheck, lint, build, smoke and relevant E2E checks; capture focused output and screenshots as gitignored workflow evidence.
 
 ## Risks, tradeoffs and unresolved prerequisites
 
 - Distribution signing/notarization: current config is ad-hoc. Confirm the approved Developer ID identity and credential provisioning. Do not bypass Gatekeeper or strip quarantine as an installation recipe.
 - Copied runtime: avoids a second runtime implementation but costs extra disk and startup copying. The 329 MB local installed bundle is one measurement, not a capacity guarantee for future releases.
-- Signed runtime compatibility: complete copy launch is verified locally; detached updates, signatures, entitlements, and run-as-node fuse settings still need packaged tests before the approach ships.
+- Signed runtime compatibility: complete copy launch is verified locally; signatures, entitlements and run-as-node fuse settings must pass on the first published artifact; signed update/recovery proof follows using that baseline and later releases.
 - Alpha cost: binary builds on main consume macOS CI capacity and introduce publication latency. Show availability honestly and preserve exact-SHA selection.
 - Supply chain: checksums detect corruption; signer identity, canonical publication and safe extraction establish the execution boundary. No execution before verification.
 - Recovery: bundle rollback is only safe when persisted state remains compatible. Retain the repository's state ownership boundary and establish per-release migration compatibility.

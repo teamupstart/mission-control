@@ -18,7 +18,7 @@
 // process read one owner rather than two copies.
 
 import { UPDATE_COPY, migrationReadyDetail } from "./update-copy.ts";
-import type { UpdateApplyOutcome, UpdateMigration } from "./update.ts";
+import { updatePrepareProgress, type UpdateApplyOutcome, type UpdateMigration, type UpdateSnapshot } from "./update.ts";
 
 /** Which conversation this is. Carried on the wire so a surface can style or find one. */
 export const UPDATE_DIALOG_KINDS = [
@@ -72,6 +72,26 @@ export interface UpdateDialogRequest extends UpdateDialogContent {
   id: string;
 }
 
+/** A menu notice observes the same pushed state as the banner. Its acknowledgement
+ * remains attached to the original question, even after preparation finishes. */
+export function liveUpdateDialog(request: UpdateDialogRequest, snapshot?: UpdateSnapshot | null): UpdateDialogRequest {
+  if (request.kind !== "preparing" || !snapshot) return request;
+  let content: Pick<UpdateDialogContent, "title" | "detail" | "tone">;
+  switch (snapshot.phase) {
+    case "preparing": {
+      const copy = snapshot.cancelling ? UPDATE_COPY.cancelling : UPDATE_COPY.preparing;
+      content = {tone: "info", title: copy.title(snapshot.newVersion), detail: snapshot.cancelling ? copy.detail
+        : `${updatePrepareProgress(snapshot.stage, snapshot.transfer).detail}. ${copy.detail}`};
+      break;
+    }
+    case "ready": content = UPDATE_DIALOGS.ready(snapshot.newVersion, snapshot.migration); break;
+    case "applying": content = UPDATE_DIALOGS.applying(snapshot.newVersion); break;
+    case "error": content = {tone: "error", title: "The update could not finish.", detail: snapshot.message}; break;
+    default: content = {tone: "info", title: "Update preparation has stopped", detail: "Mission Control is still running. Close this notice to see the current update status."};
+  }
+  return {...request, title: content.title, detail: content.detail, tone: content.tone};
+}
+
 /** The single-button acknowledgement four of the seven end on. */
 function acknowledge(hint: string): readonly UpdateDialogAction[] {
   return [{ choice: "dismiss", label: "OK", hint, tone: "primary" }];
@@ -95,7 +115,7 @@ export const UPDATE_DIALOGS = {
         {
           choice: "confirm",
           label: "Update Now",
-          hint: `Build Mission Control ${release.newVersion} now, then restart when it is ready`,
+          hint: `Download Mission Control ${release.newVersion} now, then restart when it is ready`,
           tone: "primary",
         },
         {

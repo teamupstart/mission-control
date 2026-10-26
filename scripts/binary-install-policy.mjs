@@ -34,12 +34,12 @@ export function readBinaryReceipt(directory) {
   return receipt;
 }
 
-export function binaryInstallReceipt(manifestText, destination, previous, installedAt = new Date().toISOString()) {
+export function binaryInstallReceipt(manifestText, destination, previous, installedAt = new Date().toISOString(), assetKind = 'dmg') {
   if (Buffer.byteLength(manifestText) > MAX_BINARY_MANIFEST_BYTES) throw new Error('Manifest exceeds its size limit');
   const manifest = JSON.parse(manifestText);
   const problem = validateBinaryManifest(manifest);
   if (problem) throw new Error(problem);
-  const asset = manifest.assets.find((entry) => entry.kind === 'dmg');
+  const asset = manifest.assets.find((entry) => entry.kind === assetKind);
   if (!asset || manifest.assets.length !== 2) throw new Error('A complete ZIP and DMG publication is required');
   if (destination.problem) throw new Error(destination.problem);
   // A legacy scope stays absent. Never infer system consent from /Applications.

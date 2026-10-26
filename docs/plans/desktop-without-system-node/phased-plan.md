@@ -1,6 +1,10 @@
 # Desktop without system Node: implementation phases
 
-Source: [plan.md](plan.md). Repository: mission-control only. Status: ready for dependent task scheduling after managed save, validation, commit and push. No application code is implemented here.
+Source: [plan.md](plan.md). Repository: mission-control only. Status: implementation phases retain their merge dependencies; the approved forward rollout separates first-release and subsequent-update qualification from implementation acceptance.
+
+## Approved forward rollout, 2026-10-26
+
+The five-phase implementation merge chain is unchanged. The [forward-rollout contract](forward-rollout.md) schedules R1 and R2 release qualification separately from that chain.
 
 ## Adopted decisions and publication
 
@@ -34,24 +38,24 @@ Estimated gross production additions or material changes: **3,500 to 5,800 lines
 | 1 | 1,000-1,600 | Receipt compatibility, process lifetime and interrupted replacement are one transaction slice. Combining release infrastructure would obscure the highest-risk local invariant. |
 | 2 | 600-1,000 | Signing and immutable publication have separate credentials, infrastructure and OS verification. Combining bootstrap would make its input untestable until both were complete. |
 | 3 | 600-1,000 | First install and upgrading an old app must work before the new updater exists. It has a different trust bootstrap and destination/enrollment journey. |
-| 4 | 800-1,300 | In-app discovery, download, cancellation and both progress surfaces form one user-visible feature, with a published recovery route already available. |
+| 4 | 800-1,300 | In-app discovery, download, cancellation and both progress surfaces form one user-visible feature, with the recovery installer implemented and first-release qualification tracked in R1. |
 | 5 | 500-900 | Removing the universal warning is valid only once every app-owned runtime path works. Integration repair and the honest Setup claim ship together. |
 
-Five phases are sufficient; there is no standalone preparation, test-only or cleanup phase. Each contains its own tests, operator documentation and packaged checks. More layers do not create more tasks.
+Five implementation phases remain sufficient. Two release qualification follow-ups, R1 and R2 in forward-rollout.md, track real packaged checks that require newly produced binaries. They are operational follow-ups, not additional implementation phases or prerequisites for merging Phases 4 and 5.
 
 ## Phase table and dependency graph
 
 | Phase | Plan | Direct phase prerequisites | Mergeable intermediate behavior |
 | --- | --- | --- | --- |
 | 1: Detached installation | [phase-1-bundled-install-transaction.md](phase-1-bundled-install-transaction.md) | None | Staged installs use a durable bundled helper and compatible receipt readers; source build preparation still works |
-| 2: Signed distribution | [phase-2-signed-binary-distribution.md](phase-2-signed-binary-distribution.md) | 1 | Trusted immutable stable/alpha assets are available; current installed clients still work |
+| 2: Signed distribution | [phase-2-signed-binary-distribution.md](phase-2-signed-binary-distribution.md) | 1 | Trusted producer and publication contracts are implemented; R1 qualifies the first actual release |
 | 3: Binary bootstrap | [phase-3-node-free-installation.md](phase-3-node-free-installation.md) | 2 | Fresh/legacy/manual installs can become managed without Node; installed binary receipts can later update through Phase 4 |
 | 4: Binary updater | [phase-4-binary-desktop-updates.md](phase-4-binary-desktop-updates.md) | 3 | Packaged apps update without source checkout/npm; unavailable assets never fall back to compilation |
 | 5: Integrations and Setup | [phase-5-owned-runtimes-and-setup.md](phase-5-owned-runtimes-and-setup.md) | 4 | Mission-owned tools also work without host Node; Setup accurately reports feature prerequisites |
 
 Graph: Planning publication -> every phase. Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 5.
 
-There are no concurrent implementation groups. This is a real dependency chain: Phase 2 consumes Phase 1's signed metadata/helper contracts; Phase 3 consumes Phase 2's real trusted artifacts; Phase 4 switches clients only after the no-Node recovery installer is published; Phase 5 removes the universal requirement only after that lifecycle is complete. Phases 3 and 4 also share startup/identity wiring, so allowing them to merge in either order would require temporary behavior and duplicate coordination.
+Implementation retains the order Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 5. Consumers depend on their merged contracts and refuse unavailable artifacts at runtime. R1 depends on Phase 4 merge and the next complete signed release. R2 depends on R1, Phase 5 merge and subsequent eligible stable/alpha targets. Neither R1 nor R2 is a dependency of Phase 4 or Phase 5. This avoids requiring historical assets before the first release can contain the new consumer.
 
 ## Cross-phase contracts
 
@@ -85,7 +89,7 @@ Every source-plan requirement has one primary implementation owner below. Other 
 
 Each phase runs the focused tests named in its file plus the repository's applicable typecheck/lint/build/smoke/E2E gates. UI changes receive real Playwright behavior coverage and inspected screenshots. Packaged tests run on an isolated macOS account/VM with synthetic state, fake agents and host `node`/`npm`/`npx` traps. Never exercise replacement against the operator's installed Mission Control or live state. Source-development checks remain separately exercised with supported external Node.
 
-Phase 1 proves detached launch and transaction mechanics locally; Phase 2 repeats the lifetime test with the actual signed/notarized build and run-as-node fuse. Phase 3 proves bootstrap and receipts; Phase 4 proves actual update, interruption and recovery; Phase 5 proves all owned satellite paths and the final visible claim. Passing a unit fixture is not Gatekeeper or update-journey evidence. Each phase registers its current evidence and carries durable PR proof; no evidence artifacts enter Git.
+Phase 1 proves detached launch and transaction mechanics locally; Phase 2 repeats the lifetime test with the actual signed/notarized build and run-as-node fuse. Phase 3 supplies bootstrap/receipt regression coverage and R1 proves real first-release installation. Phase 4 supplies update, interruption and recovery regression coverage; R2 proves the signed update journey. Phase 5 verifies owned satellite paths locally, with the combined signed journey completed in R2. Passing a unit fixture is not Gatekeeper or update-journey evidence. Each phase registers its current evidence and carries durable PR proof; no evidence artifacts enter Git.
 
 Do not advertise the universal Node-free experience before Phase 5. Phase 3 documents the temporary update limitation accurately: the binary installation is usable, and binary receipts show a clear update-unavailable state until Phase 4, with the same signed installer available for manual replacement. Phase 4 explicitly supports both legacy schema-1 canonical installs and schema-2 binary installs. Preserve the prior known-good signed release, and do not delete legacy source support until all ownership and rollback references are resolved.
 
@@ -93,7 +97,7 @@ Do not advertise the universal Node-free experience before Phase 5. Phase 3 docu
 
 Verified: baseline owners, current receipt fields, compiled legacy installer path, helper spawn, migration commitment and integration behavior listed in the investigation table. Verified by earlier execution: copied complete app launches Node with host command traps; this does not prove signed replacement. The operator's scheduling request is the confirmed planning input.
 
-Unresolved execution gates, not assumed facts: Apple team identity/credential availability; hardened signed runtime compatibility; release asset permissions; per-release state rollback compatibility. Phase 2 must resolve the first three before publication. Phase 1 fails closed across unknown state compatibility; later release tests establish any permitted backward recovery. No task may fill these gaps by fabricating identity, weakening signing, changing global Node, or assuming old code can read migrated state. A failure blocks that phase and its dependents, not a fallback build on the user's machine.
+Unresolved execution gates, not assumed facts: Apple team identity/credential availability; hardened signed runtime compatibility; release asset permissions; per-release state rollback compatibility. Phase 2 must resolve the first three before publication. Phase 1 fails closed across unknown state compatibility; later release tests establish any permitted backward recovery. No task may fill these gaps by fabricating identity, weakening signing, changing global Node, or assuming old code can read migrated state. A signing/publication failure blocks that artifact and its rollout qualification. Missing artifacts alone do not block implementation merge or Phase 5 work under the approved forward rollout. Runtime consumers still refuse unavailable binaries without a fallback build on the user's machine.
 
 Verdict: CLEAR for conditional planning and scheduling. No unconfirmed prerequisite is claimed available, and no production action in this planning turn relies on it.
 
@@ -103,6 +107,6 @@ Verdict: CLEAR for conditional planning and scheduling. No unconfirmed prerequis
 - Phase 1 audit: moved every schema/journal/helper decision into the earliest owner; source install and old journal compatibility remain required.
 - Phase 2 audit: publication cannot change Phase 1 schema, and signed-runtime proof is mandatory before ready assets exist.
 - Phase 3 audit: selected native DMG bootstrap to avoid assuming Node or an unverified ZIP extractor; same installer transaction, no duplicate receipt writer.
-- Phase 4 audit: requires the published first/legacy installer before client transition; source fallback is preserved only for explicit developer commands.
+- Phase 4 audit: consumes the merged first/legacy installer; R1 qualifies it on the first new signed release. Source installation remains available only through explicit developer commands.
 - Phase 5 audit: kept integration repair with Setup removal; no universal warning is removed ahead of its actual prerequisites.
 - Final audit: each NC criterion has primary proof ownership; every consumer follows its provider; all five tasks carry the planning-publication edge. No concurrency or unpublished-file assumption remains.

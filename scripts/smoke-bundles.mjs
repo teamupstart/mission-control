@@ -792,6 +792,11 @@ async function smokeDetachedUpdateHelper() {
     const binary = await run(process.execPath, [join(root, "scripts/install-binary.mjs")]);
     if (binary.code !== 1 || !binary.output.includes("Use scripts/install.sh")) throw new Error("The binary installer could not load its packaged dependency graph.");
     console.log("[smoke] binary installer loads its packaged graph and refuses an unverified host-runtime launch");
+    const worker = join(root, "update-binary-worker.cjs");
+    await copyFile(new URL("../dist/main/update-binary-worker.cjs", import.meta.url), worker);
+    const prepared = await run(process.execPath, [worker]);
+    if (prepared.code !== 0) throw new Error("The binary preparation worker could not load without checkout dependencies.");
+    console.log("[smoke] binary preparation worker loads standalone without a checkout or node_modules");
   } catch (error) { fail(String(error)); }
   finally { await rm(root, {recursive: true, force: true}); }
 }

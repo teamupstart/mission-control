@@ -2,8 +2,13 @@
 
 ## Qualification status
 
-The producer, publisher and workflow are implemented, but **Phase 2 has not met its release
-exit gate**. The operator-approved Developer ID team `S2FPCQK39Z` is pinned in
+The producer, publisher and workflow are implemented, but **real signed-release qualification
+remains outstanding**. The operator's 2026-10-26
+[forward-rollout contract](plans/desktop-without-system-node/forward-rollout.md) owns the
+implementation acceptance gates and R1/R2 release qualification rules. This runbook records
+observed status and execution procedures; no signed journey is claimed passed by this change.
+
+The operator-approved Developer ID team `S2FPCQK39Z` is pinned in
 [`binary-publisher-policy.mjs`](../src/shared/binary-publisher-policy.mjs). The approval was
 recovered from the task's saved human answer on 2026-10-15 after the original tool call had
 timed out. Neither an environment variable nor a downloaded manifest can supply this trust root.
@@ -289,15 +294,75 @@ qualification. On 2026-10-16, canonical main was `cf069aca707268f551e1f97780cd43
 all 37 release records lacked `mission-control-manifest.json`, and `distribution.yml` had
 no runs. No production publication or installation is claimed by the consumer implementation.
 
-After publishing a complete signed set, run the standard `scripts/install.sh` in a fresh
-macOS account or VM with synthetic `MISSION_HOME`, fake agents and Node/npm/npx/git/Xcode
-commands absent, then repeat with recording trap executables. Exercise default personal,
-explicit system and custom destinations, managed launch, rerun, copied-app enrollment,
-mounted-DMG refusal, and in-place replacement of a schema-1 clone/retained-installer receipt.
-Capture exact app/receipt identity, unchanged state, process identity, native command versions,
-and readiness/rollback outcomes. Include malformed/truncated assets, wrong signer/architecture,
-occupied destination, escaping symlink, permissions, concurrent attempts, receipt-write failure
-and interrupted replacement. Preserve quarantine. Repeat native bootstrap verification on the
-minimum supported macOS 12; fixtures substituting native tools cannot establish that support.
-Never use the operator's installed app or live state. These results remain required before
-calling the no-Node recovery route qualified or releasing Phase 4 against it.
+Follow the [R1 qualification contract](plans/desktop-without-system-node/forward-rollout.md#r1-first-signed-binary-and-migration).
+Use the standard `scripts/install.sh` entry point and capture native command versions alongside
+its results. Include mounted-DMG refusal, malformed/truncated assets, wrong signer/architecture,
+occupied destinations, escaping symlinks, permissions, concurrent attempts and receipt-write
+failure. Repeat native bootstrap verification on the minimum supported macOS 12; fixtures
+substituting native tools cannot establish that support.
+
+
+## Phase 4 consumer qualification
+
+The desktop consumer now selects complete stable publications or the exact observed main SHA,
+downloads and verifies their ZIP in a bundled-runtime worker, and hands the accepted binary
+descriptor to the existing installation transaction. Canonical schema-1 receipts migrate without
+executing their source installer. Source-only commands remain available explicitly.
+
+On 2026-10-25 a complete paginated inventory found 40 canonical releases and no attached
+assets.[^release-inventory-20261025] The Actions artifact inventory contained 35 artifacts and
+no `distribution-*` artifact.[^artifact-inventory-20261025] The
+[successful distribution run](https://github.com/teamupstart/mission-control/actions/runs/40014616303)
+completed input validation but skipped its package job; it supplies no signed test inputs.
+The [pending distribution run](https://github.com/teamupstart/mission-control/actions/runs/40014670460)
+was waiting at `desktop-distribution`, and GitHub reported `current_user_can_approve: false`
+for `Jordan7265` at that check.[^producer-20261025]
+On 2026-10-26, the complete release and retained-artifact inventories were checked again:
+the counts remained 40 and 35, with no signed distribution inputs.[^inventory-20261026]
+The latest five distribution runs at that check were skipped.[^producer-20261026]
+These observations establish input availability only at the stated checks, not current release
+availability. Their registered command outputs are retained in Mission Control run
+`b32df0df-7c01-4422-a692-eb4752c10844`, submission `63596c67-6cbe-4b1b-9fac-def5b9613374`
+(round 3, segment 0). Use that run's **Download the run history as JSON** action and locate the
+cited artifact IDs in the submission's `evidence.artifacts`. Registration timestamps can be
+later than the observations.
+
+The real signed update journey remains **unqualified**. Unit fixtures and browser tests do not
+prove Gatekeeper, a signed successful replacement or signed recovery.
+No signing credentials, releases or deployment configuration were changed by the consumer work.
+
+Follow the [R1 baseline requirements](plans/desktop-without-system-node/forward-rollout.md#r1-first-signed-binary-and-migration)
+and [R2 target sequence and test matrix](plans/desktop-without-system-node/forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery).
+During ZIP verification, check that extraction preserves the signed app and notarization,
+including the producer's framework symlinks and AppleDouble resources. Record the execution
+results and their registered evidence locations in this runbook when qualification is performed.
+
+Implementation reconciliations for the later pull request: the existing native-menu questions
+already render in the dashboard's themed modal, so they retain that owner and shared copy. Binary
+progress extends the existing snapshot with optional measured byte counts and appended stage IDs;
+older source progress remains readable. The product is intentionally dark-only, so browser
+verification covers both dark and light OS preferences without introducing another theme.
+
+[^release-inventory-20261025]: `phase4-recheck-all-releases-command-output.txt`, artifact
+    `txt_c9952d1b677172269a06274c9a51b459`: paginated canonical releases query, exit 0,
+    `{"pageReleaseCount":40,"releasesWithAssets":[]}`.
+
+[^artifact-inventory-20261025]: `phase4-recheck-all-action-artifacts-command-output.txt`, artifact
+    `txt_f83ee2530a69a34b0b927a0253b1f971`: paginated Actions artifacts query, exit 0,
+    `{"distribution":[],"pageArtifactCount":35}`.
+
+[^producer-20261025]: `phase4-recheck-success-skipped-package-command-output.txt`, artifact
+    `txt_ad6a9de82f5322320f9face9dc3c9865`, retains the successful input job and skipped package
+    job. `phase4-recheck-protected-producer-command-output.txt`, artifact
+    `txt_9ccfc636a5fe2e7d68830084616f8ff5`, retains the pending deployment and approval response.
+    Both commands exited 0.
+
+[^inventory-20261026]: `phase4-oct26-releases-command-output.txt`, artifact
+    `txt_82a0b96c5da06a33148c7b448a4052aa`, retains
+    `{"pageReleaseCount":40,"releasesWithAssets":[]}`; `phase4-oct26-artifacts-command-output.txt`,
+    artifact `txt_2a016bf632590b76927843ccdc125ab6`, retains
+    `{"distribution":[],"pageArtifactCount":35}`. Both paginated queries exited 0.
+
+[^producer-20261026]: `phase4-oct26-producer-command-output.txt`, artifact
+    `txt_955a514cc0334ceb8f871b629cf8cf11`: latest-five distribution workflow query, exit 0,
+    five completed runs with `conclusion: skipped`.

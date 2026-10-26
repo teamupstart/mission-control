@@ -339,6 +339,21 @@ test('schema-1 clone and retained-compiled-installer receipts preserve destinati
   }
 });
 
+test('desktop ZIP receipts share installer policy and bind the downloaded asset and original manifest bytes', () => {
+  const previous = {schema: 1 as const, sourceClone: '/state/app-src', repo: identity.repo, releaseTag: 'v1.0.0',
+    installedVersion: '1.0.0', installedAt: '2026-10-14T00:00:00.000Z', appPath: '/custom/Mission Control.app', installScope: 'custom' as const};
+  const text = JSON.stringify(manifest, null, 2);
+  const destination = resolveInstallDestination({receipt: previous});
+  const disk = binaryInstallReceipt(text, destination, previous);
+  const zip = binaryInstallReceipt(text, destination, previous, disk.installedAt, 'app-zip');
+  assert.deepEqual(zip, {...disk, provenance: {...disk.provenance, assetId: '2'}});
+  assert.equal(zip.appPath, previous.appPath);
+  assert.equal(zip.installScope, 'custom');
+  assert.equal(zip.sourceClone, undefined);
+  assert.equal(validateReceipt(zip), null);
+  assert.notEqual(zip.provenance.manifestSha256, binaryInstallReceipt(JSON.stringify(manifest), destination, previous).provenance.manifestSha256);
+});
+
 test('enrollment choices preserve managed conflicts and never enroll mounted or translocated apps', () => {
   for (const bundle of ['/Volumes/MC/Mission Control.app', '/private/var/folders/test/AppTranslocation/id/d/Mission Control.app']) {
     const state = binaryEnrollmentChoice({bundle, home: '/Users/test', managedPath: null, temporary: true});

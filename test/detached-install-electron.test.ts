@@ -15,6 +15,7 @@ import { boundedMigrationWait } from '../scripts/migration-runtime.mjs';
 import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { processIdentity, processIsAlive, type ProcessRecord } from '../scripts/update-lock.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
+import { binaryPreparationScript, createBinaryFixtureArchive, prepareBinaryFixtureRuntime } from './helpers/binary-update-detached.ts';
 
 ensureNativeStateLockAddon();
 const require = createRequire(import.meta.url);
@@ -51,7 +52,8 @@ async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boun
   }
 }
 
-for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+for (const mode of ['success', 'binary-success', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+  const binary = mode === 'binary-success';
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-detached-electron-')));
   const ownedProcesses: ProcessRecord[] = [];
@@ -77,10 +79,14 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   const state = join(root, 'state'); mkdirSync(state);
   const apps = join(root, 'apps'); mkdirSync(apps);
   const current = join(apps, 'Mission Control.app');
-  const candidate = join(root, 'candidate.app');
+  const candidate = binary ? join(root, 'payload/Mission Control.app') : join(root, 'candidate.app');
+  mkdirSync(dirname(candidate), {recursive: true});
   const electron = require('electron') as string;
   const electronBundle = resolve(dirname(electron), '../..');
   execFileSync('/bin/cp', ['-R', electronBundle, current]);
+  // electron-builder replaces the SDK default app with our plain Resources/app.
+  // The binary fixture must have that packaged layout before ZIP extraction.
+  if (binary) rmSync(join(current, 'Contents/Resources/default_app.asar'));
   renameSync(join(current, 'Contents/MacOS/Electron'), join(current, 'Contents/MacOS/Mission Control'));
   const plist = join(current, 'Contents/Info.plist');
   writeFileSync(plist, readFileSync(plist, 'utf8').replace(/(<key>CFBundleExecutable<\/key>\s*<string>)[^<]+/, '$1Mission Control')
@@ -100,6 +106,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   }
   buildSync({entryPoints: ['src/main/updater.ts'], bundle: true, platform: 'node', format: 'esm',
     alias: {'@shared': './src/shared'}, outfile: join(resources, 'updater-fixture.mjs')});
+  if (binary) prepareBinaryFixtureRuntime(root, resources);
   const pkg = {name: 'mission-control-fixture', version: '1.26.0', main: 'fixture-main.cjs', missionCommit: 'a'.repeat(40),
     missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, receiptSchemas: [1, 2]}};
   writeFileSync(join(resources, 'package.json'), JSON.stringify(pkg));
@@ -110,6 +117,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
     app.whenReady().then(async () => {
       try {
         if (process.argv.includes('--fixture-parent')) {await import('./parent.mjs'); app.quit(); return;}
+        if (${binary}) await import('./fixture-native-trust.mjs');
         const {migrationStartupGate, boundedMigrationWait, recordMigrationLaunch} = await import('./scripts/migration-runtime.mjs');
         // Hold only the attempt's target before readiness. Ordinary recovery and
         // restored-source launches must still run the real startup gate.
@@ -145,10 +153,12 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({...pkg, missionCommit: 'b'.repeat(40),
     ...(mode === 'legacy-staged-tamper' ? {missionInstallTransaction: undefined} : {})}));
   if (mode === 'readiness-failure') rmSync(join(candidate, 'Contents/Resources/app/dist/native/state-lock.node'));
+  const binaryFixture = binary ? createBinaryFixtureArchive(root, candidate) : null;
   const receipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.26.0', installedVersion: '1.26.0',
     installedCommit: 'a'.repeat(40), sourceClone: join(root, 'source-does-not-exist'), appPath: current, installedAt: '2026-10-14T00:00:00.000Z'};
   const receiptBytes = Buffer.from(`\n${JSON.stringify(receipt, null, 2)}\n\n`);
   writeFileSync(join(state, 'install-receipt.json'), receiptBytes);
+  writeFileSync(join(state, 'fixture-state-sentinel'), 'existing user state');
   const traps = join(root, 'traps'); mkdirSync(traps);
   for (const command of ['node', 'npm', 'npx']) writeFileSync(join(traps, command), '#!/bin/sh\nprintf "%s\\n" "$0" >> "$MISSION_RUNTIME_TRAPS"\nexit 97\n', {mode: 0o755});
   const parentScript = join(resources, 'parent.mjs');
@@ -168,6 +178,7 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
       helperSource: fileURLToPath(new URL('./scripts/apply-update.mjs', import.meta.url)),
       stateDirectory: state, parentPid: process.pid, logPath: state + '/update.log', sourceClone: receipt.sourceClone,
       targetTag: 'v1.26.0', appPath: receipt.appPath, stagedBundle: candidate, stagedRevision: stagedBundleRevision(lstatSync(candidate))};
+    ${binaryFixture ? binaryPreparationScript(root, binaryFixture) : ''}
     if (${JSON.stringify(mode)} === 'preparation-retry') {
       const descriptor = prepareSourceUpdate({receipt, bundle: candidate, revision: handoff.stagedRevision, targetTag: handoff.targetTag});
       handoff.migration = prepareInPlaceInstall({descriptor, stateDirectory: state});
@@ -209,6 +220,11 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
       writeFileSync(state + '/fixture-preparation-retry.json', JSON.stringify({attempt}));
     }
     await spawnDetachedUpdateHelper(handoff);
+    ${binary ? `
+      assert.deepEqual(readMigrationJournal(state).plan.descriptor, prepared.descriptor);
+      const downloadAttempt = prepared.descriptor.bundle.slice(0, prepared.descriptor.bundle.lastIndexOf('/expanded/'));
+      assert.equal(JSON.parse(readFileSync(downloadAttempt + '/handoff.json')).nonce, readMigrationJournal(state).plan.nonce);
+    ` : ''}
     if (${JSON.stringify(mode)} === 'legacy-staged-tamper') {
       const accepted = inspectBundle(candidate);
       const packageBytes = readFileSync(candidate + '/Contents/Resources/app/package.json');
@@ -302,6 +318,29 @@ for (const mode of ['success', 'preparation-retry', 'readiness-failure', 'interr
   }
   if (interruptedTarget) assert.equal(processIsAlive(interruptedTarget.pid), false, 'recovery stopped the replaced target');
   assert.equal(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result, failure ? 'failure' : 'success');
+  assert.equal(readFileSync(join(state, 'fixture-state-sentinel'), 'utf8'), 'existing user state');
+  if (binaryFixture) {
+    const prepared = JSON.parse(readFileSync(join(state, 'binary-prepared.json'), 'utf8'));
+    assert.deepEqual(ready.receipt, prepared.descriptor.receipt, 'transaction commits the binary worker receipt unchanged');
+    assert.deepEqual(JSON.parse(readFileSync(join(state, 'install-receipt.json'), 'utf8')), prepared.descriptor.receipt);
+    assert.equal(ready.receipt.provenance.manifestSha256, binaryFixture.manifestSha256);
+    assert.deepEqual(ready.receipt.provenance.manifest, binaryFixture.manifest);
+    assert.deepEqual(inspectBundle(current), {digest: prepared.descriptor.digest, bytes: prepared.descriptor.bytes});
+    assert.equal(readFileSync(join(root, 'download-requests'), 'utf8').trim().split('\n').length, 1);
+    const checks = readFileSync(join(root, 'trust-checks.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const preparationOwner = JSON.parse(readFileSync(join(dirname(dirname(prepared.descriptor.bundle)), 'owner.json'), 'utf8'));
+    // The helper verifies the installed target; the GUI owns the readiness gate.
+    for (const pid of [handed.pid, preparationOwner.worker.pid, owner.helper.pid]) {
+      for (const command of ['/usr/bin/codesign', '/usr/sbin/spctl']) assert.ok(checks.some(check => check.pid === pid && check.command === command), `native trust boundary reached by ${pid}: ${command}`);
+    }
+    assert.ok(checks.every(check => check.executable.startsWith(root + '/') && check.executable.endsWith('/Contents/MacOS/Mission Control')));
+    assert.ok(checks.every(check => check.path.startsWith(traps + ':') && check.traps === join(root, 'trap-hits')));
+    assert.ok(checks.some(check => check.pid === preparationOwner.worker.pid && check.nodeFlag === '1'));
+    assert.ok(checks.some(check => check.pid === owner.helper.pid && check.nodeFlag === '1'));
+    console.log(`Binary ZIP integration: downloaded ${binaryFixture.manifest.assets[0]!.bytes} bytes from exact asset 123; real worker extracted and verified platform/build identity; measured download/extract/signature stages; old app and receipt unchanged before handoff.`);
+    console.log('Accepted descriptor integration: worker descriptor retained unchanged in transaction; detached full Electron helper replaced installed app after parent exit; target GUI committed schema-2 app-zip receipt with exact manifest digest; durable success; state sentinel retained; zero host node/npm/npx trap hits.');
+    console.log('Fixture boundary: Developer ID codesign and notarization spctl responses are simulated in test-owned copies only. This run does not qualify a real signed release; R2 retains that proof.');
+  }
   await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'helper did not exit', {timeout: 10_000});
   assert.ok(existsSync(join(handed.runtime, 'Runtime.app/Contents/Frameworks/Electron Framework.framework')));
   cleanupHelperSnapshots(state);

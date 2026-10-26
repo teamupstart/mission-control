@@ -167,7 +167,7 @@ test('a failed repair followed by a successful retry shows completion from the m
     readAlpha: () => false, writeAlpha: unexpected,
     currentVersion: () => '1.17.1',
     currentCommit: () => null,
-    latestMainCommit: unexpected, installSnapshot: unexpected, runtime: unexpected,
+    latestMainCommit: unexpected, installSnapshot: unexpected, binaryForCommit: unexpected,
     latestRelease: unexpected, stage: unexpected, stagedBundleIdentity: unexpected,
     readOutcome: unexpected, clearOutcome: unexpected, now: Date.now, random: () => 0,
     helperSource: unexpected, stateDirectory: unexpected, handoff: unexpected, requestQuit: unexpected,

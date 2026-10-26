@@ -60,7 +60,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   }
 
   if (snapshot.phase === "preparing") {
-    const { label, percent, step, steps } = updatePrepareProgress(snapshot.stage);
+    const { percent, detail, indeterminate } = updatePrepareProgress(snapshot.stage, snapshot.transfer);
     return (
       <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
@@ -77,13 +77,13 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
             aria-label={`Preparing Mission Control ${snapshot.newVersion}`}
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={percent}
-            aria-valuetext={`${label}, step ${step} of ${steps}`}
+            aria-valuenow={indeterminate ? undefined : percent}
+            aria-valuetext={detail}
           >
-            <span className="app-banner-progress-fill" style={{ width: `${percent}%` }} />
+            <span className="app-banner-progress-fill" style={{ width: indeterminate ? "100%" : `${percent}%`, opacity: indeterminate ? 0.3 : 1 }} />
           </div>
           <p>
-            {label} · step {step} of {steps}. {UPDATE_COPY.preparing.detail}
+            {detail}. {UPDATE_COPY.preparing.detail}
           </p>
         </div>
         <div className="app-banner-actions">
@@ -132,7 +132,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
     return (
       <section className="app-banner app-banner-error" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
-          <strong>The update check failed.</strong>
+          <strong>The update could not finish.</strong>
           <p>{snapshot.message}</p>
         </div>
         <div className="app-banner-actions">
@@ -164,11 +164,11 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           <p>{snapshot.blocker ?? releaseSummary(snapshot.releaseNotes)}</p>
         </div>
         <div className="app-banner-actions">
-          <Tooltip label={`Build Mission Control ${snapshot.newVersion} now, then restart when it is ready`}>
+          <Tooltip label={`Download Mission Control ${snapshot.newVersion} now, then restart when it is ready`}>
             <button type="button" className="btn btn-primary" onClick={props.onApply} disabled={!!snapshot.blocker}>Update Now</button>
           </Tooltip>
           {snapshot.blocker && (
-            <Tooltip label="Check Node.js compatibility and the update again">
+            <Tooltip label="Check binary availability again">
               <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
             </Tooltip>
           )}

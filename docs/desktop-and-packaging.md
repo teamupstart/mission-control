@@ -96,9 +96,9 @@ from a mounted DMG or App Translocation instead offers **Install Mission Control
 daemon starts; it never enrolls or updates the temporary copy. Developer/ad-hoc DMGs remain
 unmanaged and use the source installer.
 
-Binary receipts disable source-build updates and offer a signed-installer recovery link until
-Phase 4 supplies automatic binary updates. Phase 5 still owns the broader integration runtime
-change and universal Setup warning. Shell failures retain private material and print its path;
+Binary receipts and canonical legacy source receipts use automatic binary updates. After enrolling
+a copied app, reopen it to enable the updater. The signed installer remains the manual recovery
+route. Phase 5 still owns the broader integration runtime change and universal Setup warning. Shell failures retain private material and print its path;
 GUI-started enrollment records details in `$MISSION_HOME/binary-install.log`.
 
 `install.sh` is generated from `install-bootstrap.sh` and the shipped publisher policy by
@@ -351,112 +351,59 @@ Deferring hides the banner until the next scheduled check or launch. The banner 
 Electron-only preload capability: the plain browser dashboard has no update bridge, renders no
 update banner, and starts no update check.
 
-Before offering an actionable **Update Now**, Mission Control checks the selected system Node.js
-and npm in the updater clone. Node must satisfy the installer's minimum (currently Node.js 24).
-A missing, incompatible, or unusable runtime leaves the release visible with a disabled
-**Update Now**, an explanation, and **Check again**. Install or select a supported Node.js with
-npm, then use **Check again** to refresh executable discovery without closing the app. The same
-message is shown when checking from the native menu.
+Stable discovery selects the newest complete eligible release within a bounded canonical
+inventory. A ready manifest must name both published ZIP and DMG assets with the expected IDs,
+names and byte counts. A release object alone is not readiness. The offer pins the manifest
+digest, channel, tag, full commit and asset identity. Missing assets leave **Update Now** disabled
+with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
+source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
+binary receipts both use this path. Forks and source development retain explicit source commands.
 
-The check runs again before source preparation. An already staged bundle uses the copied
-bundled runtime without probing host Node or npm. The source-build runtime selected
-by a version-manager shim is pinned into the build's child PATH, and the installer uses the npm
-path resolved by the executable catalog through `MISSION_NPM_BIN`. The installer retains its own
-Node prerequisite check. A changed launch-time override or an inherited PATH that still prioritizes
-an old installation may require restarting Mission Control with the corrected environment; merely
-switching Node in an unrelated terminal does not change the app's inherited environment.
+**Update Now** keeps the app open. A worker launched by the installed app's embedded Electron
+runtime downloads the ZIP through native authenticated `gh`, with a 15-minute transport limit,
+an exact byte limit and SHA-256 verification. Credentials and redirected URLs never enter the
+renderer or a second HTTP client. The download bar reports measured bytes; archive and publisher
+verification report their stage without an invented percentage. The worker has a 20-minute
+preparation limit. **Cancel** stays in *cancelling* until the owned worker and its subprocess group
+settle and partial staging is removed. Neither cancellation nor verification failure changes the
+installed app or its receipt.
 
-**Update Now** does not close anything. It starts the build, and Mission Control stays open and
-usable while it runs: the banner becomes a progress bar with the stage the install script has
-reached - prerequisites, source, release, checkout, dependencies, build, verify - and a **Cancel**
-that stops the build. Cancel does not return the offer straight away: `npm` and
-`electron-builder` write into the shared clone, and the next preparation force-checks-out and
-reinstalls in that same directory, so the banner reads *cancelling* until the build's whole
-process group is actually gone. Both that wait and the 45-minute build timeout are bounded the
-same way, because the signal that the group is gone is the child's `close` and a descendant that
-escaped the group - or one stuck in uninterruptible I/O - can hold the output pipes open
-indefinitely. When that happens the update settles anyway, says the shutdown was uncertain, and
-writes it to the log; a cancel that never returns would be worse than one that reports late. The
-clone stays off limits until `close` finally arrives, though - the next preparation waits for it
-and refuses rather than running `git checkout --force` and `npm ci` in a directory a dying build
-may still be writing to. When the
-new version is built and verified the banner reads **ready to install** and offers **Restart and
-Install**, which is the only part of an update that needs the app gone. That part takes seconds.
+The bounded ZIP reader checks the entire namespace before writing files. It rejects traversal,
+absolute paths, conflicting names and Unicode/case aliases, non-directory ancestors, escaping or
+cyclic symlinks, encrypted/special entries, excessive entry counts and size bombs. It streams
+files with CRC and expanded-size checks, preserves executable modes, and creates internal
+framework links last. AppleDouble entries from the publisher's ZIP are validated and discarded;
+they are never executed. The app's signed files and embedded code signatures remain subject to
+Developer ID and notarization checks. Free-space checks reserve the downloaded archive and its
+validated expanded size, then the shared transaction budgets measured replacement/recovery copies.
 
-Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
-check. The shell reveals the dashboard and asks there, in a Mission Control modal: the app is
-current, or the same **Update Now** and **Later** choice, then the restart question once the build
-finishes. Revealing first is what makes that possible from the menu bar with the window hidden, and
-it is where the build's progress is drawn in any case. A manual check made while a build is running
-reports the stage it has reached rather than starting a second one. The app also checks after a
-short startup delay, every six hours with jitter, and once after returning from a long sleep.
+After extraction, the worker verifies the pinned Developer ID team, notarization, bundle ID,
+arm64 executable, minimum macOS, signed build metadata and helper/receipt protocol. It produces
+the existing staged install descriptor, including a full content digest. **Restart and Install**
+is offered only after this succeeds. **Later** keeps an intact prepared candidate for reuse in the
+current app session, including when that exact remote asset has expired. A changed channel or a
+new accepted target retires unused staging. On a later attempt, abandoned downloads are reclaimed
+only with dead process identities and no outstanding handoff/recovery obligation.
 
-These questions used to be `dialog.showMessageBox` sheets. No platform sheet is left in this
-path: a second, unthemed auto-update surface is the thing this removed, not a fallback worth
-keeping. `src/shared/update-dialog.ts` owns the words, the tone and the buttons for all seven
-conversations, and the shell asks only through it.
+Choose **Check for Updates…** from the app menu or tray for the same offer and restart question.
+The shell reveals the existing themed dashboard modal. A manual check during preparation reports
+the current stage and measured download progress. The notice follows cancellation and completion
+without turning its acknowledgement into installation consent. Progress is pushed through the existing
+preload subscription to both notice and banner; no polling or second update store is added. Stable checks
+retain the startup delay, six-hour cadence and long-sleep check. Missing `gh` or authentication
+surfaces during background checks; transient network and rate-limit failures remain quiet.
 
-A question the dashboard cannot take - the renderer is still loading, or was destroyed while the
-question was on screen - settles as its own dismissal, which is the same answer as pressing
-**Later**. The updater already handles that outcome, so the release is offered again at the next
-check and the snapshot still reaches the banner. Settling rather than waiting is the point:
-`checkForUpdates()` awaits these, and an answer that can never arrive would wedge the update for
-the life of the process.
-
-The window is not moved to ask. Only the two places that moved it before still do: **preparing**
-reveals the dashboard before it reports, and accepting an available update reveals it because the
-build's progress is drawn there. The one addition is for a hidden window, which is where the old
-code showed a parentless sheet - with no sheet left, showing the window is what keeps that person
-asked at all.
-
-A build that has finished is kept if the person chooses **Later**, pinned to the release tag it was
-built from, so accepting it afterwards installs immediately instead of spending those minutes
-again. It is checked again at the moment of the restart, and existence is not the check. The
-staged path lives in the updater-owned clone, which is shared: anything that rebuilds that clone
-in between - an operator running `make install ARGS="--ref ..."`, a late helper - leaves a
-perfectly valid app at the same path. So the bundle's version AND its revision (the directory's
-inode and mtime, both of which change when `npm run package` recreates it) must match what was
-built. A bundle that is missing, a different version, or the same version rebuilt is refused in
-the banner with a retry, before anything quits.
-
-The revision is read by the install script at the instant it verifies the bundle and reported with
-the staged marker, never by the app afterward: between the script's exit and the app's next look,
-anything rebuilding that clone would leave a replacement to pin, and a pin taken from an unverified
-build would pass every later check. A clone whose script predates the field reports no revision, and
-rather than inventing one after the fact the whole install goes to the detached helper - the
-pre-staging path, with no progress bar and no claim about a bundle nobody checked. A build whose
-identity does not match what was verified never reaches **ready** either: it is a retryable error at
-the end of the build, because promising a restart and refusing it afterwards spends the same minutes
-twice.
-
-That check cannot be the last one either, because the swap happens in another process up to two
-minutes later - the helper waits for the app to exit first - and a rebuild can land in that window.
-The revision travels with the accepted install descriptor and is rechecked by the shared staged
-installer before `replaceAppBundle`. The version and commit are checked against the accepted
-target too. `src/shared/staged-bundle.mjs` owns the one formula all three read,
-and a handoff carrying no pin - an install driven by hand, or one from an app that predates this -
-still installs, exactly as a ref that names no version still installs.
-
-The shared staged installer now pins the complete bundle digest and checks the copied bytes.
-Quitting Mission Control while a source build is running still cancels it and its children, so
-nothing keeps writing into the clone that the next attempt will check out.
-
-Background failures stay quiet and are written to the local update log, with one exception. A
-failure that will still be there in six hours and that only the operator can clear - `gh` missing,
-or a lapsed `gh` credential - reaches the banner from a background check as well, because a
-condition nobody is ever told about is a condition nobody fixes. Everything that clears itself
-stays silent: a rate limit (which reads as a rate limit, not as a lapsed credential) and any other
-transient failure return to idle exactly as before. A background check still never opens a dialog;
-only a manual check does.
-
-Updates are deliberately inert in development, on Intel Macs, without a managed-install receipt,
-without a system Node.js binary, or when `--from-origin` installed a non-canonical repository. A
-manual check explains the applicable reason. In stable mode, a release is offered only when its
-numeric version is strictly newer than the running app.
+At handoff the current installation is read atomically, the accepted bundle is revalidated, and
+the existing independent helper must acknowledge ownership before the app requests shutdown.
+Legacy system-to-personal relocation, **Keep system installation**, explicit scope, daemon
+ownership and durable recovery remain with the shared transaction below. Before commitment,
+failure restores the prior app and exact receipt. After commitment, recovery proceeds forward
+without guessing database compatibility. The next startup displays the durable outcome and repair
+guidance. Missing assets, unsupported protocols or OS versions never select a source fallback.
 
 ### Alpha updates
 
-Enable **Settings → Setup → Application updates → Alpha updates** to follow unreleased source
+Enable **Settings → Setup → Application updates → Alpha updates** to follow signed binaries for unreleased commits
 on `main`. The setting defaults off, persists across restarts and upgrades, and starts an
 immediate background check when changed. Alpha then checks every five minutes with up to
 30 seconds of jitter, including a check after waking if that interval has elapsed. Checks
@@ -472,14 +419,14 @@ selected main commit. A release-news lookup failure does not block a main update
 main lookup failure never substitutes a stable release. After installing the current tip,
 checking again reports that it is up to date.
 
-The offer pins a full SHA from the canonical repository's `commits/main` endpoint. Preparation
-and installation carry that same SHA, even if main advances while the build is running. The
+The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete; otherwise the offer says pending or
+unavailable. Preparation and installation carry that SHA even if main advances while downloading. The
 staged bundle and installed app must match it. The detached helper also compares source
 identity during rollback, so two alpha builds with the same version remain distinguishable.
 
 Turn alpha off to resume stable-release recommendations. This clears the old offer and checks
 releases again; it does not reinstall or downgrade the running app. A newer numeric stable
-version is required for the next stable offer. During a check, build, or pending installation,
+version is required for the next stable offer. During a check, download, or pending installation,
 the toggle is unavailable; finish, cancel, or defer the current update first.
 
 The setting is owned by Electron in `update-preferences.json` beside the receipt and update log.
@@ -488,11 +435,11 @@ The plain browser dashboard and older desktop bridges have no alpha setting.
 
 ### Where the work happens, and why it splits
 
-Source preparation remains in [`scripts/install-app.mjs`](../scripts/install-app.mjs). It checks
-prerequisites, fetches the selected source identity, runs npm and packaging, and verifies the
-result. `--stage-only --progress` stops there while the app stays open. This phase still requires
-host Node, npm and the source build tools. The Bash installer and explicit developer commands
-retain their existing source behavior.
+Explicit source preparation remains in [`scripts/install-app.mjs`](../scripts/install-app.mjs),
+including `--stage-only --progress`. It requires host Node, npm and source build tools. The desktop
+controller does not call it. [`update-binary-worker.ts`](../src/main/update-binary-worker.ts) owns
+binary preparation in the installed runtime; the Bash bootstrap independently consumes a verified
+DMG. Both reuse the shared staged transaction.
 
 [`scripts/install-staged-app.mjs`](../scripts/install-staged-app.mjs) owns prepared-bundle
 validation, destination policy, copying through the existing swap primitive, and receipt
@@ -753,16 +700,15 @@ equals the version the app reports. The accepted release-tag grammar is exactly 
 `v`-prefixed three-part version such as `v1.2.3`; bare versions, prereleases, and build metadata
 are rejected because the install and update queries deliberately exclude prereleases.
 
-Releases are selected - by the install path and by the updater alike - from an explicitly
-filtered list:
+Explicit source installations select stable releases from a filtered list:
 
 ```sh
 gh release list --repo <owner/name> --exclude-drafts --exclude-pre-releases   --order desc --limit 1 --json tagName
 ```
 
-Filtering after asking for "the latest" cannot recover: once a prerelease has been chosen, there
-is no route back to the newest stable release, and every stable install silently stops updating
-with nothing logged anywhere.
+The binary installer and desktop updater additionally require a complete ready manifest and both
+published assets. The desktop consumer bounds release and asset pagination, excludes drafts and
+prereleases from stable selection, and checks the accepted tag against the manifest commit.
 
 Tags created by the release workflow are pushed with the short-lived App installation token, so
 they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
@@ -774,14 +720,13 @@ The separate [signed distribution producer](release-verification.md) consumes su
 canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,
 and uploads the ready manifest last. It also owns exact-SHA alpha prereleases. This path
 pins the approved Apple team and remains gated on credential provisioning and real
-signing/publication qualification. It does not switch the installed app to binary updates.
+signing/publication qualification. The desktop consumer uses only complete published identities;
+publication never authorizes installation without the operator's update and restart decisions.
 
-Proving that the whole journey works - clone, install, be offered a real update, accept it, and
-come back on the new version, plus a failed update that leaves the previous app running - is a
-procedure rather than a test, because no automated layer touches the real `gh` call, the detached
-spawn, or the real clone-and-package build. It is written down in the
-[release verification runbook](runbooks/release-verification.md), along with the observed timings
-and the failure signatures that are easy to misread.
+The historical [source release runbook](runbooks/release-verification.md) records clone-and-build
+timings and failure signatures. The current [binary release verification](release-verification.md)
+requires real signed old/new apps, detached replacement and recovery with host runtimes absent or
+trapped. Browser and simulated publisher fixtures cannot qualify that signed journey.
 
 See [Configuration and commands](configuration.md) for operating the app. Packaging and
 build-surface rules are authoritative in the [Electron and build surfaces contract](agent-guides/change-contracts.md#electron-and-build-surfaces)

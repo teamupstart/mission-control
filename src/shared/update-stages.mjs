@@ -24,6 +24,9 @@ export const UPDATE_PREPARE_STAGES = [
   { id: "dependencies", label: "Installing dependencies", fraction: 0.3 },
   { id: "build", label: "Building the new version", fraction: 0.55 },
   { id: "verify", label: "Verifying the build", fraction: 0.9 },
+  { id: "download", label: "Downloading the signed binary", fraction: 0 },
+  { id: "extract", label: "Checking and unpacking the archive", fraction: 0 },
+  { id: "signature", label: "Verifying publisher and build identity", fraction: 0 },
 ];
 
 export const UPDATE_PROGRESS_MARKER = "##mission-update-progress";
@@ -49,7 +52,16 @@ export function isUpdatePrepareStage(value) {
  * a clone that a future release may extend, and a progress bar is not worth failing an update
  * over.
  */
-export function updatePrepareProgress(stage) {
+export function updatePrepareProgress(stage, transfer) {
+  const binary = ["download", "extract", "signature"].indexOf(stage);
+  if (binary >= 0) {
+    const measured = stage === "download" && transfer && Number.isSafeInteger(transfer.received) &&
+      Number.isSafeInteger(transfer.total) && transfer.total > 0 && transfer.received >= 0 && transfer.received <= transfer.total;
+    const percent = measured ? Math.floor(100 * transfer.received / transfer.total) : 0;
+    const label = UPDATE_PREPARE_STAGES.find(entry => entry.id === stage).label;
+    return {label, fraction: percent / 100, step: binary + 1, steps: 3, percent,
+      indeterminate: !measured, detail: measured ? `${label} · ${percent}% downloaded` : label};
+  }
   const index = UPDATE_PREPARE_STAGES.findIndex((entry) => entry.id === stage);
   const resolved = index < 0 ? 0 : index;
   const entry = UPDATE_PREPARE_STAGES[resolved];
@@ -57,7 +69,8 @@ export function updatePrepareProgress(stage) {
     label: entry.label,
     fraction: entry.fraction,
     step: resolved + 1,
-    steps: UPDATE_PREPARE_STAGES.length,
+    steps: 8,
+    detail: `${entry.label} · step ${resolved + 1} of 8`,
     percent: Math.round(entry.fraction * 100),
   };
 }

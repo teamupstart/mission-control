@@ -41,6 +41,8 @@ export interface UpdateMigration {
   repairs: {id: string; message: string}[];
 }
 
+export interface UpdateTransfer { received: number; total: number }
+
 interface SnapshotBase {
   lastOutcome: UpdateApplyOutcome | null;
   /** Absent on older desktop bridges; alpha is opt-in. */
@@ -85,6 +87,8 @@ export type UpdateSnapshot =
       newVersion: string;
       releaseTag: string;
       stage: UpdatePrepareStage;
+      /** Actual downloaded bytes; absent on older bridges and non-download stages. */
+      transfer?: UpdateTransfer;
       /**
        * Cancel was pressed and the build is being torn down.
        *

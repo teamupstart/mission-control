@@ -1,23 +1,19 @@
-import { BINARY_UPDATE_UNAVAILABLE } from "../shared/binary-enrollment.ts";
 import { spawnBundledUpdateHelper } from "../../scripts/update-helper-runtime.mjs";
-import { prepareSourceUpdate } from "../../scripts/install-staged-app.mjs";
+import { prepareSourceUpdate, validateStagedInstall, type StagedInstallDescriptor } from "../../scripts/install-staged-app.mjs";
 import { readReceipt } from "../shared/install-receipt.mjs";
 import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
-import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, atomicMigrationJson, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
-import { processIdentity } from "../../scripts/update-lock.mjs";
+import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
-import { execFile, spawn } from "node:child_process";
-import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { execFile } from "node:child_process";
+import { statSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
 } from "../shared/install-receipt-schema.mjs";
-import { stagedBuildAcceptance, stagedBundleRevision } from "../shared/staged-bundle.mjs";
+import { stagedBundleRevision } from "../shared/staged-bundle.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
   isNewerVersion,
@@ -35,12 +31,9 @@ import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
-import { checkUpdateRuntime, type UpdateRuntime } from "./update-runtime.ts";
-import {
-  stageUpdateBuild,
-  updateChildEnvironment,
-  type StageOutcome,
-} from "./update-build.ts";
+import { latestStableBinary, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type BinaryOffer } from "./update-binary-release.ts";
+import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff, type BinaryStageRequest, type BinaryStageOutcome } from "./update-binary.ts";
+import type { UpdateTransfer } from "../shared/update.ts";
 
 /**
  * The staged build and the detached helper need the same login-shell PATH for the same
@@ -58,6 +51,8 @@ export const ALPHA_RECHECK_MS = 5 * 60 * 1000;
 const MAX_RELEASE_NOTES = 4_000;
 
 export interface ReleaseInfo {
+  binary?: BinaryOffer;
+  unavailable?: string;
   tagName: string;
   name: string;
   publishedAt: string;
@@ -85,9 +80,9 @@ export interface UpdateDialogs {
     notes: string;
   }): Promise<"apply" | "defer">;
   upToDate(version: string): Promise<void>;
-  /** A build is already running, with the stage it last reached. */
+  /** Preparation is already running, with the stage it last reached. */
   preparing(version: string, stage: string): Promise<void>;
-  /** Built, verified, and waiting: the only remaining question is whether to restart now. */
+  /** Downloaded, verified, and waiting: the only remaining question is whether to restart now. */
   ready(version: string, migration?: UpdateMigration): Promise<"install" | "defer" | "system">;
   applying(version: string): Promise<void>;
   error(message: string): Promise<void>;
@@ -102,42 +97,26 @@ export interface InstallSnapshot {
 }
 
 export interface HelperHandoff {
-  node: string;
+  node?: string;
+  descriptor?: StagedInstallDescriptor;
+  receipt?: InstallReceipt;
   env?: NodeJS.ProcessEnv;
   helperSource: string;
-  sourceClone: string;
+  sourceClone?: string;
   targetTag: string;
   appPath: string;
   parentPid: number;
   stateDirectory: string;
   logPath: string;
-  /**
-   * The bundle this app already built and verified, or null to let the helper build it.
-   *
-   * Null is the older path, and it is still reachable: a clone whose install script predates
-   * `--stage-only` cannot stage, and an update is better applied blind than not at all.
-   */
+  /** Verified candidate only. A missing candidate is refused before shutdown. */
   stagedBundle: string | null;
-  /**
-   * What that bundle was when it was verified, for the install script to check again.
-   *
-   * The app's own check happens before it quits, and the swap happens up to two minutes later
-   * in another process - long enough for a rebuild of the shared clone to land in between. The
-   * token travels so the last reader before the swap can refuse a bundle that changed.
-   */
+  /** The revision observed when bytes, signature and build identity were verified. */
   stagedRevision: string | null;
   migration?: MigrationPlan;
   migrationInventory?: unknown;
 }
 
-/**
- * What is at a staged bundle's path right now.
- *
- * Both fields are null when nothing is there. `revision` changes whenever the bundle directory
- * is replaced, which is what separates "the build I made" from "a build that happens to carry
- * the same version" - the updater-owned clone is shared, and `npm run package` inside it
- * removes and recreates this directory.
- */
+/** Identity of the prepared candidate at the moment of the read. */
 export interface StagedBundleIdentity {
   /** CFBundleShortVersionString of the bundle now at that path. */
   version: string | null;
@@ -146,14 +125,8 @@ export interface StagedBundleIdentity {
   commit?: string | null;
 }
 
-/** What the controller asks of a staged build; the port supplies the node binary and log. */
-export interface UpdateStageRequest {
-  runtime: Extract<UpdateRuntime, { ok: true }>;
-  sourceClone: string;
-  targetTag: string;
-  signal: AbortSignal;
-  onStage(stage: UpdatePrepareStage): void;
-}
+/** Binary preparation runs in the app-owned worker. */
+export type UpdateStageRequest = BinaryStageRequest;
 
 export interface UpdaterPort {
   packaged: boolean;
@@ -177,15 +150,16 @@ export interface UpdaterPort {
   installSnapshot(): InstallSnapshot;
   latestRelease(): Promise<ReleaseInfo | null>;
   latestMainCommit(): Promise<MainCommitInfo>;
-  runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
+  binaryForCommit(commit: string): Promise<BinaryOffer | null>;
+  discard?(descriptor: StagedInstallDescriptor): Promise<void>;
   helperSource(): string;
   stateDirectory(): string;
   launchPreflight(appPath: string): Promise<void>;
   handoff(args: HelperHandoff): Promise<void>;
-  stage(request: UpdateStageRequest): Promise<StageOutcome>;
+  stage(request: UpdateStageRequest): Promise<BinaryStageOutcome>;
   /** What is at a staged bundle's path now, so a caller can tell it is still the same build. */
   stagedBundleIdentity(path: string): StagedBundleIdentity;
-  migrationPlan?(receipt: InstallReceipt, bundle: string, revision: string): MigrationPlan | null;
+  migrationPlan?(receipt: InstallReceipt, bundle: string, revision: string, descriptor?: StagedInstallDescriptor): MigrationPlan | null;
   migrationInventory?(plan: MigrationPlan): unknown;
   keepSystem?(plan: MigrationPlan): Promise<InstallReceipt>;
   migrationStatus?(): UpdateMigration | undefined;
@@ -286,7 +260,7 @@ function firstLine(value: string): string {
   return value.trim().split("\n")[0]?.slice(0, 240) ?? "";
 }
 
-function ghFailure(result: CommandResult): UpdateError {
+export function ghFailure(result: CommandResult): UpdateError {
   if (result.errorCode === "ENOENT" || result.code === 127) {
     return new UpdateError(
       "GitHub CLI (gh) is not installed. Install gh, then check again.",
@@ -380,7 +354,8 @@ export async function runGh(args: string[]): Promise<CommandResult> {
       {
         encoding: "utf8",
         timeout: 30_000,
-        env: executable.env,
+        env: {...executable.env, GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_DEBUG: "", DEBUG: ""},
+        maxBuffer: 2 * 1024 ** 2,
       },
       (error, stdout, stderr) => {
         const coded = error as NodeJS.ErrnoException & { code?: string | number };
@@ -426,81 +401,27 @@ export function detachedUpdateHelperSources(helperSource: string): string[] {
 }
 
 export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<void> {
-  if (args.stagedBundle && args.stagedRevision) {
-    const receipt = readReceipt(join(args.stateDirectory, "install-receipt.json"));
-    if (!receipt || receipt.appPath !== args.appPath || receipt.sourceClone !== args.sourceClone) throw new Error("The installation receipt changed before handoff");
-    const descriptor = prepareSourceUpdate({receipt, bundle: args.stagedBundle, revision: args.stagedRevision, targetTag: args.targetTag});
-    const supportsTransaction = JSON.parse(readFileSync(join(args.stagedBundle, "Contents/Resources/app/package.json"), "utf8")).missionInstallTransaction?.protocol === 1;
-    const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
-    await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
-      parentPid: args.parentPid, logPath: args.logPath, env: args.env,
-      handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
-        "--source-clone", args.sourceClone, "--target-tag", args.targetTag, "--app-path", args.appPath,
-        "--parent-pid", String(args.parentPid), "--state-dir", args.stateDirectory, "--log-path", args.logPath,
-        "--staged-bundle", args.stagedBundle, "--staged-revision", args.stagedRevision,
-        ...(plan ? [] : ["--staged-digest", descriptor.digest]),
-      ]});
-    return;
-  }
-  const directory = await mkdtemp(join(tmpdir(), "mission-control-update-"));
-  try {
-    const root = dirname(dirname(args.helperSource));
-    const helper = join(directory, relative(root, args.helperSource));
-    for (const source of detachedUpdateHelperSources(args.helperSource)) {
-      const target = join(directory, relative(root, source));
-      mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target);
-    }
-    const migrationFile = join(directory, "migration-plan.json");
-    if (args.migration) {
-      const identity = processIdentity(process.pid);
-      if (!identity) throw new Error("Could not identify the app before migration.");
-      atomicMigrationJson(migrationFile, {plan: args.migration, parent: {pid: process.pid, identity}, port: PORT, inventory: args.migrationInventory});
-    }
-    const logFd = openSync(args.logPath, "a", 0o600);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          args.node,
-          [
-            helper,
-            "--source-clone",
-            args.sourceClone,
-            "--target-tag",
-            args.targetTag,
-            "--app-path",
-            args.appPath,
-            "--parent-pid",
-            String(args.parentPid),
-            "--state-dir",
-            args.stateDirectory,
-            "--log-path",
-            args.logPath,
-            ...(args.migration ? ["--source-app", args.migration.source, "--target-app", args.migration.target, "--migration-plan", migrationFile] : []),
-            ...(args.stagedBundle ? ["--staged-bundle", args.stagedBundle] : []),
-            ...(args.stagedBundle && args.stagedRevision
-              ? ["--staged-revision", args.stagedRevision]
-              : []),
-          ],
-          {
-            detached: true,
-            stdio: ["ignore", logFd, logFd],
-            env: args.env ?? updateChildEnvironment(),
-          },
-        );
-        child.once("error", reject);
-        child.once("spawn", () => {
-          child.unref();
-          resolve();
-        });
-      });
-    } finally {
-      closeSync(logFd);
-    }
-  } catch (error) {
-    rmSync(directory, { recursive: true, force: true });
-    throw error;
-  }
+  if (!args.stagedBundle || !args.stagedRevision) throw new Error("A verified staged bundle is required; desktop updates cannot compile source");
+  const receipt = readReceipt(join(args.stateDirectory, "install-receipt.json"));
+  if (!receipt || receipt.appPath !== args.appPath || (args.receipt && receiptDigest(receipt) !== receiptDigest(args.receipt))) throw new Error("The installation receipt changed before handoff");
+  // The source descriptor branch remains solely for callers of the staged source
+  // installer. The desktop controller always supplies its accepted binary descriptor.
+  const descriptor = args.descriptor ?? prepareSourceUpdate({receipt, bundle: args.stagedBundle, revision: args.stagedRevision, targetTag: args.targetTag});
+  if (descriptor.bundle !== args.stagedBundle || descriptor.revision !== args.stagedRevision) throw new Error("The accepted bundle identity changed");
+  validateStagedInstall(descriptor);
+  const supportsTransaction = JSON.parse(readFileSync(join(args.stagedBundle, "Contents/Resources/app/package.json"), "utf8")).missionInstallTransaction?.protocol === 1;
+  if (descriptor.receipt.kind === "binary" && !supportsTransaction) throw new Error("The binary does not support the installation transaction");
+  const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
+  if (plan) retainBinaryHandoff(descriptor, args.stateDirectory, plan.nonce);
+  await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
+    parentPid: args.parentPid, logPath: args.logPath, env: args.env,
+    handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
+      ...(receipt.sourceClone ? ["--source-clone", receipt.sourceClone] : []),
+      "--target-tag", args.targetTag, "--app-path", args.appPath,
+      "--parent-pid", String(args.parentPid), "--state-dir", args.stateDirectory, "--log-path", args.logPath,
+      "--staged-bundle", args.stagedBundle, "--staged-revision", args.stagedRevision,
+      ...(plan ? [] : ["--staged-digest", descriptor.digest]),
+    ]});
 }
 
 /** Ordering seam protecting the hide-on-close window guard. */
@@ -522,6 +443,7 @@ function safeUpdateError(error: unknown): {
   retryable: boolean;
   kind: UpdateErrorKind;
 } {
+  if (error instanceof BinaryUpdateError) return {message: error.message, retryable: true, kind: "gh-failed"};
   return error instanceof UpdateError
     ? { message: error.message, retryable: error.retryable, kind: error.kind }
     : {
@@ -541,7 +463,6 @@ function safeUpdateError(error: unknown): {
  */
 export function updateIneligibility(snapshot: InstallSnapshot): string | null {
   if (!snapshot.receipt) return "This app was not installed with the managed install command.";
-  if (snapshot.receipt.kind === "binary") return BINARY_UPDATE_UNAVAILABLE;
   if (!isTrustedInstallRepo(snapshot.receipt.repo)) {
     return `Updates are disabled because this app was installed from ${snapshot.receipt.repo}.`;
   }
@@ -566,21 +487,23 @@ export class UpdateController {
   private listeners = new Set<(snapshot: UpdateSnapshot) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastBackgroundAttempt = 0;
-  /**
-   * The verified bundle this app built, kept across a deferral.
-   *
-   * Someone who prepares an update and then chooses Later has already paid for the build;
-   * offering to spend those minutes again when they come back would be the same insult as
-   * the closed window this whole path replaces. Pinned to the release tag it was built from,
-   * so a newer release never installs the previous one's bundle.
-   */
+  /** Retained across Later, pinned to the accepted immutable release. */
   private staged: {
+    binary: BinaryOffer;
     releaseTag: string;
     version: string;
     bundlePath: string;
     revision: string | null;
   } | null = null;
   private preparation: AbortController | null = null;
+  private offeredBinary: BinaryOffer | null = null;
+  private descriptor: StagedInstallDescriptor | null = null;
+
+  private discardStaged(): void {
+    const descriptor = this.descriptor;
+    this.staged = null; this.descriptor = null; this.migration = null;
+    if (descriptor) void this.port.discard?.(descriptor).catch(error => this.port.log(`could not remove abandoned binary: ${String(error)}`));
+  }
 
   constructor(private readonly port: UpdaterPort) {
     this.alpha = port.readAlpha();
@@ -606,7 +529,7 @@ export class UpdateController {
     return this.snapshot;
   }
 
-  /** A channel change cannot retarget a check, consent dialog, or build already in flight. */
+  /** A channel change cannot retarget a check, consent dialog, or preparation already in flight. */
   setAlpha(alpha: boolean): UpdateSnapshot {
     if (typeof alpha !== "boolean") throw new Error("Alpha mode must be a boolean.");
     if (this.checkPromise || this.releaseDecisionPending || this.applyPromise || this.installPromise ||
@@ -615,7 +538,8 @@ export class UpdateController {
     }
     this.port.writeAlpha(alpha);
     this.alpha = alpha;
-    this.staged = null;
+    this.discardStaged();
+    this.offeredBinary = null;
     if (this.snapshot.phase === "disabled") return this.publish(this.snapshot);
     this.publish(idleSnapshot(this.currentLabel(), this.snapshot.lastOutcome, null));
     this.schedule(0);
@@ -705,9 +629,7 @@ export class UpdateController {
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    // The build runs in its own process group so that this reaches npm and electron-builder
-    // too. An abandoned build would go on writing into the clone that the next attempt is
-    // about to check out.
+    // The preparation adapter settles its worker group before removing partial staging.
     this.preparation?.abort();
     this.preparation = null;
   }
@@ -775,10 +697,9 @@ export class UpdateController {
               ...(newerRelease ? [`Stable release ${release!.tagName} is also available.`] : []),
               commit.message, ...(newerRelease ? [release!.body] : [])].join("\n\n")
           : release!.body;
-        const reusableStaged = this.staged?.releaseTag === targetRef &&
-          this.stagedBundleIsIntact(this.staged);
-        const runtime = reusableStaged ? {ok: true as const, node: process.execPath, env: process.env}
-          : await this.port.runtime(this.receipt!.sourceClone!);
+        const reusableStaged = this.staged?.releaseTag === targetRef && this.descriptor && this.stagedBundleIsIntact(this.staged);
+        const binary = reusableStaged ? this.staged!.binary : commit ? await this.port.binaryForCommit(commit.sha) : release?.binary;
+        this.offeredBinary = binary ? structuredClone(binary) : null;
         return this.publish({
           phase: "available",
           currentVersion,
@@ -790,7 +711,7 @@ export class UpdateController {
           publishedAt: commit?.committedAt ?? release!.publishedAt,
           checkedAt,
           lastOutcome,
-          ...(!runtime.ok ? { blocker: runtime.message } : {}),
+          ...(!this.offeredBinary ? { blocker: release?.unavailable ?? BINARY_PENDING } : {}),
         });
       } catch (error) {
         const safe = safeUpdateError(error);
@@ -836,7 +757,7 @@ export class UpdateController {
       return this.reportApplying(this.snapshot.newVersion);
     }
     if (this.snapshot.phase === "preparing") {
-      const { label } = updatePrepareProgress(this.snapshot.stage);
+      const { detail: label } = updatePrepareProgress(this.snapshot.stage, this.snapshot.transfer);
       const version = this.snapshot.newVersion;
       return this.port.dialogs.preparing(version, label).then(() => this.snapshot);
     }
@@ -866,7 +787,7 @@ export class UpdateController {
             return this.snapshot;
           }
           await this.apply();
-          // The build has finished by the time apply() resolves, so this is the second half of
+          // Preparation has finished by the time apply() resolves, so this is the second half of
           // the same conversation rather than a new one: it asks for the restart the person
           // has now earned, in the same place they asked for the update.
           if (this.snapshot.phase === "ready") await this.confirmReady(this.snapshot.newVersion);
@@ -876,7 +797,7 @@ export class UpdateController {
           await this.confirmReady(snapshot.newVersion);
           return this.snapshot;
         case "preparing": {
-          const { label } = updatePrepareProgress(snapshot.stage);
+          const { detail: label } = updatePrepareProgress(snapshot.stage, snapshot.transfer);
           await this.port.dialogs.preparing(snapshot.newVersion, label);
           return this.snapshot;
         }
@@ -906,27 +827,22 @@ export class UpdateController {
     return this.commandPromise;
   }
 
-  /**
-   * "Update Now": build the new version while this app stays open.
-   *
-   * This used to be the whole update - hand off to a detached helper and quit immediately -
-   * and that is what made a normal update look like a failure. Everything long happens here
-   * now, in front of a person, and the app is still running to say so. The quit is deferred
-   * to `install()`, where it costs seconds.
-   */
+  /** Download and verify while the current app stays open. */
   apply(): Promise<boolean> {
     if (this.applyPromise) return this.applyPromise;
-    if (this.snapshot.phase !== "available" || !this.receipt || this.snapshot.blocker) {
+    if (this.snapshot.phase !== "available" || !this.receipt || this.snapshot.blocker || !this.offeredBinary) {
       return Promise.resolve(false);
     }
     const offer = this.snapshot;
+    const binary = structuredClone(this.offeredBinary!);
     const lastOutcome = offer.lastOutcome;
-    const preparing = (stage: UpdatePrepareStage, cancelling = false): UpdateSnapshot => ({
+    const preparing = (stage: UpdatePrepareStage, cancelling = false, transfer?: UpdateTransfer): UpdateSnapshot => ({
       phase: "preparing",
       currentVersion: offer.currentVersion,
       newVersion: offer.newVersion,
       releaseTag: offer.releaseTag,
       stage,
+      transfer,
       cancelling,
       lastOutcome,
     });
@@ -940,9 +856,7 @@ export class UpdateController {
       ...(this.migration ? {migration: {source: this.migration.source, target: this.migration.target, status: "offered" as const, repairs: []}} : {}),
     });
 
-    // Already built, still there, and still the same build. Reached by preparing an update,
-    // choosing Later, and coming back to it - the minutes were already spent, so this goes
-    // straight to the offer to restart. Anything else falls through and rebuilds.
+    // Later retains the verified bytes. Reuse only the exact accepted identity.
     if (
       this.staged?.releaseTag === offer.releaseTag &&
       this.stagedBundleIsIntact(this.staged)
@@ -953,64 +867,53 @@ export class UpdateController {
       return Promise.resolve(true);
     }
 
-    this.staged = null;
+    this.discardStaged();
     const abort = new AbortController();
     this.preparation = abort;
-    this.publish(preparing("starting"));
+    this.publish(preparing("download"));
     this.applyPromise = (async () => {
       try {
-        const runtime = await this.port.runtime(this.receipt!.sourceClone!);
-        if (abort.signal.aborted) {
-          this.publish(offer);
-          return false;
-        }
-        if (!runtime.ok) {
-          this.publish({ ...offer, blocker: runtime.message });
-          return false;
-        }
         const outcome = await this.port.stage({
-          runtime,
-          sourceClone: this.receipt!.sourceClone!,
+          offer: binary,
+          receipt: this.receipt!,
           targetTag: offer.releaseTag,
           signal: abort.signal,
           // Guarded on the phase rather than published blindly: a cancellation or a failure
           // has already moved the snapshot on, and a late stage line must not drag it back
           // into a build that is over.
-          onStage: (stage) => {
+          onStage: (stage, transfer) => {
             // A stage arriving after Cancel was pressed must not undo the cancelling state -
             // the build is on its way out, and the bar advancing again would say otherwise.
             if (this.snapshot.phase === "preparing" && !this.snapshot.cancelling) {
-              this.publish(preparing(stage));
+              this.publish(preparing(stage, false, transfer));
             }
           },
         });
         if (outcome.ok) {
           const sourceProblem = sourceCommitProblem(offer.releaseTag, this.identify(outcome.staged.bundlePath).commit ?? null);
           if (sourceProblem) throw new UpdateError(sourceProblem);
-          // Whether a finished build may be installed is a rule about bundles, and it lives
-          // with the rest of them in `src/shared/staged-bundle.mjs`. What is left here is the
-          // coordination: which log line, which dialog, which snapshot, and which of the two
-          // install paths to take.
-          const acceptance = stagedBuildAcceptance({
-            staged: outcome.staged,
-            found: this.identify(outcome.staged.bundlePath),
-          });
-          if (acceptance.verdict === "unpinnable") {
-            this.port.log(
-              "the installed version's install script reports no bundle identity; handing the whole install to the detached helper rather than pinning one after the fact",
-            );
-            return await this.handOff(offer, null);
+          if (abort.signal.aborted) {
+            await this.port.discard?.(outcome.descriptor);
+            this.publish(offer);
+            return false;
           }
-          if (acceptance.verdict === "replaced") {
-            throw new UpdateError(
-              "The new version was replaced while it was being prepared, so it was not installed. Check for updates again to prepare it once more.",
-            );
+          const descriptor = outcome.descriptor;
+          const found = this.identify(outcome.staged.bundlePath);
+          if (!descriptor || descriptor.receipt.kind !== "binary" ||
+              JSON.stringify(descriptor.receipt.provenance.manifest) !== JSON.stringify(binary.manifest) ||
+              descriptor.receipt.provenance.manifestSha256 !== binary.manifestSha256 ||
+              descriptor.bundle !== outcome.staged.bundlePath || descriptor.revision !== outcome.staged.revision ||
+              found.revision !== descriptor.revision || found.version !== binary.manifest.version || found.commit !== binary.manifest.commit) {
+            await this.port.discard?.(outcome.descriptor);
+            throw new UpdateError("The prepared binary no longer matches the accepted build. Check again to retry.");
           }
+          this.descriptor = descriptor;
           this.staged = {
+            binary,
             releaseTag: offer.releaseTag,
             version: outcome.staged.version,
             bundlePath: outcome.staged.bundlePath,
-            revision: acceptance.revision,
+            revision: descriptor.revision,
           };
           this.refreshMigration();
           this.publish(ready());
@@ -1020,18 +923,10 @@ export class UpdateController {
           this.publish(offer);
           return false;
         }
-        if (outcome.reason === "unsupported") {
-          // The clone's install script has no `--stage-only`, which means the installed
-          // version predates staging. The old single-shot handoff still applies the update;
-          // it just cannot show progress, which is exactly the version being replaced.
-          this.port.log(
-            "the installed version cannot build an update in the background; handing the whole install to the detached helper",
-          );
-          return await this.handOff(offer, null);
-        }
         throw new UpdateError(outcome.message);
       } catch (error) {
-        return await this.reportFailure("update build failed", offer, error);
+        if (abort.signal.aborted) { this.publish(offer); return false; }
+        return await this.reportFailure("binary update preparation failed", offer, error);
       } finally {
         this.applyPromise = null;
         if (this.preparation === abort) this.preparation = null;
@@ -1073,13 +968,12 @@ export class UpdateController {
       return Promise.resolve(false);
     }
     this.receipt = installed.receipt;
+    if (this.descriptor && (this.descriptor.receipt.appPath !== this.receipt!.appPath || this.descriptor.receipt.installScope !== this.receipt!.installScope)) {
+      return this.reportFailure("installation destination changed", target, new UpdateError("The installation destination or scope changed after preparation. Check for updates again."));
+    }
     const staged = this.staged;
     if (!staged || staged.releaseTag !== target.releaseTag) return Promise.resolve(false);
-    // Checked again here, not only when it was built. A person can leave an update ready for
-    // hours, and in that time the shared clone can be cleaned, or rebuilt at another ref -
-    // which would otherwise send the helper off to swap a bundle that is missing, or worse,
-    // one that is a different version than the person accepted. Both are refused here, before
-    // the app quits, and the install script refuses a version mismatch again on its own.
+    // A deferred candidate can be removed or replaced. Refuse it before requesting quit.
     if (!this.stagedBundleIsIntact(staged)) {
       this.staged = null;
       this.publish({
@@ -1130,18 +1024,7 @@ export class UpdateController {
     }
   }
 
-  /**
-   * Whether the bundle at the staged path is still the one this app built for this release.
-   *
-   * Existence is not enough, and that was the hole: the path lives in the updater-owned clone,
-   * which is shared. Anything that rebuilds that clone between preparation and the restart -
-   * an operator running `make install ARGS="--ref ..."`, an older helper finishing late -
-   * leaves a perfectly valid app at the same path, and installing it would put a version
-   * nobody accepted into /Applications under a receipt naming the tag they did accept.
-   *
-   * So the version has to match what was built, and the revision has to match too: a rebuild
-   * at the same version is still not the bundle whose contents were verified.
-   */
+  /** Same revision, version and signed commit; handoff revalidates the full bytes. */
   private stagedBundleIsIntact(staged: {
     releaseTag: string;
     version: string;
@@ -1150,6 +1033,7 @@ export class UpdateController {
   }): boolean {
     const found = this.identify(staged.bundlePath);
     if (sourceCommitProblem(staged.releaseTag, found.commit ?? null)) return false;
+    if (this.descriptor?.receipt.kind === "binary" && found.commit !== this.descriptor.receipt.installedCommit) return false;
     if (found.version === null) return false;
     if (found.version !== staged.version) return false;
     // A port that cannot produce a revision (an unreadable directory) fails closed rather than
@@ -1157,27 +1041,14 @@ export class UpdateController {
     return found.revision !== null && found.revision === staged.revision;
   }
 
-  /**
-   * Stop a build in progress and return to the offer that started it.
-   *
-   * The offer comes back when the build's process group is actually gone, not when the signal
-   * is sent: `npm` and `electron-builder` write into the shared clone, and the next preparation
-   * force-checks-out and reinstalls in that same directory. Until then the phase stays
-   * `preparing` with `cancelling` set - so the banner stops offering a Cancel that has already
-   * been pressed, and `applyPromise` keeps a second build from starting.
-   */
+  /** Retry remains unavailable until the worker acknowledges cancellation and exits. */
   cancel(): void {
     if (this.snapshot.phase !== "preparing" || this.snapshot.cancelling) return;
     this.publish({ ...this.snapshot, cancelling: true });
     this.preparation?.abort();
   }
 
-  /**
-   * Start the detached helper and quit, which is where every update ends.
-   *
-   * `stagedBundle` decides how much the helper still has to do: swap a bundle this app already
-   * built and verified, or build one itself.
-   */
+  /** The copied helper owns replacement only after acknowledging the accepted descriptor. */
   private async handOff(
     target: {
       currentVersion: string;
@@ -1196,10 +1067,7 @@ export class UpdateController {
       lastOutcome: target.lastOutcome,
     });
     try {
-      const runtime = stagedBundle
-        ? {ok: true as const, node: process.execPath, env: process.env}
-        : await this.port.runtime(this.receipt!.sourceClone!);
-      if (!runtime.ok) throw new UpdateError(runtime.message);
+      if (!stagedBundle || !stagedRevision || !this.descriptor) throw new UpdateError("The accepted binary is missing. Check again to retry.");
       try {
         await this.port.launchPreflight(this.receipt!.appPath);
         if (this.migration) await this.port.launchPreflight(this.migration.target);
@@ -1207,10 +1075,9 @@ export class UpdateController {
         throw new UpdateError(error instanceof Error ? error.message : "Could not verify macOS launch state.");
       }
       await this.port.handoff({
-        node: runtime.node,
-        env: runtime.env,
+        descriptor: this.descriptor,
+        receipt: this.receipt!,
         helperSource: this.port.helperSource(),
-        sourceClone: this.receipt!.sourceClone!,
         targetTag: target.releaseTag,
         appPath: this.receipt!.appPath,
         parentPid: process.pid,
@@ -1275,7 +1142,7 @@ export class UpdateController {
 
   private refreshMigration(): void {
     this.migration = this.receipt && this.staged?.revision
-      ? this.port.migrationPlan?.(this.receipt, this.staged.bundlePath, this.staged.revision) ?? null : null;
+      ? this.port.migrationPlan?.(this.receipt, this.staged.bundlePath, this.staged.revision, this.descriptor ?? undefined) ?? null : null;
   }
 
   keepSystem(): Promise<boolean> {
@@ -1287,6 +1154,7 @@ export class UpdateController {
     this.systemPromise = (async () => {
       try {
         this.receipt = await this.port.keepSystem!(plan);
+        if (this.descriptor) this.descriptor = {...this.descriptor, receipt: {...this.descriptor.receipt, installScope: this.receipt.installScope}};
         this.migration = null;
         this.publish({...target, migration: undefined});
         this.policyPending = false;
@@ -1365,7 +1233,7 @@ export function createDefaultUpdaterPort(options: {
   const logPath = join(options.stateDirectory, "update.log");
   const log = createRotatingUpdateLogger(logPath);
   return {
-    migrationPlan: (receipt, stagedBundle, stagedRevision) => prepareMigration({receipt, stagedBundle, stagedRevision, stateDirectory: options.stateDirectory}),
+    migrationPlan: (receipt, stagedBundle, stagedRevision, descriptor) => prepareMigration({receipt, stagedBundle, stagedRevision, descriptor, stateDirectory: options.stateDirectory}),
     migrationInventory: options.migrationInventory,
     keepSystem: keepSystemInstallation,
     repairMigration: options.repairMigration,
@@ -1381,16 +1249,20 @@ export function createDefaultUpdaterPort(options: {
     installSnapshot: options.installSnapshot,
     readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
-    latestRelease: () => latestStableRelease(runGh),
+    latestRelease: () => latestStableBinary(runGh),
+    binaryForCommit: (commit) => binaryForCommit(runGh, commit),
+    discard: (descriptor) => discardBinaryUpdate(descriptor, options.stateDirectory),
     latestMainCommit: () => latestMainCommit(runGh),
-    runtime: checkUpdateRuntime,
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
     launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
       spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
     stage: async (request) => {
-      return stageUpdateBuild({ ...request, node: request.runtime.node, env: request.runtime.env, log });
+      const gh = await locateExecutable("gh");
+      if (!gh) throw new UpdateError("GitHub CLI (gh) is not installed. Install gh, then check again.", true, "gh-missing");
+      return stageBinaryUpdate(request, {worker: join(dirname(dirname(options.helperSource)), "dist/main/update-binary-worker.cjs"),
+        stateDirectory: options.stateDirectory, gh: gh.path, env: gh.env, log});
     },
     stagedBundleIdentity: (path) => {
       // `mtimeMs` and the inode together: electron-builder removes and recreates this

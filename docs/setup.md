@@ -16,7 +16,7 @@ requires macOS 12+ on Apple Silicon and native GitHub CLI authentication, withou
 npm, npx, Git or local compilation. Signed release qualification is still pending; unavailable
 assets refuse installation. Existing source installs can be replaced in place by this command
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
-through **Settings > Setup > Application updates**. Automatic binary updates are a later phase.
+through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
 
 The commands below concern source development. Setup's universal Node row is retained until
 the separate integration-runtime phase; it is not a prerequisite for binary installation.
@@ -67,15 +67,15 @@ plugin installation, sign-in, restart, daemon certificate, and verification step
 without the plugin remain free of Upstart-specific setup chrome.
 
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
-source installer and source update preflight (currently Node.js 24). It reports a missing or older runtime as
+source installer (currently Node.js 24). It reports a missing or older runtime as
 **Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**
 opens `brew install node` in the selected visible terminal to install or update Node.js and npm.
 This command requires Homebrew; if you manage Node another way, select a supported version in
 that manager instead. Read the command's exit status, then press **Re-check**. Opening the
 installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
 PATH still selects an older runtime, correct that selection and restart Mission Control with
-the corrected environment. The updater still performs its fuller Node/npm checks in the build
-directory before preparing an update.
+the corrected environment. Desktop binary updates do not use that host runtime. This Setup row remains for the separate
+integration-runtime phase; source development and third-party tools keep their own prerequisites.
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and

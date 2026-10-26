@@ -39,14 +39,14 @@ export const UPDATE_COPY: {
   preparing: {
     title: (version) => `Preparing Mission Control ${version}`,
     detail:
-      "Mission Control keeps running while the new version is built, and will ask before it restarts.",
+      "Mission Control keeps running while the signed binary downloads and is verified, and will ask before it restarts.",
   },
   cancelling: {
     title: (version) => `Cancelling the Mission Control ${version} update`,
     // Not "cancelled": the build is being torn down, and the offer comes back when it is
     // actually gone. Starting another one before that would put a fresh checkout and install
     // into the directory the dying processes are still writing to.
-    detail: "Waiting for the build to stop. The update will be offered again in a moment.",
+    detail: "Waiting for the download and verification to stop. The update will be offered again in a moment.",
   },
   ready: {
     title: (version) => `Mission Control ${version} is ready to install`,

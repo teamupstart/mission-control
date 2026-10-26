@@ -783,19 +783,22 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         </li>
         <li>
           <strong>Update Now closes nothing.</strong> Mission Control stays open and usable while
-          the new version is prepared, showing progress and a <strong>Cancel</strong>.
+          the signed binary downloads and is verified. The download bar measures received bytes;
+          verification names its current stage. <strong>Cancel</strong> waits for owned work to stop.
         </li>
         <li>
           <strong>Restart and Install</strong> appears when it is ready. That part takes seconds,
-          and is the only point where the app has to close. A failed update leaves the version you
-          already had.
+          and is the only point where the app has to close. Failures before receipt commitment restore
+          the prior installation; later failures retain recovery material and provide repair guidance.
         </li>
       </ol>
 
       <p>
-        Source updates need Node.js 24 or newer. If yours is older or missing, the banner explains why
-        <strong>Update Now</strong> is unavailable and offers <strong>Check again</strong> once you
-        have fixed it.
+        Managed desktop updates use trusted prebuilt stable or exact-commit alpha binaries without
+        host Node, npm or local compilation. An incomplete or expired publication leaves
+        <strong>Update Now</strong> unavailable; <strong>Check again</strong> refreshes the offer.
+        The signed installer is the manual recovery route. Signed packaged qualification remains
+        a release gate. Source development and third-party tools still have their own prerequisites.
       </p>
 
       <h3>If you run it in the browser</h3>

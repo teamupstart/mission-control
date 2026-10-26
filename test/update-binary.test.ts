@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, rm, lstat, readlink } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -198,6 +199,21 @@ test("archive traversal, roots, aliases, links, collisions and expansion limits 
   await assert.rejects(extractBinaryArchive(archive, root, new AbortController().signal, {bytes: 2, entries: 10}), /size limit/);
   const abort = new AbortController(); abort.abort();
   await assert.rejects(extractBinaryArchive(archive, root, abort.signal), /aborted/);
+});
+
+test("corrupt archive streams reject safely when destination creation is delayed", async t => {
+  const root = await mkdtemp(join(tmpdir(), "mission-binary-zip-stream-"));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const archive = join(root, "corrupt.zip");
+  await writeFile(archive, zip([{...executable, size: 100}]));
+  const originalMkdir = fsPromises.mkdir;
+  const delayed = t.mock.method(fsPromises, "mkdir", (async (...args: Parameters<typeof fsPromises.mkdir>) => {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return originalMkdir(...args);
+  }) as typeof fsPromises.mkdir);
+  syncBuiltinESMExports();
+  t.after(() => {delayed.mock.restore(); syncBuiltinESMExports();});
+  await assert.rejects(extractBinaryArchive(archive, join(root, "out"), new AbortController().signal), /not enough bytes/);
 });
 
 test("canonical download streams progress, redacts credentials, detects corruption/truncation and settles cancellation", async t => {

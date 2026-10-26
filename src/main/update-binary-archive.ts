@@ -70,6 +70,9 @@ export async function extractBinaryArchive(archive: string, destination: string,
       signal.throwIfAborted();
       const path = join(destination, name);
       if (kind === "directory") { if (!resource) await mkdir(path, {recursive: true, mode: 0o755}); continue; }
+      if (kind === "file" && !resource) await mkdir(dirname(path), {recursive: true, mode: 0o755});
+      // Opening starts decompression. Attach pipeline's error handlers without
+      // awaiting filesystem work that could let a corrupt stream fail unobserved.
       const stream = await zip.openReadStreamPromise(entry);
       let count = 0;
       let checksum = 0;
@@ -85,7 +88,6 @@ export async function extractBinaryArchive(archive: string, destination: string,
           for await (const chunk of source) if (!resource) chunks.push(Buffer.from(chunk));
         }, {signal});
       } else {
-        await mkdir(dirname(path), {recursive: true, mode: 0o755});
         await pipeline(stream, bounded, createWriteStream(path, {flags: "wx", mode: mode || 0o644}), {signal});
       }
       if (count !== entry.uncompressedSize || checksum !== entry.crc32) throw new Error("Corrupt binary archive contents");

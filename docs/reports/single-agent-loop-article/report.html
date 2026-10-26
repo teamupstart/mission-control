@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Single agent loop and Mission Control</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1013;
+    --panel: #16181c;
+    --panel-2: #1d2026;
+    --line: #2f343c;
+    --fg: #f2f3f5;
+    --fg-2: #b6bcc6;
+    --fg-3: #8d949e;
+    --accent-fg: #6fa8f0;
+    --good-fg: #3fc496;
+    --warn-fg: #e0a63a;
+    --bad-fg: #f08080;
+    --chip-good-bg: #12352a;
+    --chip-warn-bg: #3a2c0e;
+    --chip-bad-bg: #3d1c1c;
+    --chip-fg: #f2f3f5;
+    --svg-box: #1d2026;
+    --svg-stroke: #4a515c;
+    --svg-text: #e6e8eb;
+    --svg-muted: #a3aab4;
+    --svg-hot: #f08080;
+    --svg-ok: #3fc496;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f6f6f4;
+      --panel: #ffffff;
+      --panel-2: #efefec;
+      --line: #d5d5d0;
+      --fg: #101114;
+      --fg-2: #3f4248;
+      --fg-3: #5e6168;
+      --accent-fg: #1d5fae;
+      --good-fg: #0b7351;
+      --warn-fg: #8a5c00;
+      --bad-fg: #b32524;
+      --chip-good-bg: #d7f0e5;
+      --chip-warn-bg: #f6e6c4;
+      --chip-bad-bg: #f7dada;
+      --chip-fg: #101114;
+      --svg-box: #ffffff;
+      --svg-stroke: #9aa0a8;
+      --svg-text: #15171a;
+      --svg-muted: #50545b;
+      --svg-hot: #b32524;
+      --svg-ok: #0b7351;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+         font-size: 15px; line-height: 1.65; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px 96px; }
+  header { padding: 52px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+             color: var(--fg-3); margin: 0 0 12px; }
+  h1 { font-size: 34px; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 14px; font-weight: 640; }
+  h2 { font-size: 23px; letter-spacing: -0.012em; margin: 52px 0 10px; }
+  h3 { font-size: 17px; margin: 28px 0 6px; }
+  p, li { color: var(--fg-2); max-width: 74ch; }
+  strong { color: var(--fg); }
+  a { color: var(--accent-fg); }
+  code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); color: var(--fg);
+         padding: 1px 5px; border-radius: 4px; }
+  .answer { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent-fg);
+            border-radius: 8px; padding: 18px 22px; margin: 22px 0; }
+  .answer p { margin: 8px 0; }
+  .meta { font-size: 13.5px; color: var(--fg-3); }
+  nav ol { columns: 2; column-gap: 32px; padding-left: 20px; }
+  nav li { color: var(--fg-2); }
+  .scroll { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--fg); background: var(--panel-2); font-weight: 600; }
+  td { color: var(--fg-2); }
+  tr:last-child td { border-bottom: 0; }
+  .chip { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 999px;
+          color: var(--chip-fg); white-space: nowrap; }
+  .chip.good { background: var(--chip-good-bg); }
+  .chip.warn { background: var(--chip-warn-bg); }
+  .chip.bad { background: var(--chip-bad-bg); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 20px; margin: 14px 0; }
+  .card h3 { margin-top: 6px; }
+  svg text { font-family: var(--sans); }
+  .figure { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 16px 0; }
+  .caption { font-size: 13px; color: var(--fg-3); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Mission Control · research note · 2026-10-26</p>
+  <h1>Anthropic's single-agent-loop guidance, read against Mission Control</h1>
+  <p class="meta">Question as asked: "Read Anthropic's latest Claude prompting guide and tell me how it relates to Mission Control."
+  Source: <em>Building agents: When to fold subagents into your main agent loop</em>, Diane Sarkis, claude.com, published 2026-10-22,
+  read 2026-10-26. It sits in the "Best practices" category and is about agent architecture, not prompt wording, so I treat it as an
+  architecture guide rather than a prompting guide.</p>
+</header>
+
+<div class="answer">
+  <p><strong>Short answer.</strong> The article argues for one model, one context window, and progressively disclosed skills and tools,
+  and keeps subagents for three jobs: verification, parallel work, and permission boundaries. Mission Control does not run the agent loop
+  itself. Each dispatched session is already a single loop in Claude Code, Codex or Pi, and Mission Control does not split it into
+  specialists. What Mission Control adds sits <em>around</em> those loops: Foreman, the GitHub Inspector, workflow Personas and ensemble judges.</p>
+  <p>Against the article, those split into two groups. <strong>Personas, the Inspector and ensembles are the patterns it endorses</strong>
+  (generator-verifier and parallel candidates split by context). <strong>Foreman is the closest match to the failure it describes</strong>:
+  a second, cold agent rebuilding from a 60-turn transcript window the context the blocked session already holds. Three other things are
+  worth acting on. The verifiers pay a real handoff cost, which Mission Control covers with evidence registration. The standing
+  instructions Mission Control adds to dispatch prompts are the "Frankenprompt" risk the article names. And a keyword search of
+  <code>docs/</code>, <code>src/</code> and <code>scripts/</code> found no end-to-end eval set for Mission Control's own model-driven parts.
+  The article treats that as the first step before changing any of them.</p>
+</div>
+
+<nav>
+  <h2 style="margin-top:28px">Contents</h2>
+  <ol>
+    <li><a href="#article">What the article says</a></li>
+    <li><a href="#map">Component-by-component mapping</a></li>
+    <li><a href="#diagram">Where context crosses a boundary</a></li>
+    <li><a href="#already">What Mission Control already does</a></li>
+    <li><a href="#tension">Where it pulls against the article</a></li>
+    <li><a href="#next">Experiments the article would suggest</a></li>
+    <li><a href="#limits">What I did not establish</a></li>
+  </ol>
+</nav>
+
+<h2 id="article">1. What the article says</h2>
+<ul>
+  <li><strong>Default to one loop.</strong> One model and one context window run an open-ended tool loop with turn, cost and write
+  budgets set in the harness. The model writes its own plan on turn one and revises it. The same model plans and executes.</li>
+  <li><strong>Progressive disclosure.</strong> The agent sees short descriptions of skills and tools and loads full detail on demand.
+  The article says Anthropic cut Claude Code's system prompt by over 80% for advanced models, and that starting with Opus 4.5, models
+  can hold much more in one loop.</li>
+  <li><strong>Subagents remain for</strong> verification, parallel work and modular permissioning. If you use them, start with
+  generator-verifier or orchestrator-subagent, and <strong>divide by context, not by problem type</strong>. Each subagent should need little from the rest of the
+  system and return a compact result. Splitting by problem type causes a "telephone game".</li>
+  <li><strong>Named failure modes:</strong> subagent sprawl, a conflicting "Frankenprompt", unvetted local evals, lossy summaries at every handoff,
+  and nested model loops that add latency. One customer saw about 2x slower runtime on a multi-agent harness.</li>
+  <li><strong>Tools:</strong> group them by user intent. Tool choice degrades beyond 30 to 50 definitions, so use tool search with
+  deferred loading. Move hard preconditions into tools that return actionable refusals, and enforce permissions inside tools.</li>
+  <li><strong>Skills</strong> hold how a team does its work. Each team has a DRI, and every skill ships with evals.</li>
+  <li><strong>Evals first:</strong> start with one shared end-to-end set (10 golden examples is enough), grade with a rubric, timestamp key
+  events for replay, run each task more than once, and fold in one subagent at a time. Keep it as a subagent only if the folded version scores worse.</li>
+</ul>
+<p class="meta">Provenance: fetched with WebFetch, which returns a model-written summary of the page rather than its raw HTML. Section headings,
+figures and tool names above come from that summary. See <a href="#limits">limits</a>.</p>
+
+<h2 id="map">2. Component-by-component mapping</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Mission Control part</th><th>What it is (verified)</th><th>Article pattern</th><th>Fit</th></tr></thead>
+  <tbody>
+  <tr>
+    <td><strong>Dispatched session</strong></td>
+    <td>One task, one harness session (Claude, Codex, Pi), with one worktree per attached repository: usually one, and one for each repository
+      on a multi-repo task (<code>docs/glossary.md</code>, "Multi-repo task"). Mission Control launches it and watches it, but does not stage the work inside it.
+      <code>docs/overview.md</code></td>
+    <td>The single agent loop itself.</td>
+    <td><span class="chip good">aligned</span></td>
+  </tr>
+  <tr>
+    <td><strong>Workflow Personas</strong></td>
+    <td>14 builtin review roles (<code>src/server/workflows/builtin-personas.generated.ts</code>). Each judges one immutable evidence snapshot. "Each attempt is a fresh, tool-less provider call" (<code>docs/workflows.md:33</code>),
+      and six of the Persona sources in <code>personas/</code> also tell the judge "You have no repository tools."</td>
+    <td>Generator-verifier, which the article endorses. The verifier sees only what is handed to it.</td>
+    <td><span class="chip good">endorsed</span> <span class="chip warn">handoff cost</span></td>
+  </tr>
+  <tr>
+    <td><strong>Ensembles</strong></td>
+    <td>Best of N, Consensus and Panel vote. Each member gets its own worktree from one pinned commit and submits an immutable artifact. A blind, tool-less judge
+      compares the artifacts. <code>docs/ensembles.md</code></td>
+    <td>Parallel work split by context, each member returning a compact result, then a verifier.</td>
+    <td><span class="chip good">endorsed</span></td>
+  </tr>
+  <tr>
+    <td><strong>GitHub Inspector</strong></td>
+    <td>Separate reviewer for adopted PRs. On the Codex runner it is a one-shot review with no tools. On the Claude runner the same review took 13 turns on Opus and 23 on Sonnet
+      (<code>docs/foreman-inspector-token-usage.html</code>, 2026-08-07 snapshot).</td>
+    <td>Verifier subagent.</td>
+    <td><span class="chip good">endorsed</span></td>
+  </tr>
+  <tr>
+    <td><strong>Foreman</strong></td>
+    <td>Separate auto-responder. For each blocked session it reads a transcript window of 12 head turns and 48 tail turns
+      (<code>src/shared/protocol.ts:342-344</code>) plus the pane, then answers or escalates. Each call is a cold process with no context reuse, carrying about 61 KB
+      (token report).</td>
+    <td>Closest to a domain subagent: a second model rebuilds the session's context from a lossy window.</td>
+    <td><span class="chip bad">tension</span></td>
+  </tr>
+  <tr>
+    <td><strong>Skills catalog</strong></td>
+    <td>5 shipped skills (<code>skills/</code>), symlinked into each harness's own skills directory, which loads them natively. <code>docs/skills-and-settings.md</code></td>
+    <td>Progressive disclosure through skills.</td>
+    <td><span class="chip good">aligned</span></td>
+  </tr>
+  <tr>
+    <td><strong>Mission Control MCP server</strong></td>
+    <td>23 tools in <code>src/mcp/server.ts</code>. In this session Claude Code listed all 23 as deferred, so only their names loaded.
+      Refusals such as <code>handoff_awaiting_discovery</code> tell the caller what to do next (<code>docs/workflow-system.md</code>).</td>
+    <td>Under the 30 to 50 threshold, with deferred loading and preconditions inside tools.</td>
+    <td><span class="chip good">aligned</span></td>
+  </tr>
+  <tr>
+    <td><strong>Dispatch standing instructions</strong></td>
+    <td>Assembled in <code>src/server/execution-authorization.ts</code>, <code>src/server/documentation/prompt.ts</code>,
+      <code>src/server/workflows/agent-contract.ts</code> and <code>src/server/routes.ts</code>, then appended to the operator's request.</td>
+    <td>The "Frankenprompt" risk: prompts from several owners in one context.</td>
+    <td><span class="chip warn">watch</span></td>
+  </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="diagram">3. Where context crosses a boundary</h2>
+<p>The article's main cost is the lossy handoff. This shows each place in Mission Control where one model's context is packed and passed to another.
+Green arrows go to verifiers, where packing context is part of the design. The red arrow goes to Foreman, which
+rebuilds intent rather than checking an output.</p>
+<div class="figure">
+<svg viewBox="0 0 900 330" width="900" height="330" role="img" aria-label="Context handoffs between a dispatched session and Mission Control's side agents">
+  <rect x="330" y="120" width="240" height="90" rx="10" fill="var(--svg-box)" stroke="var(--svg-stroke)"/>
+  <text x="450" y="152" text-anchor="middle" font-size="15" font-weight="600" fill="var(--svg-text)">Dispatched session</text>
+  <text x="450" y="174" text-anchor="middle" font-size="12" fill="var(--svg-muted)">one loop, full context,</text>
+  <text x="450" y="192" text-anchor="middle" font-size="12" fill="var(--svg-muted)">skills + MCP tools</text>
+
+  <rect x="30" y="24" width="220" height="70" rx="10" fill="var(--svg-box)" stroke="var(--svg-stroke)"/>
+  <text x="140" y="52" text-anchor="middle" font-size="14" font-weight="600" fill="var(--svg-text)">Workflow Personas</text>
+  <text x="140" y="72" text-anchor="middle" font-size="12" fill="var(--svg-muted)">tool-less, 14 builtin</text>
+
+  <rect x="650" y="24" width="220" height="70" rx="10" fill="var(--svg-box)" stroke="var(--svg-stroke)"/>
+  <text x="760" y="52" text-anchor="middle" font-size="14" font-weight="600" fill="var(--svg-text)">GitHub Inspector</text>
+  <text x="760" y="72" text-anchor="middle" font-size="12" fill="var(--svg-muted)">PR diff + standards</text>
+
+  <rect x="30" y="236" width="220" height="70" rx="10" fill="var(--svg-box)" stroke="var(--svg-stroke)"/>
+  <text x="140" y="264" text-anchor="middle" font-size="14" font-weight="600" fill="var(--svg-text)">Ensemble judge</text>
+  <text x="140" y="284" text-anchor="middle" font-size="12" fill="var(--svg-muted)">blind diff comparison</text>
+
+  <rect x="650" y="236" width="220" height="70" rx="10" fill="var(--svg-box)" stroke="var(--svg-hot)" stroke-width="2"/>
+  <text x="760" y="264" text-anchor="middle" font-size="14" font-weight="600" fill="var(--svg-text)">Foreman</text>
+  <text x="760" y="284" text-anchor="middle" font-size="12" fill="var(--svg-muted)">12 + 48 turns + pane</text>
+
+  <g stroke="var(--svg-ok)" stroke-width="2" fill="none">
+    <path d="M330 140 L250 70"/><path d="M570 140 L650 70"/><path d="M330 195 L250 262"/>
+  </g>
+  <path d="M570 195 L650 262" stroke="var(--svg-hot)" stroke-width="2.5" fill="none"/>
+  <text x="288" y="118" text-anchor="end" font-size="12" fill="var(--svg-muted)">registered evidence</text>
+  <text x="612" y="118" font-size="12" fill="var(--svg-muted)">pushed PR</text>
+  <text x="280" y="224" text-anchor="end" font-size="12" fill="var(--svg-muted)">immutable commit</text>
+  <text x="622" y="224" font-size="12" fill="var(--svg-hot)">rebuilt intent</text>
+</svg>
+<p class="caption">Each box beyond the session is a separate, cold model call. Arrow labels are what crosses the boundary, taken from the docs and source cited in section 2.</p>
+</div>
+
+<h2 id="already">4. What Mission Control already does that the article recommends</h2>
+<div class="card">
+  <h3>Verifiers split by context, not by problem type</h3>
+  <p>Personas, the Inspector and the ensemble judge each get a bounded, immutable artifact and return a verdict. That matches the article's
+  rule that a subagent should need little from the rest of the system and return a compact result. The ensemble judge is blind to agent names,
+  models and ordinals (<code>docs/ensembles.md</code>), so its answer cannot drift with the identity of the work's author.</p>
+</div>
+<div class="card">
+  <h3>Preconditions live in tools</h3>
+  <p>The MCP tools refuse with a next step instead of trusting the model to sequence correctly. Evidence registration returns a retryable
+  <code>handoff_awaiting_discovery</code> until the successor session is verified. <code>submit_ensemble_result</code> works out who the member is from the calling
+  session and never lets the member name itself. Both match "if Y needs X's output, Y's tool checks for it and returns an actionable instruction".</p>
+</div>
+<div class="card">
+  <h3>Shadow measurement before trusting a cheaper path</h3>
+  <p>Foreman's cheap tier has an explicit <strong>shadow</strong> posture. It runs the cheap tier beside the full review, acts only on the full
+  review, and records every divergence, with <code>cheap-over-eager</code> called out in red (<code>docs/foreman.md</code>, "Cheap tier").
+  The article's migration loop works the same way: keep the old path, measure the new one, and switch only when the numbers hold.</p>
+</div>
+<div class="card">
+  <h3>A smaller root prompt</h3>
+  <p>Commit <code>b6ea3e7</code> (2026-07-30, "docs(agents): streamline project guidance") cut <code>AGENTS.md</code> from 80,918 bytes to 6,076,
+  which is 92% smaller (figures from <code>docs/agent-guides/inspector-prompt-bytes.md</code>). That file is loaded into every Inspector review and every Foreman verify,
+  so the cut is the same trim the article describes for Claude Code's system prompt.</p>
+</div>
+
+<h2 id="tension">5. Where it pulls against the article</h2>
+<div class="card">
+  <h3>Foreman rebuilds context instead of verifying an artifact</h3>
+  <p>Foreman answers a question the blocked session asked, using a 60-turn window of that session's transcript plus its pane. The article's
+  concerns all apply: the window is a lossy summary, each call is a nested cold loop (about 61 KB per review in the August token report), and its
+  prompt has its own owner (Library, Personas, Foreman). The difference is that Foreman stands in for the <em>operator</em>, not for a domain specialist.
+  So part of what it does, deciding what to escalate to a human, has no single-loop equivalent. That part is a permission boundary, which the article
+  keeps as a reason for a subagent.</p>
+  <p>The part it does not obviously cover is Foreman's routine work: implementation trade-offs it "auto-answers ... defaulting to the most correct,
+  secure, non-duplicative option" (<code>docs/foreman.md</code>). A current model holding the full context could often make that call itself
+  if a standing instruction told it not to ask. That is an inference I have not tested.</p>
+</div>
+<div class="card">
+  <h3>Verifier handoffs are expensive, and the contract shows it</h3>
+  <p>Because Personas have no repository tools, anything they need has to be packed into evidence by the session. This task's own prompt asks the
+  session to register "complete relevant sections from unchanged authoritative documents", search results, git history patches and a
+  removed-detail-to-owner mapping, because "the reviewers cannot search the checkout themselves". That is the lossy-handoff cost, paid on purpose
+  for an isolated, reproducible verdict. The article supports the trade for verification. It does mean evidence-packing instructions are now one of the
+  biggest standing sections in a dispatch prompt.</p>
+</div>
+<div class="card">
+  <h3>Standing instructions come from several owners</h3>
+  <p>This session's one-line request arrived with six appended sections (execution authorization, plan discovery, document task, completion handoff,
+  documentation review evidence, workflow evidence readiness), built in four source files. One of them framed a research question as
+  "write or maintain the requested repository documentation". That mismatch is a small, concrete example of the article's Frankenprompt:
+  instructions written separately, each reasonable on its own, conflicting at the point where they are combined.</p>
+</div>
+<div class="card">
+  <h3>No end-to-end eval set found for the model-driven parts</h3>
+  <p>The article makes an eval set the first step before folding anything in. I searched <code>docs/</code>, <code>src/</code> and
+  <code>scripts/</code> for "golden", "eval set", "evals/" and "benchmark". Every hit was a code fixture or a telemetry benchmark
+  (<code>test/helpers/workflow-telemetry.ts</code>, <code>scripts/observability/benchmark.ts</code>), not a graded set of Foreman decisions or Persona
+  verdicts. Shadow mode measures one divergence. Within that search I found nothing that scores Foreman, the Inspector or the Personas against
+  known-good answers. A harness under other names or outside those paths would not have shown up (see <a href="#limits">limits</a>).</p>
+</div>
+
+<h2 id="next">6. Experiments the article would suggest</h2>
+<p>These are the article's method applied here. They are proposals, not findings.</p>
+<ol>
+  <li><strong>Build a small eval set first.</strong> Take about 10 resolved Foreman decisions from its decisions ledger and about 10 completed
+  workflow runs with known-good outcomes. The daemon already timestamps these, which the article names as the raw material for replay evals.</li>
+  <li><strong>Try folding Foreman's routine tier into the session.</strong> Add a standing instruction telling the session to resolve routine
+  trade-offs itself. Run it beside Foreman in a shadow-style comparison, more than once per case, and check which tasks changed, not only the total.</li>
+  <li><strong>Audit the dispatch standing instructions</strong> as one prompt rather than four. The article's <code>/claude-api prompt-audit</code> is
+  built to flag instructions written for older models.</li>
+  <li><strong>Leave Personas, the Inspector and ensembles as subagents.</strong> They are the verification and parallel cases the article keeps.
+  The lever there is how much evidence they need, not whether they exist.</li>
+</ol>
+
+<h2 id="limits">7. What I did not establish</h2>
+<ul>
+  <li>I read the article through WebFetch, which returns a model summary rather than raw text. Figures such as "2x slower", "over 80%" and "30 to 50
+  tools" are as that summary reported them. I did not check them against the page source, and I did not open the migration kit repository it links.</li>
+  <li>I did not measure Mission Control's own latency or cost for any of these paths. The Foreman and Inspector byte figures come from
+  <code>docs/foreman-inspector-token-usage.html</code>, dated 2026-08-07, which predates later changes. For example, that report calls cheap-tier
+  shadow the shipped default, but the current <code>docs/foreman.md</code> says <strong>on</strong> is the default.</li>
+  <li>The eval-set gap rests on a keyword search. A differently named harness could exist outside the paths I searched.</li>
+  <li>The claim that current models could absorb Foreman's routine answers is an inference from the article, not something I ran.</li>
+  <li>The retrieved article contained no instructions directed at the reader agent. I treated it only as data.</li>
+</ul>
+
+</div>
+</body>
+</html>

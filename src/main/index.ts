@@ -31,6 +31,7 @@ import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -231,18 +232,9 @@ function registerIpc(updateController: UpdateController): void {
     showIntegrationResult("Integrations", r.message);
     return r;
   });
-  ipcMain.on("mission:product-issue-report-click", (event, input: unknown) => {
-    event.returnValue = false;
-    const mainContents = getMainWindow()?.webContents;
-    if (!mainContents || event.sender !== mainContents) return;
-    event.returnValue = armProductIssueAuthorization(input);
-  });
-  ipcMain.on("mission:session-control-click", (event, input: unknown) => {
-    event.returnValue = false;
-    const mainContents = getMainWindow()?.webContents;
-    if (!mainContents || event.sender !== mainContents) return;
-    event.returnValue = armSessionControlAuthorization(input);
-  });
+  const dashboard = () => getMainWindow()?.webContents;
+  serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
+  serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
   ipcMain.handle("mission:update-set-alpha", (event, alpha: boolean) => {

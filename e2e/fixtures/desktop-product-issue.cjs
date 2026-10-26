@@ -1,13 +1,11 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("node:path");
-const { armProductIssueAuthorization } = require(process.argv[3]);
+const { armProductIssueAuthorization, serveDashboardClick } = require(process.argv[3]);
 
 app.whenReady().then(async () => {
   ipcMain.handle("mission:card-jump-keys", () => undefined);
   ipcMain.handle("mission:update-get-state", () => null);
-  ipcMain.on("mission:product-issue-report-click", (event, input) => {
-    event.returnValue = event.sender === window.webContents && armProductIssueAuthorization(input);
-  });
+  serveDashboardClick(ipcMain, "mission:product-issue-report-click", () => window.webContents, armProductIssueAuthorization);
   const window = new BrowserWindow({
     width: 1000,
     height: 900,

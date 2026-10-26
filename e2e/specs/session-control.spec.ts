@@ -89,7 +89,9 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
   // There is no production HTTP or environment bypass for the authorization under test.
   await daemon.crash();
   const authorizationModule = join(daemon.home, "session-control-authorization.cjs");
-  buildSync({ entryPoints: ["src/main/session-control-authorization.ts"], outfile: authorizationModule, bundle: true, platform: "node", format: "cjs" });
+  // The shell's own click registrar travels with the module, so the fixture replies the way main does.
+  buildSync({ stdin: { contents: 'export * from "./src/main/session-control-authorization.ts"; export * from "./src/main/dashboard-click-ipc.ts";', resolveDir: process.cwd(), loader: "ts" },
+    outfile: authorizationModule, bundle: true, platform: "node", format: "cjs" });
   const application = await electron.launch({ args: [fileURLToPath(new URL("../fixtures/desktop-session-control.cjs", import.meta.url)), authorizationModule] });
   try {
     const dashboard = await application.firstWindow();

@@ -19,8 +19,9 @@ for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged 
     const dev = surface === "hot-updated dashboard" ? await startDevDashboard(daemon) : null;
     try {
       const authorizationModule = join(daemon.home, "product-issue-authorization.cjs");
+      // The shell's own click registrar travels with the module, so the fixture replies the way main does.
       buildSync({
-        entryPoints: ["src/main/product-issue-authorization.ts"],
+        stdin: { contents: 'export * from "./src/main/product-issue-authorization.ts"; export * from "./src/main/dashboard-click-ipc.ts";', resolveDir: process.cwd(), loader: "ts" },
         outfile: authorizationModule,
         bundle: true,
         platform: "node",

@@ -220,6 +220,9 @@ consumes it over the private utility-process channel; HTTP supplies only the req
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check before enabling control. Standalone
 daemons fail closed.
+Main registers every dashboard click arm, this one and the Feedback report's, through
+`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
+desktop e2e fixtures use the same registrar.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control

@@ -890,34 +890,42 @@ export class UpdateController {
           },
         });
         if (outcome.ok) {
-          const sourceProblem = sourceCommitProblem(offer.releaseTag, this.identify(outcome.staged.bundlePath).commit ?? null);
-          if (sourceProblem) throw new UpdateError(sourceProblem);
-          if (abort.signal.aborted) {
-            await this.port.discard?.(outcome.descriptor);
-            this.publish(offer);
-            return false;
+          let retained = false;
+          try {
+            const sourceProblem = sourceCommitProblem(offer.releaseTag, this.identify(outcome.staged.bundlePath).commit ?? null);
+            if (sourceProblem) throw new UpdateError(sourceProblem);
+            if (abort.signal.aborted) {
+              this.publish(offer);
+              return false;
+            }
+            const descriptor = outcome.descriptor;
+            const found = this.identify(outcome.staged.bundlePath);
+            if (!descriptor || descriptor.receipt.kind !== "binary" ||
+                JSON.stringify(descriptor.receipt.provenance.manifest) !== JSON.stringify(binary.manifest) ||
+                descriptor.receipt.provenance.manifestSha256 !== binary.manifestSha256 ||
+                descriptor.bundle !== outcome.staged.bundlePath || descriptor.revision !== outcome.staged.revision ||
+                found.revision !== descriptor.revision || found.version !== binary.manifest.version || found.commit !== binary.manifest.commit) {
+              throw new UpdateError("The prepared binary no longer matches the accepted build. Check again to retry.");
+            }
+            this.descriptor = descriptor;
+            this.staged = {
+              binary,
+              releaseTag: offer.releaseTag,
+              version: outcome.staged.version,
+              bundlePath: outcome.staged.bundlePath,
+              revision: descriptor.revision,
+            };
+            this.refreshMigration();
+            this.publish(ready());
+            retained = true;
+            return true;
+          } finally {
+            if (!retained) {
+              this.staged = null; this.descriptor = null; this.migration = null;
+              try { await this.port.discard?.(outcome.descriptor); }
+              catch (error) { this.port.log(`could not remove abandoned binary: ${String(error)}`); }
+            }
           }
-          const descriptor = outcome.descriptor;
-          const found = this.identify(outcome.staged.bundlePath);
-          if (!descriptor || descriptor.receipt.kind !== "binary" ||
-              JSON.stringify(descriptor.receipt.provenance.manifest) !== JSON.stringify(binary.manifest) ||
-              descriptor.receipt.provenance.manifestSha256 !== binary.manifestSha256 ||
-              descriptor.bundle !== outcome.staged.bundlePath || descriptor.revision !== outcome.staged.revision ||
-              found.revision !== descriptor.revision || found.version !== binary.manifest.version || found.commit !== binary.manifest.commit) {
-            await this.port.discard?.(outcome.descriptor);
-            throw new UpdateError("The prepared binary no longer matches the accepted build. Check again to retry.");
-          }
-          this.descriptor = descriptor;
-          this.staged = {
-            binary,
-            releaseTag: offer.releaseTag,
-            version: outcome.staged.version,
-            bundlePath: outcome.staged.bundlePath,
-            revision: descriptor.revision,
-          };
-          this.refreshMigration();
-          this.publish(ready());
-          return true;
         }
         if (outcome.reason === "cancelled") {
           this.publish(offer);

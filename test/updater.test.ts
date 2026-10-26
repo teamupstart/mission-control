@@ -1358,6 +1358,54 @@ test("a bundle whose identity cannot be read is refused, not thrown at the calle
 });
 
 
+test("post-preparation failures discard the candidate before retrying", async (t) => {
+  for (const failure of ["unreadable alpha identity", "changed revision", "migration preflight", "cancelled"] as const) {
+    await t.test(failure, async (t) => {
+      let failing = true;
+      const prepared: ReturnType<typeof binaryStaged>["descriptor"][] = [];
+      const discarded: typeof prepared = [];
+      const f = fixture({
+        readAlpha: () => failure === "unreadable alpha identity",
+        stage: async (request) => {
+          const outcome = binaryStaged(request, STAGED_BUNDLE,
+            failing && failure === "changed revision" ? "changed" : "staged-1");
+          prepared.push(outcome.descriptor);
+          if (failing && failure === "cancelled") f.controller.cancel();
+          return outcome;
+        },
+        stagedBundleIdentity: () => {
+          if (failing && failure === "unreadable alpha identity") throw new Error("ENOENT: candidate removed");
+          return {version: "1.2.4", revision: "staged-1", commit: "b".repeat(40)};
+        },
+        migrationPlan: () => {
+          if (failing && failure === "migration preflight") throw new Error("migration preflight failed");
+          return null;
+        },
+        discard: async (descriptor) => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          discarded.push(descriptor);
+        },
+      });
+      t.after(() => f.controller.stop());
+      await f.controller.start();
+      await f.controller.check(true);
+      assert.equal(await f.controller.apply(), false);
+      assert.equal(f.controller.getSnapshot().phase, failure === "cancelled" ? "available" : "error");
+      assert.equal(discarded.length, 1);
+      assert.equal(discarded[0], prepared[0], "discard the exact descriptor returned by staging");
+      assert.deepEqual(f.handoffs, []);
+      assert.ok(!f.events.includes("quit"));
+
+      failing = false;
+      await f.controller.check(true);
+      assert.equal(await f.controller.apply(), true);
+      assert.equal(prepared.length, 2, "retry stages a fresh candidate");
+      assert.equal(discarded.length, 1, "the failed candidate was cleared and the successful retry is retained");
+      assert.equal(f.controller.getSnapshot().phase, "ready");
+    });
+  }
+});
+
 test("a build replaced before it could be pinned is refused, and never called ready", async () => {
   // The install script reads the bundle's identity in the same breath as it verifies it and
   // reports it with the marker. Anything this app read afterwards could already be a

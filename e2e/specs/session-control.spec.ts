@@ -160,6 +160,10 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await expect(controlButton).toHaveAttribute("aria-label", "Session control: Off");
       await expect(dashboard.getByText("A delegated follow-up about CSS", { exact: true }).first()).toBeVisible();
       await expect(dashboard.getByRole("article", { name: "Delegated session", exact: true }).first()).toBeVisible();
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        mkdirSync(artifactsDir("session-control"), { recursive: true });
+        await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-message.png") });
+      }
 
       // Exercise the native SDK question channel, through the same built MCP tool.
       expect((await act({ action: "message", text: "ask me which linter to use" })).isError).toBe(false);

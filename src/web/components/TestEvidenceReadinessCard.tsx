@@ -12,9 +12,8 @@ import { ConsoleCard, ConsoleState } from "./settings-console.tsx";
 // What the built-in Test Evidence Auditor's own telemetry says, as a card an operator can
 // read without running an agent.
 //
-// The scout report behind this (`docs/reports/test-evidence-auditor-rejections/report.html`)
-// ends in a rollout criterion - "if first-pass failures remain above 30%, add the readiness
-// gate", "at most 1.5 auditor attempts per run" - and the event that criterion is written in
+// The rollout criteria are "if first-pass failures remain above 30%, add the readiness
+// gate" and "at most 1.5 auditor attempts per run". The event those criteria are written in
 // was appended and never read. A number nobody can see is not a measurement; it is a row in
 // a table. This card is the reading, and it is deliberately the WHOLE reading rather than a
 // single headline percentage, because every one of those targets has a different denominator
@@ -28,7 +27,7 @@ import { ConsoleCard, ConsoleState } from "./settings-console.tsx";
 // Advisory only. It reads events; it re-runs nothing, re-judges nothing, and rewrites no
 // Persona verdict. Nothing an operator does here can change what a Persona decided.
 
-/** The report's own targets, restated where the numbers they judge are drawn. */
+/** Rollout targets, restated where the numbers they judge are drawn. */
 export const TEST_EVIDENCE_TARGETS = {
   /** At least this share of first semantic Auditor attempts accepted. */
   firstPassAcceptance: 0.7,

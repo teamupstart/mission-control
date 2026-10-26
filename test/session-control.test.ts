@@ -34,7 +34,7 @@ const cleanups: Array<() => void> = [];
 after(() => { for (const cleanup of cleanups) cleanup(); rmSync(home, { recursive: true, force: true }); });
 let serial = 0;
 
-function fixture(authorizeOverride?: import("../src/server/session-control-authorization.ts").AuthorizeSessionControl) {
+function fixture(authorizeOverride?: import("../src/server/session-control-authorization.ts").AuthorizeSessionControl, idleSettleMs = 60_000) {
   const registry = new Registry();
   cleanups.push(maintainScoutSessionCredentials(registry));
   const make = () => registry.registerSdkSession({ id: `sdk:control-${++serial}`, name: `Session ${serial}`, agent: "claude", cwd: home, agentSessionId: `native-${serial}` });
@@ -65,7 +65,7 @@ function fixture(authorizeOverride?: import("../src/server/session-control-autho
     },
   } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
   const reviews = new ReviewManager(registry);
-  const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000 });
+  const pending = new PendingTurnManager(registry, sdk, { idleSettleMs });
   pending.start(); cleanups.push(() => pending.stop());
   reviews.startContinuationRecovery((review, text) => pending.submitReviewContinuation(review.id, review.sessionId, text).ok);
   const queues = new QueueManager(registry);
@@ -315,6 +315,28 @@ test("review answers preserve delegation, ownership, structured choices and cont
   assert.equal((await f.act(command)).status, 409);
 });
 
+for (const [action, status] of [["approve", "approved"], ["reject", "rejected"], ["dismiss", "dismissed"]] as const) {
+  test(`delegated review ${action} persists ${status} with controller attribution outside human history`, async () => {
+    const f = fixture(); await f.grant(true);
+    const review = f.reviews.create(f.target.id, "plan", `Plan to ${action}`, "Review this proposed change");
+    const command: SessionControlAction = {
+      action: "resolve_review", reviewId: review.id,
+      resolution: { action, response: "Controller decision", selections: null, by: "human" },
+    };
+    assert.equal((await f.act(command)).status, 200);
+    const saved = loadConversationResolvedReviews(f.target.id).find(item => item.id === review.id)!;
+    assert.ok(saved, "the decision must survive in durable conversation history");
+    assert.equal(saved.status, status);
+    assert.equal(saved.resolvedBy, `session:${f.caller.id}`);
+    assert.equal(saved.response, action === "dismiss" ? null : "Controller decision");
+    assert.equal(typeof saved.resolvedAt, "number");
+    assert.equal(f.registry.getReview(review.id)?.status, status);
+    assert.equal(f.registry.getReview(review.id)?.resolvedBy, saved.resolvedBy);
+    assert.equal(loadHumanResolvedReviews(f.target.id).some(item => item.id === review.id), false);
+    assert.equal((await f.act(command)).status, 409, "the same decision cannot be replayed");
+  });
+}
+
 test("direct answer routes cannot claim delegated attribution, even with an enabled controller credential", async () => {
   const f = fixture();
   const review = f.reviews.create(f.target.id, "input", "Choose", "Choose a path");
@@ -547,6 +569,57 @@ test("pending delivery steers the selected text and refuses stale revisions or a
   for (let attempt = 0; attempt < 100 && listPendingTurns(f.target.agentSessionId!).length; attempt++) await delay(10);
   assert.deepEqual(f.messages, [{ id: f.target.id, text: row.text }]);
   assert.deepEqual(listPendingTurns(f.target.agentSessionId!), []);
+});
+
+test("delegated interrupt delivery waits for idle, starts the selected input and preserves other queued work", async (t) => {
+  const f = fixture(undefined, 0); await f.grant(true);
+  const key = f.target.agentSessionId!;
+  f.registry.applyDriverEvent(f.target.id, { kind: "state", state: "working", activity: null });
+  const later = f.pending.submit(f.target.id, "Keep this for a later turn").pendingTurn!;
+  const selected = f.pending.submit(f.target.id, "Interrupt and change course").pendingTurn!;
+  const calls: Array<{ action: string; id: string; text?: string }> = [];
+  let confirmIdle!: () => void;
+  const acknowledgement = new Promise<void>(resolve => { confirmIdle = resolve; });
+  t.after(() => { confirmIdle(); f.pending.stop(); });
+  t.mock.method(f.sdk, "interruptForDelivery", async (id: string, guard: () => string | null) => {
+    assert.equal(guard(), null);
+    assert.equal(f.registry.getSession(id)?.state, "working");
+    calls.push({ action: "interrupt", id });
+    await acknowledgement;
+    f.registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  });
+  t.mock.method(f.sdk, "sendWhenIdle", async (id: string, input: { text: string }, guard?: () => string | null) => {
+    assert.equal(guard?.(), null);
+    assert.equal(f.registry.getSession(id)?.state, "idle");
+    calls.push({ action: "sendWhenIdle", id, text: input.text });
+    f.messages.push({ id, text: input.text });
+    f.registry.applyDriverEvent(id, { kind: "state", state: "working", activity: null });
+    return "started" as const;
+  });
+  const command: SessionControlAction = {
+    action: "pending_deliver", turnId: selected.id, revision: selected.revision, delivery: "interrupt",
+  };
+  assert.equal((await f.act(command)).status, 200);
+  for (let attempt = 0; attempt < 100 && calls.length === 0; attempt++) await delay(10);
+  assert.deepEqual(calls, [{ action: "interrupt", id: f.target.id }]);
+  assert.equal(f.registry.getSession(f.target.id)?.state, "working");
+  assert.equal(f.messages.length, 0, "input must wait for confirmed interruption and idle");
+  const claimed = listPendingTurns(key).find(row => row.id === selected.id)!;
+  assert.equal(claimed.deliveryMode, "interrupt-after-wait");
+  assert.equal(claimed.state, "sending");
+  assert.equal(typeof claimed.interruptAttemptedAt, "number");
+  confirmIdle();
+  for (let attempt = 0; attempt < 100 && listPendingTurns(key).some(row => row.id === selected.id); attempt++) await delay(10);
+  assert.deepEqual(calls, [
+    { action: "interrupt", id: f.target.id },
+    { action: "sendWhenIdle", id: f.target.id, text: selected.text },
+  ]);
+  assert.deepEqual(f.messages, [{ id: f.target.id, text: selected.text }]);
+  assert.equal(f.registry.getSession(f.target.id)?.state, "working");
+  assert.deepEqual(listPendingTurns(key), [later]);
+  assert.deepEqual(f.registry.getSession(f.target.id)?.pendingTurns, [later]);
+  assert.equal((await f.act(command)).status, 409);
+  assert.equal(calls.length, 2, "a stale delivery cannot interrupt or send again");
 });
 
 test("pending retry and resolution reconcile uncertain delivery with ownership, state and revision guards", async () => {

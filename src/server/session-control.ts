@@ -86,9 +86,10 @@ export function registerSessionControlRoutes(
     if (!requestId) return c.json({ error: SESSION_CONTROL_DESKTOP_REQUIRED }, 403);
     // Hold the identity across the asynchronous private-channel check. A click for the
     // old conversation must not enable a replacement that appeared while it was in flight.
+    // Revocation only removes authority, so an identity change must not block it.
     const before = registry.sessionControlIdentity(sessionId);
     if (!await authorize({ sessionId, enabled, requestId })) return c.json({ error: SESSION_CONTROL_DESKTOP_REQUIRED }, 403);
-    if (registry.sessionControlIdentity(sessionId) !== before || !registry.setSessionControlEnabled(sessionId, enabled)) {
+    if ((enabled && registry.sessionControlIdentity(sessionId) !== before) || !registry.setSessionControlEnabled(sessionId, enabled)) {
       return c.json({ error: "Session control requires a live, registered conversation" }, 409);
     }
     logEvent(c.req.param("id"), Date.now(), "session_control_grant", { enabled: parsed.data.enabled });
@@ -101,11 +102,13 @@ export function registerSessionControlRoutes(
     if (!parsed.ok) return parsed.res;
     const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
-    const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping");
-    if (!parsed.data.sessionId) return c.json({ sessions: sessions.map((s) => ({ id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity })) });
-    const session = sessions.find((s) => s.id === parsed.data.sessionId);
-    if (!session) return c.json({ error: "No such other live session" }, 404);
-    const reviews = registry.snapshot().reviews.filter((r) => r.sessionId === session.id && r.status === "pending");
+    if (!parsed.data.sessionId) {
+      const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping");
+      return c.json({ sessions: sessions.map((s) => ({ id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity })) });
+    }
+    const session = registry.getSession(parsed.data.sessionId);
+    if (!session || session.id === caller || session.state === "exited" || session.state === "stopping") return c.json({ error: "No such other live session" }, 404);
+    const reviews = registry.pendingReviews(session.id);
     let transcript: unknown;
     if (parsed.data.transcript) {
       const result = await app.request(`http://localhost/api/sessions/${encodeURIComponent(session.id)}/transcript?turns=20`, { headers: { host: "localhost" } });

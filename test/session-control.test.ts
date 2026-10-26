@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import type { SessionControlAction } from "../src/shared/protocol.ts";
+import { SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
 import type { SessionRequestAnswer } from "../src/server/harness/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -125,6 +125,36 @@ test("a conversation replaced while desktop authorization is pending cannot inhe
   assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
 });
 
+test("an authenticated revoke still succeeds when the task changes during authorization", async () => {
+  let confirm!: (value: boolean) => void;
+  const f = fixture(({ enabled }) => enabled ? Promise.resolve(true) : new Promise((resolve) => { confirm = resolve; }));
+  assert.equal((await f.grant(true)).status, 200);
+  const before = f.registry.sessionControlIdentity(f.caller.id);
+  const revoking = f.grant(false);
+  while (!confirm) await delay(1);
+  const task = mkTask({ id: `revoke-race-${serial}`, sessionId: f.caller.id, status: "running", repoRoot: home, worktreePath: home });
+  f.registry.upsertTask(task);
+  assert.notEqual(f.registry.sessionControlIdentity(f.caller.id), before);
+  confirm(true);
+  assert.equal((await revoking).status, 200);
+  f.registry.removeTask(task.id);
+  assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
+  assert.equal(f.registry.getSession(f.caller.id)?.sessionControlEnabled, false);
+  assert.equal((await f.act({ action: "interrupt" })).status, 403);
+});
+
+test("authenticated revokes still refuse a session that stops during authorization", async () => {
+  let confirm!: (value: boolean) => void;
+  const f = fixture(({ enabled }) => enabled ? Promise.resolve(true) : new Promise((resolve) => { confirm = resolve; }));
+  await f.grant(true);
+  const revoking = f.grant(false);
+  while (!confirm) await delay(1);
+  f.registry.markSessionStopping(f.caller.id);
+  confirm(true);
+  assert.equal((await revoking).status, 409);
+  assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
+});
+
 test("control is off for every session, cannot be self-granted, and revocation is immediate", async () => {
   const f = fixture();
   assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
@@ -228,6 +258,19 @@ test("reads expose target state and pending reviews; unknown, self, stopping and
   const filtered = await f.request("/mcp/session-control/read", {});
   assert.equal(filtered.status, 200);
   assert.deepEqual(await filtered.json(), { sessions: [] });
+});
+
+test("target detail reads avoid building a full registry snapshot", async (t) => {
+  const f = fixture(); await f.grant(true);
+  const review = f.reviews.create(f.target.id, "input", "Choose", "Which option?");
+  f.reviews.create(f.other.id, "input", "Other", "Not this target");
+  const snapshot = t.mock.method(f.registry, "snapshot");
+  const response = await f.request("/mcp/session-control/read", { sessionId: f.target.id });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.session.id, f.target.id);
+  assert.deepEqual(body.reviews.map((item: { id: string }) => item.id), [review.id]);
+  assert.equal(snapshot.mock.callCount(), 0);
 });
 
 test("optional transcript reads return the target's opening turns and bounded recent conversation", async () => {
@@ -394,6 +437,42 @@ test("delegated option selection requires the read prompt id even when a newer p
   assert.equal(f.registry.getSession(f.target.id)?.paneDialog?.requestId, newId);
   assert.equal((await f.act({ action: "select_option", requestId: newId, number: 1, label: "Yes" })).status, 200);
   assert.deepEqual(f.answers, [{ id: f.target.id, requestId: newId, answer: { kind: "option", number: 1, label: "Yes" } }]);
+});
+
+test("delegated SDK form answers require the current request id even for identical replacement questions", async () => {
+  const f = fixture(); await f.grant(true);
+  const oldId = `old-form-${serial}`;
+  const newId = `new-form-${serial}`;
+  const ask = (id: string) => f.registry.applyDriverEvent(f.target.id, { kind: "request", request: {
+    id, kind: "question", prompt: "Which linter?", options: [],
+    questions: [{ question: "Which linter?", options: [{ number: 1, label: "biome" }] }],
+  } });
+  const answers = [{ question: "Which linter?", labels: ["biome"] }];
+  ask(oldId);
+  const read = await f.request("/mcp/session-control/read", { sessionId: f.target.id });
+  assert.equal((await read.json()).session.paneDialog.requestId, oldId);
+  f.registry.applyDriverEvent(f.target.id, { kind: "request_resolved", requestId: oldId });
+  ask(newId);
+  for (const requestId of [undefined, "", oldId]) {
+    const response = await f.request("/mcp/session-control/act", {
+      sessionId: f.target.id, command: { action: "submit_options", form: { requestId, answers } },
+    });
+    assert.equal(response.status, requestId === oldId ? 409 : 400);
+    assert.equal(f.answers.length, 0);
+    assert.equal(f.registry.getSession(f.target.id)?.paneDialog?.requestId, newId);
+  }
+  assert.equal((await f.act({ action: "submit_options", form: { requestId: newId, answers, by: "human" } })).status, 200);
+  assert.deepEqual(f.answers, [{ id: f.target.id, requestId: newId, answer: { kind: "form", answers } }]);
+  assert.equal(loadConversationResolvedReviews(f.target.id)[0]?.resolvedBy, `session:${f.caller.id}`);
+  assert.equal((await f.act({ action: "submit_options", form: { requestId: newId, answers, by: "human" } })).status, 409);
+  assert.equal(f.answers.length, 1);
+});
+
+test("delegated pane form rows remain valid without an SDK request id", () => {
+  const parsed = SessionControlActionSchema.parse({
+    action: "submit_options", form: { options: [{ number: 1, label: "biome", checked: true }] },
+  });
+  assert.deepEqual(parsed, { action: "submit_options", form: { options: [{ number: 1, label: "biome", checked: true }], by: "human" } });
 });
 
 test("pending delivery steers the selected text and refuses stale revisions or a covering prompt", async () => {

@@ -8027,7 +8027,10 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("message"), text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH) }).strict(),
   z.object({ action: z.literal("interrupt") }).strict(),
   z.object({ action: z.literal("select_option"), requestId: z.string().min(1), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
-  z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema }).strict(),
+  z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema.refine(
+    (form) => !form.answers || Boolean(form.requestId),
+    { message: "delegated SDK form answers require the current requestId", path: ["requestId"] },
+  ) }).strict(),
   z.object({ action: z.literal("resolve_review"), reviewId: ControlIdSchema, resolution: ResolveReviewSchema }).strict(),
   z.object({ action: z.literal("pending_deliver"), turnId: ControlIdSchema, revision: z.number().int().min(0), delivery: z.enum(["steer", "interrupt"]) }).strict(),
   z.object({ action: z.literal("pending_recall"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),

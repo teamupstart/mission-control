@@ -369,6 +369,7 @@ test("compact session menus share one row and support keyboard view selection", 
   await expect(view).toBeFocused();
   await view.click();
   await expect(viewMenu.getByRole("menuitemradio", { name: "Terminal" })).toBeChecked();
+  await expect(viewMenu.getByRole("menuitemradio", { name: "Terminal" })).toBeFocused();
   await dashboard.keyboard.press("Home");
   await dashboard.keyboard.press("Enter");
   await expect(view).toHaveAttribute("aria-label", "Conversation view: Chat");
@@ -413,5 +414,46 @@ test("a session menu opens above a trigger in the lower half of the viewport", a
     await dashboard.mouse.move(0, 0);
     await dashboard.screenshot({ path: `${EVIDENCE}06-lower-screen-menu.png` });
     console.log("CAPTURED e2e/.artifacts/console-tabs-toolbar/06-lower-screen-menu.png");
+  }
+});
+
+test("a tall session menu scrolls within the space above or below its trigger", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "tall session menu");
+  const detail = await openConsoleDetail(dashboard, daemon, /Tall Session Menu/i);
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
+  // Larger user text makes the explanatory copy wrap. Keep the real toolbar geometry
+  // and menu content so this exercises available space, not a mocked menu rectangle.
+  await dashboard.addStyleTag({ content: ".session-toolbar-note { font-size: 18px; line-height: 1.6; }" });
+  const control = detail.getByRole("button", { name: "Session control: Off" });
+  const menu = dashboard.getByRole("menu", { name: "Control other sessions" });
+  for (const height of [440, 540]) {
+    const viewport = { width: 1280, height };
+    await dashboard.setViewportSize(viewport);
+    await control.click();
+    await expect(menu).toBeVisible();
+    const trigger = (await control.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    if (height === 440) {
+      expect(trigger.y).toBeGreaterThan(height / 2);
+      expect(box.y + box.height).toBeLessThan(trigger.y);
+    } else {
+      expect(trigger.y).toBeLessThan(height / 2);
+      expect(box.y).toBeGreaterThan(trigger.y + trigger.height);
+    }
+    expect(box.y).toBeGreaterThanOrEqual(8);
+    expect(box.y + box.height).toBeLessThanOrEqual(height - 8);
+    expect(await menu.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await menu.locator(".session-toolbar-foot").scrollIntoViewIfNeeded();
+    await expect(menu.locator(".session-toolbar-foot")).toBeInViewport();
+    console.log(`TALL_SESSION_MENU ${JSON.stringify({ viewport, trigger, menu: box })}`);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      mkdirSync(EVIDENCE, { recursive: true });
+      await menu.evaluate(el => { el.scrollTop = 0; });
+      await menu.focus();
+      await dashboard.mouse.move(0, 0);
+      await dashboard.screenshot({ path: `${EVIDENCE}07-tall-menu-${height}.png` });
+    }
+    await dashboard.keyboard.press("Escape");
+    await expect(control).toBeFocused();
   }
 });

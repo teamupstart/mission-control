@@ -19,7 +19,7 @@ export function SessionToolbarMenu({ label, title, icon, className = "", childre
   children: (close: () => void) => React.ReactNode;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{ left: number; top?: number; bottom?: number }>({ left: 0, top: 0 });
+  const [anchor, setAnchor] = useState<{ left: number; top?: number; bottom?: number; maxHeight?: number }>({ left: 0, top: 0 });
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const close = () => { setOpen(false); button.current?.focus(); };
@@ -31,9 +31,10 @@ export function SessionToolbarMenu({ label, title, icon, className = "", childre
       if (!rect) return;
       const width = Math.min(272, window.innerWidth - 16);
       const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+      // Keep the 6px trigger gap and 8px viewport inset even when content must scroll.
       setAnchor(rect.top > window.innerHeight / 2
-        ? { left, bottom: window.innerHeight - rect.top + 6 }
-        : { left, top: rect.bottom + 6 });
+        ? { left, bottom: window.innerHeight - rect.top + 6, maxHeight: Math.max(0, rect.top - 14) }
+        : { left, top: rect.bottom + 6, maxHeight: Math.max(0, window.innerHeight - rect.bottom - 14) });
     };
     place();
     // Position the portal before focus opens a row's tooltip at its measured coordinates.

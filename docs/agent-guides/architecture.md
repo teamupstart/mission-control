@@ -218,7 +218,8 @@ The Registry owns the transient per-controller grant and its session projection.
 The desktop preload arms a single-use authorization from a trusted menu selection. Main
 consumes it over the private utility-process channel; HTTP supplies only the request id,
 session id and setting, never the authorization. The daemon rechecks the same Registry
-identity used by the grant after the asynchronous check. Standalone daemons fail closed.
+identity used by the grant after the asynchronous check before enabling control. Standalone
+daemons fail closed.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control
@@ -229,7 +230,9 @@ human-only meaning.
 The verified controller is associated with the exact internal `Request` through a private
 WeakMap in `session-control.ts`, removed when dispatch finishes. Answer handlers read that
 association separately from their public human/Foreman schemas, so concurrent direct requests
-cannot inherit delegated attribution. Delegated single-option commands require a prompt id.
+cannot inherit delegated attribution. Delegated single-option commands and SDK form answers
+require the current prompt id. Pane form rows retain their existing request-id compatibility. Authenticated revocation
+still removes the grant if the live session identity changes while authorization is pending.
 
 ```mermaid
 flowchart LR

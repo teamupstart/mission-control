@@ -59,12 +59,12 @@ test("standalone browser and headerless local HTTP cannot grant session control"
   const controller = await dispatch(daemon, "Browser controller");
   await dashboard.reload();
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: "Browser controller" }).click();
-  const toggle = dashboard.getByRole("checkbox", { name: "Control other sessions" });
+  const controlButton = dashboard.getByRole("button", { name: "Session control" });
+  await controlButton.click();
+  const toggle = dashboard.getByRole("menuitemradio", { name: "On", exact: true });
   await expect(toggle).not.toBeChecked();
   await expect(toggle).toBeDisabled();
-  await expect(dashboard.locator(".session-control-setting p").filter({ hasText: "Open the desktop app to change session control." })).toBeVisible();
-  await toggle.locator("..").hover();
-  await expect(dashboard.locator(".tooltip")).toHaveText("Open the desktop app to change session control. Resets when this conversation changes or Mission Control restarts.");
+  await expect(dashboard.getByRole("menu", { name: "Control other sessions" })).toContainText("Open the desktop app to change session control.");
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(artifactsDir("session-control"), { recursive: true });
     await dashboard.screenshot({ path: join(artifactsDir("session-control"), "browser-control-tooltip.png") });
@@ -108,14 +108,15 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await dashboard.reload();
       const rail = dashboard.getByRole("navigation", { name: "Sessions" });
       await rail.locator("button.rail-row").filter({ hasText: "Controller" }).click();
-      const toggle = dashboard.getByRole("checkbox", { name: "Control other sessions" });
+      const controlButton = dashboard.getByRole("button", { name: "Session control" });
+      await controlButton.click();
+      const toggle = dashboard.getByRole("menuitemradio", { name: "On", exact: true });
       await expect(toggle).not.toBeChecked();
-      await toggle.locator("..").hover();
-      await expect(dashboard.locator(".tooltip")).toHaveText("Allow this session to message and steer other live sessions on your behalf. Resets when this conversation changes or Mission Control restarts.");
+      await expect(dashboard.getByRole("menu", { name: "Control other sessions" })).toContainText("Resets when this conversation changes or Mission Control restarts.");
       expect((await client.callTool({ name: "read_sessions", arguments: {} })).isError).toBe(true);
-      await toggle.evaluate((input: HTMLInputElement) => input.click());
+      await toggle.evaluate((input: HTMLButtonElement) => input.click());
       await expect(toggle).not.toBeChecked();
-      await expect(dashboard.getByRole("alert").filter({ hasText: "Use the session control checkbox" })).toBeVisible();
+      await expect(dashboard.getByRole("alert").filter({ hasText: "Use the session control menu" })).toBeVisible();
       expect(await dashboard.evaluate((sessionId) => {
         const bridge = window.missionDesktop!;
         return [bridge.claimSessionControlAuthorization?.(), bridge.authorizeSessionControl?.("forged", { sessionId, enabled: true, requestId: crypto.randomUUID() })];
@@ -140,12 +141,15 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await expect.poll(async () => (await api(daemon, "/api/sessions") as Session[]).find((s) => s.id === controller.id)?.sessionControlEnabled).toBe(true);
       await dashboard.reload();
       await rail.locator("button.rail-row").filter({ hasText: "Controller" }).click();
+      await controlButton.click();
       await expect(toggle).toBeChecked();
       const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
       await tabs.getByRole("tab", { name: /Diff$/ }).click();
       await expect(toggle).toHaveCount(0);
       await tabs.getByRole("tab", { name: /Conversation$/ }).click();
+      await controlButton.click();
       await expect(toggle).toBeChecked();
+      await dashboard.keyboard.press("Escape");
 
       const act = (command: unknown) => client.callTool({ name: "control_session", arguments: { sessionId: target.id, command } });
       const list = await client.callTool({ name: "read_sessions", arguments: {} });
@@ -153,7 +157,7 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       expect(JSON.stringify(list)).toContain(target.id);
       expect((await act({ action: "message", text: "A delegated follow-up about CSS" })).isError).toBe(false);
       await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
-      await expect(toggle).not.toBeChecked();
+      await expect(controlButton).toHaveAttribute("aria-label", "Session control: Off");
       await expect(dashboard.getByText("A delegated follow-up about CSS", { exact: true }).first()).toBeVisible();
       await expect(dashboard.getByRole("article", { name: "Delegated session", exact: true }).first()).toBeVisible();
 
@@ -188,9 +192,14 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
         await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-answers.png") });
       }
       await rail.locator("button.rail-row").filter({ hasText: "Controller" }).click();
+      await controlButton.click();
       await expect(toggle).toBeChecked();
-      if (process.env.MC_E2E_EVIDENCE === "1") await dashboard.screenshot({ path: join(artifactsDir("session-control"), "controller-enabled.png") });
-      await toggle.click();
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        await dashboard.getByRole("menu", { name: "Control other sessions" }).focus();
+        await dashboard.mouse.move(0, 0);
+        await dashboard.screenshot({ path: join(artifactsDir("session-control"), "controller-enabled.png") });
+      }
+      await dashboard.getByRole("menuitemradio", { name: "Off", exact: true }).click();
       await expect(toggle).not.toBeChecked();
       expect((await act({ action: "message", text: "must be refused after revocation" })).isError).toBe(true);
       expect((await client.callTool({ name: "read_sessions", arguments: {} })).isError).toBe(true);
@@ -205,6 +214,7 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       }).toBe(restartedPid);
       await dashboard.reload();
       await rail.locator("button.rail-row").filter({ hasText: "Controller" }).click();
+      await controlButton.click();
       await expect(toggle).not.toBeChecked();
       expect((await client.callTool({ name: "read_sessions", arguments: {} })).isError).toBe(true);
     } finally { await client.close(); }

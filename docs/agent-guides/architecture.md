@@ -215,7 +215,7 @@ TaskManager retains completion and eviction ownership. Foreman and MCP never wri
 ## Delegated session control
 
 The Registry owns the transient per-controller grant and its session projection.
-The desktop preload arms a single-use authorization from a trusted checkbox click. Main
+The desktop preload arms a single-use authorization from a trusted menu selection. Main
 consumes it over the private utility-process channel; HTTP supplies only the request id,
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check. Standalone daemons fail closed.
@@ -233,7 +233,7 @@ cannot inherit delegated attribution. Delegated single-option commands require a
 
 ```mermaid
 flowchart LR
-  Operator[Trusted desktop checkbox click] --> Shell[Private preload and Electron shell]
+  Operator[Trusted desktop menu selection] --> Shell[Private preload and Electron shell]
   Shell -->|Single-use private reply| Auth[Daemon authorization and identity check]
   Auth --> Registry[Registry grant]
   Agent[Controller MCP tools] --> Gate[Live credential and grant check]

@@ -117,7 +117,7 @@ test("context actions work by pointer and keyboard without leaking keys to the d
 
   // The host drops a selection that does not intersect the keyboard target, so an otherwise
   // actionless focused control cannot open a menu for text somewhere else in the document.
-  const terminalView = card.getByRole("button", { name: "Terminal view" });
+  const terminalView = card.getByRole("button", { name: "Conversation view" });
   await terminalView.focus();
   await pointForText(turn, SELECTED, true);
   await dashboard.keyboard.press("Shift+F10");

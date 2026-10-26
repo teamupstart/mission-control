@@ -88,7 +88,7 @@ test("the console detail hosts the strip in its tab row and the panel draws none
   const tabs = html.slice(html.indexOf('class="detail-tabs"'));
   const row = tabs.slice(0, tabs.indexOf('class="detail-body"'));
   assert.match(row, /conv-launch in-toolbar/, "the launcher strip is not in the tab row");
-  assert.match(row, /Terminal view/, "the rendering toggle is not in the tab row");
+  assert.match(row, /Conversation view/, "the rendering toggle is not in the tab row");
   assert.match(row, /foreman-rail/, "Foreman left the tab row");
 
   // And the conversation pane draws no second one. `.detail-conv` is where the band used to
@@ -236,7 +236,7 @@ test("a shed label goes visually hidden, never display:none", () => {
   // And the known sheds are present, so this cannot pass by the ladder having quietly stopped
   // collapsing anything.
   const shed = [...LADDER.values()].flat().filter(([s]) => LABELS.test(s));
-  assert.ok(shed.length >= 3, `only ${shed.length} label rules left in the ladder`);
+  assert.ok(shed.length >= 2, `only ${shed.length} label rules left in the ladder`);
 });
 
 test("no rung ever sheds a tab, its word, or its pip", () => {

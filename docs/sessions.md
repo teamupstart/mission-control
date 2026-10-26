@@ -1331,8 +1331,8 @@ no exit code and no duration for any of them. Where it shows an elapsed time, th
 span between the run's first and last recorded turn, and its tooltip says so.
 
 **Settings → Display → Conversation** chooses the default for every session. Any single
-conversation can be flipped on its own with the **Terminal view** button in the detail's
-tab strip in Console and Board, where it appears only while the
+conversation can choose **Chat** or **Terminal** from the **Conversation view** icon menu
+in the detail's tab strip in Console and Board, where it appears only while the
 Conversation tab is the one you are reading. It
 wins over that default for that session until you close the tab - so one agent can be
 read as a chat log while the rest stay in the terminal stream. Nothing about the
@@ -1935,15 +1935,17 @@ rollouts do not currently expose every separately billed hosted-tool fee.
 
 ### Let a session steer other sessions
 
-In the Mission Control desktop app, open a session's Conversation tab and enable **Control other sessions** to let that session act on
-your behalf across the other live sessions. The checkbox always starts off. It grants the
-controller permission, so targets do not need their own checkbox enabled. You can revoke it
+In the Mission Control desktop app, open a session's Conversation tab and open the **Session control** icon menu,
+to the left of the chat/terminal view menu. Choose **On** under **Control other sessions**
+to let that session act on your behalf across the other live sessions. It always starts off.
+The grant belongs to the controller, so targets do not need their own control enabled. You can revoke it
 at any time; subsequent reads and actions refuse immediately. An action already accepted
 may finish. The grant lasts only for the current conversation, task and work episode in this
 daemon run. A reset, replacement conversation, different task, session removal or Mission
 Control restart requires another explicit opt-in. There is no global, dispatch or task default.
 
-Changing the checkbox requires a real desktop click. Browser dashboards show it disabled.
+Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
+The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
 The desktop app must own its daemon: if it reused a standalone daemon, stop that daemon and
 reopen the app. Local HTTP requests cannot grant control, even with agent credentials or
 forged browser headers.

@@ -757,11 +757,11 @@ available:
   **Conversation tab is the transcript and its reply box, and nothing else**: the workflow
   ladder lives in **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this
   run going* while Conversation answers *what was said*. The controls for getting *at* this
-  session - **Terminal view** and the two launchers - sit in the **tab strip** rather than
+  session - the **Session control** and **Conversation view** icon menus and the two launchers - sit in the **tab strip** rather than
   in a band above the transcript, since that row already runs the full width and its job is
   adjacent: the launchers choose *how* you view a session exactly as the tabs choose *what*.
-  On a narrow pane that row gives way in order - the tabs' chord hints, then the toggle's
-  word, then the launchers' words and chord hints, then Foreman's word - so it stays one
+  On a narrow pane that row gives way in order - the tabs' chord hints, then the menu
+  spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a tile. In Console and Board, the
@@ -1113,7 +1113,7 @@ flight when you move on, or publish a second file, never replaces another file's
 The Conversation is drawn as a **terminal stream** by default - prompt lines in, stdout out,
 tool runs folded into one record, inside a frame with a live status line. It can instead be
 drawn as a **chat log**. **Settings → Display → Conversation** sets the default for
-every session, per machine; the **Terminal view** button flips that one session for as long
+every session, per machine; the **Conversation view** icon menu changes that one session for as long
 as the tab is open - in the strip above the conversation on a card, and in the detail's tab
 strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the

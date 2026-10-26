@@ -5,7 +5,7 @@
  * is how many rungs it has and why it needs them at all.
  *
  * The strip used to be five tabs and Foreman, with dead space after "Files". It now also
- * hosts the conversation's toolbar - the Terminal-view toggle and the two launchers - which
+ * hosts the conversation's toolbar - the control/view menus and the two launchers - which
  * moved here so the worktree band above the transcript could stop existing and give its
  * height back to the conversation (`docs/plans/console-header-density/plan.md`). Measured in
  * the design mockup at an 848px pane, that made the row overflow by 101px.
@@ -29,9 +29,8 @@
  *
  *   1. The tabs give up their KEYCAPS. A keycap is a hint about a chord that works at every
  *      width, not a control's name.
- *   2. The Terminal-view toggle drops to its glyph. It is the one control in the run that
- *      acts on the pane you are already looking at, and its state is carried by
- *      `aria-pressed`, its accent and its override dot rather than by the word.
+ *   2. The icon menus tighten their padding and the toolbar gaps shrink. Both menus
+ *      retain their icons, carets and accessible names at every width.
  *   3. The two launchers drop to their glyphs, giving up their keycaps and carets with the
  *      word - a keycap floating beside a bare glyph reads as a second glyph. The chords
  *      still work and the tooltips still name what each button opens.

@@ -361,7 +361,7 @@ test("a task's pull requests keep the band even with both cells hidden", async (
 test("the collapsed band leaves nothing behind in its place", async () => {
   // Nothing structural hung off `.detail-sub`: both neighbours own their own bottom rule, so
   // its absence must leave no spacer, no empty wrapper and no compensating element.
-  // Preserve every other sibling, including the session-control setting before the band.
+  // Preserve every other sibling, including the toolbar controls.
   const session = silentTaskSession();
   const withBand = render(session);
   const existingBand = band(withBand);

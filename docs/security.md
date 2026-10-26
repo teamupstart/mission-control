@@ -157,7 +157,7 @@ routes retain their human/Foreman grammar. Delegated single-option selections re
 request id returned by the target read, so an identical option on a replacement prompt does
 not accept a stale answer. Message routes likewise reject a caller-supplied `origin: "session"`;
 only the verified internal request receives the delegated message label.
-Changing the grant requires a trusted click on the desktop dashboard's checkbox. A private
+Changing the grant requires a trusted click on the desktop dashboard's session-control menu. A private
 preload capability arms the exact session id, desired setting and one-use request id in the
 Electron shell. The daemon consumes that authorization over its private utility-process
 channel and rechecks the conversation identity before applying it. Authorizations expire
@@ -166,7 +166,7 @@ the shared machine token and signed agent credentials cannot create a grant.
 
 The standalone browser dashboard cannot change this setting. A desktop app that adopted
 an independently launched daemon also refuses changes, because it has no private channel
-to that daemon. Stop the standalone daemon and reopen the app to use the checkbox.
+to that daemon. Stop the standalone daemon and reopen the app to use the menu.
 
 This is an authorization boundary for Mission Control tools within the existing single-user
 local trust model. It is not a sandbox against arbitrary shell code running as the operator,

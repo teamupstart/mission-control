@@ -132,14 +132,14 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "electron": "^43.5.0",
+    "electron": "^43.8.1",
     "electron-builder": "^26.15.3",
     "electronmon": "^2.0.4",
     "node-gyp": "^12.4.0",
     "oxlint": "^1.76.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.4.4"
   },
   "overrides": {
     "@anthropic-ai/claude-agent-sdk": {
@@ -148,6 +148,9 @@
     "next": "^16.3.0",
     "concurrently": {
       "shell-quote": "^1.11.0"
+    },
+    "@earendil-works/pi-coding-agent": {
+      "undici": "^8.12.2"
     }
   },
   "electronmon": {

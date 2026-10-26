@@ -1953,8 +1953,9 @@ forged browser headers.
 The session uses two Mission Control tools:
 
 - `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
-  pending review prompts, native approval/question dialog, outbox and work queue. Set
-  `transcript: true` to include a bounded recent conversation window.
+  pending review prompts, native approval/question dialog, outbox and work queue. The top-level
+  `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
+  when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
 - `control_session` takes that target's `sessionId` and a typed `command`. It supports
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
+import type { SessionQueue } from "../src/shared/types.ts";
 import type { SessionRequestAnswer } from "../src/server/harness/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -389,6 +390,54 @@ test("work queue operations preserve item ownership and edit revisions", async (
   assert.equal(f.registry.getQueueItem(item.id)?.intent, "Revised intent");
   assert.equal((await f.act({ action: "queue_remove", itemId: item.id })).status, 200);
   assert.equal(f.registry.getQueueItem(item.id), undefined);
+});
+
+test("target reads expose only that session's full queue for subsequent delegated actions", async () => {
+  const f = fixture();
+  const read = () => f.request("/mcp/session-control/read", { sessionId: f.target.id });
+  assert.equal((await read()).status, 403);
+  await f.grant(true);
+  assert.equal((await (await read()).json()).queue, null);
+
+  // Seed existing work through the operator route. The controller learns item identities
+  // and revisions from its read response, not from creating the work itself.
+  for (const [id, intent] of [[f.target.id, "First operator item"], [f.target.id, "Second operator item"], [f.other.id, "Other session's item"]]) {
+    assert.equal((await f.request(`/api/sessions/${id}/queue`, { intent }, f.headers)).status, 200);
+  }
+  const readQueue = async (): Promise<SessionQueue> => {
+    const response = await read();
+    assert.equal(response.status, 200);
+    return (await response.json()).queue;
+  };
+  const queue = await readQueue();
+  assert.deepEqual(queue, f.registry.getQueue(f.target.id));
+  assert.deepEqual(queue.items.map(item => item.intent), ["First operator item", "Second operator item"]);
+  const [first, second] = queue.items;
+  assert.equal((await f.act({ action: "queue_edit", itemId: first!.id, intent: "Revised operator item", revision: first!.revision })).status, 200);
+  const edited = (await readQueue()).items[0]!;
+  assert.equal(edited.intent, "Revised operator item");
+  assert.ok(edited.revision > first!.revision);
+  assert.equal((await f.act({ action: "queue_edit", itemId: first!.id, intent: "Stale edit", revision: first!.revision })).status, 409);
+
+  // A proposed payload is produced by Foreman; expose it for the controller to inspect
+  // before choosing to approve the existing item.
+  f.registry.putQueueItem({ ...edited, state: "proposed", proposedPayload: "Exact proposed instruction" });
+  const proposed = (await readQueue()).items[0]!;
+  assert.equal(proposed.state, "proposed");
+  assert.equal(proposed.proposedPayload, "Exact proposed instruction");
+  assert.equal((await f.act({ action: "queue_approve", itemId: proposed.id })).status, 200);
+  assert.equal(typeof (await readQueue()).items[0]!.approvedAt, "number");
+  assert.equal((await f.act({ action: "queue_reorder", ids: [second!.id, proposed.id] })).status, 200);
+  const reordered = await readQueue();
+  assert.deepEqual(reordered.items.map(item => item.id), [second!.id, proposed.id]);
+  assert.equal((await f.act({ action: "queue_remove", itemId: reordered.items[0]!.id })).status, 200);
+  assert.deepEqual((await readQueue()).items.map(item => item.id), [proposed.id]);
+  assert.deepEqual(f.registry.getQueue(f.other.id)?.items.map(item => item.intent), ["Other session's item"]);
+
+  await f.grant(false);
+  const denied = await read();
+  assert.equal(denied.status, 403);
+  assert.equal(Object.hasOwn(await denied.json(), "queue"), false);
 });
 
 test("single-option answers reach the target driver and refuse stale requests or mismatched labels", async () => {

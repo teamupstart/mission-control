@@ -115,7 +115,7 @@ export function registerSessionControlRoutes(
       transcript = await result.json();
       if (!sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER))) return c.json({ error: "Session control was revoked" }, 403);
     }
-    return c.json({ session, reviews, ...(transcript === undefined ? {} : { transcript }) });
+    return c.json({ session, reviews, queue: registry.getQueue(session.id), ...(transcript === undefined ? {} : { transcript }) });
   });
 
   app.post("/mcp/session-control/act", async (c) => {

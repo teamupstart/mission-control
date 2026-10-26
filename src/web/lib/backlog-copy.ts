@@ -231,6 +231,27 @@ export function plannerFacts({
 }
 
 /**
+ * Whether an armed autopilot can launch anything at all, and if not, which half of the gate
+ * is shut.
+ *
+ * `not-live` is the worker's own short-circuit (`cfg.enabled && mode === "live"`,
+ * `worker.ts`). `untrusted` is the other half: Foreman ships Live, but its repository
+ * allowlist ships empty, and an unattended launch needs a granted repository. An empty
+ * allowlist therefore launches nothing anywhere, which is a fresh install's state - and a
+ * footer that read "takes the top row on its own" there would be promising work no machine
+ * is going to do. A non-empty allowlist that misses one task's repository is that task's
+ * own explanation (`backlogTrustHold`), not the queue's.
+ */
+export type AutopilotGate = "launches" | "not-live" | "untrusted";
+
+export function autopilotGate(
+  config: { enabled: boolean; mode: ForemanStatus["mode"]; repoAllowlist: readonly string[] } | null,
+): AutopilotGate {
+  if (!config || !config.enabled || config.mode !== "live") return "not-live";
+  return config.repoAllowlist.length === 0 ? "untrusted" : "launches";
+}
+
+/**
  * The autopilot's own state, as the drawer's footer says it.
  *
  * Three facts and no more: is it armed, how much of the agent budget is spent, and what
@@ -240,27 +261,28 @@ export function plannerFacts({
  * drawer's own vocabulary ("parked", where the status object says "disabled"). One fact
  * printed twice in two dialects is how a panel teaches people to stop reading it.
  *
- * `launches` is the gate the machine actually applies (`cfg.enabled && mode === "live"`,
- * `worker.ts`). An armed autopilot behind either half of that gate takes nothing, so a
- * footer that read a plain "on" would be the one sentence sending somebody to hunt for
- * why nothing is being picked up. The wording names the gate rather than which half of it
- * is shut, because the fix is the same and it is one click away in the same panel family.
+ * `gate` is `autopilotGate` above. An armed autopilot behind a shut gate takes nothing, so a
+ * footer that read a plain "on" would be the one sentence sending somebody to hunt for why
+ * nothing is being picked up. Each shut gate names its own fix, because the two are granted
+ * on different screens.
  */
 export function autopilotReadout({
   on,
   status,
-  launches,
+  gate,
 }: {
   /** `ForemanConfig.autoBacklog`, read optimistically so the switch and the words agree. */
   on: boolean;
   /** The daemon's derived counts, or null before the first poll answers. */
   status: ForemanStatus["autopilot"] | null;
-  /** False while Foreman is off or not in live mode: it reads the queue, nothing more. */
-  launches: boolean;
+  gate: AutopilotGate;
 }): string {
   if (!on) return "Autopilot off - nothing starts unless you start it";
   const agents = status ? ` · ${status.active}/${status.max} agents` : "";
-  if (!launches) return `Autopilot on${agents} · nothing launches until Foreman is live`;
+  if (gate === "not-live") return `Autopilot on${agents} · nothing launches until Foreman is live`;
+  if (gate === "untrusted") {
+    return `Autopilot on${agents} · nothing launches until a repository is trusted for Foreman`;
+  }
   if (!status) return "Autopilot on";
   if (status.ready === 0) return `Autopilot on${agents} · nothing ready to take`;
   if (status.active >= status.max) return `Autopilot on${agents} · full, waiting for one to free up`;

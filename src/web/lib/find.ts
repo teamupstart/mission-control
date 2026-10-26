@@ -69,6 +69,7 @@ export interface FindHit {
 const SNIPPET_PAD = 46;
 
 const ORIGIN_LABEL: Record<TurnOrigin, string> = {
+  session: "Delegated session",
   foreman: "foreman",
   harness: "mission control",
   workflow: "workflow",

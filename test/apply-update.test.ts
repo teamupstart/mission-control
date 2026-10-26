@@ -20,6 +20,7 @@ import {
   stagingEntryName,
   INSTALL_TIMEOUT_MS,
   installFailureSummary,
+  openAppForRelaunch,
   parseArgs,
   processIsAlive,
   realApplyOperations,
@@ -29,6 +30,7 @@ import {
   runApplyUpdate,
   sanitizeDiagnostic,
 } from "../scripts/apply-update.mjs";
+import { COMMAND_TIMEOUT_MS } from "../scripts/mac-app-lifecycle.mjs";
 
 function args(stateDirectory: string) {
   return {
@@ -1308,4 +1310,28 @@ test("a stale LaunchServices registration prevents launching the replacement or 
   assert.ok(!f.actions.some((a) => a.startsWith("launch:")));
   assert.ok(f.actions.some((a) => a.startsWith("restore:")));
   assert.match(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).message, /LaunchServices/);
+});
+
+test("the update relaunch's open gets COMMAND_TIMEOUT_MS, so one slower than the former 5s still relaunches", () => {
+  // Modeled on `spawnSync`: a command slower than its `timeout` is killed and reports
+  // ETIMEDOUT in `error`; otherwise it exits with its own status.
+  const nonce = "a".repeat(32);
+  for (const [duration, outcome] of [[7_000, "relaunches"], [COMMAND_TIMEOUT_MS + 1, "times out"]] as const) {
+    const calls: Array<{ command: string; args: string[]; timeout: number; runAsNode: string | undefined }> = [];
+    const spawn = (command: string, args: string[], options: { timeout: number; env: NodeJS.ProcessEnv }) => {
+      calls.push({ command, args, timeout: options.timeout, runAsNode: options.env.ELECTRON_RUN_AS_NODE });
+      return duration > options.timeout
+        ? { error: Object.assign(new Error("spawnSync /usr/bin/open ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null }
+        : { status: 0 };
+    };
+    const relaunch = () => openAppForRelaunch("/Applications/Mission Control.app", nonce, spawn);
+    if (outcome === "relaunches") relaunch();
+    else assert.throws(relaunch, { code: "ETIMEDOUT" });
+    assert.deepEqual(calls, [{
+      command: "/usr/bin/open",
+      args: ["/Applications/Mission Control.app", "--args", "--mission-update-launch", nonce],
+      timeout: COMMAND_TIMEOUT_MS,
+      runAsNode: undefined,
+    }], `a ${duration}ms open ${outcome}`);
+  }
 });

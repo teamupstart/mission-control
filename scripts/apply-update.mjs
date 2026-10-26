@@ -15,7 +15,7 @@ import { acknowledgeHelper, finishHelper } from "./update-helper-runtime.mjs";
 import { prepareSourceUpdate, installStagedApp, bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 import { readReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes } from "node:crypto";
-import { assertSafeAppLaunch, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -204,6 +204,23 @@ function restoreReceipt({ receiptPath, backupReceipt, hadReceipt, ops }) {
   ops.move(staged, receiptPath);
 }
 
+/**
+ * Relaunch the app through LaunchServices, within `COMMAND_TIMEOUT_MS`.
+ *
+ * `spawn` is injectable so the budget is observable in a test; production always uses
+ * `spawnSync`. `open` returns once LaunchServices has the request, so the bound is on a hung
+ * `open`, not on the app's own startup.
+ */
+export function openAppForRelaunch(appPath, nonce, spawn = spawnSync) {
+  const env = {...process.env};
+  delete env.ELECTRON_RUN_AS_NODE;
+  const result = spawn("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, env });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
+  }
+}
+
 export function realApplyOperations(
   logPath,
   installTimeoutMs = INSTALL_TIMEOUT_MS,
@@ -301,15 +318,7 @@ export function realApplyOperations(
     bundleVersion: (path) => bundleShortVersion(path),
     bundleCommit: bundleSourceCommit,
     lock: realHelperLockOperations(),
-    launch: (appPath, nonce) => {
-      const env = {...process.env};
-      delete env.ELECTRON_RUN_AS_NODE;
-      const result = spawnSync("/usr/bin/open", [appPath, ...(nonce ? ["--args", "--mission-update-launch", nonce] : [])], { encoding: "utf8", timeout: 5000, env });
-      if (result.error) throw result.error;
-      if (result.status !== 0) {
-        throw new Error(`macOS could not relaunch the app (open exited ${result.status ?? 1})`);
-      }
-    },
+    launch: (appPath, nonce) => openAppForRelaunch(appPath, nonce),
     log,
   };
 }

@@ -111,7 +111,8 @@ test("multiline text boxes grow through five lines before scrolling", async ({
   await compactComposer.fill(FIVE_LINES);
   await captureEvidence(dashboard, detail, "console-reply-composer-five-lines.png");
 
-  await detail.getByRole("button", { name: "Terminal view" }).click();
+  await detail.getByRole("button", { name: "Conversation view" }).click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
   const terminalComposer = detail.getByPlaceholder("Send the next instruction to this process…");
   await expect(terminalComposer).toBeEnabled();
   // The terminal composer starts at its five-line cap; additional input scrolls inside it.

@@ -12,6 +12,7 @@ export interface MacAppOps {
 }
 export const APP_ID: string;
 export const LAUNCH_TIMEOUT_MS: number;
+export const COMMAND_TIMEOUT_MS: number;
 export function launchAckPath(directory: string, nonce: string): string;
 export function realMacAppOps(directory?: string): MacAppOps;
 export function parseAppProcesses(output: string): AppProcess[];

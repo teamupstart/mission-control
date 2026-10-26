@@ -451,7 +451,10 @@ test("a Mac that left Upstart stays locked until its withdrawal is written, then
   ).toBeVisible();
   await expect(panel.getByText(/no endpoint is configured/)).toHaveCount(0);
   // The successor daemon's event stream is up, so the capture shows a live dashboard.
-  await expect(dashboard.getByText("live", { exact: true })).toBeVisible();
+  // Scoped to the stream pulse: Foreman's topbar chip also reads "live" since it ships Live.
+  await expect(
+    dashboard.getByRole("button", { name: /^Keep awake/ }).getByText("live", { exact: true }),
+  ).toBeVisible();
   await shoot(dashboard, "05-withdrawal-pending");
 
   // Once the store accepts the write again, Re-check completes the withdrawal and unlocks.

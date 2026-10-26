@@ -70,7 +70,8 @@ import { ConversationActivity, type ActivityTab } from "./ConversationActivity.t
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { TerminalStatusLine, TerminalTitlebar } from "./ConversationTerminal.tsx";
-import { useSessionConversationView } from "../lib/conversation-view.ts";
+import { SessionToolbarIcon, SessionToolbarMenu } from "./SessionToolbarMenu.tsx";
+import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/conversation-view.ts";
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
@@ -1523,24 +1524,7 @@ export function TranscriptPanel({
   );
 }
 
-/**
- * The per-session rendering switch, at the head of the launcher run.
- *
- * A toggle BUTTON rather than a second radio group: there are two renderings and the
- * question at this level is "read this one differently", which is one press. `aria-pressed`
- * carries the state, so the control keeps one stable accessible name instead of relabelling
- * itself to the thing it is not currently showing - the relabelling toggle is the one every
- * screen reader user has to read twice.
- *
- * It sits beside the launchers because that strip is already the answer to "where am I and
- * how do I get at this session".
- *
- * Exported so ConsoleDetail can render it into the toolbar's `leading` slot. It takes its state as props and
- * holds none, so the caller's `useSessionConversationView` is still the single reader of
- * that module's map - which matters, because that hook notifies only its OWN caller. A
- * console-detail caller works because the panel re-renders as its child; a SIBLING of the
- * panel would set the override and leave the log drawn in the other rendering.
- */
+/** Per-session view menu; the caller still owns the shared conversation-view state. */
 export function ConversationViewToggle({
   terminal,
   overridden,
@@ -1551,25 +1535,16 @@ export function ConversationViewToggle({
   onChange: (next: ConversationView) => void;
 }): React.JSX.Element {
   return (
-    <Tooltip
-      label={
-        terminal
-          ? "Read this session as a chat log again"
-          : "Read this session as a terminal stream - just this session, until you close the tab"
-      }
-    >
-      <button
-        type="button"
-        className={`launch-btn conv-view-btn${overridden ? " is-overridden" : ""}`}
-        aria-pressed={terminal}
-        onClick={() => onChange(terminal ? "chat" : "terminal")}
-      >
-        <span className="launch-glyph-lead" aria-hidden>
-          ▤
-        </span>
-        <span className="launch-word">Terminal view</span>
-      </button>
-    </Tooltip>
+    <SessionToolbarMenu label={`Conversation view: ${terminal ? "Terminal" : "Chat"}`} title="Conversation view"
+      icon={<SessionToolbarIcon kind={terminal ? "terminal" : "chat"} />}
+      className={`conv-view-btn${overridden ? " is-overridden" : ""}`}>
+      {close => <>{CONVERSATION_VIEW_OPTIONS.map(({ id: view, label, description }) => <Tooltip key={view} label={description}><button type="button"
+        role="menuitemradio" aria-checked={terminal === (view === "terminal")} className="session-toolbar-option"
+        onClick={() => { onChange(view); close(); }}>
+        <SessionToolbarIcon kind={view} /><span>{label}</span>
+        <span className="session-toolbar-check" aria-hidden="true">{terminal === (view === "terminal") ? "✓" : ""}</span>
+      </button></Tooltip>)}</>}
+    </SessionToolbarMenu>
   );
 }
 

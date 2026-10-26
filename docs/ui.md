@@ -189,7 +189,9 @@ one press per layer - and a click anywhere outside it, or a scroll, puts it away
 **The footer says whether anything is going to act on that order at all.** It carries the
 backlog autopilot's switch and a live readout: `Autopilot on · 2/3 agents · takes the top row
 on its own`, or `full, waiting for one to free up`, or `nothing ready to take`, or - armed
-behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`.
+behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`, or -
+Live with no repository granted in Trust, which is a fresh install's state -
+`nothing launches until a repository is trusted for Foreman`.
 It is **the same switch** as **Auto-schedule the backlog** in the
 [Foreman popover](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet): one config field, one
 route, either surface. The readout deliberately does not repeat the header's
@@ -734,14 +736,15 @@ second probe or polling loop. The daemon binds dismissal to the displayed checks
 tab cannot suppress a repair-regression sequence that another tab already observed.
 
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-lets you switch live between them, and the choice persists per machine:
+lets you switch live between them, and the choice persists per machine. A fresh install opens
+on **Board**; an install that already stored a layout keeps it:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
+| **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
-| **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Stored preferences for the retired `grid` layout migrate to Console when loaded. New
+Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
@@ -754,11 +757,11 @@ available:
   **Conversation tab is the transcript and its reply box, and nothing else**: the workflow
   ladder lives in **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this
   run going* while Conversation answers *what was said*. The controls for getting *at* this
-  session - **Terminal view** and the two launchers - sit in the **tab strip** rather than
+  session - the **Session control** and **Conversation view** icon menus and the two launchers - sit in the **tab strip** rather than
   in a band above the transcript, since that row already runs the full width and its job is
   adjacent: the launchers choose *how* you view a session exactly as the tabs choose *what*.
-  On a narrow pane that row gives way in order - the tabs' chord hints, then the toggle's
-  word, then the launchers' words and chord hints, then Foreman's word - so it stays one
+  On a narrow pane that row gives way in order - the tabs' chord hints, then the menu
+  spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a tile. In Console and Board, the
@@ -1110,7 +1113,7 @@ flight when you move on, or publish a second file, never replaces another file's
 The Conversation is drawn as a **terminal stream** by default - prompt lines in, stdout out,
 tool runs folded into one record, inside a frame with a live status line. It can instead be
 drawn as a **chat log**. **Settings → Display → Conversation** sets the default for
-every session, per machine; the **Terminal view** button flips that one session for as long
+every session, per machine; the **Conversation view** icon menu changes that one session for as long
 as the tab is open - in the strip above the conversation on a card, and in the detail's tab
 strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the

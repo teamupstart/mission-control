@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { processIdentity } from '../scripts/update-lock.mjs';
 import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, type MigrationJournal } from '../scripts/install-migration.mjs';
-import type { MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
+import { COMMAND_TIMEOUT_MS, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { boundedMigrationWait, migrationRuntimePorts, migrationStartupGate, sameMigrationProcess, verifyMigrationAssets } from '../scripts/migration-runtime.mjs';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
 
@@ -52,6 +52,29 @@ test('migration launch opens the exact target and nonce through LaunchServices a
   assert.ok(f.calls[0]?.command.endsWith('/lsregister'));
   assert.deepEqual(f.calls[0]?.args, ['-f', f.journal.plan.target]);
   assert.ok(!f.calls.some((call) => call.command.includes('/Contents/MacOS/')));
+});
+
+test('migration open gets COMMAND_TIMEOUT_MS, so an open slower than the former 5s still launches', async (t) => {
+  // Modeled on the real ops: an open slower than the budget it was handed is killed and
+  // rejects; otherwise LaunchServices takes the request and the target registers itself.
+  for (const [duration, outcome] of [[7_000, 'launches'], [COMMAND_TIMEOUT_MS + 1, 'rejects']] as const) {
+    await t.test(`${duration}ms ${outcome}`, async (t) => {
+      const f = launchFixture(t);
+      const budgets: number[] = [];
+      const run = f.mac.run;
+      f.mac.run = async (command, args, timeout) => {
+        if (command !== '/usr/bin/open') return run(command, args, timeout);
+        budgets.push(timeout ?? -1);
+        if (duration > (timeout ?? 0)) throw new Error('Could not inspect macOS launch state within the time limit.');
+        atomicMigrationJson(join(f.stateDirectory, MIGRATION_LAUNCH), f.ack);
+        return run(command, args, timeout);
+      };
+      const launched = f.ports.launchTarget(f.journal.plan);
+      if (outcome === 'launches') assert.deepEqual(await launched, {pid: f.ack.pid, identity: f.ack.identity});
+      else await assert.rejects(launched, {message: 'Could not inspect macOS launch state within the time limit.'});
+      assert.deepEqual(budgets, [COMMAND_TIMEOUT_MS]);
+    });
+  }
 });
 
 test('migration launch reports open failure even if a matching launch journal exists', async (t) => {

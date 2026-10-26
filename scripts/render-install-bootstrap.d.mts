@@ -1,0 +1,1 @@
+export function renderInstallBootstrap(): string;

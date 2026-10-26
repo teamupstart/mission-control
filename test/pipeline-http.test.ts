@@ -37,6 +37,15 @@ import {
 
 const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
 const originalPath = process.env.PATH;
+// An explicit `<PREFIX>_NODE_BIN` outranks every directory below, `MISSION_EXECUTABLE_PATHS`
+// included. A session launched by Mission Control (or an operator who pinned Node) exports
+// one, which would make the installer probe the real Node instead of the fake runtime this
+// file writes. Clear every spelling the locator reads, `NPM_BIN` with it, before any import
+// can resolve an executable.
+for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+  delete process.env[`${prefix}_NODE_BIN`];
+  delete process.env[`${prefix}_NPM_BIN`];
+}
 const originalExecutablePaths = process.env.MISSION_EXECUTABLE_PATHS;
 const nodeBinDir = join(home, "bin");
 process.env.HARNESS_HOME = join(home, "state");

@@ -229,6 +229,13 @@ async function dispatchWithoutWorkflow(
   return sessionId;
 }
 
+// Every test here reads the session through the Console's rail and detail. Console is no
+// longer the shipped layout, and these specs use the raw `page` rather than the `dashboard`
+// fixture that pins it, so they state the precondition themselves.
+test.beforeEach(async ({ daemon }) => {
+  await api(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+});
+
 test("a dispatched session names its armed workflow, and the bind dialog opens on it", async ({
   page,
   daemon,

@@ -48,7 +48,7 @@ export function detailLayer(mode: LayoutMode): "selection" | "board" {
 /**
  * A stored value is only trusted if it's still a layout we ship. Anything else -
  * a hand-edited key, a mode from a future version, a half-written string - falls
- * back to Console rather than rendering nothing.
+ * back to the shipped default (Board) rather than rendering nothing.
  *
  * `LAYOUT_MODES` is the shared list the daemon's schema validates against too, so a mode
  * cannot be renderable here and rejected there (or the reverse). `LAYOUTS` carries the

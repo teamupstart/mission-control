@@ -8,7 +8,7 @@ import type {
   ReviewKind,
   ReviewStatus,
 } from "@shared/types.ts";
-import { isHumanResolvedReview, reviewToolResult } from "@shared/review-item.ts";
+import { isHumanResolvedReview, isConversationResolvedReview, reviewToolResult } from "@shared/review-item.ts";
 import type { Registry } from "./registry.ts";
 import {
   inTransaction,
@@ -494,7 +494,7 @@ export class ReviewManager {
       this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
     }
     this.markSteered(updated);
-    if (isHumanResolvedReview(updated)) {
+    if (isConversationResolvedReview(updated)) {
       const candidate = loadReviewContinuationCandidates(updated.id)[0];
       if (candidate) this.deliverContinuation(candidate);
     }

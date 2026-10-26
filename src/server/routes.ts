@@ -1,3 +1,6 @@
+import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import { parseBody } from "./http-body.ts";
 import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
@@ -24,6 +27,7 @@ import { homedir } from "node:os";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import {
   AddWorkItemSchema,
+  ApproveWorkItemSchema,
   AssignTaskSchema,
   AwayConfigPatchSchema,
   BacklogPlanSchema,
@@ -477,7 +481,7 @@ import {
   forgetTaskSourceSeen,
   retryWritebacks,
   getSkillsAcks,
-  loadHumanResolvedReviews,
+  loadConversationResolvedReviews,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
   getInspectorPr,
@@ -746,25 +750,6 @@ export const WORKFLOW_EVIDENCE_COVERAGE_BODY_MAX_BYTES =
   + 8 * 1024;
 
 /**
- * Parse + validate a JSON request body against a schema. Returns the typed data,
- * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
- * every write endpoint otherwise repeats.
- */
-// `error` is carried alongside the ready-made `res` so a route with extra facts to
-// report on a refusal can build its own body without re-reading this one's. /inject
-// is that route: its contract is that EVERY refusal states whether text was pasted.
-async function parseBody<S extends ZodTypeAny>(
-  c: Context,
-  schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
-  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
-  }
-  return { ok: true, data: parsed.data };
-}
-
-/**
  * The same, for a body whose SIZE is part of the contract.
  *
  * `parseBody` above buffers whatever arrives and hands it to Zod. That is right for every
@@ -858,7 +843,7 @@ interface ForemanWriteRefusal {
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
@@ -1131,6 +1116,8 @@ export interface RouteDeps {
    * embedded session can exist.
    */
   sdkSessions?: SdkSupervisor;
+  /** Private desktop authorization; defaults to the owning utility-process channel. */
+  authorizeSessionControl?: AuthorizeSessionControl;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1229,6 +1216,7 @@ export const ROUTE_DEP_NAMES = [
   "schedules",
   "ensembles",
   "sdkSessions",
+  "authorizeSessionControl",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1519,6 +1507,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     schedules,
     ensembles,
     sdkSessions,
+    authorizeSessionControl,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -1868,6 +1857,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
+  registerSessionControlRoutes(app, registry, authorizeSessionControl);
+
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
   // --- Keep Awake: the transient idle-sleep inhibitor ---
@@ -5358,6 +5349,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
     // on whether its session could be resolved cheaply. It can: a review record names its
     // `sessionId`, so this is two map lookups and no I/O.
@@ -5369,7 +5361,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, parsed.data.by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -5379,7 +5371,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         c.req.param("id"),
         parsed.data.action,
         parsed.data.response,
-        parsed.data.by,
+        by,
         parsed.data.selections,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
@@ -5405,19 +5397,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
     // The twin of /inject's backstop, and the reason `origin` exists on this schema at
     // all: the Foreman worker splits one delivery across the two routes, sending a
     // SUBMITTED answer through /inject and an unsubmitted one - a draft the model asked to
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.submit && pendingTurns) {
+    if (origin === "human" && parsed.data.submit && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
@@ -5429,7 +5422,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         parsed.data.text,
         undefined,
-        parsed.data.origin,
+        origin,
       );
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
@@ -5438,7 +5431,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "send",
         outcome: sent.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(
@@ -5463,7 +5456,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // is a different operation from a send and is recorded as one.
       operation: parsed.data.submit ? "send" : "queued",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
@@ -5481,10 +5474,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5501,15 +5495,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverOptionAnswer(dialog, parsed.data),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r, r.ok ? 200 : 409);
     }
     const r = await selectPaneOption(session, parsed.data, panes);
-    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-    observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+    observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -5524,8 +5518,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
+    const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5548,10 +5543,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
-        { reviews, by: parsed.data.by },
+        { reviews, by },
       );
-      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
-      observeQuestionResponse(session, r.ok, parsed.data.by, c.req.raw.headers);
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, by);
+      observeQuestionResponse(session, r.ok, by, c.req.raw.headers);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -5563,11 +5558,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const r = await submitPaneForm(session, options, panes);
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
-    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, by);
     // `formDelivered`, not `ok`, for the same reason the retirement above uses it: a pane form
     // reports `ok` for two states that sent the child nothing, and recording those as answered
     // questions would count decisions that are still owed.
-    observeQuestionResponse(session, formDelivered(r), parsed.data.by, c.req.raw.headers);
+    observeQuestionResponse(session, formDelivered(r), by, c.req.raw.headers);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -5636,18 +5631,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, parsed.data.origin);
+    const refusal = foremanWriteRefusal(composerActivity, session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+    if (origin === "human" && parsed.data.buffer && pendingTurns) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
-      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(parsed.data.origin, c.req.raw.headers));
+      if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       // QUEUED, not sent. A row in `pending_turns` has not reached the agent and may never -
       // it can be recalled or dropped - so recording it as a delivery would count turns the
       // session never saw. `mission.session.operation` keeps the two apart by name.
@@ -5655,7 +5651,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         session,
         operation: "queued",
         outcome: result.ok ? "delivered" : "refused",
-        actor: promptActor(parsed.data.origin, c.req.raw.headers),
+        actor: promptActor(origin, c.req.raw.headers),
         operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
       });
       return c.json(result, result.ok ? 200 : 409);
@@ -5672,7 +5668,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // place. Claiming afterwards left it open on exactly the deliveries that matter most.
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
-    const daemonOrigin = parsed.data.origin === "human" ? null : parsed.data.origin;
+    const daemonOrigin = origin === "human" ? null : origin;
     if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
     const r = await injectPromptForRuntime(
       sdkSessions,
@@ -5680,7 +5676,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       undefined,
       () => registry.promptResourceBlockerForSession(session.id),
-      parsed.data.origin,
+      origin,
     );
     if (daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
@@ -5702,7 +5698,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       operation: "send",
       outcome: r.ok ? "delivered" : "refused",
-      actor: promptActor(parsed.data.origin, c.req.raw.headers),
+      actor: promptActor(origin, c.req.raw.headers),
       operationId: resolveOperationContext(c.req.raw.headers).operationId ?? undefined,
     });
     return c.json(r, r.ok ? 200 : 500);
@@ -6249,7 +6245,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/resolved-reviews", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    return c.json(loadHumanResolvedReviews(session.id));
+    return c.json(loadConversationResolvedReviews(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -6305,10 +6301,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
+  app.post("/api/sessions/:id/queue/:itemId/approve", async (c) => {
+    let revision: number | undefined;
+    if (sessionControlActor(c.req.raw)) {
+      const parsed = await parseBody(c, ApproveWorkItemSchema);
+      if (!parsed.ok) return parsed.res;
+      revision = parsed.data.revision;
+    }
     const owned = ownedItem(registry, queues, c);
     if (!owned.ok) return owned.res;
-    const r = queues.approve(owned.item.id);
+    const r = queues.approve(owned.item.id, Date.now(), revision);
     return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
   });
 
@@ -8614,10 +8616,11 @@ function trustedLoopbackJsonRequest(c: Context): boolean {
  * origin rather than assuming one.
  */
 function promptActor(
-  origin: "human" | "foreman" | "workflow",
+  origin: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): TelemetryActor {
   const context = resolveOperationContext(headers);
+  if (origin === "session" || origin.startsWith("session:")) return { kind: "agent", origin: "mcp", basis: "declared" };
   if (context.actor.kind !== "unknown" && context.actor.kind !== origin) {
     return { kind: "unknown", origin: context.actor.origin, basis: "unknown" };
   }
@@ -8636,7 +8639,7 @@ function promptActor(
 function observeQuestionResponse(
   session: Session,
   delivered: boolean,
-  by: "human" | "foreman" | "workflow",
+  by: ReviewActor | "workflow" | "session",
   headers: { get(name: string): string | null },
 ): void {
   observeSessionOperation({

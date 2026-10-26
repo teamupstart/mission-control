@@ -8,13 +8,13 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /**
  * The console detail's tab strip IS the conversation's toolbar.
  *
- * The worktree band that used to sit above the transcript is gone, and its two controls -
- * the Terminal-view toggle and the two launchers - live in the tab row, which already ran
+ * The worktree band that used to sit above the transcript is gone, and the controls -
+ * the compact control/view menus and the two launchers - live in the tab row, which already ran
  * the full width with dead space after "Files". That band was ~81px of the ~294px of fixed
  * chrome above the transcript in a 600px pane, and the conversation gets it back
  * (`docs/plans/console-header-density/plan.md`).
  *
- * Four things are at stake and only a browser can settle any of them:
+ * These behaviors need a browser to verify:
  *
  *  1. The controls are really in the tab row, they really work from there, and the pane's
  *     worktree path appears exactly ONCE - in the `PATH`/`BRANCH` row. Twice would recreate
@@ -148,7 +148,7 @@ test("the console detail's tab row carries the conversation's toolbar, and the p
 
   // The three controls are IN the tab row - asserted through the row rather than through the
   // detail, which is the difference between "they moved" and "they exist somewhere".
-  await expect(tabs.getByRole("button", { name: "Terminal view" })).toBeVisible();
+  await expect(tabs.getByRole("button", { name: "Conversation view" })).toBeVisible();
   await expect(tabs.getByRole("button", { name: /Terminal$/ })).toBeVisible();
   await expect(tabs.getByRole("button", { name: /Claude Code$/ })).toBeVisible();
   // And Foreman is still at the far end of it, past them.
@@ -199,22 +199,24 @@ test("the toggle in the tab row really switches the conversation under it", asyn
   await dispatch(dashboard, daemon, "switch the rendering from the tab row");
   const detail = await openConsoleDetail(dashboard, daemon, /Switch the Rendering From the Tab Row/i);
 
-  const toggle = detail.locator(".detail-tabs").getByRole("button", { name: "Terminal view" });
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  const toggle = detail.locator(".detail-tabs").getByRole("button", { name: "Conversation view" });
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Chat");
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
 
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Terminal");
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   await expect(detail.getByPlaceholder(/^Send the next instruction/)).toBeEnabled();
 
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await dashboard.getByRole("menuitemradio", { name: "Chat" }).click();
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Chat");
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
   await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
 
   // The toggle is about the pane you are READING, so it stands down on a tab that is not the
-  // conversation - where it would be an `aria-pressed` control over a surface not on screen.
+  // conversation - where its rendering choices would affect a surface not on screen.
   // The launchers do not: they open the session somewhere else, which is a question you can
   // ask from any tab.
   await detail.getByRole("tab", { name: /Files/ }).click();
@@ -253,8 +255,8 @@ test("the tab row stays one row on a narrow pane, and keeps every name", async (
   await dashboard.setViewportSize({ width: 1800, height: 900 });
   const wide = await readRow(dashboard);
   expect(wide.rows, "the row is already stacked at 1800px").toBe(1);
-  const viewWord = tabs.getByRole("button", { name: "Terminal view" }).locator(".launch-word");
-  await expectDrawn(viewWord, true, "precondition: a wide pane draws every word");
+  const viewIcon = tabs.getByRole("button", { name: "Conversation view" }).locator("svg");
+  await expect(viewIcon).toBeVisible();
 
   // The reported width. The console gives the rail ~300px, so this is the pane the design
   // mockup measured a 101px overflow at.
@@ -270,12 +272,9 @@ test("the tab row stays one row on a narrow pane, and keeps every name", async (
   expect(narrow.rows, `the tab row wrapped to ${narrow.rows} rows`).toBe(1);
   expect(narrow.rung, "the row bought that by spending no rung at all").not.toBe("");
 
-  // It bought the row by shedding a LABEL, and the control it shed still says what it is:
-  // the button is drawn (its glyph is there), its word is not, and its accessible name is
-  // untouched - which is the whole reason a shed label is hidden visually and never with
-  // `display: none`.
-  await expectDrawn(viewWord, false, "the toggle's word survived a pane that had no room");
-  await expect(tabs.getByRole("button", { name: "Terminal view" })).toBeVisible();
+  // The view icon and its accessible name survive at every width.
+  await expect(viewIcon).toBeVisible();
+  await expect(tabs.getByRole("button", { name: "Conversation view" })).toBeVisible();
   // And no tab ever gives up its own word. The tabs are what this row IS.
   for (const label of ["Conversation", "Work queue", "Workflows", "Diff", "Files"]) {
     await expectDrawn(
@@ -308,5 +307,153 @@ test("the tab row stays one row on a narrow pane, and keeps every name", async (
     back.rung.split(" ").filter(Boolean).length,
     `the wide row still holds the narrow row's rungs ("${back.rung}" after "${narrow.rung}")`,
   ).toBeLessThan(narrow.rung.split(" ").filter(Boolean).length);
-  await expectDrawn(viewWord, true, "the toggle's word never came back when the room did");
+  await expect(viewIcon).toBeVisible();
+});
+
+test("compact session menus share one row and support keyboard view selection", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "compact session menus");
+  const detail = await openConsoleDetail(dashboard, daemon, /Compact Session Menus/i);
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
+  await expect(detail.locator(".turn").first()).toBeVisible();
+  await detail.getByPlaceholder(/^Reply to this session/).fill("Keep the conversation concise.");
+  await detail.getByPlaceholder(/^Reply to this session/).press("Enter");
+  await expect(detail.getByText("Mock reply to: Keep the conversation concise.", { exact: true })).toBeVisible();
+  const tabs = detail.getByRole("tablist", { name: "Session detail" });
+  const control = tabs.getByRole("button", { name: "Session control: Off" });
+  const view = tabs.getByRole("button", { name: "Conversation view" });
+  await expect(control).toBeVisible();
+  await expect(view).toHaveAttribute("aria-haspopup", "menu");
+  await expect(view.locator("svg")).toBeVisible();
+  await expect(detail.getByRole("checkbox", { name: "Control other sessions" })).toHaveCount(0);
+  const before = await detail.locator(".transcript-log").boundingBox();
+  const positions = await Promise.all([control.boundingBox(), view.boundingBox()]);
+  expect(positions[0]!.x + positions[0]!.width).toBeLessThanOrEqual(positions[1]!.x);
+  expect(Math.abs(positions[0]!.y - positions[1]!.y)).toBeLessThan(2);
+  expect(positions[0]!.width).toBeLessThan(60);
+  expect(positions[1]!.width).toBeLessThan(60);
+
+  await control.click();
+  const controlMenu = dashboard.getByRole("menu", { name: "Control other sessions" });
+  await expect(controlMenu.getByRole("menuitemradio", { name: "Off", exact: true })).toBeChecked();
+  await expect(controlMenu.getByRole("menuitemradio", { name: "On", exact: true })).toBeDisabled();
+  const choices = await controlMenu.getByRole("menuitemradio").evaluateAll(rows => rows.map(row => {
+    const { x, y, width, height } = row.getBoundingClientRect();
+    return { x, y, width, height };
+  }));
+  expect(choices[1]!.y).toBeGreaterThanOrEqual(choices[0]!.y + choices[0]!.height);
+  expect(choices[0]!.x).toBe(choices[1]!.x);
+  expect(choices[0]!.width).toBeGreaterThan(240);
+  const during = await detail.locator(".transcript-log").boundingBox();
+  expect(during!.height).toBe(before!.height);
+  await shoot(dashboard, detail, "04-session-control-menu");
+  await dashboard.keyboard.press("Escape");
+  await expect(control).toBeFocused();
+
+  await view.focus();
+  await dashboard.keyboard.press("Enter");
+  const viewMenu = dashboard.getByRole("menu", { name: "Conversation view" });
+  await expect(viewMenu.getByRole("menuitemradio", { name: "Chat" })).toBeChecked();
+  await expect(viewMenu.getByRole("menuitemradio", { name: "Chat" })).toBeFocused();
+  const chatTip = dashboard.locator(".tooltip").filter({ hasText: "Turns as messages:" });
+  await expect(chatTip).toBeVisible();
+  expect((await chatTip.boundingBox())!.x).toBeGreaterThanOrEqual((await viewMenu.boundingBox())!.x);
+  // Photograph the choices without the focused row's help bubble covering the heading.
+  await viewMenu.focus();
+  await shoot(dashboard, detail, "05-conversation-view-menu");
+  await viewMenu.getByRole("menuitemradio", { name: "Chat" }).focus();
+  await dashboard.keyboard.press("ArrowDown");
+  await dashboard.keyboard.press("Enter");
+  await expect(viewMenu).toHaveCount(0);
+  await expect(view).toHaveAttribute("aria-label", "Conversation view: Terminal");
+  await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
+  await expect(view).toBeFocused();
+  await view.click();
+  await expect(viewMenu.getByRole("menuitemradio", { name: "Terminal" })).toBeChecked();
+  await expect(viewMenu.getByRole("menuitemradio", { name: "Terminal" })).toBeFocused();
+  await dashboard.keyboard.press("Home");
+  await dashboard.keyboard.press("Enter");
+  await expect(view).toHaveAttribute("aria-label", "Conversation view: Chat");
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
+  await control.click();
+  await view.click();
+  await expect(controlMenu).toHaveCount(0);
+  await expect(viewMenu).toBeVisible();
+  await tabs.getByRole("tab", { name: /Files/ }).click();
+  await expect(viewMenu).toHaveCount(0);
+});
+
+test("a session menu opens above a trigger in the lower half of the viewport", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "lower screen session menu");
+  const detail = await openConsoleDetail(dashboard, daemon, /Lower Screen Session Menu/i);
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
+
+  // A short window puts the real toolbar in the lower half, without moving or mocking it.
+  const viewport = { width: 1280, height: 440 };
+  await dashboard.setViewportSize(viewport);
+  const view = detail.getByRole("button", { name: "Conversation view" });
+  await expect(view).toBeVisible();
+  expect((await view.boundingBox())!.y).toBeGreaterThan(viewport.height / 2);
+  await view.click();
+
+  const menu = dashboard.getByRole("menu", { name: "Conversation view" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitemradio", { checked: true })).toBeFocused();
+  const triggerBox = (await view.boundingBox())!;
+  const menuBox = (await menu.boundingBox())!;
+  expect(triggerBox.y).toBeGreaterThan(viewport.height / 2);
+  expect(menuBox.y + menuBox.height).toBeLessThan(triggerBox.y);
+  expect(menuBox.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(viewport.width);
+  expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(viewport.height);
+  console.log(`LOWER_SCREEN_MENU ${JSON.stringify({ viewport, trigger: triggerBox, menu: menuBox })}`);
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await menu.focus();
+    await dashboard.mouse.move(0, 0);
+    await dashboard.screenshot({ path: `${EVIDENCE}06-lower-screen-menu.png` });
+    console.log("CAPTURED e2e/.artifacts/console-tabs-toolbar/06-lower-screen-menu.png");
+  }
+});
+
+test("a tall session menu scrolls within the space above or below its trigger", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "tall session menu");
+  const detail = await openConsoleDetail(dashboard, daemon, /Tall Session Menu/i);
+  await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
+  // Larger user text makes the explanatory copy wrap. Keep the real toolbar geometry
+  // and menu content so this exercises available space, not a mocked menu rectangle.
+  await dashboard.addStyleTag({ content: ".session-toolbar-note { font-size: 18px; line-height: 1.6; }" });
+  const control = detail.getByRole("button", { name: "Session control: Off" });
+  const menu = dashboard.getByRole("menu", { name: "Control other sessions" });
+  for (const height of [440, 540]) {
+    const viewport = { width: 1280, height };
+    await dashboard.setViewportSize(viewport);
+    await control.click();
+    await expect(menu).toBeVisible();
+    const trigger = (await control.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    if (height === 440) {
+      expect(trigger.y).toBeGreaterThan(height / 2);
+      expect(box.y + box.height).toBeLessThan(trigger.y);
+    } else {
+      expect(trigger.y).toBeLessThan(height / 2);
+      expect(box.y).toBeGreaterThan(trigger.y + trigger.height);
+    }
+    expect(box.y).toBeGreaterThanOrEqual(8);
+    expect(box.y + box.height).toBeLessThanOrEqual(height - 8);
+    expect(await menu.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await menu.locator(".session-toolbar-foot").scrollIntoViewIfNeeded();
+    await expect(menu.locator(".session-toolbar-foot")).toBeInViewport();
+    console.log(`TALL_SESSION_MENU ${JSON.stringify({ viewport, trigger, menu: box })}`);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      mkdirSync(EVIDENCE, { recursive: true });
+      await menu.evaluate(el => { el.scrollTop = 0; });
+      await menu.focus();
+      await dashboard.mouse.move(0, 0);
+      await dashboard.screenshot({ path: `${EVIDENCE}07-tall-menu-${height}.png` });
+    }
+    await dashboard.keyboard.press("Escape");
+    await expect(control).toBeFocused();
+  }
 });

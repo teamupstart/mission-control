@@ -891,8 +891,10 @@ The checkbox appears above the consent controls. **Allowed repositories**, inclu
 link, sits below the **Workflow Commands** toggle.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
-new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are
+or Live delivery, and a repair-round limit. Foreman complete plus Live is the default for
+new workflows, matching the built-in workflows. Live still needs the **Live delivery** switch
+(on by default) and a Trust grant for the session's repository; a binding without both is
+refused with that reason, and choosing Preview on the binding is always available. The optional GitHub Inspector final gate and its missing-PR and findings policies are
 immutable parts of each published version, and so is the
 [repair-resumption policy](#repair-resumption) below.
 

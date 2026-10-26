@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   inspectAppLaunch, parseAppProcesses, parseLaunchServices, waitForBundleExit,
   prepareAppLaunch, verifyAppLaunch, launchConflictMessage,
-  stopAttemptLaunch, jobLaunchesBundle, type MacAppOps,
+  stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
 
 const bundle = "/Users/test/Applications/Mission Control.app";
@@ -151,6 +151,67 @@ test("quit barrier waits for all bundle executables, including orphan utilities"
   await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), /bundle processes.*43/);
   f.outputs.set("ps", "1 0 S /sbin/launchd\n");
   await waitForBundleExit(bundle, f.ops, 1000);
+});
+
+test("a slow probe gets the rest of its caller's deadline, not a fixed two-second slice", async () => {
+  // The regression: every probe was capped at 2s, and a probe that runs out of time rejects
+  // rather than retrying, so one slow `ps` or `launchctl print` on a busy Mac failed an update
+  // (and then its recovery) long before the caller's own deadline.
+  const f = fixture();
+  f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  const budgets = new Map<string, number[]>();
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    const name = command.split("/").at(-1) ?? command;
+    budgets.set(name, [...(budgets.get(name) ?? []), timeout ?? -1]);
+    return run(command, args, timeout);
+  };
+  await inspectAppLaunch(bundle, f.ops, 15_000);
+  // The fake clock does not advance during a probe, so each one is offered the whole budget.
+  assert.deepEqual(budgets.get("lsappinfo"), [15_000]);
+  assert.deepEqual(budgets.get("ps"), [15_000]);
+  assert.deepEqual(budgets.get("launchctl"), [15_000, 15_000], "list, then print for the one label");
+
+  budgets.clear();
+  f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  await waitForBundleExit(bundle, f.ops, 120_000);
+  assert.deepEqual(budgets.get("ps"), [120_000]);
+
+  // Still bounded: an exhausted deadline refuses before running a probe at all.
+  budgets.clear();
+  await assert.rejects(inspectAppLaunch(bundle, f.ops, 0), /before the time limit/);
+  assert.equal(budgets.size, 0);
+});
+
+test("a real command with no caller deadline is not killed at the old two-second default", async () => {
+  // A command slower than the old 2s cap, run through the real ops. Before, this rejected with
+  // "within the time limit"; a loaded Mac's `ps` looked exactly like it.
+  assert.ok(COMMAND_TIMEOUT_MS > 2_500);
+  const result = await realMacAppOps().run("/bin/sh", ["-c", "sleep 2.5; echo done"]);
+  assert.deepEqual(result, {code: 0, stdout: "done\n"});
+  // Still a bound: a caller's own budget is honored and a hung command is refused.
+  await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "sleep 5"], 200), /within the time limit/);
+});
+
+test("lsregister gets the whole launch budget, not the former five-second cap", async () => {
+  // Modeled on the real ops: a command slower than the budget it was handed is killed and
+  // rejects; otherwise it answers. Only lsregister is slow here.
+  for (const [duration, outcome] of [[7_000, "answers"], [LAUNCH_TIMEOUT_MS + 1, "rejects"]] as const) {
+    const f = fixture();
+    f.outputs.set("apps", "");
+    const budgets: number[] = [];
+    const run = f.ops.run;
+    f.ops.run = async (command, args, timeout) => {
+      if (!command.endsWith("/lsregister")) return run(command, args, timeout);
+      budgets.push(timeout ?? -1);
+      if (duration > (timeout ?? 0)) throw new Error("Could not inspect macOS launch state within the time limit.");
+      return run(command, args, timeout);
+    };
+    const launched = prepareAppLaunch(bundle, f.ops);
+    if (outcome === "answers") await launched;
+    else await assert.rejects(launched, /within the time limit/);
+    assert.deepEqual(budgets, [LAUNCH_TIMEOUT_MS], `a ${duration}ms lsregister ${outcome}`);
+  }
 });
 
 test("dormant shell jobs with expanded executables fail closed without disclosing their environment", async (t) => {

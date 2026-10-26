@@ -139,6 +139,8 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
 export const FIXED_OS_EXECUTABLES = {
   env: "/usr/bin/env",
   sh: "/bin/sh",
+  // The macOS binary-install bootstrap uses the OS-provided Bash before daemon startup.
+  bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
   // an instance that is already running rather than starting a second one. Not searched, and

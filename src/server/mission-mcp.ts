@@ -63,6 +63,8 @@ export const MISSION_MCP_TOOLS = [
   "get_workflow_run",
   "trigger_workflow_action",
   "share_plan",
+  "read_sessions",
+  "control_session",
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,

@@ -90,14 +90,15 @@ export function answeredDecisions(
  * that called both "you reviewed" would leave the reader unable to tell which.
  */
 export function reviewAnswerVerb(review: ReviewItem): string {
+  const who = review.resolvedBy?.startsWith("session:") ? `session ${review.resolvedBy.slice(8)}` : "you";
   switch (review.status) {
     case "approved":
-      return "you approved";
+      return `${who} approved`;
     case "rejected":
-      return "you requested changes";
+      return `${who} requested changes`;
     case "dismissed":
-      return "you dismissed";
+      return `${who} dismissed`;
     default:
-      return "you answered";
+      return `${who} answered`;
   }
 }

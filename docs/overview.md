@@ -174,16 +174,17 @@ Install directly, with no checkout to keep:
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' --
 ```
 
-The Bash installer downloads a temporary bootstrap checkout, then calls the same installer as
-`make install`. It removes its temporary checkouts, dependencies, and build output on success
-or failure. A self-contained installer remains under `~/.mission-control/installers`,
-so even an older installed release can prepare its next update. Requesting an update later
-creates the normal updater-owned `app-src` cache. Existing caches and personal checkouts are
-left alone. Like any process, a forcibly killed installer cannot run its cleanup handlers.
-
+The binary bootstrap downloads a canonical signed DMG and ready manifest, verifies them with
+native macOS tools, and uses a private copy of the app's embedded runtime for installation.
+It requires macOS 12+ on Apple Silicon and authenticated native `gh`, without host Node, npm,
+npx, Git or build tools. Signed publication and clean-account qualification are still pending;
+an unavailable binary is refused. See [binary recovery and enrollment](desktop-and-packaging.md#binary-installation-and-manual-recovery).
+Quit the existing app before replacement. Reruns preserve its state and recorded destination.
 Bash installs into `~/Applications` by default on a new installation. Reruns preserve an
 existing receipt's system, personal, or custom destination. Pass `--scope user`,
-`--scope system`, or `--apps-dir <dir>` to choose a destination explicitly.
+`--scope system`, or `--apps-dir <dir>` to choose a fresh destination explicitly.
+Moving an existing managed installation still uses the app's relocation flow; the binary
+installer refuses a destination change and explains how to replace it in place.
 
 The wrapper reports download failures as failures. Pass installer options after its final `--`,
 for example:
@@ -193,10 +194,10 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mi
 ```
 
 From a checkout, `make install` retains the updater-owned build cache as before.
-`make install ARGS="--temporary-source"` uses the same temporary-build behavior as Bash.
-Both paths share release selection, verification, install destinations, and receipts.
+`make install ARGS="--temporary-source"` and `scripts/install-source.sh` retain the explicit
+source-build route. Binary installation shares destination, swap and receipt ownership.
 
-The install needs Node.js 24+ with npm, `git`, an authenticated `gh` (`gh auth login`), the Xcode
+The explicit source install needs Node.js 24+ with npm, `git`, an authenticated `gh` (`gh auth login`), the Xcode
 command line tools (`xcode-select --install`, for the native keep-awake module node-gyp
 compiles during packaging), and an Apple Silicon Mac - it refuses an Intel host rather than
 building an app that cannot run there. Each is checked before the build clone, so a missing one
@@ -241,7 +242,8 @@ it records no receipt, so that copy cannot update itself. It carries a Read Me s
 deliberately carries no `/Applications` shortcut - a disk image is opened on somebody else's
 Mac, where no fixed link can name the right Applications folder.
 
-A managed installed app keeps itself current from stable GitHub Releases. Choose **Check for
+A managed source installation keeps itself current from stable GitHub Releases. Binary
+receipts instead link to manual signed replacement until automatic binary updates arrive. Choose **Check for
 Updates…** from the app menu or tray; the app uses the existing authenticated `gh` CLI and asks
 before rebuilding. Accepting does not close anything: the new version is built while Mission
 Control keeps running, with a progress bar naming each stage and a **Cancel**, and only when it is

@@ -40,7 +40,8 @@ test("startup preference defaults on for old caches and legacy imports, preservi
 
 test("nothing stored anywhere reads as the shipped defaults", () => {
   const config = readCache();
-  assert.equal(config.layout, "console");
+  // Board. Retiring Cards moved this to Console by accident; see `UI_CONFIG_DEFAULTS`.
+  assert.equal(config.layout, "board");
   assert.equal(config.conversationView, "terminal");
   // Condensed, which is deliberately NOT the no-op default - see `UI_CONFIG_DEFAULTS`.
   // Pinned here because this one line decides the Line's band height for every profile
@@ -199,7 +200,7 @@ test("a task-kind style this build does not ship reads as the shipped one", () =
 test("a corrupt cache falls back to the defaults instead of throwing", () => {
   // A half-written value must cost a fetch, never a crash on the first paint.
   store.set("mission-control.ui", "{not json");
-  assert.equal(readCache().layout, "console");
+  assert.equal(readCache().layout, "board");
 });
 
 test("no legacy settings on this origin reports nothing, not empty defaults", () => {
@@ -224,12 +225,12 @@ test("the newest generation wins when several are present", () => {
   assert.equal(readLegacySettings()?.layout, "board");
 });
 
-test("a retired Cards preference is adopted as Console", () => {
+test("a retired Cards preference is adopted as the shipped default", () => {
   store.set("mission-control.ui", JSON.stringify({ layout: "grid" }));
-  assert.equal(readCache().layout, "console");
+  assert.equal(readCache().layout, "board");
   store.clear();
   store.set("mission-control.layout", "grid");
-  assert.equal(readLegacySettings()?.layout, "console");
+  assert.equal(readLegacySettings()?.layout, "board");
 });
 
 test("the generations are read per setting, not as one block", () => {
@@ -255,9 +256,9 @@ test("dead fields from before away mode moved server-side are dropped", () => {
 
 test("an unrecognised layout is not adopted as if it were real", () => {
   // A mode from a future build (or a hand-edit) must not be PUT to the daemon looking
-  // valid. Store the Console fallback the renderer will draw.
+  // valid. Store the default the renderer will draw.
   store.set("mission-control.layout", "kanban");
-  assert.equal(readLegacySettings()?.layout, "console");
+  assert.equal(readLegacySettings()?.layout, "board");
 });
 
 test("a corrupt legacy value falls back rather than discarding the rest", () => {

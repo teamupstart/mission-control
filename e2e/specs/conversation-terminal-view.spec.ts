@@ -535,12 +535,13 @@ test("one session reads as a terminal while the rest stay on the chat log", asyn
   await first.click();
   const detail = dashboard.locator(".console-detail");
   await openConversation(detail);
-  const toggle = detail.getByRole("button", { name: "Terminal view" });
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  const toggle = detail.getByRole("button", { name: "Conversation view" });
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Chat");
   // Nothing to mark yet: this session reads exactly like the rest of the fleet.
   await expect(toggle).not.toHaveClass(/is-overridden/);
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Terminal");
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   await expect(toggle).toHaveClass(/is-overridden/);
 
@@ -550,9 +551,9 @@ test("one session reads as a terminal while the rest stay on the chat log", asyn
   await second.click();
   await openConversation(detail);
   await expect(detail.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: "Terminal view" })).toHaveAttribute(
-    "aria-pressed",
-    "false",
+  await expect(detail.getByRole("button", { name: "Conversation view" })).toHaveAttribute(
+    "aria-label",
+    "Conversation view: Chat",
   );
   await expect(detail.getByPlaceholder(/^Reply to this session/)).toBeVisible();
 
@@ -636,14 +637,15 @@ test("a session's own choice beats the dashboard default, and the tab forgets it
   const card = dashboard.locator(".console-detail");
   await openConversation(card);
   // The default put this session in the terminal...
-  const toggle = card.getByRole("button", { name: "Terminal view" });
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  const toggle = card.getByRole("button", { name: "Conversation view" });
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Terminal");
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
 
   // ...and the session's own switch takes it back out, which is the direction that would
   // be missing if the override could only ever turn the terminal ON.
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await dashboard.getByRole("menuitemradio", { name: "Chat" }).click();
+  await expect(toggle).toHaveAttribute("aria-label", "Conversation view: Chat");
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toHaveCount(0);
   await expect(card.getByPlaceholder(/^Reply to this session/)).toBeVisible();
   // And NOW the session differs from a terminal default, so the mark is on. The reverse of

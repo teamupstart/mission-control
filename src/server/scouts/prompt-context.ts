@@ -34,10 +34,10 @@ import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
  *
  * Append-only: these strings are written into `scout_prompt_turns.origin` on operators'
  * machines and read back by exact value. `human` leads because it is the only one whose
- * text is archived; the other three are `TurnOrigin` from the live attribution map, and
+ * text is archived; the other values are `TurnOrigin` from the live attribution map, and
  * they are recorded so that a restart cannot turn one of them into a human prompt.
  */
-export const SCOUT_PROMPT_ORIGINS = ["human", "foreman", "workflow", "harness"] as const;
+export const SCOUT_PROMPT_ORIGINS = ["human", "foreman", "workflow", "harness", "session"] as const;
 export type ScoutPromptOrigin = (typeof SCOUT_PROMPT_ORIGINS)[number];
 
 /**

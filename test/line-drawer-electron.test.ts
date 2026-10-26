@@ -205,7 +205,7 @@ const backlogDrawer = (tasks: Task[], withNotices = false): string =>
     // worst case rather than a placeholder.
     autoBacklog: true,
     autopilot: { on: true, active: 2, max: 3, ready: 6, blocked: 0, disabled: 1 },
-    autopilotLaunches: true,
+    autopilotGate: "launches",
     onClose: () => {},
     onEditTask: () => {},
     onOpenSitrep: () => {},

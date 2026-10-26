@@ -8,6 +8,15 @@ import { processIdentity } from "./update-lock.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
+/**
+ * How long one macOS command may take when its caller has no deadline of its own to give it.
+ *
+ * A bound on a hung command, not a guess at a healthy one. It used to be 2s here and 5s for
+ * `open` and `lsregister`, and a busy Mac blows through both: a command that runs out of time
+ * rejects rather than being retried, so one slow `ps` failed the update it belonged to and then
+ * that update's recovery. A caller that has a deadline passes what is left of it instead.
+ */
+export const COMMAND_TIMEOUT_MS = 15_000;
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const POLL_MS = 250;
 export const launchAckPath = (directory, nonce) => join(directory, `update-launch-${nonce}.json`);
@@ -16,7 +25,7 @@ export function realMacAppOps(directory) {
   return {
     uid: process.getuid(), now: Date.now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    run: (command, args, timeout = 2000) => new Promise((resolve, reject) => {
+    run: (command, args, timeout = COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
       const env = {...process.env};
       if (command === "/usr/bin/open") delete env.ELECTRON_RUN_AS_NODE;
       execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, env }, (error, stdout) => {
@@ -261,12 +270,16 @@ export function jobLaunchesBundle(text, bundle) {
     .map((value) => ({value, expanded: false, operator: false})), bundle);
 }
 
+// A probe gets whatever is left of its caller's deadline, never a smaller fixed slice. A probe
+// that runs out of time rejects rather than being retried, so a per-probe cap bought nothing but
+// an earlier failure: on a busy Mac one `ps` or `launchctl print` taking more than two seconds
+// failed the whole update and then its recovery, well inside the deadline the caller had set.
 export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 15_000) {
   const deadline = ops.now() + timeout;
   const budget = () => {
     const remaining = deadline - ops.now();
     if (remaining <= 0) throw new Error("Could not inspect all launchd jobs before the time limit. Retry the update after checking launchctl.");
-    return Math.min(2000, remaining);
+    return remaining;
   };
   const registrations = await apps(ops, budget());
   const running = await processes(ops, budget());
@@ -322,7 +335,8 @@ export async function assertSafeAppLaunch(bundle, ops = realMacAppOps()) {
 async function poll(ops, timeout, check, message) {
   const deadline = ops.now() + timeout;
   do {
-    if (await check(Math.max(1, Math.min(2000, deadline - ops.now())))) return;
+    // The rest of the deadline, for the reason `inspectAppLaunch` gives.
+    if (await check(Math.max(1, deadline - ops.now()))) return;
     const remaining = deadline - ops.now();
     if (remaining <= 0) break;
     await ops.sleep(Math.min(POLL_MS, remaining));
@@ -339,7 +353,7 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000) {
 }
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
-  await read(ops, LSREGISTER, ["-f", bundle], Math.min(timeout, 5000));
+  await read(ops, LSREGISTER, ["-f", bundle], timeout);
   await poll(ops, timeout, async (budget) => !(await apps(ops, budget)).some((row) => canonical(row.bundle) === canonical(bundle)),
     "LaunchServices still lists an old instance. The app was not relaunched. Restart macOS if Finder and other apps also cannot open.");
 }

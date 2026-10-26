@@ -100,6 +100,11 @@ export const test = base.extend<{
    * Conversation-facing specs likewise keep their original Chat precondition; the default
    * itself is covered through the raw page fixture in `settings-conversation-picker.spec.ts`.
    *
+   * `layout` is pinned to Console for the same reason. The dashboard ships Board, but the
+   * suite was written while Console was the default, and a spec that wants Board says so
+   * with its own PUT. The shipped default is covered through the raw page fixture in
+   * `fresh-install-defaults.spec.ts`.
+   *
    * `lineDensity` is the same story and the newest instance of it. The strip SHIPS
    * condensed, which drops each stage's sentence from the row - and `line-strip.spec.ts`
    * asserts those sentences as its proof that the daemon's fold arrived over SSE at all.
@@ -133,6 +138,7 @@ export const test = base.extend<{
           showToursOnStartup: false,
           conversationView: "chat",
           lineDensity: "expanded",
+          layout: "console",
         }),
       });
       expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);

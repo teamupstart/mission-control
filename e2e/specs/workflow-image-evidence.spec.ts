@@ -123,6 +123,9 @@ async function createWorkflow(daemon: DaemonHandle): Promise<{ workflowId: strin
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E native image evidence",
+    // Preview, stated rather than inherited: a new draft now defaults to Live, which needs a
+    // Trust grant this fixture's repository does not have.
+    bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "preview", maxRepairRounds: 5 },
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 80 } },

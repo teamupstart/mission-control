@@ -33,7 +33,7 @@ beforeEach(() => {
 
 test("an unset key reads as the shipped defaults", () => {
   const config = getUiConfig();
-  assert.equal(config.layout, "console");
+  assert.equal(config.layout, "board");
   assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
@@ -94,9 +94,9 @@ test("a key from a retired preference is dropped rather than carried forever", (
   assert.ok(!("usageBarCollapsed" in config));
 });
 
-test("a stored Cards preference is rewritten to Console", () => {
+test("a stored Cards preference is rewritten to the shipped default", () => {
   setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "grid", richText: false } as never);
-  assert.equal(getUiConfig().layout, "console");
+  assert.equal(getUiConfig().layout, "board");
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.ui), {
     ...UI_CONFIG_DEFAULTS,
     richText: false,
@@ -106,7 +106,7 @@ test("a stored Cards preference is rewritten to Console", () => {
 
 test("new Cards preferences are rejected", () => {
   assert.throws(() => setUiConfig({ layout: "grid" } as never));
-  assert.equal(getUiConfig().layout, "console");
+  assert.equal(getUiConfig().layout, "board");
 });
 
 test("the defaults the schema applies are the ones the web paints from", () => {
@@ -124,8 +124,8 @@ test("configured is false until something is saved, and true once it is", () => 
 
 test("saving the defaults on purpose still counts as configured", () => {
   // The trap a value-compare would fall into: an operator who deliberately chose the
-  // Console has configured this, and adoption must not fire over the top of that choice.
-  setUiConfig({ layout: "console" });
+  // Board has configured this, and adoption must not fire over the top of that choice.
+  setUiConfig({ layout: "board" });
   assert.equal(uiConfigView().configured, true);
   assert.deepEqual(uiConfigView().config, UI_CONFIG_DEFAULTS);
 });
@@ -134,6 +134,8 @@ test("a patch merges over the stored config rather than replacing it", () => {
   setUiConfig({ layout: "console" });
   setUiConfig({ richText: false });
   const config = getUiConfig();
+  // Console is no longer the default, so this also proves a stored Console survives the
+  // default moving to Board.
   assert.equal(config.layout, "console", "an unrelated patch cleared the layout");
   assert.equal(config.richText, false);
 });

@@ -82,12 +82,11 @@ test("no sessions: every arrow is a no-op", () => {
 test("a stored layout is only trusted if we still ship it", () => {
   assert.equal(parseLayoutMode("console"), "console");
   assert.equal(parseLayoutMode("board"), "board");
-  assert.equal(parseLayoutMode("grid"), "console");
+  assert.equal(parseLayoutMode("grid"), "board");
   // The retired Cards value, junk, a mode from a future version, or a cleared key all
-  // fall back to Console
-  // rather than rendering an app with no layout at all.
-  assert.equal(parseLayoutMode("triage"), "console");
-  assert.equal(parseLayoutMode(""), "console");
-  assert.equal(parseLayoutMode(null), "console");
-  assert.equal(parseLayoutMode(undefined), "console");
+  // fall back to the shipped default, Board, rather than rendering an app with no layout.
+  assert.equal(parseLayoutMode("triage"), "board");
+  assert.equal(parseLayoutMode(""), "board");
+  assert.equal(parseLayoutMode(null), "board");
+  assert.equal(parseLayoutMode(undefined), "board");
 });

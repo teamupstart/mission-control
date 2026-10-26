@@ -57,8 +57,8 @@ There are two explicit exceptions:
   shared child environment, under the Workflow process supervisor. Their resolved record carries
   `id: null` so it cannot impersonate a built-in catalog entry.
 - Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
-  currently `/usr/bin/env`, `/bin/sh`, and `/usr/bin/osascript`. Do not add a bare command to this
-  class.
+  currently `/usr/bin/env`, `/bin/sh`, `/bin/bash`, `/usr/bin/osascript`, and `/usr/bin/open`.
+  Do not add a bare command to this class.
 
 ## Session ownership
 
@@ -211,6 +211,41 @@ flow and tool contracts. `plans/inputs.ts` verifies pinned inputs at dispatch an
 `plans/publication.ts` owns exact human approval, frozen validation and durable local receipts.
 WorkflowManager owns its notification/recovery lifetime. Receipts update only plan artifact edges;
 TaskManager retains completion and eviction ownership. Foreman and MCP never write SQLite.
+
+## Delegated session control
+
+The Registry owns the transient per-controller grant and its session projection.
+The desktop preload arms a single-use authorization from a trusted menu selection. Main
+consumes it over the private utility-process channel; HTTP supplies only the request id,
+session id and setting, never the authorization. The daemon rechecks the same Registry
+identity used by the grant after the asynchronous check before enabling control. Standalone
+daemons fail closed.
+`session-control.ts` authenticates the current signed session credential and checks that
+grant before translating typed commands to the existing dashboard routes. It introduces no
+second driver, terminal write policy, queue owner or review lifecycle. New session-control
+actions belong in the shared discriminated schema and the exhaustive route translator;
+there is no arbitrary-path proxy. Grant changes and actions use the existing session event
+ledger. Delegated reviews are conversation history, while human approval queries keep their
+human-only meaning.
+The verified controller is associated with the exact internal `Request` through a private
+WeakMap in `session-control.ts`, removed when dispatch finishes. Answer handlers read that
+association separately from their public human/Foreman schemas, so concurrent direct requests
+cannot inherit delegated attribution. Delegated single-option commands and SDK form answers
+require the current prompt id. Pane form rows retain their existing request-id compatibility. Authenticated revocation
+still removes the grant if the live session identity changes while authorization is pending.
+
+```mermaid
+flowchart LR
+  Operator[Trusted desktop menu selection] --> Shell[Private preload and Electron shell]
+  Shell -->|Single-use private reply| Auth[Daemon authorization and identity check]
+  Auth --> Registry[Registry grant]
+  Agent[Controller MCP tools] --> Gate[Live credential and grant check]
+  Registry --> Gate
+  Gate --> Routes[Existing dashboard action routes]
+  Routes --> Runtime[SDK or terminal]
+  Routes --> Reviews[Review and queue owners]
+  Registry --> SSE[Session upsert to dashboard]
+```
 
 ## Harnesses and terminals
 

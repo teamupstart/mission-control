@@ -7,7 +7,7 @@
 //
 // So this runs as its own process. `electron` is external in the bundle and reached through
 // `require`, and `node:child_process` is required as a namespace whose property is read at
-// call time, so both can be replaced before the bundle is loaded. Nothing else is faked: the
+// call time, so both can be replaced before the bundle is loaded. Apart from native inventory, the
 // identity classification, the receipt read, the executable, the argv and the ordering are all
 // the production path.
 // The launch-registration mode permits startup with a simulated macOS inventory
@@ -162,6 +162,15 @@ if (launchRegistration) {
     }
   };
 }
+
+// These fixtures run from persistent copies. Keep mount inventory at the native
+// subprocess boundary so the real location policy runs on Linux and macOS alike.
+childProcess.execFileSync = (command, args) => {
+  observed.inspection.push({command, args});
+  if (command === "/usr/bin/hdiutil") return "fixture image inventory";
+  if (command === "/usr/bin/plutil") return JSON.stringify({images: []});
+  throw new Error(`Unexpected startup subprocess: ${command}`);
+};
 
 const load = Module._load;
 Module._load = function (request, parent, isMain) {

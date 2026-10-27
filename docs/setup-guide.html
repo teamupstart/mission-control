@@ -412,11 +412,18 @@
 cd mission-control
 make install</code></pre>
       <p>
-        That is the whole install. Run it as yourself, never with <code>sudo</code>. It checks the
-        prerequisites first, builds the app, and puts <strong>Agent Mission Control.app</strong> in
+        Run it as yourself, never with <code>sudo</code>. It checks the prerequisites first and
+        builds the app. A fresh install puts <strong>Agent Mission Control.app</strong> in
         <strong>your own Applications folder</strong>, the one inside your home folder, which it
-        creates if you have never had one. No administrator password is needed for any of it.
-        Re-running it is safe.
+        creates if you have never had one. No administrator password is needed for this personal
+        installation.
+      </p>
+      <p>
+        Re-running <code>make install</code> updates an existing managed installation at its
+        recorded path and app name, so an existing <strong>Mission Control.app</strong> keeps
+        that name. To rename it, follow the
+        <a href="app-name-migration.md#existing-installations">supported binary migration route</a>
+        after a qualified renamed release is available.
       </p>
       <p>
         Already have Mission Control in the shared <code>/Applications</code> folder? It stays

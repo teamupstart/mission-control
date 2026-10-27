@@ -2,7 +2,8 @@ import { fork } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { lstatSync, readdirSync, realpathSync, rmSync, existsSync } from "node:fs";
-import { atomicMigrationJson, readMigrationJson, readMigrationJournal } from "../../scripts/install-migration.mjs";
+import { atomicMigrationJson, readMigrationJson, readMigrationJournal, migrationReceipt, receiptDigest, withMigrationLock } from "../../scripts/install-migration.mjs";
+import { boundedMigrationWait } from "../../scripts/migration-runtime.mjs";
 import { processIdentity, claimIsLive } from "../../scripts/update-lock.mjs";
 import type { StagedInstallDescriptor } from "../../scripts/install-staged-app.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
@@ -21,32 +22,54 @@ export type BinaryStageOutcome = {ok: true; descriptor: StagedInstallDescriptor;
   | {ok: false; reason: "cancelled" | "failed"; message: string};
 
 /** Abandoned downloads have no recovery obligation. Handed-off candidates stay
- * until the matching transaction and independent helper have both finished. */
-export function cleanupBinaryDownloads(stateDirectory: string): void {
+ * until the matching transaction and independent helper have both finished.
+ * Returns true only when a matching terminal handoff still has a live helper. */
+export function cleanupBinaryDownloads(stateDirectory: string): boolean {
   const store = join(realpathSync(stateDirectory), "update-downloads");
-  if (!existsSync(store) || lstatSync(store).isSymbolicLink()) return;
+  if (!existsSync(store) || lstatSync(store).isSymbolicLink()) return false;
   const journal = readMigrationJournal(stateDirectory);
+  let waitingForHelper = false;
   for (const name of readdirSync(store)) {
     if (!/^attempt-[A-Za-z0-9]+$/.test(name)) continue;
     const directory = join(store, name);
     try {
       if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) continue;
       const marker = readMigrationJson(join(directory, "owner.json"));
-      if (marker.protocol !== 1 || marker.path !== realpathSync(directory) || !marker.parent?.identity ||
-          claimIsLive(marker.parent) || !marker.worker?.identity || claimIsLive(marker.worker)) continue;
+      if (marker.protocol !== 1 || marker.path !== realpathSync(directory) ||
+          [marker.parent, marker.worker].some(record => !Number.isSafeInteger(record?.pid) || record.pid < 1 ||
+            typeof record.identity !== "string" || !record.identity || claimIsLive(record))) continue;
       const handoff = join(directory, "handoff.json");
       if (existsSync(handoff)) {
         const {nonce} = readMigrationJson(handoff);
-        if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce) || journal?.plan.nonce !== nonce || !["complete", "restored"].includes(journal.stage)) continue;
+        if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce) || journal?.plan.nonce !== nonce || !["complete", "restored"].includes(journal.stage) ||
+            !journal.plan.stagedBundle.startsWith(`${directory}/`)) continue;
+        const receipt = migrationReceipt(stateDirectory);
+        if (!receipt || receiptDigest(receipt) !== receiptDigest(journal.stage === "complete" ? journal.plan.intendedReceipt : journal.plan.oldReceipt)) continue;
         const runtime = join(stateDirectory, "update-runtimes", `attempt-${nonce}`);
+        if (!lstatSync(runtime).isDirectory() || realpathSync(runtime) !== runtime) continue;
         const owner = readMigrationJson(join(runtime, "owner.json"));
+        if (owner.protocol !== 1 || owner.nonce !== nonce || (owner.transactionNonce ?? owner.nonce) !== nonce || owner.path !== runtime ||
+            !Number.isSafeInteger(owner.helper?.pid) || owner.helper.pid < 1 || typeof owner.helper.identity !== "string" || !owner.helper.identity) continue;
+        // The helper releases the transaction lock before writing its completion
+        // marker and exiting. Startup must retry this short interval, never delete
+        // a live helper's candidate just because its journal is terminal.
+        if (claimIsLive(owner.helper) || claimIsLive(journal.owner)) { waitingForHelper = true; continue; }
         const finished = readMigrationJson(join(runtime, "finished.json"));
-        if (!owner.helper?.identity || claimIsLive(owner.helper) || finished.nonce !== nonce ||
+        if (finished.nonce !== nonce ||
             finished.pid !== owner.helper.pid || finished.identity !== owner.helper.identity) continue;
       } else if (journal?.plan.stagedBundle.startsWith(`${directory}/`)) continue;
       rmSync(directory, {recursive: true});
     } catch { /* Unknown ownership or recovery state retains the candidate. */ }
   }
+  return waitingForHelper;
+}
+
+/** Called at startup, independently of accepting another update. The shared lock
+ * keeps journal replacement and helper snapshot cleanup out of the decision. A
+ * bounded retry retains unknown/stuck helpers without holding up startup forever. */
+export async function cleanupSettledBinaryDownloads(stateDirectory: string): Promise<void> {
+  await boundedMigrationWait(() => withMigrationLock(stateDirectory, () => !cleanupBinaryDownloads(stateDirectory)),
+    "Binary download cleanup retained a helper that has not exited.", {timeout: 10_000});
 }
 
 /** The parent owns the attempt directory and never offers retry until its worker
@@ -57,7 +80,7 @@ export async function stageBinaryUpdate(request: BinaryStageRequest, options: {
   const store = join(await realpath(options.stateDirectory), "update-downloads");
   await mkdir(store, {recursive: true, mode: 0o700});
   if ((await lstat(store)).isSymbolicLink()) throw new BinaryUpdateError("The update staging directory is not a private installation directory.");
-  cleanupBinaryDownloads(options.stateDirectory);
+  await cleanupSettledBinaryDownloads(options.stateDirectory);
   const directory = await mkdtemp(join(store, "attempt-"));
   const env: NodeJS.ProcessEnv = {...options.env, ELECTRON_RUN_AS_NODE: "1"};
   delete env.NODE_OPTIONS; delete env.NODE_PATH;

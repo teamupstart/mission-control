@@ -33,7 +33,7 @@ import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferen
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { latestStableBinary, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type BinaryOffer } from "./update-binary-release.ts";
-import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff, type BinaryStageRequest, type BinaryStageOutcome } from "./update-binary.ts";
+import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff, cleanupSettledBinaryDownloads, type BinaryStageRequest, type BinaryStageOutcome } from "./update-binary.ts";
 import type { UpdateTransfer } from "../shared/update.ts";
 
 /**
@@ -1306,7 +1306,12 @@ export function createDefaultUpdaterPort(options: {
       };
     },
     requestQuit: options.requestQuit,
-    readOutcome: () => readSettledUpdateOutcome(options.stateDirectory),
+    readOutcome: async () => {
+      const outcome = await readSettledUpdateOutcome(options.stateDirectory);
+      try { await cleanupSettledBinaryDownloads(options.stateDirectory); }
+      catch (error) { log(`binary download cleanup retained material: ${String(error)}`); }
+      return outcome;
+    },
     clearOutcome: (expected) => clearUpdateOutcome(updateOutcomePath(options.stateDirectory), expected),
     now: Date.now,
     random: Math.random,

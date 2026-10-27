@@ -6,6 +6,7 @@ import test from 'node:test';
 import { execFileSync, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { UPDATE_HELPER_FILES } from '../scripts/update-helper-files.mjs';
@@ -349,6 +350,27 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }
   await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'helper did not exit', {timeout: 10_000});
   assert.ok(existsSync(join(handed.runtime, 'Runtime.app/Contents/Frameworks/Electron Framework.framework')));
+  if (binaryFixture) {
+    const prepared = JSON.parse(readFileSync(join(state, 'binary-prepared.json'), 'utf8'));
+    const download = dirname(dirname(prepared.descriptor.bundle));
+    assert.ok(existsSync(download), 'the candidate survives until startup proves helper completion');
+    const receiptBefore = readFileSync(join(state, 'install-receipt.json'));
+    const journalBefore = readFileSync(join(state, 'install-migration.json'));
+    const result = execFileSync(join(installed, 'Contents/MacOS/Mission Control'), ['--input-type=module', '-e', `
+      import {createDefaultUpdaterPort} from ${JSON.stringify(pathToFileURL(join(installed, 'Contents/Resources/app/updater-fixture.mjs')).href)};
+      const port = createDefaultUpdaterPort({packaged: true, stateDirectory: ${JSON.stringify(state)},
+        currentVersion: () => '1.26.0', currentCommit: () => 'b'.repeat(40), installSnapshot: () => ({receipt: null, problem: null}),
+        helperSource: '/unused', requestQuit: () => {}, dialogs: {}});
+      console.log(JSON.stringify(await port.readOutcome()));
+    `], {env: {...env, ELECTRON_RUN_AS_NODE: '1'}, encoding: 'utf8', timeout: 20_000});
+    assert.equal(JSON.parse(result).result, 'success');
+    assert.equal(existsSync(download), rename, 'completed startup reclaims the ZIP and app; pending rename repairs retain both');
+    assert.deepEqual(readFileSync(join(state, 'install-receipt.json')), receiptBefore);
+    assert.deepEqual(readFileSync(join(state, 'install-migration.json')), journalBefore);
+    assert.equal(readFileSync(join(state, 'fixture-state-sentinel'), 'utf8'), 'existing user state');
+    assert.equal(existsSync(join(root, 'trap-hits')), false, 'startup cleanup invokes no host node/npm/npx');
+    console.log(`Embedded Electron startup cleanup: ${rename ? 'pending rename integration repairs retain candidate' : 'completed ZIP and expanded candidate reclaimed without another update'}; exact receipt, journal and synthetic state preserved; zero host runtime trap hits.`);
+  }
   cleanupHelperSnapshots(state);
   if (!failure) assert.deepEqual(readdirSync(apps), [basename(installed)], 'successful update leaves no retained swap siblings');
   assert.equal(existsSync(handed.runtime), failure || rename, 'only a later owner reclaims a dead completed runtime; failed or integration-pending recovery material remains');

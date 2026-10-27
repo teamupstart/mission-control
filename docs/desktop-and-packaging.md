@@ -388,8 +388,12 @@ arm64 executable, minimum macOS, signed build metadata and helper/receipt protoc
 the existing staged install descriptor, including a full content digest. **Restart and Install**
 is offered only after this succeeds. **Later** keeps an intact prepared candidate for reuse in the
 current app session, including when that exact remote asset has expired. A changed channel or a
-new accepted target retires unused staging. On a later attempt, abandoned downloads are reclaimed
-only with dead process identities and no outstanding handoff/recovery obligation.
+new accepted target retires unused staging. Startup and later preparation reclaim abandoned
+downloads only with dead process identities and no outstanding handoff/recovery obligation.
+For handed-off candidates, cleanup requires the matching terminal transaction, committed receipt
+for success or prior receipt after restoration, and the exact helper's completion marker and death.
+Startup briefly retries a helper that is still exiting. Missing, changed or uncertain records retain the ZIP and expanded candidate;
+cleanup does not remove the outcome notice or recovery copies and never requires another update.
 
 Choose **Check for Updates…** from the app menu or tray for the same offer and restart question.
 The shell reveals the existing themed dashboard modal. A manual check during preparation reports

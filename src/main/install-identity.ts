@@ -22,12 +22,13 @@
 // Shipping the classification first is what keeps that relocation from being the moment two
 // bundles first have to coexist safely.
 
-import { join } from "node:path";
+import { dirname, basename, join } from "node:path";
 import { isTrustedInstallRepo } from "../shared/install-receipt-schema.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 
 /** The product bundle's directory name, which is also its identity on disk. */
-export const APP_BUNDLE_NAME = "Mission Control.app";
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME } from "../shared/app-naming.mjs";
+export { APP_BUNDLE_NAME };
 
 /** The one shared location; personal installs live under a home directory instead. */
 export const SYSTEM_APPS_DIR = "/Applications";
@@ -117,12 +118,15 @@ export function classifyInstallIdentity(inputs: IdentityInputs): InstallIdentity
   // receipt is a file in the state directory; treating it as "a path to launch" without
   // pinning both ends of the move would turn it into a way to make Mission Control open an
   // arbitrary bundle.
-  if (runningBundle !== systemAppPath()) {
+  const sameFolderRename = basename(runningBundle) === LEGACY_APP_BUNDLE_NAME && target === join(dirname(runningBundle), APP_BUNDLE_NAME);
+  if (runningBundle !== systemAppPath() && runningBundle !== join(SYSTEM_APPS_DIR, LEGACY_APP_BUNDLE_NAME) &&
+      !sameFolderRename) {
     return mismatch(
       `Updates are disabled because this copy of Mission Control is at ${runningBundle}, while the managed installation is at ${target}. Open the app at ${target}, or reinstall with the managed install command.`,
     );
   }
-  if (target !== userAppPath(home)) {
+  if (target !== userAppPath(home) && target !== join(home, "Applications", LEGACY_APP_BUNDLE_NAME) &&
+      !sameFolderRename) {
     return mismatch(
       `Updates are disabled because the managed installation is at ${target}, which is not this account's Mission Control. Reinstall with the managed install command.`,
     );

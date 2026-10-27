@@ -147,6 +147,10 @@ export const FIXED_OS_EXECUTABLES = {
   // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there
   // is no locator snapshot yet and nothing to select between.
   open: "/usr/bin/open",
+  // Binary update platform checks use the OS tools, never an operator override.
+  swVers: "/usr/bin/sw_vers",
+  lipo: "/usr/bin/lipo",
+  plistBuddy: "/usr/libexec/PlistBuddy",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

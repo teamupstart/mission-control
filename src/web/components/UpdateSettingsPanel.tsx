@@ -47,7 +47,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
       <Tooltip label="Track unreleased main commits instead of stable releases.">
         <label className={`settings-toggle${snapshot?.alpha ? " is-on" : ""}`}>
           <input type="checkbox" aria-label="Alpha updates" checked={snapshot?.alpha ?? false}
-            disabled={busy || binary} onChange={(event) => { void change(event.target.checked); }} />
+            disabled={busy || snapshot?.phase === "disabled"} onChange={(event) => { void change(event.target.checked); }} />
           <span className="settings-toggle-text">
             <span className="settings-toggle-label">Alpha updates</span>
             <span className="settings-toggle-desc">
@@ -57,9 +57,7 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
           </span>
         </label>
       </Tooltip>
-      <p className="settings-hint">{binary
-        ? "The signed installer verifies a published app without host Node or local compilation."
-        : "Updates are built while you work. You choose when to restart and install."}</p>
+      <p className="settings-hint">Signed binaries download while you work. You choose when to restart and install. No host Node or local compilation is needed for updates.</p>
       <Tooltip label={snapshot?.alpha ? "Check for new main commits now." : "Check for a newer stable release now."}>
         <button type="button" className="btn btn-ghost" disabled={busy || snapshot?.phase === "disabled"}
           onClick={() => { void check(); }}>Check for updates</button>

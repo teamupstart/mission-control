@@ -15,6 +15,10 @@ reruns preserve the recorded destination and state home. Quit the existing app b
 Use `--scope system` for a fresh shared installation, `--apps-dir DIR` for an existing writable
 custom directory, or `--ref vX.Y.Z` / `--ref FULL_SHA` to pin stable / alpha bytes.
 
+New binaries install **Agent Mission Control.app**. Existing managed installations migrate in
+the same folder, preserving their state and receipt scope. Older saved installers must be
+replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
+
 **Release qualification is still pending.** Until a signed ready manifest is published, this
 command refuses installation. It never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.

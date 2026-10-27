@@ -167,7 +167,7 @@ test('a failed repair followed by a successful retry shows completion from the m
     readAlpha: () => false, writeAlpha: unexpected,
     currentVersion: () => '1.17.1',
     currentCommit: () => null,
-    latestMainCommit: unexpected, installSnapshot: unexpected, runtime: unexpected,
+    latestMainCommit: unexpected, installSnapshot: unexpected, binaryForCommit: unexpected,
     latestRelease: unexpected, stage: unexpected, stagedBundleIdentity: unexpected,
     readOutcome: unexpected, clearOutcome: unexpected, now: Date.now, random: () => 0,
     helperSource: unexpected, stateDirectory: unexpected, handoff: unexpected, requestQuit: unexpected,
@@ -218,4 +218,44 @@ test('integration repair status displays safe guidance instead of private diagno
   await expect(banner).not.toContainText('/Users/Private');
   await expect(banner).not.toContainText('fixture-secret');
   await capture(dashboard, 'safe-repair-status.png');
+});
+
+test('app rename shows the same-folder destination and keeps cancellation before restart', async ({dashboard}) => {
+  const rename: UpdateMigration = {kind: 'rename', source: '/Users/Fixture/Applications/Mission Control.app',
+    target: '/Users/Fixture/Applications/Agent Mission Control.app', status: 'offered', repairs: []};
+  await bridge(dashboard, {...ready, migration: rename});
+  const banner = dashboard.getByRole('status', {name: 'Mission Control update'});
+  await expect(banner).toContainText('renames');
+  await expect(banner).toContainText(rename.source);
+  await expect(banner).toContainText(rename.target);
+  await expect(banner).toContainText('same folder');
+  await expect(banner.getByRole('button', {name: 'Keep system installation'})).toHaveCount(0);
+  await banner.getByRole('button', {name: 'Later', exact: true}).click();
+  expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['later']);
+  const request = {...UPDATE_DIALOGS.ready('1.27.3', rename), id: 'app-name-migration'};
+  await dashboard.evaluate((request) => window.migrationFixture.dialog(request), request);
+  const modal = dashboard.getByRole('dialog', {name: 'Mission Control update'});
+  await expect(modal).toContainText(rename.target);
+  await expect(modal).toContainText('settings and sessions stay');
+  await expect(modal.getByRole('button', {name: 'Keep system installation'})).toHaveCount(0);
+  await expectContentClearsBorder(modal);
+  await capture(dashboard, 'app-rename-ready.png');
+  await dashboard.keyboard.press('Escape');
+  expect(await dashboard.evaluate(() => window.migrationFixture.answers)).toEqual(['dismiss']);
+  await dashboard.evaluate((snapshot) => window.migrationFixture.push(snapshot), {...ready, migration: rename});
+  await banner.getByRole('button', {name: 'Install and restart', exact: true}).click();
+  expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['later', 'install']);
+  await dashboard.evaluate((migration) => window.migrationFixture.push({phase: 'idle', currentVersion: '1.27.3', lastCheckedAt: null,
+    lastOutcome: null, migration: {...migration, status: 'repair-required', repairs: [{id: 'login-confirmation',
+      message: 'The old login preference was unavailable. Set Start at login in the renamed app to your preference, then Retry integration repair to confirm it.'}]}}), rename);
+  await expect(banner).toContainText('App renamed; integrations need repair');
+  await expect(banner).toContainText('Set Start at login');
+  await capture(dashboard, 'app-rename-login-confirmation.png');
+  await banner.getByRole('button', {name: 'Retry integration repair'}).click();
+  expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['later', 'install', 'repair']);
+  await dashboard.evaluate((migration) => window.migrationFixture.push({phase: 'idle', currentVersion: '1.27.3', lastCheckedAt: null,
+    lastOutcome: null, migration: {...migration, status: 'complete'}}), rename);
+  await expect(banner).toContainText('App rename complete');
+  await expect(banner).toContainText('retained privately for recovery');
+  await capture(dashboard, 'app-rename-complete.png');
 });

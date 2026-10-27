@@ -61,3 +61,5 @@ Mission Control's product reference is organized by feature below.
 - [Troubleshooting](troubleshooting.md)
 - [Glossary](glossary.md)
 - [Security policy and reporting](../SECURITY.md)
+
+- [macOS app-name migration](app-name-migration.md): binary compatibility, the source bridge and recovery.

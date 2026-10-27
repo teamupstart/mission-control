@@ -165,6 +165,26 @@ its recorded outcome and cleanup choice. See [session lifecycle](session-lifecyc
 and [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
 
 
+## A desktop binary update is unavailable or fails verification
+
+Use **Check again** to refresh the stable release or exact-main-SHA alpha offer. A release without
+a complete manifest, ZIP and DMG is not ready. An alpha may still be publishing or may have expired;
+the updater never substitutes an older alpha or compiles source. An intact local prepared binary
+can still be installed in the current session. Native GitHub CLI authentication is required, but
+host Node, npm and a source clone are not.
+
+The download bar measures bytes. Archive and signature checks show their stage without a guessed
+percentage. Cancellation waits for the worker and owned subprocesses to stop before retry appears.
+Wrong signer, digest, architecture, OS requirement or helper protocol leaves the installed app and
+receipt unchanged. Free enough space for the archive, expanded app and measured runtime/recovery
+copies, then retry. See the bounded, redacted `update.log` for diagnostics.
+
+If the app cannot update itself, use the [signed binary installer](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+to replace the existing destination without host Node. Preserve the state home, receipt and
+recovery directories. A failure after receipt commitment needs forward recovery; do not manually
+launch an older app against potentially migrated state. Signed publication and real packaged
+qualification remain required before this route can be declared release-ready.
+
 ## Mission Control is not open anymore, or an update relaunch fails
 
 A Dock error saying **The application "Mission Control" is not open anymore**, especially with

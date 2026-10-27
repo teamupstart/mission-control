@@ -62,7 +62,7 @@ function put(path: string, body: string | Buffer) {
 function fixture(t: TestContext, failure = '', channel = 'alpha') {
   const root = mkdtempSync(join(tmpdir(), 'mission-package-behavior-'));
   const output = join(root, 'release/distribution');
-  const app = join(output, 'mac-arm64/Mission Control.app');
+  const app = join(output, 'mac-arm64/Agent Mission Control.app');
   const roots: string[] = [], mounts: string[] = [], stages: string[] = [], mcpMethods: string[] = [];
   const snapshots = new Map<string, string>();
   let metadata: any, dmgNotarized = false, recovery = false;
@@ -79,7 +79,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
   };
   const assertQualificationBoundary = () => {if (!recovery) assertUnqualified();};
   function snapshot(archive: string, kind: string) {
-    const copy = join(root, `${kind}-contents/Mission Control.app`);
+    const copy = join(root, `${kind}-contents/Agent Mission Control.app`);
     cpSync(app, copy, {recursive: true}); snapshots.set(archive, copy);
     put(archive, `${kind} archive fixture`);
   }
@@ -150,7 +150,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
         if ((dmg && (!dmgNotarized || failure === 'dmg-staple')) || (!dmg && failure === 'app-staple')) status = 1;
       } else if (command === '/usr/libexec/PlistBuddy') {
         const key = args[1]!.slice('Print :'.length);
-        stdout = ({CFBundleIdentifier: policy.bundleId, CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion} as Record<string, string>)[key]!;
+        stdout = ({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: "Mission Control", CFBundleName: "Agent Mission Control", CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion} as Record<string, string>)[key]!;
       } else if (command === '/usr/bin/lipo') stdout = 'arm64';
       else if (command === '/usr/bin/codesign') {
         if (args[0] === '-d') stderr = 'flags=0x10000(runtime)';
@@ -158,11 +158,11 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
       } else if (command === '/usr/bin/hdiutil') {
         if (args[0] === 'attach') {
           const mount = args.at(-1)!; mounts.push(mount); stages.push('mount-dmg');
-          cpSync(snapshots.get(args[1]!)!, join(mount, 'Mission Control.app'), {recursive: true});
-          if (failure === 'dmg-bytes') put(join(mount, 'Mission Control.app/changed'), 'tampered');
+          cpSync(snapshots.get(args[1]!)!, join(mount, 'Agent Mission Control.app'), {recursive: true});
+          if (failure === 'dmg-bytes') put(join(mount, 'Agent Mission Control.app/changed'), 'tampered');
         } else {stages.push('detach-dmg'); mounts.splice(mounts.indexOf(args[1]!), 1);}
       } else if (command === '/usr/bin/ditto') {
-        const destination = join(args.at(-1)!, 'Mission Control.app'); stages.push('extract-zip');
+        const destination = join(args.at(-1)!, 'Agent Mission Control.app'); stages.push('extract-zip');
         cpSync(snapshots.get(args[2]!)!, destination, {recursive: true});
         if (failure === 'zip-bytes') put(join(destination, 'changed'), 'tampered');
       } else throw new Error(`Unexpected verification command: ${command}`);
@@ -180,7 +180,7 @@ function fixture(t: TestContext, failure = '', channel = 'alpha') {
         queueMicrotask(() => {
           if (failure === 'parent') {proc.exitCode = 1; proc.emit('exit', 1); return;}
           const directory = join(probe, 'state/update-runtimes/attempt'); mkdirSync(directory, {recursive: true});
-          const original = join(probe, 'Mission Control.app');
+          const original = join(probe, 'Agent Mission Control.app');
           cpSync(original, join(directory, 'Runtime.app'), {recursive: true});
           put(join(directory, 'owner.json'), JSON.stringify({helper: {pid: helperPid, identity: 'fixture helper'}}));
           put(join(probe, 'handoff.json'), JSON.stringify({directory, parentPid}));

@@ -1,3 +1,4 @@
+import { binaryBundleName } from "../src/shared/app-naming.mjs";
 import { execFileSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -49,7 +50,7 @@ export async function packageDistribution({repoRoot = process.cwd(), env = proce
   const {build, Platform, Arch} = await import('electron-builder');
   const config = distributionBuilderConfig(metadata, env.CSC_NAME, output);
   await build({targets: Platform.MAC.createTarget(['dir'], Arch.arm64), config, publish: 'never'});
-  const app = join(output, 'mac-arm64/Mission Control.app');
+  const app = join(output, 'mac-arm64', binaryBundleName(metadata));
   await verifyDistributionApp(app, metadata, policy);
   await qualifySignedRuntime(app, metadata, policy);
   const before = inspectBundle(app);

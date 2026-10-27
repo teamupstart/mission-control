@@ -274,3 +274,14 @@ test('persisted repair failures use fixed guidance while detailed diagnostics go
   assert.ok(!logged.includes('/Users/Private'));
   assert.ok(!logged.includes('fixture-secret'));
 });
+
+test('standalone rename leaves unknown login preference untouched until explicit retry confirms the user setting', async t => {
+  const f = fixture(t);
+  const journal = f.journal(); journal.plan.kind = 'rename'; journal.inventory = null;
+  const first = await repairMigrationIntegrations(journal, f.ports);
+  assert.equal(first.find(r => r.id === 'login-confirmation')?.status, 'pending');
+  assert.equal(f.calls.some(c => c.startsWith('login:')), false);
+  const retry = await repairMigrationIntegrations(journal, f.ports, {confirmLogin: true});
+  assert.equal(retry.find(r => r.id === 'login')?.status, 'complete');
+  assert.equal(f.calls.at(-1), 'login:false');
+});

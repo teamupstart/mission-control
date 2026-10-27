@@ -110,3 +110,21 @@ export function replaceAppBundle(input: {
    */
   stranded: string[];
 };
+
+export function reserveRenamedApp(target: string): string;
+export function renamedBundlePublicationCommand(source: string, target: string, expectedIdentity: string): string;
+export function publishRenamedApp(source: string, target: string, expectedIdentity: string, options?: {
+  rename?: (from: string, to: string) => void;
+  runElevated?: (command: string) => void;
+}): void;
+export function renamedBundleRemovalCommand(source: string, expectedIdentity: string): string;
+export function removeRenamedBundle(source: string, expectedIdentity: string, options?: {
+  ops?: {
+    identity(path: string): string | null;
+    makePrivateDirectory(prefix: string): string;
+    move(from: string, to: string): void;
+    remove(path: string): void;
+    removeDirectory(path: string): void;
+  };
+  runElevated?: (command: string) => void;
+}): void;

@@ -74,7 +74,7 @@ else if (tool === "node") {
   mkdirSync(join(process.cwd(), "node_modules/.bin"), { recursive: true });
   if (failure === "support-build") writeFileSync(compiler, "#!/bin/sh\\nexit 32\\n", { mode: 0o755 });
   else symlinkSync(${JSON.stringify(join(root, "node_modules/.bin/esbuild"))}, compiler);
-  const contents = join(process.cwd(), "release/mac-arm64/Mission Control.app/Contents");
+  const contents = join(process.cwd(), "release/mac-arm64/Agent Mission Control.app/Contents");
   mkdirSync(join(contents, "Resources/app"), { recursive: true });
   const version = failure === "version" ? "9.9.9" : "1.2.3";
   writeFileSync(join(contents, "Info.plist"), '<plist><dict><key>CFBundleShortVersionString</key><string>' + version + '</string></dict></plist>');
@@ -159,7 +159,7 @@ test("Bash installs through the shared release, verification, swap and receipt p
   assert.equal(validateReceipt(receipt), null);
   assert.equal(receipt.releaseTag, "v1.2.3");
   assert.equal(receipt.installedCommit, commit);
-  assert.equal(receipt.appPath, join(f.apps, "Mission Control.app"));
+  assert.equal(receipt.appPath, join(f.apps, "Agent Mission Control.app"));
   assert.ok(existsSync(join(receipt.appPath, "Contents/Info.plist")));
   const supportFiles = readdirSync(receipt.sourceClone, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name).slice(receipt.sourceClone.length + 1));
@@ -181,7 +181,7 @@ test("Bash installs through the shared release, verification, swap and receipt p
   });
   const staged = update(["--stage-only", "--ref", "v1.2.3"]);
   assert.equal(staged.status, 0, staged.stdout + staged.stderr);
-  const bundle = join(f.state, "app-src/release/mac-arm64/Mission Control.app");
+  const bundle = join(f.state, "app-src/release/mac-arm64/Agent Mission Control.app");
   assert.ok(existsSync(bundle));
   const swapped = update(["--from-staged", bundle, "--ref", "v1.2.3"]);
   assert.equal(swapped.status, 0, swapped.stdout + swapped.stderr);
@@ -199,7 +199,7 @@ test("Bash installs through the shared release, verification, swap and receipt p
 for (const failure of ["bootstrap", "source", "release", "build", "version", "interrupt", "support-build"]) {
   test(`failed ${failure} removes temporary sources and preserves the existing app and cache`, (t) => {
     const f = fixture(t, failure);
-    const existing = join(f.apps, "Mission Control.app");
+    const existing = join(f.apps, "Agent Mission Control.app");
     const cache = join(f.state, "app-src");
     mkdirSync(existing);
     mkdirSync(cache, { recursive: true });
@@ -255,10 +255,10 @@ test("the explicit source bootstrap creates ~/Applications and installs there wi
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(readdirSync(f.scratch), []);
-  assert.ok(existsSync(join(personalApps, "Mission Control.app/Contents/Info.plist")));
+  assert.ok(existsSync(join(personalApps, "Agent Mission Control.app/Contents/Info.plist")));
   const receipt = JSON.parse(readFileSync(join(f.state, "install-receipt.json"), "utf8"));
   assert.equal(validateReceipt(receipt), null);
-  assert.equal(receipt.appPath, join(personalApps, "Mission Control.app"));
+  assert.equal(receipt.appPath, join(personalApps, "Agent Mission Control.app"));
   assert.equal(receipt.installScope, "user");
   assert.deepEqual(readdirSync(f.apps), []);
   assert.ok(f.commands().some(({ tool, args }) => tool === "curl" && args.includes(`https://raw.githubusercontent.com/${CANONICAL_REPO}/main/scripts/install-source.sh`)));
@@ -305,7 +305,7 @@ for (const scope of ["user", "system"] as const) {
     const missingSystemDir = scope === "system" && !existsSync(apps);
     assert.equal(result.status, missingSystemDir ? 1 : 0, result.stdout + result.stderr);
     if (missingSystemDir) assert.match(result.stderr, /\/Applications does not exist/);
-    assert.ok(result.stdout.includes(`destination: ${join(apps, "Mission Control.app")}  (${scope === "user" ? "personal" : "system"})`), result.stdout);
+    assert.ok(result.stdout.includes(`destination: ${join(apps, "Agent Mission Control.app")}  (${scope === "user" ? "personal" : "system"})`), result.stdout);
     assert.equal(existsSync(f.state), false);
     assert.equal(existsSync(join(f.home, "Applications")), false);
   });

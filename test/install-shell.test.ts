@@ -10,7 +10,7 @@ import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs'
 const root = process.cwd();
 const shell = renderInstallBootstrap();
 const commit = 'a'.repeat(40);
-function fixture(t: test.TestContext, failure = '') {
+function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Control.app') {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'binary-bootstrap-')));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin'); mkdirSync(bin);
@@ -20,7 +20,7 @@ function fixture(t: test.TestContext, failure = '') {
   mkdirSync(join(candidate, 'Contents/Resources/app/scripts'), {recursive: true});
   const log = join(dir, 'tools.log'); writeFileSync(log, '');
   writeFileSync(join(candidate, 'Contents/Info.plist'), JSON.stringify({CFBundleIdentifier: 'com.mission-control.app', CFBundleExecutable: 'Mission Control'}));
-  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {commit: failure === 'identity' ? 'b'.repeat(40) : commit, version: '1.2.3'}}));
+  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...(appName === 'Agent Mission Control.app' && failure !== 'signed-name' ? {appBundleName: appName} : {}), commit: failure === 'identity' ? 'b'.repeat(40) : commit, version: '1.2.3'}}));
   writeFileSync(join(candidate, 'Contents/MacOS/Mission Control'), '#!/bin/bash\nprintf "runtime:%s\\n" "$@" >> "$PROBE_LOG"\n[[ $ELECTRON_RUN_AS_NODE == 1 ]]\n', {mode: 0o755});
   if (failure === 'symlink') symlinkSync('/etc/passwd', join(candidate, 'Contents/escape'));
   if (failure === 'symlink-parent') symlinkSync('..', join(candidate, 'escape'));
@@ -36,7 +36,7 @@ function fixture(t: test.TestContext, failure = '') {
   // An 18-byte DMG caps that growing log at 1 KiB on Linux; use a realistic
   // minimum payload so logging cannot fail before the fixture downloads it.
   const dmg = Buffer.alloc(64 * 1024, 'signed dmg fixture');
-  const manifest = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
+  const manifest = {protocol: 1, ...(appName === 'Agent Mission Control.app' ? {appBundleName: failure === 'manifest-name' ? 'Unrelated.app' : appName} : {}), repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
     channel: alpha ? 'alpha' : 'stable', releaseTag: alpha ? null : 'v1.2.3', version: '1.2.3', commit, platform: 'darwin', arch: failure === 'manifest-arch' ? 'x64' : 'arm64',
     minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}, assets: [
       {kind: 'app-zip', id: '12', name: 'app.zip', bytes: 3, sha256: 'a'.repeat(64)},
@@ -68,7 +68,7 @@ else if(tool==='stat') console.log(statSync(args.at(-1)).size);
 else if(tool==='od') console.log(fail==='architecture'?'ce fa ed fe 07 00 00 00':'cf fa ed fe 0c 00 00 01');
 else if(tool==='codesign') {if(fail==='signer')process.exit(1);}
 else if(tool==='spctl') {console.error(fail==='notarization'?'source=Developer ID':'source=Notarized Developer ID');}
-else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true,verbatimSymlinks:true});}}
+else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);cpSync(${JSON.stringify(candidate)},join(args.at(-1),fail==='root-mismatch'?'Mission Control.app':${JSON.stringify(appName)}),{recursive:true,verbatimSymlinks:true});if(fail==='mixed-root')cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true});}}
 else if(tool==='ditto') cpSync(args[0],args[1],{recursive:true,verbatimSymlinks:true});
 else {process.exit(99);}
 `;
@@ -98,6 +98,10 @@ test('native bootstrap verifies twice, unmounts, and forwards quoted options wit
   assert.equal((log.match(/codesign:/g) ?? []).length, 3);
 });
 for (const [failure, message] of Object.entries({
+  'manifest-name': /Unsupported app bundle name/,
+  'signed-name': /signed app name differs/,
+  'root-mismatch': /unexpected entry|Unexpected DMG|does not contain|unexpected DMG|exactly one/i,
+  'mixed-root': /unexpected entry|Unexpected DMG|does not contain|unexpected DMG|exactly one/i,
   'missing-gh': /GitHub CLI \(gh\) is required/,
   identity: /signed app differs from the selected release/,
   oversize: /Canonical download failed|Download exceeds its size limit/,
@@ -138,6 +142,13 @@ test('alpha bootstrap pins the selected full main SHA without falling back to st
 
 test('bootstrap accepts internal framework link chains and normalized internal file targets', t => {
   const f = fixture(t, 'internal-links'); const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(readFileSync(f.log, 'utf8'), /runtime:/);
+});
+
+test('current bootstrap can authenticate the historical root without accepting mixed or mismatched new roots', t => {
+  const f = fixture(t, '', 'Mission Control.app');
+  const result = f.run(['--dry-run']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(readFileSync(f.log, 'utf8'), /runtime:/);
 });

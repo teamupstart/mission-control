@@ -53,9 +53,9 @@ test("the app this receipt describes runs, and updates, exactly as before", () =
   const system = classify({ runningBundle: SYSTEM_APP, receipt: receipt({ appPath: SYSTEM_APP }) });
   assert.equal(system.state, "managed");
   assert.equal(identityUpdateBlock(system), null);
-  assert.equal(APP_BUNDLE_NAME, "Mission Control.app");
-  assert.equal(SYSTEM_APP, "/Applications/Mission Control.app");
-  assert.equal(USER_APP, "/Users/someone/Applications/Mission Control.app");
+  assert.equal(APP_BUNDLE_NAME, "Agent Mission Control.app");
+  assert.equal(SYSTEM_APP, "/Applications/Agent Mission Control.app");
+  assert.equal(USER_APP, "/Users/someone/Applications/Agent Mission Control.app");
 });
 
 test("an app with no receipt is unmanaged, which is what it always was", () => {
@@ -97,14 +97,14 @@ test("the retained system copy hands a launch over to this account's personal ap
   assert.equal(identity.state === "redirect" ? identity.target : null, USER_APP);
   // The source copy must not update anything either. If the hand-over fails it keeps running,
   // and it is emphatically not the bundle an update should swap.
-  assert.match(identityUpdateBlock(identity) ?? "", /installed at .*Applications\/Mission Control\.app/);
+  assert.match(identityUpdateBlock(identity) ?? "", /installed at .*Applications\/Agent Mission Control\.app/);
 });
 
 test("only the exact system bundle may redirect, and only to the canonical personal one", () => {
   // Some third location holding a receipt for the personal app is a mismatch, not a launcher.
-  const elsewhere = classify({ runningBundle: "/opt/Mission Control.app" });
+  const elsewhere = classify({ runningBundle: "/opt/Agent Mission Control.app" });
   assert.equal(elsewhere.state, "mismatched");
-  assert.match(elsewhere.state === "mismatched" ? elsewhere.reason : "", /\/opt\/Mission Control\.app/);
+  assert.match(elsewhere.state === "mismatched" ? elsewhere.reason : "", /\/opt\/Agent Mission Control\.app/);
 
   // The receipt is a file in the state directory. Following it to an arbitrary path would make
   // it a way to have Mission Control open any bundle at all, so the destination is pinned to
@@ -166,4 +166,13 @@ test("a receipt pointing at the running bundle can never produce a launch loop",
     bundleVersion: () => "1.2.3",
   });
   assert.notEqual(identity.state, "redirect");
+});
+
+for (const directory of [`${HOME}/Applications`, '/Applications', '/opt/custom-apps']) test(`old-name identity supports only the verified same-folder rename in ${directory}`, () => {
+  const source = `${directory}/Mission Control.app`, target = `${directory}/Agent Mission Control.app`;
+  assert.equal(classify({runningBundle: source, receipt: receipt({appPath: source})}).state, 'managed');
+  assert.equal(classify({runningBundle: source, receipt: receipt({appPath: target})}).state, 'redirect');
+  assert.equal(classify({runningBundle: source, receipt: receipt({appPath: target}), exists: () => false}).state, 'mismatched');
+  assert.equal(classify({runningBundle: source, receipt: receipt({appPath: target}), bundleCommit: () => OTHER_COMMIT}).state, 'mismatched');
+  assert.equal(classify({runningBundle: `${directory}/Unrelated.app`, receipt: receipt({appPath: target})}).state, 'mismatched');
 });

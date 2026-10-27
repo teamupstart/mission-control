@@ -55,7 +55,7 @@ try {
   console.log("Building current working snapshot through the explicit Bash temporary-source installer.");
   execFileSync("/bin/bash", [join(repo, "scripts/install-source.sh")], { cwd: root, env, stdio: "inherit", timeout: 600_000 });
   assert.deepEqual(readdirSync(scratch).filter(name => /^mission-control-(bootstrap|install)/.test(name)), [], "Bash bootstrap and build source must be deleted");
-  const app = join(home, "Applications/Mission Control.app");
+  const app = join(home, "Applications/Agent Mission Control.app");
   const resources = join(app, "Contents/Resources/app");
   const runtime = join(app, "Contents/MacOS/Mission Control");
   assert.ok(existsSync(runtime));

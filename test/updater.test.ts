@@ -1,3 +1,5 @@
+import { binaryOffer, binaryStaged, binaryReceipt } from "./helpers/binary-update.ts";
+import type { BinaryStageOutcome } from "../src/main/update-binary.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
@@ -172,6 +174,7 @@ const release = (over: Partial<ReleaseInfo> = {}): ReleaseInfo => ({
   isDraft: false,
   isPrerelease: false,
   body: "## Fixed\n\n- Safer updates",
+  binary: binaryOffer("b".repeat(40), "stable", (over.tagName ?? "v1.2.4").slice(1)),
   ...over,
 });
 
@@ -198,7 +201,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
   // marker, so a fake whose marker and whose stat disagree is modelling a race, not a bundle.
   // The tests that want that race override both deliberately.
   const identity: UpdaterPort["stagedBundleIdentity"] =
-    over.stagedBundleIdentity ?? (() => ({ version: "1.2.4", revision: "staged-1" }));
+    over.stagedBundleIdentity ?? (() => ({ version: "1.2.4", revision: "staged-1", commit: "b".repeat(40) }));
   const port: UpdaterPort = {
     packaged: true,
     arch: "arm64",
@@ -209,7 +212,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     writeAlpha: () => {},
     latestMainCommit: async () => ({ sha: "b".repeat(40), message: "New main commit", committedAt: "2026-08-19T13:00:00.000Z" }),
     latestRelease: async () => release(),
-    runtime: async () => ({ ok: true, node: "/opt/homebrew/bin/node", env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" } }),
+    binaryForCommit: async (commit) => binaryOffer(commit, "alpha"),
     helperSource: () => "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
     stateDirectory: () => "/tmp/mission-state",
     launchPreflight: async () => {},
@@ -227,28 +230,13 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       // The revision comes from the marker the install script printed when it verified the
       // bundle, which is what the controller must pin - not whatever it reads afterwards. Here
       // that is whatever this fixture's disk currently says, which is the consistent case.
-      return {
-        ok: true,
-        staged: {
-          version: "1.2.4",
-          bundlePath: STAGED_BUNDLE,
-          // The script reads this while it still holds the bundle it just built, so it
-          // reports an identity even when THIS app cannot stat the path afterwards - that
-          // split is the situation `install()` and the ready-time check exist for. A test
-          // that wants an install script too old to report one overrides `stage` itself.
-          revision: (() => {
-            try {
-              return identity(STAGED_BUNDLE).revision ?? "staged-1";
-            } catch {
-              return "staged-1";
-            }
-          })(),
-        },
-      };
+      let revision = "staged-1";
+      try { revision = identity(STAGED_BUNDLE).revision ?? revision; } catch { /* unreadable fixture */ }
+      return binaryStaged(request, STAGED_BUNDLE, revision);
     },
     // The bundle the fake build leaves behind: the version it reported, and a revision that
     // only changes when something rebuilds it.
-    stagedBundleIdentity: identity,
+    stagedBundleIdentity: (path) => ({commit: "b".repeat(40), ...identity(path)}),
     requestQuit: () => events.push("quit"),
     readOutcome: () => {
       return outcome;
@@ -283,6 +271,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
       },
     },
     ...over,
+    ...(over.stagedBundleIdentity ? {stagedBundleIdentity: (path: string) => ({commit: "b".repeat(40), ...over.stagedBundleIdentity!(path)})} : {}),
   };
   const controller = new UpdateController(port);
   return {
@@ -357,7 +346,7 @@ test("the receipt handed to the helper is the one that was just validated", asyn
   const moved: InstallReceipt = {
     ...receipt,
     sourceClone: "/tmp/relocated-clone",
-    appPath: "/Users/someone/Applications/Mission Control.app",
+    appPath: receipt.appPath,
   };
   let current = receipt;
   const f = fixture({ installSnapshot: () => ({ receipt: current, problem: null }) });
@@ -371,7 +360,7 @@ test("the receipt handed to the helper is the one that was just validated", asyn
   assert.equal(await f.controller.install(), true);
   assert.equal(f.handoffs.length, 1);
   assert.equal(f.handoffs[0]!.appPath, moved.appPath);
-  assert.equal(f.handoffs[0]!.sourceClone, moved.sourceClone);
+  assert.equal(f.handoffs[0]!.receipt?.appPath, moved.appPath);
 });
 
 test("a receipt that becomes untrusted after startup stops the prepared install", async () => {
@@ -389,131 +378,46 @@ test("a receipt that becomes untrusted after startup stops the prepared install"
   assert.match((f.controller.getSnapshot() as { message: string }).message, /someone\/fork/);
 });
 
-test("Node preflight prevents incompatible build attempts", async () => {
-  let attempted = 0;
-  for (const version of ["18.20.0", "22.0.0", "23.11.0"]) {
-    const f = fixture({
-      runtime: async () => ({ ok: false, message: `Requires Node.js 24 or newer (found ${version}). Check again.` }),
-      stage: async () => {
-        attempted++;
-        return { ok: false, reason: "failed", message: "incompatible Node" };
-      },
-    });
+test("canonical legacy and binary receipts update without any external runtime port", async () => {
+  for (const installed of [receipt, binaryReceipt(binaryOffer("a".repeat(40), "stable", "1.2.3"), receipt)]) {
+    const f = fixture({installSnapshot: () => ({receipt: installed, problem: null})});
     await f.controller.start();
-    await f.controller.check(false);
-    await f.controller.apply();
+    const offer = await f.controller.check(true);
+    assert.equal(offer.phase, "available");
+    assert.equal(await f.controller.apply(), true);
+    assert.equal(await f.controller.install(), true);
+    assert.equal(f.handoffs[0]?.descriptor?.receipt.kind, "binary");
+    assert.equal(f.handoffs[0]?.sourceClone, undefined);
+    assert.equal(f.handoffs[0]?.node, undefined);
     f.controller.stop();
   }
-  console.log(`NODE_PREFLIGHT_MEASUREMENT ${JSON.stringify({ incompatibleScenarios: 3, incompatibleBuildAttempts: attempted })}`);
-  assert.equal(attempted, 0, "incompatible runtimes must never reach the build adapter");
 });
 
-test("Node remediation rechecks compatibility before offering and starting the build", async () => {
-  let compatible = false;
-  let probes = 0;
-  const f = fixture({ runtime: async () => {
-    probes++;
-    return compatible
-      ? { ok: true, node: "/selected/node", env: { PATH: "/selected:/usr/bin" } }
-      : { ok: false, message: "Install Node.js 24+, then choose Check again." };
-  } });
+test("pending alpha assets block apply and retry refreshes the same exact identity", async () => {
+  let ready = false;
+  const commits: string[] = [];
+  const f = fixture({readAlpha: () => true, binaryForCommit: async commit => {commits.push(commit); return ready ? binaryOffer(commit, "alpha") : null;}});
   await f.controller.start();
-  const blocked = await f.controller.check(false);
-  assert.equal(blocked.phase, "available");
-  if (blocked.phase === "available") assert.match(blocked.blocker!, /Check again/);
-  await f.controller.checkForUpdates();
-  assert.ok(f.events.some((event) => event.includes("error-dialog:Install Node")));
+  const pending = await f.controller.check(true);
+  assert.equal(pending.phase, "available");
+  if (pending.phase === "available") assert.match(pending.blocker!, /pending or unavailable/);
   assert.equal(await f.controller.apply(), false);
   assert.equal(f.stageRequests.length, 0);
-  compatible = true;
+  ready = true;
   await f.controller.check(true);
-  const before = probes;
   assert.equal(await f.controller.apply(), true);
-  assert.equal(probes, before + 1);
-  assert.deepEqual(f.stageRequests[0]?.runtime, { ok: true, node: "/selected/node", env: { PATH: "/selected:/usr/bin" } });
+  assert.deepEqual(commits, ["b".repeat(40), "b".repeat(40)]);
   f.controller.stop();
 });
 
-test("a deferred intact update installs without probing host Node or npm", async () => {
-  for (const nodeCompatible of [true, false]) {
-    const f = fixture();
-    await f.controller.start();
-    await f.controller.check(true);
-    await f.controller.apply();
-    f.controller.defer();
-    const probes: boolean[] = [];
-    f.port.runtime = async (_cwd, needsBuildTools = true) => {
-      probes.push(needsBuildTools);
-      return needsBuildTools || !nodeCompatible
-        ? { ok: false, message: needsBuildTools ? "npm is missing" : "Node is incompatible" }
-        : { ok: true, node: "/selected/node", env: {} };
-    };
-    f.port.dialogs.available = async () => "apply";
-    try {
-      const snapshot = await f.controller.checkForUpdates();
-      assert.equal(snapshot.phase, "applying");
-      assert.deepEqual(probes, []);
-      assert.equal(f.stageRequests.length, 1, "the deferred bundle must not rebuild");
-      assert.equal(f.handoffs.length, 1);
-    } finally { f.controller.stop(); }
-  }
-});
-
-test("a changed or different-release deferred bundle still requires npm", async () => {
-  for (const change of ["missing", "replaced", "different-release"] as const) {
-    const f = fixture();
-    await f.controller.start();
-    await f.controller.check(true);
-    await f.controller.apply();
-    f.controller.defer();
-    if (change === "different-release") f.port.latestRelease = async () => release({ tagName: "v1.2.5" });
-    else f.port.stagedBundleIdentity = () => change === "missing"
-      ? { version: null, revision: null }
-      : { version: "1.2.4", revision: "replacement" };
-    const probes: boolean[] = [];
-    f.port.runtime = async (_cwd, needsBuildTools = true) => {
-      probes.push(needsBuildTools);
-      return { ok: false, message: "npm is missing" };
-    };
-    try {
-      const snapshot = await f.controller.checkForUpdates();
-      assert.equal(snapshot.phase, "available", change);
-      if (snapshot.phase === "available") assert.equal(snapshot.blocker, "npm is missing", change);
-      assert.deepEqual(probes, [true], change);
-      assert.equal(f.stageRequests.length, 1, change);
-      assert.equal(f.handoffs.length, 0, change);
-    } finally { f.controller.stop(); }
-  }
-});
-
-test("a runtime changed after the offer blocks before build or quit", async () => {
-  const f = fixture();
-  await f.controller.start();
-  await f.controller.check(false);
-  f.port.runtime = async () => ({ ok: false, message: "Node.js 22 is incompatible. Check again." });
-  assert.equal(await f.controller.apply(), false);
-  const snapshot = f.controller.getSnapshot();
-  assert.equal(snapshot.phase, "available");
-  if (snapshot.phase === "available") assert.match(snapshot.blocker!, /Node.js 22/);
-  assert.equal(f.stageRequests.length, 0);
-  assert.equal(f.handoffs.length, 0);
-  assert.ok(!f.events.includes("quit"));
-  f.controller.stop();
-});
-
-test("cancelling during runtime preflight prevents a late build", async () => {
-  const f = fixture();
-  await f.controller.start();
-  await f.controller.check(false);
-  let finish!: (runtime: Awaited<ReturnType<UpdaterPort["runtime"]>>) => void;
-  f.port.runtime = () => new Promise((resolve) => { finish = resolve; });
-  const first = f.controller.apply();
-  assert.equal(f.controller.apply(), first);
-  f.controller.cancel();
-  finish({ ok: true, node: "/node", env: {} });
-  assert.equal(await first, false);
-  assert.equal(f.stageRequests.length, 0);
-  assert.equal(f.controller.getSnapshot().phase, "available");
+test("an intact deferred alpha remains usable after its remote asset expires", async () => {
+  const f = fixture({readAlpha: () => true});
+  await f.controller.start(); await f.controller.check(true); await f.controller.apply(); f.controller.defer();
+  f.port.binaryForCommit = async () => {throw new Error("expired");};
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.stageRequests.length, 1);
   f.controller.stop();
 });
 
@@ -878,10 +782,7 @@ test("activation preserves the startup delay and checks only after a long sleep"
 });
 
 test("a build already in flight cannot start a second one", async () => {
-  let finish!: (outcome: {
-    ok: true;
-    staged: { version: string; bundlePath: string; revision: string | null };
-  }) => void;
+  let finish!: (outcome: BinaryStageOutcome) => void;
   const f = fixture({
     stage: () => new Promise((resolve) => (finish = resolve)),
   });
@@ -892,7 +793,7 @@ test("a build already in flight cannot start a second one", async () => {
   assert.equal(first, second);
   assert.equal(f.controller.getSnapshot().phase, "preparing");
   await flush();
-  finish({ ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "staged-1" } });
+  finish(binaryStaged({offer: binaryOffer(), receipt}, STAGED_BUNDLE));
   assert.equal(await first, true);
   assert.equal(f.controller.getSnapshot().phase, "ready");
   f.controller.stop();
@@ -1018,10 +919,10 @@ test("an update is built while the app stays open, and only installs when asked"
   const ready = f.controller.getSnapshot();
   assert.equal(ready.phase, "ready");
   if (ready.phase === "ready") assert.equal(ready.newVersion, "1.2.4");
-  assert.deepEqual(stages, ["starting", "prerequisites", "dependencies", "build"]);
+  assert.deepEqual(stages, ["download", "prerequisites", "dependencies", "build"]);
   assert.deepEqual(
-    f.stageRequests.map((request) => [request.sourceClone, request.targetTag]),
-    [["/tmp/mission-source", "v1.2.4"]],
+    f.stageRequests.map((request) => [request.receipt.appPath, request.targetTag]),
+    [[receipt.appPath, "v1.2.4"]],
   );
 
   assert.equal(await f.controller.install(), true);
@@ -1136,27 +1037,13 @@ test("a prepared bundle that is gone is reported instead of handed off", async (
   f.controller.stop();
 });
 
-test("an installed version that cannot stage still applies through the detached helper", async () => {
-  const f = fixture({
-    stage: async () => ({
-      ok: false,
-      reason: "unsupported",
-      message: "This installed version cannot build the update in the background.",
-    }),
-  });
-  await f.controller.start();
-  await f.controller.check(true);
-
-  assert.equal(await f.controller.apply(), true);
-  assert.equal(f.controller.getSnapshot().phase, "applying");
-  assert.equal(f.handoffs[0]?.stagedBundle, null);
-  // Nothing was staged, so there is nothing to pin either, and the helper builds as it always
-  // did rather than being handed a token for a bundle that does not exist.
-  assert.equal(f.handoffs[0]?.stagedRevision, null);
-  assert.deepEqual(
-    f.events.filter((event) => event === "handoff" || event === "quit"),
-    ["handoff", "quit"],
-  );
+test("a binary preparation failure never falls back to detached source compilation", async () => {
+  const f = fixture({stage: async () => ({ok: false, reason: "failed", message: "Binary is unavailable"})});
+  await f.controller.start(); await f.controller.check(true);
+  assert.equal(await f.controller.apply(), false);
+  assert.equal(f.controller.getSnapshot().phase, "error");
+  assert.deepEqual(f.handoffs, []);
+  assert.ok(!f.events.includes("quit"));
   f.controller.stop();
 });
 
@@ -1238,7 +1125,7 @@ test("a failed handoff is reported exactly as a failed build is, and nothing qui
     assert.equal(buildSnapshot.manual, snapshot.manual);
     assert.equal(buildSnapshot.currentVersion, snapshot.currentVersion);
   }
-  assert.ok(build.events.some((event) => event.startsWith("log:update build failed: ")));
+  assert.ok(build.events.some((event) => event.startsWith("log:binary update preparation failed: ")));
   assert.ok(!build.events.includes("quit"));
 
   f.controller.stop();
@@ -1295,7 +1182,7 @@ test("a manual command reports the stage a build has reached", async () => {
   await flush();
 
   assert.equal((await f.controller.checkForUpdates()).phase, "preparing");
-  assert.deepEqual(f.events, ["preparing-dialog:1.2.4:Installing dependencies"]);
+  assert.deepEqual(f.events, ["preparing-dialog:1.2.4:Installing dependencies · step 6 of 8"]);
   f.controller.stop();
 });
 
@@ -1471,6 +1358,54 @@ test("a bundle whose identity cannot be read is refused, not thrown at the calle
 });
 
 
+test("post-preparation failures discard the candidate before retrying", async (t) => {
+  for (const failure of ["unreadable alpha identity", "changed revision", "migration preflight", "cancelled"] as const) {
+    await t.test(failure, async (t) => {
+      let failing = true;
+      const prepared: ReturnType<typeof binaryStaged>["descriptor"][] = [];
+      const discarded: typeof prepared = [];
+      const f = fixture({
+        readAlpha: () => failure === "unreadable alpha identity",
+        stage: async (request) => {
+          const outcome = binaryStaged(request, STAGED_BUNDLE,
+            failing && failure === "changed revision" ? "changed" : "staged-1");
+          prepared.push(outcome.descriptor);
+          if (failing && failure === "cancelled") f.controller.cancel();
+          return outcome;
+        },
+        stagedBundleIdentity: () => {
+          if (failing && failure === "unreadable alpha identity") throw new Error("ENOENT: candidate removed");
+          return {version: "1.2.4", revision: "staged-1", commit: "b".repeat(40)};
+        },
+        migrationPlan: () => {
+          if (failing && failure === "migration preflight") throw new Error("migration preflight failed");
+          return null;
+        },
+        discard: async (descriptor) => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          discarded.push(descriptor);
+        },
+      });
+      t.after(() => f.controller.stop());
+      await f.controller.start();
+      await f.controller.check(true);
+      assert.equal(await f.controller.apply(), false);
+      assert.equal(f.controller.getSnapshot().phase, failure === "cancelled" ? "available" : "error");
+      assert.equal(discarded.length, 1);
+      assert.equal(discarded[0], prepared[0], "discard the exact descriptor returned by staging");
+      assert.deepEqual(f.handoffs, []);
+      assert.ok(!f.events.includes("quit"));
+
+      failing = false;
+      await f.controller.check(true);
+      assert.equal(await f.controller.apply(), true);
+      assert.equal(prepared.length, 2, "retry stages a fresh candidate");
+      assert.equal(discarded.length, 1, "the failed candidate was cleared and the successful retry is retained");
+      assert.equal(f.controller.getSnapshot().phase, "ready");
+    });
+  }
+});
+
 test("a build replaced before it could be pinned is refused, and never called ready", async () => {
   // The install script reads the bundle's identity in the same breath as it verifies it and
   // reports it with the marker. Anything this app read afterwards could already be a
@@ -1480,10 +1415,7 @@ test("a build replaced before it could be pinned is refused, and never called re
   // the restart would spend the person's minutes, promise them a version, and only then send
   // them back to rebuild.
   const f = fixture({
-    stage: async () => ({
-      ok: true,
-      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "verified-at-build" },
-    }),
+    stage: async (request) => binaryStaged(request, STAGED_BUNDLE, "verified-at-build"),
     // What is on disk NOW disagrees, which is exactly the race: something rebuilt the clone
     // between the script's verification and this app looking.
     stagedBundleIdentity: () => ({ version: "1.2.4", revision: "rebuilt-since" }),
@@ -1495,7 +1427,7 @@ test("a build replaced before it could be pinned is refused, and never called re
   const snapshot = f.controller.getSnapshot();
   assert.equal(snapshot.phase, "error");
   if (snapshot.phase === "error") {
-    assert.match(snapshot.message, /replaced while it was being prepared/);
+    assert.match(snapshot.message, /no longer matches the accepted build/);
     assert.equal(snapshot.retryable, true);
   }
   // Nothing handed off, nothing quit, and no "ready" ever published.
@@ -1503,33 +1435,13 @@ test("a build replaced before it could be pinned is refused, and never called re
   f.controller.stop();
 });
 
-test("a build this app cannot pin is not staged at all, it is handed over whole", async () => {
-  // A clone checked out at a ref older than this app has a script that predates the identity
-  // field, so it reports no revision. Reading one here instead - after that process exited -
-  // would pin whatever is on disk by now, which is the very race the pin exists to close. So
-  // the whole install goes to the detached helper: no progress bar, and no claim about a
-  // bundle nobody checked.
-  const f = fixture({
-    stage: async () => ({
-      ok: true,
-      staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: null },
-    }),
-  });
-  await f.controller.start();
-  await f.controller.check(true);
-
-  assert.equal(await f.controller.apply(), true);
-  assert.equal(f.controller.getSnapshot().phase, "applying");
-  // Handed over with no bundle and no pin, which is the pre-staging path.
-  assert.equal(f.handoffs.length, 1);
-  assert.equal(f.handoffs[0]?.stagedBundle, null);
-  assert.equal(f.handoffs[0]?.stagedRevision, null);
-  assert.ok(
-    f.events.some((event) => event.startsWith("log:the installed version's install script reports no bundle identity")),
-    f.events.join("\n"),
-  );
-  // Never called ready, so nobody was promised a restart into a bundle that was not pinned.
-  assert.deepEqual(f.events.filter((event) => event === "quit"), ["quit"]);
+test("a binary without a pinned revision is refused without quitting or source fallback", async () => {
+  const f = fixture({stage: async request => binaryStaged(request, STAGED_BUNDLE, "")});
+  await f.controller.start(); await f.controller.check(true);
+  assert.equal(await f.controller.apply(), false);
+  assert.equal(f.controller.getSnapshot().phase, "error");
+  assert.deepEqual(f.handoffs, []);
+  assert.ok(!f.events.includes("quit"));
   f.controller.stop();
 });
 
@@ -1799,6 +1711,19 @@ test("a failed, undelivered or legacy unverified outcome survives timeout and re
     f.port.dialogs.outcome = async (_outcome, delivery) => { delivery.acknowledged(); };
     await f.controller.start();
     assert.equal(await f.port.readOutcome(), null);
+    f.controller.stop();
+  }
+});
+
+test("a changed destination or explicit scope cannot retarget a prepared binary", async () => {
+  for (const change of [{appPath: "/tmp/other/Mission Control.app"}, {installScope: "system" as const}]) {
+    let current = receipt;
+    const f = fixture({installSnapshot: () => ({receipt: current, problem: null})});
+    await f.controller.start(); await f.controller.check(true); await f.controller.apply();
+    current = {...receipt, ...change};
+    assert.equal(await f.controller.install(), false);
+    assert.deepEqual(f.handoffs, []);
+    assert.match((f.controller.getSnapshot() as {message: string}).message, /destination or scope changed/);
     f.controller.stop();
   }
 });

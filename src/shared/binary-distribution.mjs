@@ -1,5 +1,6 @@
 // Browser-safe wire contracts. Shape validation is not publisher authentication.
 // The caller's shipped publisher policy, never a manifest claim, authorizes execution.
+import { APP_BUNDLE_NAME } from "./app-naming.mjs";
 export const BINARY_MANIFEST_PROTOCOL = 1;
 export const INSTALL_HELPER_PROTOCOL = 1;
 export const BINARY_RECEIPT_SCHEMA = 2;
@@ -15,6 +16,7 @@ const bounded = (v, n) => typeof v === 'string' && v.length > 0 && v.length <= n
 
 function identityProblem(v) {
   if (!object(v) || v.protocol !== BINARY_MANIFEST_PROTOCOL) return 'Unsupported binary protocol';
+  if (v.appBundleName !== undefined && v.appBundleName !== APP_BUNDLE_NAME) return 'Unsupported binary app name';
   if (v.repo !== BINARY_REPO || v.bundleId !== BINARY_BUNDLE_ID) return 'Unexpected binary product identity';
   if (!bounded(v.version, 80) || !VERSION.test(v.version) || typeof v.commit !== 'string' || !SHA.test(v.commit)) return 'Invalid binary build identity';
   if (!['stable', 'alpha'].includes(v.channel) || (v.channel === 'stable'
@@ -29,7 +31,7 @@ function identityProblem(v) {
 export function validateBinaryManifest(v) {
   const problem = identityProblem(v);
   if (problem) return problem;
-  if (Object.keys(v).some((key) => !['protocol', 'repo', 'channel', 'releaseTag', 'version', 'commit', 'platform', 'arch', 'bundleId', 'minimumSystemVersion', 'helperProtocol', 'assets'].includes(key))) return 'Unknown manifest field';
+  if (Object.keys(v).some((key) => !['protocol', 'repo', 'channel', 'releaseTag', 'version', 'commit', 'platform', 'arch', 'bundleId', 'minimumSystemVersion', 'helperProtocol', 'appBundleName', 'assets'].includes(key))) return 'Unknown manifest field';
   if (!Array.isArray(v.assets) || v.assets.length < 1 || v.assets.length > 2) return 'Invalid binary asset inventory';
   const kinds = new Set(), ids = new Set(), names = new Set();
   for (const asset of v.assets) {
@@ -48,7 +50,7 @@ export function validateBinaryBuildMetadata(v) {
   if (problem) return problem;
   if (v.receiptSchema !== BINARY_RECEIPT_SCHEMA || Object.keys(v).some((key) => ![
     'protocol', 'repo', 'channel', 'releaseTag', 'version', 'commit', 'platform', 'arch', 'bundleId',
-    'minimumSystemVersion', 'helperProtocol', 'receiptSchema',
+    'minimumSystemVersion', 'helperProtocol', 'appBundleName', 'receiptSchema',
   ].includes(key))) return 'Invalid signed build metadata (archive provenance belongs outside the app)';
   return null;
 }

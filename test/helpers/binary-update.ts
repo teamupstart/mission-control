@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { BinaryOffer } from "../../src/main/update-binary-release.ts";
 import type { BinaryStageRequest, BinaryStageOutcome } from "../../src/main/update-binary.ts";
 import type { InstallReceipt } from "../../src/shared/install-receipt-schema.mjs";
+import { migrationPlanFixture } from "./migration-plan.ts";
 
 export function binaryOffer(commit = "b".repeat(40), channel: "stable" | "alpha" = "stable", version = "1.2.4"): BinaryOffer {
   const manifest: BinaryOffer["manifest"] = {protocol: 1, appBundleName: "Agent Mission Control.app", repo: "teamupstart/mission-control", channel,
@@ -25,4 +26,17 @@ export function binaryStaged(request: Pick<BinaryStageRequest, "offer" | "receip
   return {ok: true, staged: {bundlePath, revision, version: request.offer.manifest.version},
     descriptor: {protocol: 1, bundle: bundlePath, revision, digest: "a".repeat(64), bytes: 100,
       receipt: binaryReceipt(request.offer, request.receipt), publisher: {teamId: "S2FPCQK39Z", notarized: true}}};
+}
+
+/** Controller-port fixture: filesystem, publisher and detached transaction tests
+ * exercise the real planner separately. The descriptor carries the renamed path. */
+export function binaryRenamePlan(previous: InstallReceipt, candidate: Extract<BinaryStageOutcome, {ok: true}>) {
+  const plan = migrationPlanFixture(previous);
+  return {...plan, protocol: 3, kind: "rename" as const,
+    target: candidate.descriptor.receipt.appPath, intendedReceipt: candidate.descriptor.receipt,
+    stagedBundle: candidate.staged.bundlePath, stagedRevision: candidate.staged.revision,
+    sourceIdentity: {...plan.sourceIdentity, commit: previous.installedCommit ?? null, version: previous.installedVersion},
+    targetIdentity: {...plan.targetIdentity, commit: candidate.descriptor.receipt.installedCommit ?? null,
+      version: candidate.staged.version, revision: candidate.staged.revision},
+    descriptor: candidate.descriptor};
 }

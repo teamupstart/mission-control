@@ -5,6 +5,7 @@ import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
 import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME } from "../shared/app-naming.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
 import { execFile } from "node:child_process";
 import { statSync, readFileSync } from "node:fs";
@@ -976,7 +977,13 @@ export class UpdateController {
       return Promise.resolve(false);
     }
     this.receipt = installed.receipt;
-    if (this.descriptor && (this.descriptor.receipt.appPath !== this.receipt!.appPath || this.descriptor.receipt.installScope !== this.receipt!.installScope)) {
+    // A prepared rename changes only the basename. Require its recorded plan;
+    // a new destination or scope still needs a fresh preparation.
+    const plannedRename = this.migration?.protocol === 3 && this.migration.kind === "rename" &&
+      this.migration.source === this.receipt!.appPath && this.migration.target === this.descriptor?.receipt.appPath &&
+      this.migration.source === join(dirname(this.migration.target), LEGACY_APP_BUNDLE_NAME) &&
+      this.migration.target === join(dirname(this.migration.source), APP_BUNDLE_NAME);
+    if (this.descriptor && ((this.descriptor.receipt.appPath !== this.receipt!.appPath && !plannedRename) || this.descriptor.receipt.installScope !== this.receipt!.installScope)) {
       return this.reportFailure("installation destination changed", target, new UpdateError("The installation destination or scope changed after preparation. Check for updates again."));
     }
     const staged = this.staged;
@@ -1259,7 +1266,7 @@ export function createDefaultUpdaterPort(options: {
     installSnapshot: options.installSnapshot,
     readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
-    latestRelease: () => latestStableBinary(runGh),
+    latestRelease: () => latestStableBinary(runGh, options.currentVersion()),
     binaryForCommit: (commit) => binaryForCommit(runGh, commit),
     discard: (descriptor) => discardBinaryUpdate(descriptor, options.stateDirectory),
     latestMainCommit: () => latestMainCommit(runGh),

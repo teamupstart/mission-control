@@ -17,10 +17,10 @@ import type { GhRunner } from "../src/main/updater.ts";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const release = (tag: string, id: number) => ({id, tag_name: tag, name: tag, body: "Changes", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: tag.startsWith("alpha-")});
-function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, badManifest = false} = {}) {
-  const offer = binaryOffer("b".repeat(40), alpha ? "alpha" : "stable");
+function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, badManifest = false, version = "1.2.4"} = {}) {
+  const offer = binaryOffer("b".repeat(40), alpha ? "alpha" : "stable", version);
   const text = JSON.stringify(badManifest ? {...offer.manifest, arch: "x64"} : offer.manifest);
-  const tag = alpha ? `alpha-${offer.manifest.commit}` : "v1.2.4";
+  const tag = alpha ? `alpha-${offer.manifest.commit}` : `v${version}`;
   const calls: string[][] = [];
   const run: GhRunner = async args => {
     calls.push(args);
@@ -28,7 +28,7 @@ function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, bad
     assert.ok(args[3]!.startsWith("repos/teamupstart/mission-control/"));
     const path = args[3]!.slice("repos/teamupstart/mission-control/".length);
     let value: unknown;
-    if (path === "releases?per_page=30&page=1") value = [release("v1.2.5", 5), release("v1.2.4", 4)];
+    if (path === "releases?per_page=30&page=1") value = [release("v1.2.5", 5), release(tag, 4)];
     else if (path === `releases/tags/${tag}`) value = release(tag, 4);
     else if (path === "releases/5/assets?per_page=30&page=1") value = [];
     else if (path === "releases/4/assets?per_page=30&page=1") value = [
@@ -45,10 +45,27 @@ function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, bad
 
 test("stable skips a newer incomplete release and pins the complete manifest digest and asset identity", async () => {
   const f = fakeGithub();
-  const release = await latestStableBinary(f.run);
+  const release = await latestStableBinary(f.run, "1.2.3");
   assert.equal(release?.tagName, "v1.2.4");
   assert.equal(release?.binary?.manifestSha256, digest(f.text));
   assert.deepEqual(release?.binary?.manifest, f.offer.manifest);
+});
+
+for (const installed of ["1.2.3", "1.2.4"]) {
+  test(`stable keeps pending 1.2.5 when the complete 1.2.3 is not newer than installed ${installed}`, async () => {
+    const f = fakeGithub({version: "1.2.3"});
+    const selected = await latestStableBinary(f.run, installed);
+    assert.equal(selected?.tagName, "v1.2.5");
+    assert.match(selected?.unavailable ?? "", /pending or unavailable/);
+    assert.equal(selected?.binary, undefined);
+  });
+}
+
+test("stable still offers complete 1.2.3 above installed 1.2.2 while 1.2.5 is pending", async () => {
+  const f = fakeGithub({version: "1.2.3"});
+  const selected = await latestStableBinary(f.run, "1.2.2");
+  assert.equal(selected?.tagName, "v1.2.3");
+  assert.deepEqual(selected?.binary?.manifest, f.offer.manifest);
 });
 
 test("stable selects the newest of multiple complete releases regardless of inventory order", async t => {
@@ -80,7 +97,7 @@ test("stable selects the newest of multiple complete releases regardless of inve
         const path = args[3]!.slice(prefix.length);
         assert.ok(responses.has(path), `Unexpected GitHub request: ${path}`);
         return {code: 0, stdout: JSON.stringify(responses.get(path)), stderr: ""};
-      });
+      }, "1.2.3");
       assert.equal(selected?.tagName, newest.tag);
       assert.deepEqual(selected?.binary, {
         manifest: newest.manifest, manifestText: newest.text, manifestSha256: digest(newest.text),
@@ -116,7 +133,7 @@ test("stable scans past 300 ineligible releases and orders eligible releases acr
     }) : number === 11 ? [release("v1.2.3", 3), ...Array.from({length: 29}, () => release("alpha-old", 2))]
       : [release("v1.2.4", 4)];
     return {code: 0, stdout: JSON.stringify(batch), stderr: ""};
-  });
+  }, "1.2.3");
   assert.deepEqual(calls, Array.from({length: 12}, (_, index) => index + 1));
   assert.equal(selected?.tagName, "v1.2.4");
   assert.deepEqual(selected?.binary?.manifest, f.offer.manifest);
@@ -124,22 +141,22 @@ test("stable scans past 300 ineligible releases and orders eligible releases acr
 });
 
 test("incomplete stable sets remain visibly unavailable and substituted tag/protocol/platform fail closed", async () => {
-  const unavailable = await latestStableBinary(fakeGithub({incomplete: true}).run);
+  const unavailable = await latestStableBinary(fakeGithub({incomplete: true}).run, "1.2.3");
   assert.match(unavailable?.unavailable ?? "", /pending or unavailable/);
   assert.equal(unavailable?.binary, undefined);
-  await assert.rejects(latestStableBinary(fakeGithub({wrongCommit: true}).run), /tag no longer matches/);
-  await assert.rejects(latestStableBinary(fakeGithub({badManifest: true}).run), /incompatible protocol, platform/);
+  await assert.rejects(latestStableBinary(fakeGithub({wrongCommit: true}).run, "1.2.3"), /tag no longer matches/);
+  await assert.rejects(latestStableBinary(fakeGithub({badManifest: true}).run, "1.2.3"), /incompatible protocol, platform/);
 });
 
 test("discovery bounds pagination and preserves authentication and rate-limit errors without leaking stderr", async () => {
   let calls = 0;
-  await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("v1.2.4", 4))), stderr: ""};}), /inventory limit/);
+  await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("v1.2.4", 4))), stderr: ""};}, "1.2.3"), /inventory limit/);
   assert.equal(calls, 11);
   calls = 0;
-  await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("alpha-old", 4))), stderr: ""};}), /inventory limit/);
+  await assert.rejects(latestStableBinary(async () => {calls++; return {code: 0, stdout: JSON.stringify(Array.from({length: 30}, () => release("alpha-old", 4))), stderr: ""};}, "1.2.3"), /inventory limit/);
   assert.equal(calls, 100);
   for (const [stderr, expected] of [["HTTP 401 secret-token", /not authenticated/], ["HTTP 429 secret-token", /rate limit/]] as const) {
-    await assert.rejects(latestStableBinary(async () => ({code: 1, stdout: "", stderr})), error => error instanceof Error && expected.test(error.message) && !error.message.includes("secret-token"));
+    await assert.rejects(latestStableBinary(async () => ({code: 1, stdout: "", stderr}), "1.2.3"), error => error instanceof Error && expected.test(error.message) && !error.message.includes("secret-token"));
   }
 });
 

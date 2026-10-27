@@ -1,4 +1,5 @@
-import { binaryOffer, binaryStaged, binaryReceipt } from "./helpers/binary-update.ts";
+import { binaryOffer, binaryStaged, binaryReceipt, binaryRenamePlan } from "./helpers/binary-update.ts";
+import { dirname, join } from "node:path";
 import type { BinaryStageOutcome } from "../src/main/update-binary.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -1727,3 +1728,51 @@ test("a changed destination or explicit scope cannot retarget a prepared binary"
     f.controller.stop();
   }
 });
+
+for (const kind of ["source", "binary"] as const) {
+  for (const installScope of [undefined, "user", "system", "custom"] as const) {
+    test(`install hands off the planned same-folder rename for ${kind} receipt with ${installScope ?? "legacy"} scope`, async t => {
+      const directory = installScope === "user" ? "/Users/Fixture/Applications" : installScope === "custom" ? "/custom/apps" : "/Applications";
+      const prior = {...receipt, appPath: join(directory, "Mission Control.app"), ...(installScope ? {installScope} : {})};
+      const current = kind === "binary" ? binaryReceipt(binaryOffer("a".repeat(40), "stable", "1.2.3"), prior) : prior;
+      const candidate = binaryStaged({offer: binaryOffer(), receipt: {...current, appPath: join(directory, "Agent Mission Control.app")}}, STAGED_BUNDLE);
+      const plan = binaryRenamePlan(current, candidate);
+      const f = fixture({installSnapshot: () => ({receipt: current, problem: null}), stage: async () => candidate, migrationPlan: () => plan});
+      t.after(() => f.controller.stop());
+      await f.controller.start(); await f.controller.check(true);
+      assert.equal(await f.controller.apply(), true);
+      assert.equal(await f.controller.install(), true);
+      assert.equal(f.handoffs.length, 1);
+      assert.deepEqual(f.handoffs[0]?.receipt, current);
+      assert.equal(f.handoffs[0]?.migration?.target, join(directory, "Agent Mission Control.app"));
+      assert.deepEqual(f.handoffs[0]?.descriptor, candidate.descriptor);
+      assert.equal(f.events.filter(event => event === "quit").length, 1);
+    });
+  }
+}
+
+for (const changed of ["no plan", "source", "directory", "name", "scope", "receipt"] as const) {
+  test(`rename install refuses a changed ${changed} before shutdown`, async t => {
+    let current = receipt;
+    const target = join(dirname(receipt.appPath), "Agent Mission Control.app");
+    const candidate = binaryStaged({offer: binaryOffer(), receipt: {...receipt, appPath: target}}, STAGED_BUNDLE);
+    const plan = binaryRenamePlan(receipt, candidate);
+    const f = fixture({installSnapshot: () => ({receipt: current, problem: null}), stage: async () => candidate,
+      migrationPlan: () => changed === "no plan" ? null : plan});
+    t.after(() => f.controller.stop());
+    await f.controller.start(); await f.controller.check(true); await f.controller.apply();
+    if (changed === "source") current = {...receipt, appPath: "/other/Mission Control.app"};
+    if (changed === "scope") current = {...receipt, installScope: "system"};
+    if (changed === "receipt") current = {...receipt, installedAt: "2026-10-26T00:00:00Z"};
+    if (changed === "directory" || changed === "name") {
+      plan.target = changed === "directory" ? "/other/Agent Mission Control.app" : "/Applications/Unrelated.app";
+      candidate.descriptor.receipt.appPath = plan.target;
+    }
+    assert.equal(await f.controller.install(), false);
+    assert.deepEqual(f.handoffs, []);
+    assert.equal(f.events.includes("quit"), false);
+    assert.match((f.controller.getSnapshot() as {message: string}).message,
+      changed === "receipt" ? /installation change could not finish/ : /destination or scope changed/);
+    if (changed === "receipt") assert.ok(f.events.some(event => event.includes("policy changed")));
+  });
+}

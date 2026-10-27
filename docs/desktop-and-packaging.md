@@ -352,7 +352,10 @@ Electron-only preload capability: the plain browser dashboard has no update brid
 update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
-inventory. A ready manifest must name both published ZIP and DMG assets with the expected IDs,
+inventory. If a newer release is pending and every complete release is at or below the installed
+version, the pending release remains visible with **Check again**. An older complete release is
+offered only when it is still newer than the installed version.
+A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Missing assets leave **Update Now** disabled
 with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a

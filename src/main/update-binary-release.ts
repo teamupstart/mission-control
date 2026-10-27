@@ -71,7 +71,7 @@ async function readyOffer(run: GhRunner, release: Release, channel: "stable" | "
   return {manifest, manifestText: response.stdout, manifestSha256: createHash("sha256").update(response.stdout).digest("hex")};
 }
 
-export async function latestStableBinary(run: GhRunner): Promise<ReleaseInfo | null> {
+export async function latestStableBinary(run: GhRunner, installedVersion: string): Promise<ReleaseInfo | null> {
   // Ineligible records do not consume the 300-candidate budget. Bound the scan
   // separately at 100 pages; GitHub's inventory order is not semver order, so
   // only a complete scan can establish the newest eligible stable release.
@@ -81,11 +81,14 @@ export async function latestStableBinary(run: GhRunner): Promise<ReleaseInfo | n
     .sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? 1 : isNewerVersion(b.tag_name, a.tag_name) ? -1 : 0);
   let unavailable: ReleaseInfo | null = null;
   for (const release of releases) {
+    // An older complete build cannot update this installation. Keep the newer
+    // pending offer so the controller can explain availability and offer retry.
+    if (unavailable && !isNewerVersion(installedVersion, release.tag_name)) return unavailable;
     const info: ReleaseInfo = {tagName: release.tag_name, name: typeof release.name === "string" ? release.name : release.tag_name,
       publishedAt: release.published_at, body: typeof release.body === "string" ? release.body : "", isDraft: false, isPrerelease: false};
-    unavailable ??= {...info, unavailable: BINARY_PENDING};
     const binary = await readyOffer(run, release, "stable");
     if (binary) return {...info, binary};
+    unavailable ??= {...info, unavailable: BINARY_PENDING};
   }
   return unavailable;
 }

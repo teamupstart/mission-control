@@ -4,7 +4,7 @@ Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the prior phase ha
 
 ## Approved forward rollout, 2026-10-26
 
-R1 qualifies fresh installation and legacy source-install replacement through the standalone binary installer. See the [forward-rollout contract](forward-rollout.md) for its baseline and evidence requirements.
+Implementation supplies the standalone binary installer and enrollment flow. [R1 in the forward-rollout contract](forward-rollout.md#r1-first-signed-binary-and-migration) owns their signed release qualification.
 
 ## Outcome and entry criteria
 
@@ -54,7 +54,7 @@ Use the isolated single-file invocation from AGENTS.md for `test/install-shell.t
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add behavior specs for enrollment and mounted-DMG refusal, extending `e2e/specs/update-install-identity.spec.ts` and `e2e/specs/user-install-migration.spec.ts` or a focused new spec. Run them with `npm run test:e2e -- <spec paths>` after build. Any new modal must use the border-inset measurement helper. Keep all agent binaries faked.
 
-R1 requires the first newly produced signed release in a fresh macOS account/VM with Node/npm/npx/git build tools absent. It needs no historical signed release: the previous installation can be an isolated existing canonical source installation. Verify signed first install, managed launch, rerun, explicit system/custom paths, copied-DMG enrollment, mounted-DMG refusal and replacement of an old schema-1 app whose host Node is absent. Repeat with sentinel commands that record unexpected invocations. Capture receipt identity, state preservation, old/new process identity and failure recovery without secrets or operator data. This is NC-1 and the install portion of NC-4; unit/browser fixtures alone do not satisfy it.
+Implementation evidence covers the bootstrap, enrollment and shared transaction boundaries above. Hand off those results to [R1](forward-rollout.md#r1-first-signed-binary-and-migration), which owns the signed first-install and legacy-migration matrix, inputs and completion criteria.
 
 ## Implementation merge and rollout qualification
 

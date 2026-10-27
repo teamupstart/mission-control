@@ -6,7 +6,7 @@ Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the earlier phase 
 
 ## Approved forward rollout, 2026-10-26
 
-Phase 4 may merge after its applicable implementation checks; the real signed stable and exact-SHA alpha update journey belongs to R2. The [forward-rollout contract](forward-rollout.md) owns that qualification sequence.
+Phase 4 may merge after its applicable implementation checks; [R2 in the forward-rollout contract](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns signed update and recovery qualification.
 
 ## Outcome and entry criteria
 
@@ -58,7 +58,7 @@ Test stable selection across incomplete/newer releases; exact-SHA alpha pending/
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add/update and run `e2e/specs/alpha-updates.spec.ts`, `update-banner.spec.ts`, `update-preload.spec.ts`, `update-node-preflight.spec.ts`, `update-install-identity.spec.ts`, `user-install-migration.spec.ts` and `update-dialog-theme.spec.ts` as applicable, plus a dedicated binary download/cancel flow. Verify visible states and actions, not just request payloads; measure inset for new modals. Keep agents faked and capture inspected screenshots in both themes.
 
-R2 rollout proof uses the first newly produced qualified binary as the old-app baseline and subsequent eligible stable/alpha targets in isolated state with no host runtime, plus traps in a second run. This remains mandatory before claiming signed update/recovery qualification, but is not an implementation merge gate and requires no historical release set. Exercise stable and exact-SHA alpha, user/system/custom destinations, legacy relocation, cancel before shutdown, wrong/corrupt asset, target readiness failure and interrupted recovery. Verify exact installed identity/receipt and unchanged state ownership. This establishes NC-2, update failure portions of NC-3/NC-4 and progress portions of NC-6. Browser fixtures cannot substitute for detached signature/Gatekeeper behavior.
+Implementation evidence covers discovery, transport, trust, handoff, progress and recovery boundaries above. Hand off those results to [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery), which owns the signed update/recovery matrix, release inputs and completion criteria.
 
 ## Implementation completion and merge criteria
 

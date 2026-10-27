@@ -51,8 +51,14 @@ on the isolated rename branch; the held branch was not overwritten. The renamed 
 and compatible consumer must be reviewed together before any binary installation or upgrade.
 See [app-name migration](app-name-migration.md) for compatibility limits and recovery.
 
-The canonical GitHub release inventory returned 40 releases and zero assets. Distribution run
-`40422966224`, for `1c5f609b4e07518857e89621374c23eee2dc0840`, remained pending.
+The [retained October 27 capture and recount](https://github.com/teamupstart/mission-control/pull/1216#issuecomment-6455779143)
+contain 40 distinct release records (`tag_name`, from `v1.27.2` through `v1.0.0`) and zero
+assets. The combined transcript has 41 JSON object lines, but one is PR #1214 metadata,
+not a release; the distribution-run array is also excluded. This count describes that
+capture, not a later live inventory. Its SHA-256 is
+`a72c05329512dcb6c4035aeb2d8d9b6203126f7e3004ed07b660e2a657b66513`.
+Distribution run `40422966224`, for `1c5f609b4e07518857e89621374c23eee2dc0840`, was pending
+in the same capture.
 This observation is time-bound and is not a rollout gate or authorization to publish, merge
 #1214, approve the protected environment, or alter any immutable asset.
 

@@ -4,7 +4,7 @@ Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the completed phas
 
 ## Approved forward rollout, 2026-10-26
 
-Phase 5 depends on the combined rename and compatible Phase 4 consumer merge, while R2 qualifies the combined signed update and owned-runtime journey. See the [forward-rollout contract](forward-rollout.md) for that release gate.
+Phase 5 depends on the combined rename and compatible Phase 4 consumer merge. [R2 in the forward-rollout contract](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns the combined signed update and owned-runtime qualification.
 
 ## Outcome and entry criteria
 
@@ -48,7 +48,7 @@ Actual runtime origin -> Owned runtime resolver -> Owned registrations -> Shippe
 6. Project the actual daemon runtime/origin and relevant installed update capability through existing Setup owners. Use an additive browser-safe field/row shape only where needed; update server schemas, settings comparison, snapshot/SSE handling and client types together. Avoid a second runtime discovery service. Do not claim an adopted standalone daemon is bundled just because an Electron window is connected.
 7. Make system Node informational or feature-scoped for the completed packaged lifecycle. Preserve selected path/version/source and useful remedies for genuine source/third-party use. Keep the append-only `node-runtime` id and older dismissal records readable; the shared attention predicate should still work for every genuinely required row. A missing external runtime must not hide another required Setup problem or suppress first-launch guidance. Unknown probe results must remain unknown rather than falsely ready.
 8. Update Setup panel/banner copy, tour content source, update guidance and user documentation to explain that Electron still contains Node, while operators do not need their own Node for app installation/updates/owned tools. Source development, user projects and optional external tools retain their prerequisites. Regenerate generated tour/guide assets through their owners, never edit generated output. Include the correct source and retained HTML policy for any docs artifacts.
-9. Supply this phase's integration inventory and checks to R2, which runs the complete signed no-Node journey after newly produced targets include this phase, in an isolated account/VM: first install, launch, owned hook/MCP/statusline/Pi-helper/resume execution, stable update, exact-SHA alpha update, failure/rollback or forward recovery, relocation and registration repair. Use both absent commands and invocation-recording traps. Confirm no owned app path invokes host Node/npm/npx and independently exercise the preserved source path with supported Node.
+9. Supply this phase's integration inventory and focused bundled-runtime, registration-repair and source-path results to [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery). Keep the combined signed qualification matrix and release inputs in that contract.
 
 ## Data, API and compatibility
 
@@ -64,7 +64,7 @@ Run the isolated test invocation from AGENTS.md for `test/mission-mcp-runtime-el
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add/update and run `e2e/specs/setup-node-runtime.spec.ts`, `setup-banner-and-tour.spec.ts`, `setup-panel.spec.ts`, `pi-extension-setup.spec.ts`, `user-install-migration.spec.ts` and the changed integration repair flows. Assert readable runtime labels, no false universal banner, persistent unrelated required gaps, correct feature warnings and real action feedback. Measure border insets on any new modal, keep agents faked and capture inspected light/dark screenshots.
 
-R2 final rollout proof covers NC-1 through NC-6 using the actual signed bundles and independent helper, not only fixture responses. Implementation acceptance uses the applicable focused, build, browser and real bundled-runtime regressions available in this phase; unavailable signed releases are tracked in R2 and do not block implementation completion. Register exact command outputs, synthetic receipt/identity comparisons and relevant screenshots. Do not put test credentials, personal config, live state or evidence files into Git. Document any third-party invocation separately so the no-host-Node claim is limited to the app and its owned code.
+Implementation acceptance uses the applicable focused, build, browser and real bundled-runtime regressions above. Register their command output and relevant screenshots as gitignored evidence, and document third-party invocations separately from app-owned execution. [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns the combined signed qualification requirements and evidence boundary.
 
 ## Implementation completion and merge criteria
 

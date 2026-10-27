@@ -357,7 +357,10 @@ version, the pending release remains visible with **Check again**. An older comp
 offered only when it is still newer than the installed version.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
-digest, channel, tag, full commit and asset identity. Missing assets leave **Update Now** disabled
+digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
+the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
+for existing receipts and recovery, but cannot become actionable update offers.
+Missing assets or an unsupported app layout leave **Update Now** disabled
 with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.

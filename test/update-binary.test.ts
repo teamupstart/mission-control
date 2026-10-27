@@ -12,13 +12,16 @@ import { latestStableBinary, binaryForCommit } from "../src/main/update-binary-r
 import { downloadBinaryAsset } from "../src/main/update-binary-download.ts";
 import { extractBinaryArchive } from "../src/main/update-binary-archive.ts";
 import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff } from "../src/main/update-binary.ts";
-import { binaryOffer, binaryStaged } from "./helpers/binary-update.ts";
+import { binaryOffer, binaryStaged, binaryReceipt } from "./helpers/binary-update.ts";
+import { validateBinaryManifest } from "../src/shared/binary-distribution.mjs";
+import { validateReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { GhRunner } from "../src/main/updater.ts";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const release = (tag: string, id: number) => ({id, tag_name: tag, name: tag, body: "Changes", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: tag.startsWith("alpha-")});
-function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, badManifest = false, version = "1.2.4"} = {}) {
-  const offer = binaryOffer("b".repeat(40), alpha ? "alpha" : "stable", version);
+function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, badManifest = false, version = "1.2.4", commit = "b".repeat(40), legacy = false, pendingNewer = true} = {}) {
+  const offer = binaryOffer(commit, alpha ? "alpha" : "stable", version);
+  if (legacy) delete offer.manifest.appBundleName;
   const text = JSON.stringify(badManifest ? {...offer.manifest, arch: "x64"} : offer.manifest);
   const tag = alpha ? `alpha-${offer.manifest.commit}` : `v${version}`;
   const calls: string[][] = [];
@@ -28,7 +31,7 @@ function fakeGithub({alpha = false, incomplete = false, wrongCommit = false, bad
     assert.ok(args[3]!.startsWith("repos/teamupstart/mission-control/"));
     const path = args[3]!.slice("repos/teamupstart/mission-control/".length);
     let value: unknown;
-    if (path === "releases?per_page=30&page=1") value = [release("v1.2.5", 5), release(tag, 4)];
+    if (path === "releases?per_page=30&page=1") value = [...(pendingNewer ? [release("v1.2.5", 5)] : []), release(tag, 4)];
     else if (path === `releases/tags/${tag}`) value = release(tag, 4);
     else if (path === "releases/5/assets?per_page=30&page=1") value = [];
     else if (path === "releases/4/assets?per_page=30&page=1") value = [
@@ -68,15 +71,16 @@ test("stable still offers complete 1.2.3 above installed 1.2.2 while 1.2.5 is pe
   assert.deepEqual(selected?.binary?.manifest, f.offer.manifest);
 });
 
-test("stable selects the newest of multiple complete releases regardless of inventory order", async t => {
+for (const legacyNewest of [false, true]) test(`stable selects the newest complete supported layout when newest legacy is ${legacyNewest}`, async t => {
   const candidates = ["1.2.9", "1.2.10"].map((version, index) => {
     const id = index + 4;
     const manifest = binaryOffer(String(id).repeat(40), "stable", version).manifest;
+    if (legacyNewest && index === 1) delete manifest.appBundleName;
     manifest.assets = manifest.assets.map((asset, offset) => ({...asset, id: String(id * 10 + offset + 1)}));
     const text = JSON.stringify(manifest);
     return {id, tag: `v${version}`, manifest, text};
   });
-  const newest = candidates[1]!;
+  const newest = candidates[legacyNewest ? 0 : 1]!;
   for (const order of [candidates, [...candidates].reverse()]) {
     await t.test(`inventory starts with ${order[0]!.tag}`, async () => {
       const responses = new Map<string, unknown>([
@@ -103,8 +107,30 @@ test("stable selects the newest of multiple complete releases regardless of inve
         manifest: newest.manifest, manifestText: newest.text, manifestSha256: digest(newest.text),
       });
       assert.ok(selected?.binary);
-      assert.deepEqual(selected.binary.manifest.assets.map(asset => asset.id), ["51", "52"]);
+      assert.deepEqual(selected.binary.manifest.assets.map(asset => asset.id), newest.manifest.assets.map(asset => asset.id));
     });
+  }
+});
+
+for (const alpha of [false, true]) test(`${alpha ? "exact-SHA alpha" : "stable"} historical layout is readable for recovery but unavailable for a new update`, async () => {
+  const f = fakeGithub({alpha, legacy: true, pendingNewer: false});
+  assert.equal(validateBinaryManifest(f.offer.manifest), null);
+  const receipt = binaryReceipt({...f.offer, manifestText: f.text, manifestSha256: digest(f.text)}, {
+    schema: 1, repo: "teamupstart/mission-control", appPath: "/Applications/Mission Control.app",
+    sourceClone: "/missing", releaseTag: "v1.2.3", installedVersion: "1.2.3", installedAt: "2026-10-25T00:00:00Z",
+  });
+  receipt.installedAt = "2026-10-25T00:00:00.000Z";
+  assert.equal(validateReceipt(receipt), null, "historical receipt provenance remains valid");
+  if (alpha) {
+    assert.equal(await binaryForCommit(f.run, f.offer.manifest.commit), null);
+    assert.ok(f.calls.every(args => !args[3]!.includes("releases?")), "no stable fallback for an exact SHA");
+    const supported = fakeGithub({alpha: true, commit: "d".repeat(40)});
+    assert.deepEqual((await binaryForCommit(supported.run, supported.offer.manifest.commit))?.manifest, supported.offer.manifest);
+  } else {
+    const selected = await latestStableBinary(f.run, "1.2.3");
+    assert.equal(selected?.tagName, "v1.2.4");
+    assert.equal(selected?.binary, undefined);
+    assert.match(selected?.unavailable ?? "", /pending or unavailable/);
   }
 });
 

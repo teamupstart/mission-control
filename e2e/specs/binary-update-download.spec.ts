@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { UpdateController, type UpdaterPort, type UpdateStageRequest } from "../../src/main/updater.ts";
+import { UpdateController, type GhRunner, type UpdaterPort, type UpdateStageRequest } from "../../src/main/updater.ts";
 import type { BinaryStageOutcome } from "../../src/main/update-binary.ts";
-import { latestStableBinary } from "../../src/main/update-binary-release.ts";
+import { latestStableBinary, binaryForCommit } from "../../src/main/update-binary-release.ts";
 import { binaryOffer, binaryStaged, binaryReceipt, binaryRenamePlan } from "../../test/helpers/binary-update.ts";
 import { connectUpdateController } from "../fixtures/update-controller.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -149,6 +149,82 @@ for (const kind of ["source", "binary"] as const) {
       await expect(banner).toContainText("Installing Mission Control 1.2.5");
       expect(handoffs).toBe(1); expect(quits).toBe(1);
       await capture("handed-off");
+    } finally {unsubscribe(); controller.stop();}
+  });
+}
+
+for (const channel of ["stable", "alpha"] as const) {
+  test(`${channel} discovery withholds a complete legacy layout and offers a later renamed publication`, async ({dashboard, daemon}) => {
+    const legacy = binaryOffer("b".repeat(40), channel, "1.2.4");
+    delete legacy.manifest.appBundleName;
+    const supported = binaryOffer("c".repeat(40), channel, "1.2.5");
+    for (const [index, offer] of [legacy, supported].entries()) {
+      offer.manifest.assets = offer.manifest.assets.map((asset, offset) => ({...asset, id: String(100 + index * 10 + offset)}));
+    }
+    const inventory = [legacy];
+    let head = legacy.manifest.commit, preparations = 0;
+    const queries: string[] = [];
+    const release = (offer: typeof legacy, index: number) => ({id: index + 1,
+      tag_name: channel === "alpha" ? `alpha-${offer.manifest.commit}` : offer.manifest.releaseTag,
+      name: offer.manifest.version, body: "Fixture publication", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: channel === "alpha"});
+    const run: GhRunner = async args => {
+      const path = args[3]!.replace("repos/teamupstart/mission-control/", ""); queries.push(path);
+      const reply = (value: unknown) => ({code: 0, stdout: JSON.stringify(value), stderr: ""});
+      if (path === "releases?per_page=30&page=1") return reply(inventory.map(release));
+      for (const [index, offer] of inventory.entries()) {
+        const record = release(offer, index), text = JSON.stringify(offer.manifest);
+        if (path === `releases/tags/${record.tag_name}`) return reply(record);
+        if (path === `releases/${record.id}/assets?per_page=30&page=1`) return reply([
+          {id: index + 10, name: "mission-control-manifest.json", state: "uploaded", size: Buffer.byteLength(text)},
+          ...offer.manifest.assets.map(asset => ({id: Number(asset.id), name: asset.name, size: asset.bytes, state: "uploaded"})),
+        ]);
+        if (path === `releases/assets/${index + 10}`) return {code: 0, stdout: text, stderr: ""};
+        if (path === `commits/${record.tag_name}`) return reply({sha: offer.manifest.commit});
+      }
+      throw new Error(`Unexpected fixture request: ${path}`);
+    };
+    const receipt = binaryReceipt(binaryOffer("a".repeat(40), channel, "1.2.3"), {
+      schema: 1, repo: "teamupstart/mission-control", appPath: "/Users/Fixture/Applications/Agent Mission Control.app",
+      sourceClone: "/missing", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-25T00:00:00.000Z",
+    });
+    const port: UpdaterPort = {
+      packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
+      readAlpha: () => channel === "alpha", writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
+      latestRelease: () => channel === "stable" ? latestStableBinary(run, "1.2.3") : Promise.resolve(null),
+      latestMainCommit: async () => ({sha: head, message: "Fixture main", committedAt: "2026-10-25T00:00:00Z"}),
+      binaryForCommit: commit => binaryForCommit(run, commit),
+      stage: async request => {
+        expect(request.offer.manifest.appBundleName).toBe("Agent Mission Control.app");
+        expect(request.offer.manifest.commit).toBe(supported.manifest.commit);
+        preparations++; return binaryStaged(request, join(daemon.home, "candidate.app"));
+      },
+      stagedBundleIdentity: () => ({version: "1.2.5", revision: "staged-1", commit: supported.manifest.commit}),
+      launchPreflight: async () => {}, helperSource: () => "", stateDirectory: () => daemon.home,
+      handoff: async () => {throw new Error("No install is requested by this fixture");}, requestQuit: () => {throw new Error("No shutdown is expected");},
+      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: () => {},
+      dialogs: {available: async () => "defer", ready: async () => "defer", preparing: async () => {}, applying: async () => {}, error: async () => {}, outcome: async () => {}, upToDate: async () => {}},
+    };
+    const controller = new UpdateController(port); await controller.start(); await controller.check(true);
+    const unsubscribe = await connectUpdateController(dashboard, controller);
+    const banner = dashboard.getByRole("status", {name: "Mission Control update"});
+    try {
+      await expect(banner).toContainText(channel === "stable" ? "1.2.4" : "alpha bbbbbbb");
+      await expect(banner).toContainText("pending or unavailable");
+      await expect(banner.getByRole("button", {name: "Update Now"})).toBeDisabled();
+      await expect(banner.getByRole("button", {name: "Check again"})).toBeEnabled();
+      expect(await controller.apply()).toBe(false); expect(preparations).toBe(0);
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        const directory = join(process.cwd(), "e2e/.artifacts/binary-update-legacy-layout"); await mkdir(directory, {recursive: true});
+        await dashboard.screenshot({path: join(directory, `${channel}-unavailable.png`), fullPage: true});
+      }
+      // Add a new immutable publication; never rewrite the historical manifest.
+      inventory.push(supported); head = supported.manifest.commit;
+      await banner.getByRole("button", {name: "Check again"}).click();
+      await expect(banner).toContainText(channel === "stable" ? "1.2.5" : "alpha ccccccc");
+      await expect(banner.getByRole("button", {name: "Update Now"})).toBeEnabled();
+      await banner.getByRole("button", {name: "Update Now"}).click();
+      await expect(banner).toContainText("is ready to install"); expect(preparations).toBe(1);
+      if (channel === "alpha") expect(queries.some(path => path.startsWith("releases?"))).toBe(false);
     } finally {unsubscribe(); controller.stop();}
   });
 }

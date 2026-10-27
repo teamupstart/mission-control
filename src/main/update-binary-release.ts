@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { BINARY_REPO, validateBinaryManifest, type BinaryManifest } from "../shared/binary-distribution.mjs";
 import { BINARY_MANIFEST_NAME, MAX_BINARY_MANIFEST_BYTES, binaryReleaseTag } from "../shared/binary-publisher-policy.mjs";
+import { APP_BUNDLE_NAME, binaryBundleName } from "../shared/app-naming.mjs";
 import { isNewerVersion, versionFromReleaseTag } from "../shared/update.ts";
 import type { GhRunner, ReleaseInfo } from "./updater.ts";
 
@@ -68,6 +69,9 @@ async function readyOffer(run: GhRunner, release: Release, channel: "stable" | "
   }
   const tagged = await query(run, `commits/${release.tag_name}`) as {sha?: string};
   if (tagged?.sha !== manifest.commit) throw new BinaryUpdateError("The published tag no longer matches the binary build. No update was downloaded.");
+  // Historical manifests remain readable for receipts and recovery, but a new
+  // update must satisfy the same app-name policy as the installation writer.
+  if (binaryBundleName(manifest) !== APP_BUNDLE_NAME) return null;
   return {manifest, manifestText: response.stdout, manifestSha256: createHash("sha256").update(response.stdout).digest("hex")};
 }
 

@@ -23,9 +23,9 @@ function mountedImage(bundle: string): boolean {
 for (const kind of ['copied', 'mounted', 'custom-mounted', 'conflict'] as const) {
   test(`binary installation ${kind} presents the safe action and recovery route`, async ({dashboard}) => {
     const mounted = kind === 'mounted' || kind === 'custom-mounted';
-    const bundle = kind === 'mounted' ? '/Volumes/Mission Control/Mission Control.app'
-      : kind === 'custom-mounted' ? '/private/tmp/mission-custom-mount-ui-fixture/Mission Control.app'
-        : '/Users/operator/Applications/Mission Control.app';
+    const bundle = kind === 'mounted' ? '/Volumes/Agent Mission Control/Agent Mission Control.app'
+      : kind === 'custom-mounted' ? '/private/tmp/mission-custom-mount-ui-fixture/Agent Mission Control.app'
+        : '/Users/operator/Applications/Agent Mission Control.app';
     const state = binaryEnrollmentChoice({
       bundle, home: '/Users/operator', managedPath: kind === 'conflict' ? '/Applications/Mission Control.app' : null,
       temporary: mounted && mountedImage(bundle),
@@ -66,7 +66,7 @@ for (const kind of ['copied', 'mounted', 'custom-mounted', 'conflict'] as const)
       await expect(dashboard.locator('.tooltip')).toBeVisible();
       if (mounted) {
         await expect(panel.getByRole('button', {name: 'Enroll this copied app'})).toHaveCount(0);
-        await expect(panel).toContainText('Destination: /Users/operator/Applications/Mission Control.app');
+        await expect(panel).toContainText('Destination: /Users/operator/Applications/Agent Mission Control.app');
       }
       if (process.env.MC_E2E_EVIDENCE === '1') {
         const dir = join(process.cwd(), 'e2e/.artifacts/binary-enrollment'); await mkdir(dir, {recursive: true});

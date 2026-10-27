@@ -129,7 +129,9 @@ main() {
   [[ $(field "$manifest" protocol) == 1 && $(field "$manifest" repo) == '@REPO@' && $(field "$manifest" bundleId) == '@BUNDLE_ID@' && $(field "$manifest" arch) == arm64 && $(field "$manifest" platform) == darwin && $(field "$manifest" channel) == "$channel" ]] || fail 'Unexpected manifest identity or protocol.'
   commit=$(field "$manifest" commit); version=$(field "$manifest" version)
   app_bundle=$(/usr/bin/plutil -extract appBundleName raw -o - "$manifest" 2>/dev/null) || app_bundle='@LEGACY_APP_BUNDLE@'
-  [[ "$app_bundle" == '@APP_BUNDLE@' || "$app_bundle" == '@LEGACY_APP_BUNDLE@' ]] || fail 'Unsupported app bundle name. Download the current installer.'
+  # Historical bundles carry an installer that still targets the old name. Reject them
+  # here before downloading or running candidate code, even when correctly signed.
+  [[ "$app_bundle" == '@APP_BUNDLE@' ]] || fail 'Unsupported app bundle name. Select a current Agent Mission Control release.'
   [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid commit.'
   if [[ "$channel" == stable ]]; then [[ "$tag" == "v$version" && $(field "$manifest" releaseTag) == "$tag" ]] || fail 'Stable identity mismatch.'
   else [[ "$commit" == "$ref" ]] || fail 'Alpha identity mismatch.'; fi

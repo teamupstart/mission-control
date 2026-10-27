@@ -146,9 +146,16 @@ test('bootstrap accepts internal framework link chains and normalized internal f
   assert.match(readFileSync(f.log, 'utf8'), /runtime:/);
 });
 
-test('current bootstrap can authenticate the historical root without accepting mixed or mismatched new roots', t => {
-  const f = fixture(t, '', 'Mission Control.app');
-  const result = f.run(['--dry-run']);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(readFileSync(f.log, 'utf8'), /runtime:/);
-});
+for (const channel of ['stable', 'alpha']) {
+  test(`${channel} bootstrap rejects a complete historical layout before downloading or executing its installer`, t => {
+    const f = fixture(t, channel === 'alpha' ? 'alpha' : '', 'Mission Control.app');
+    const result = f.run(['--channel', channel, '--dry-run']);
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /Select a current Agent Mission Control release/);
+    const log = readFileSync(f.log, 'utf8');
+    assert.match(log, /releases\/assets\/11/);
+    assert.ok(log.includes(channel === 'alpha' ? `releases/tags/alpha-${commit}` : 'releases/latest'));
+    assert.doesNotMatch(log, /releases\/assets\/13|codesign:|spctl:|hdiutil:|ditto:|runtime:|forbidden:/);
+    if (channel === 'alpha') assert.doesNotMatch(log, /releases\/latest/);
+  });
+}

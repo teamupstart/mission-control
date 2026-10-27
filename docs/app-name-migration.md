@@ -18,6 +18,7 @@ combined change. No merge or release is authorized by implementation completion.
 | --- | --- | --- |
 | Released source updater before this change | Existing source build route | An ordinary source update can install this combined bridge at the recorded old path. Its next binary update performs the rename. The current standalone binary installer is also supported. |
 | Original Phase 3 bootstrap or unadapted #1214 consumer | Original Mission Control.app layout only | Refuses the unknown manifest field before executing downloaded code. Fetch the current installer from the README; do not reuse a saved old bootstrap or remove validation. |
+| Current standalone bootstrap | Refuses the release before downloading the DMG or executing its bundled installer, which would still install the old name | Requires the renamed manifest and matching signed metadata before executing the bundled installer. Applies to stable and exact-SHA alpha selection. |
 | Combined renamed consumer and installer | Parses historical identity for receipts/recovery, but refuses it as a new installation target | Installs the new layout, migrates the old name in the same directory, and supports subsequent stable and exact-SHA alpha updates. |
 
 There is no fabricated legacy-layout copy, dual-root ZIP, alias app, historical backfill or

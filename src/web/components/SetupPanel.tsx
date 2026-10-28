@@ -64,12 +64,14 @@ function OwnedIntegrationRepair(): React.JSX.Element | null {
   if (typeof window === "undefined" || !window.missionDesktop?.installIntegrations) return null;
   return <div className="setup-row" aria-label="Mission-owned integrations">
     <p className="setup-impact">Install or repair Mission hooks and MCP with the app runtime. Existing Mission statusline wrappers keep their saved command; independent tools keep their own prerequisites.</p>
-    <button type="button" className="btn" disabled={busy} onClick={async () => {
-      setBusy(true);
-      try { setResult(await window.missionDesktop!.installIntegrations()); }
-      catch { setResult({ok:false, message:"Integration repair could not finish. Check the app log and retry."}); }
-      finally { setBusy(false); }
-    }}>{busy ? "Repairing..." : "Install Claude integrations"}</button>
+    <Tooltip label="Install or repair Mission-owned hooks and MCP using this app's runtime.">
+      <button type="button" className="btn" disabled={busy} onClick={async () => {
+        setBusy(true);
+        try { setResult(await window.missionDesktop!.installIntegrations()); }
+        catch { setResult({ok:false, message:"Integration repair could not finish. Check the app log and retry."}); }
+        finally { setBusy(false); }
+      }}>{busy ? "Repairing..." : "Install Claude integrations"}</button>
+    </Tooltip>
     {result && <p role="status" className={result.ok ? "setup-impact" : "settings-error"}>{result.message}</p>}
   </div>;
 }

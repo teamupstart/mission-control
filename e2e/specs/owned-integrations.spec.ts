@@ -26,6 +26,12 @@ test("desktop repair action runs the real installer and reports preserved custom
     await page.goto(`${daemon.baseURL}/#/settings/setup`);
     await openSetupFamily(page,"extensions");
     const panel=page.getByLabel("Mission-owned integrations");
+    await panel.getByRole("button",{name:"Install Claude integrations"}).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Install or repair Mission-owned hooks and MCP using this app's runtime.");
+    if(process.env.MC_E2E_EVIDENCE==="1") {
+      mkdirSync("e2e/.artifacts/setup-node-runtime",{recursive:true});
+      await page.screenshot({path:"e2e/.artifacts/setup-node-runtime/repair-tooltip.png",fullPage:true});
+    }
     await panel.getByRole("button",{name:"Install Claude integrations"}).click();
     await expect(panel.getByRole("status")).toContainText("installed via this app's bundled Node");
     const config=parse(readFileSync(settings,"utf8"));

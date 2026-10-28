@@ -80,6 +80,7 @@ test("unknown settings never expose file contents or read-error messages", async
 
 test("filtered, duplicate or competing package declarations cannot claim readiness", async () => {
   for (const packages of [
+    [{ source: SOURCE, autoload: false }],
     [{ source: SOURCE, extensions: [] }],
     [{ source: SOURCE, extensions: ["!**/otel/**"] }],
     [SOURCE, SOURCE],

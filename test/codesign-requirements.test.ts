@@ -1,32 +1,54 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import ts from 'typescript';
 import { verifyBinaryPublisher } from '../scripts/install-staged-app.mjs';
 import { verifyDistributionDmg } from '../scripts/verify-distribution.mjs';
-import { binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
+import { appPublisherRequirement, binaryPublisherPolicy, imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
 
 const policy = binaryPublisherPolicy();
 const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS codesign' : false};
 const appRequirement = `=anchor apple generic and identifier "${policy.bundleId}" and certificate leaf[subject.OU] = "${policy.teamId}"`;
 const dmgRequirement = `=anchor apple generic and certificate leaf[subject.OU] = "${policy.teamId}"`;
+const sharedRequirements: Record<string, string> = {
+  appPublisherRequirement: appPublisherRequirement(policy.teamId),
+  imagePublisherRequirement: imagePublisherRequirement(policy.teamId),
+};
 
 // Discover calls throughout shipped code, not just a fixed list of known files.
-// Require literal argv at this trust boundary so a new dynamic argument cannot
-// silently escape the guard. No source text is evaluated.
+// Require inspectable argv and literal text or the imported shared formatters at
+// this trust boundary. Unknown expressions fail closed; no source text is evaluated.
 function requirements(source: string, path: string): string[] {
   const found: string[] = [];
   if (/\.[cm]?[jt]sx?$/.test(path)) {
     const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+    const formatters = new Map<string, string>();
+    for (const statement of ast.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+        || resolve(dirname(path), statement.moduleSpecifier.text) !== resolve('src/shared/binary-publisher-policy.mjs')) continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (!bindings || !ts.isNamedImports(bindings)) continue;
+      for (const binding of bindings.elements) {
+        const value = sharedRequirements[(binding.propertyName ?? binding.name).text];
+        if (value !== undefined) formatters.set(binding.name.text, value);
+      }
+    }
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && node.arguments.some(arg => ts.isStringLiteral(arg) && /(^|\/)codesign$/.test(arg.text))) {
         const argv = node.arguments[1];
         assert.ok(argv && ts.isArrayLiteralExpression(argv), `${path}: codesign needs inspectable argv`);
-        const args = argv.elements.map(arg => ts.isStringLiteralLike(arg) ? arg.text
-          : ts.isTemplateExpression(arg) ? arg.getText(ast).slice(1, -1) : null);
+        const args = argv.elements.map(arg => {
+          if (ts.isStringLiteralLike(arg)) return arg.text;
+          if (ts.isTemplateExpression(arg)) return arg.getText(ast).slice(1, -1);
+          if (!ts.isCallExpression(arg) || !ts.isIdentifier(arg.expression) || arg.arguments.length !== 1) return null;
+          const team = arg.arguments[0]!;
+          if (!ts.isPropertyAccessExpression(team) || team.name.text !== 'teamId'
+            || !ts.isIdentifier(team.expression) || !['publisher', 'policy'].includes(team.expression.text)) return null;
+          return formatters.get(arg.expression.text) ?? null;
+        });
         for (let i = 0; i < args.length; i++) {
           const arg = args[i];
           if (arg === '-R' || arg === '--test-requirement') {
@@ -61,7 +83,7 @@ test('every shipped codesign requirement is text and retains the publisher polic
     for (const entry of readdirSync(root, {recursive: true, withFileTypes: true})) {
       if (!entry.isFile() || !/\.(?:[cm]?[jt]sx?|sh|ya?ml)$/.test(entry.name)) continue;
       const path = join(entry.parentPath, entry.name);
-      const source = readFileSync(path, 'utf8');
+      const source = path === 'scripts/install-bootstrap.sh' ? renderInstallBootstrap() : readFileSync(path, 'utf8');
       if (!source.includes('codesign')) continue;
       for (const requirement of requirements(source, path)) {
         const rendered = requirement.replace(/\$\{(?:publisher|policy)\.teamId\}|@TEAM@/g, policy.teamId)
@@ -81,6 +103,15 @@ test('every shipped codesign requirement is text and retains the publisher polic
 test('the source guard rejects missing prefixes in JavaScript and shell, including multiline argv', () => {
   assert.throws(() => requirements("run('/usr/bin/codesign', ['--verify', '-R',\n `anchor apple`, app])", 'future.mjs'), /requirement TEXT/);
   assert.throws(() => requirements("/usr/bin/codesign --verify \\\n -R 'anchor apple' app", 'future.sh'), /requirement TEXT/);
+});
+
+test('the source guard follows only the shared formatter import and the publisher team argument', () => {
+  const imported = "import { appPublisherRequirement as requirement } from '../src/shared/binary-publisher-policy.mjs';\n";
+  const call = (argument: string) => `run('/usr/bin/codesign', ['--verify', '-R', ${argument}, app])`;
+  assert.deepEqual(requirements(imported + call('requirement(publisher.teamId)'), 'scripts/future.mjs'), [appRequirement]);
+  assert.throws(() => requirements(call('requirement(publisher.teamId)'), 'scripts/future.mjs'), /requirement TEXT/);
+  assert.throws(() => requirements(imported + call('requirement(otherTeam)'), 'scripts/future.mjs'), /requirement TEXT/);
+  assert.throws(() => requirements(imported + call('requirement(publisher.teamId).slice(1)'), 'scripts/future.mjs'), /requirement TEXT/);
 });
 
 function assertUnsatisfied(result: {status: number | null; stderr: string}, label: string) {

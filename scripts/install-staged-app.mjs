@@ -12,6 +12,7 @@ import { stagedBundleRevision, stagedRevisionProblem } from '../src/shared/stage
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
 import { writeReceipt } from '../src/shared/install-receipt.mjs';
 import { INSTALL_HELPER_PROTOCOL, validateBinaryBuildMetadata } from '../src/shared/binary-distribution.mjs';
+import { appPublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
 
 export function bundleCommit(bundle) {
   try {
@@ -71,9 +72,7 @@ export function verifyBinaryPublisher(bundle, publisher) {
     throw new Error('A trusted Developer ID and notarization policy are required');
   }
   const run = (command, args) => execFileSync(command, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000});
-  // codesign interprets -R as a file path unless the requirement starts with '='.
-  run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', '-R',
-    `=anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "${publisher.teamId}"`, bundle]);
+  run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', '-R', appPublisherRequirement(publisher.teamId), bundle]);
   const assessment = spawnSync('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle],
     {encoding: 'utf8', env: {...process.env, LC_ALL: 'C'}, timeout: 30_000});
   if (assessment.error || assessment.status !== 0 || !/^source=Notarized Developer ID$/m.test(assessment.stderr)) {

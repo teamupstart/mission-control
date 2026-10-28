@@ -68,9 +68,9 @@ the interactive path below instead of asking in prose.
 
 ## Always: offer a phased implementation follow-up
 
-Every root plan review ends with one explicit next-step decision in the Mission Control dashboard.
-Append this as the **last** entry in the `decisions` passed to `request_plan_decisions`, after any
-choices about the plan itself:
+Offer the phased implementation follow-up once per root plan, on its first review in the Mission
+Control dashboard. Append this as the **last** entry in the `decisions` passed to
+`request_plan_decisions`, after any choices about the plan itself:
 
 ```json
 {
@@ -94,6 +94,7 @@ choices about the plan itself:
 
 Call `request_plan_decisions` even when this is the only decision. It is the selectable action at the
 bottom of the rendered dashboard review; do not replace it with a prose offer after sharing the plan.
+Record the submitted choice with the plan's adopted decisions. Later repair and re-approval reviews retain the submitted choice without repeating the offer.
 
 When the returned response says **Create phased implementation plan** (the `phased-plan` option):
 
@@ -120,8 +121,8 @@ dashboard with your decision points rendered as radio buttons (choose one) or ch
 (choose many) plus Submit and Dismiss buttons, **blocks until the human submits or dismisses
 that decision set**, and returns either their selections or an explicit dismissal as the
 tool result. You do not need to know your session id or post anything yourself - the
-dashboard binds the resolution straight back to this session. Append the phased
-implementation follow-up above after these plan-specific decisions. If the request is
+dashboard binds the resolution straight back to this session. On the root plan's first review,
+append the phased implementation follow-up above after these plan-specific decisions. If the request is
 dismissed, stop without applying a choice or invoking `phased-plan`; never infer selections
 from an unanswered form.
 
@@ -213,4 +214,5 @@ function, a field added to a payload, an internal helper - which prose covers fi
 - Don't ask an open-ended prose question when the answer is a choice between options -
   that's what `request_plan_decisions` is for. Reserve free text for genuinely open asks.
 - Don't offer the phased implementation follow-up in prose or omit it because the plan has no
-  other open choices. It is always the last selectable decision on a root plan review.
+  other open choices. It is the last selectable decision on the root plan's first review;
+  carry the submitted choice into later reviews.

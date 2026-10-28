@@ -146,8 +146,9 @@ failed with `No such file or directory / invalid requirement specification`.
 `codesign -R` treats an argument as a filename unless the requirement begins with `=`.
 All app and DMG requirement arguments now carry that prefix, including the standalone
 bootstrap and its generated `install.sh`. Apple anchor, bundle identifier where present,
-and team OU remain identical. The binary updater, preparation worker and detached installer
-reach the same repaired `verifyBinaryPublisher` boundary.
+and team OU remain identical. The shared app/image requirement helpers supply both the
+JavaScript verifiers and rendered bootstrap arguments. The binary updater, preparation worker
+and detached installer reach the same repaired `verifyBinaryPublisher` boundary.
 
 `test/codesign-requirements.test.ts` statically discovers requirement calls throughout
 shipped source, checks their prefix and publisher semantics, and verifies installer generation.

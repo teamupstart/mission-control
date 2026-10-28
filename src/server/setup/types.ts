@@ -41,6 +41,8 @@ export interface SetupDeps {
   refreshPath?(): Promise<void>;
   executableDiagnostic?(id: ExecutableId): Promise<{ path: string; source: string } | null>;
   environment: EnvironmentDeps;
+  /** Pi's configured agent directory; omitted fixtures use their isolated environment home. */
+  piAgentDir?: string;
   agentBin(agent: AgentType): string;
   installedBackend(id: TerminalBackendId): Promise<string | null>;
   /** An adapter-level host refusal that must win before installation probing. */

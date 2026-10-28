@@ -134,7 +134,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "electron": "^43.8.1",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "26.16.1",
     "electronmon": "^2.0.4",
     "node-gyp": "^12.4.0",
     "oxlint": "^1.76.0",

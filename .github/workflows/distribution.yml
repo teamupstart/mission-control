@@ -90,6 +90,9 @@ jobs:
         run: |
           node --input-type=module -e "import {writeFileSync} from 'node:fs'; if (!process.env.APPLE_API_KEY_BASE64) throw new Error('APPLE_API_KEY_BASE64 is not provisioned'); writeFileSync(process.env.RUNNER_TEMP + '/mission-notarization.p8', Buffer.from(process.env.APPLE_API_KEY_BASE64, 'base64'), {mode: 0o600})"
       - name: Build, sign, notarize and qualify the exact bytes
+        id: qualification
+        # Explicit bash enables pipefail: tee must not turn a producer failure green.
+        shell: bash
         env:
           GITHUB_SHA: ${{ needs.input.outputs.commit }}
           MISSION_DISTRIBUTION_CHANNEL: ${{ needs.input.outputs.channel }}
@@ -100,10 +103,18 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/mission-notarization.p8
           APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
-        run: npm run package:distribution
+        run: npm run package:distribution 2>&1 | tee "$RUNNER_TEMP/distribution-diagnostics.log"
       - name: Remove the temporary key
         if: always()
         run: rm -f "$RUNNER_TEMP/mission-notarization.p8"
+      - name: Retain safe packaging diagnostics
+        if: always() && steps.qualification.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-diagnostics-${{ needs.input.outputs.commit }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/distribution-diagnostics.log
       - name: Bundle smoke
         run: npm run smoke
       - name: Retain original qualified bytes for publication retries

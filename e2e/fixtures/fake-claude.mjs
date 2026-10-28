@@ -844,6 +844,27 @@ function appendTurn(role, content) {
   );
 }
 
+/**
+ * Record a message the running turn took, the way Claude Code does: never as a `user`
+ * record, only as a `queued_command` attachment on that turn. A fake that wrote a `user`
+ * record here hid the daemon's failure to read the real shape behind a green spec.
+ */
+function appendQueuedCommand(prompt) {
+  turn += 1;
+  const timestamp = new Date().toISOString();
+  appendFileSync(
+    transcriptPath,
+    `${JSON.stringify({
+      type: "attachment",
+      uuid: `queued-${turn}`,
+      isSidechain: false,
+      userType: "external",
+      timestamp,
+      attachment: { type: "queued_command", commandMode: "prompt", origin: null, prompt, timestamp },
+    })}\n`,
+  );
+}
+
 // --- the control protocol -------------------------------------------------------------
 
 function emit(frame) {
@@ -1332,7 +1353,7 @@ rl.on("line", (line) => {
       const waiting = setInterval(() => {
         if (!existsSync(READ_STEERS_SIGNAL)) return;
         clearInterval(waiting);
-        appendTurn("user", prompt);
+        appendQueuedCommand(prompt);
       }, 100);
       waiting.unref();
       return;

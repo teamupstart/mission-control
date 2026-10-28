@@ -168,6 +168,9 @@ const HARNESS_LAUNCH: Record<
 
 /** Where one signal's copy goes right now, or null. Read per send. */
 function currentUpstream(signal: AgentOtelSignal): RelayUpstream | null {
+  // Existing sessions keep exporting without opening Settings or launching another agent.
+  // Refresh in the background so managed changes cannot leave their routing stale forever.
+  void managedAgentOtel();
   const policy = policyFrom(cachedManagedAgentOtel());
   const url = policy.upstream[signal];
   if (url === null || !policy.signals[signal]) return null;

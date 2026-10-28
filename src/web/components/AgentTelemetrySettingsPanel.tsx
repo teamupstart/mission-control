@@ -80,6 +80,7 @@ export function AgentTelemetrySettingsPanel({
     setHeaderValue("");
   }, [config]);
 
+  const managedRelayEnabled = AGENT_OTEL_SIGNALS.some((signal) => status?.effective.signals[signal]);
   const shownSignals = managed ? (status?.effective.signals ?? signals) : signals;
   const shownCapture = managed ? (status?.effective.capture ?? capture) : capture;
   const editable = config !== null && !managed && !saving;
@@ -145,7 +146,9 @@ export function AgentTelemetrySettingsPanel({
           <span className="kb-row-label">Relay agent telemetry</span>
           <span className="kb-row-desc">
             {managed
-              ? "On, because your organization's managed policy configures it."
+              ? managedRelayEnabled
+                ? "On, because your organization's managed policy provides an OTLP/HTTP destination."
+                : "Off. Your organization's managed policy provides no OTLP/HTTP destination for this relay."
               : "Off by default. While on, new SDK sessions export to Mission Control and a copy goes to the endpoint below. Sessions already running keep what they started with."}
           </span>
         </div>
@@ -154,7 +157,7 @@ export function AgentTelemetrySettingsPanel({
           <label className="skill-switch">
             <input
               type="checkbox"
-              checked={managed ? status?.effective.source === "mdm" : enabled}
+              checked={managed ? managedRelayEnabled : enabled}
               disabled={!editable}
               onChange={(e) => setEnabled(e.target.checked)}
               aria-label="Relay SDK agent telemetry"

@@ -14,6 +14,7 @@ import {
   type ManagedFileStat,
 } from "../environment/claude-managed.ts";
 import { readPlistValue } from "../environment/macos.ts";
+import { agentOtelSignalUrl } from "./policy.ts";
 
 // What device management says about the agents' OWN telemetry.
 //
@@ -40,6 +41,10 @@ export const CLAUDE_OTEL_KEYS = [
   "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
   "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
   "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
   "OTEL_LOG_USER_PROMPTS",
   "OTEL_LOG_TOOL_DETAILS",
   "OTEL_LOG_TOOL_CONTENT",
@@ -63,6 +68,8 @@ export interface ManagedAgentOtel {
   disabled: boolean;
   /** Full per-signal URL the policy sends to, or null when it does not route that signal. */
   endpoints: Record<AgentOtelSignal, string | null>;
+  /** Only HTTP destinations can receive the relay's unchanged HTTP bodies. */
+  transports: Partial<Record<AgentOtelSignal, "http" | "grpc">>;
   capture: AgentOtelCapture;
 }
 
@@ -109,7 +116,7 @@ export function claudeManagedOtelFromEnv(
 ): ManagedAgentOtel | null {
   if (Object.keys(env).length === 0) return null;
   if (falsy(env.CLAUDE_CODE_ENABLE_TELEMETRY)) {
-    return { source, disabled: true, endpoints: noEndpoints(), capture: noCapture() };
+    return { source, disabled: true, endpoints: noEndpoints(), transports: {}, capture: noCapture() };
   }
   const generic = httpUrl(env.OTEL_EXPORTER_OTLP_ENDPOINT);
   const exporter: Record<AgentOtelSignal, string | undefined> = {
@@ -122,13 +129,22 @@ export function claudeManagedOtelFromEnv(
     metrics: env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
     traces: env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
   };
+  const protocols: Record<AgentOtelSignal, string | undefined> = {
+    logs: env.OTEL_EXPORTER_OTLP_LOGS_PROTOCOL,
+    metrics: env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+    traces: env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL,
+  };
   const endpoints = noEndpoints();
+  const transports: ManagedAgentOtel["transports"] = {};
   for (const signal of AGENT_OTEL_SIGNALS) {
-    const kind = exporter[signal]?.trim().toLowerCase();
-    if (kind === undefined || kind === "none" || kind === "") continue;
-    endpoints[signal] =
-      httpUrl(perSignal[signal]) ??
-      (generic === null ? null : `${generic.replace(/\/+$/, "")}/v1/${signal}`);
+    const kinds = exporter[signal]?.split(",").map((kind) => kind.trim().toLowerCase()) ?? [];
+    if (!kinds.includes("otlp")) continue;
+    const protocol = protocols[signal] ?? env.OTEL_EXPORTER_OTLP_PROTOCOL;
+    const transport = protocol?.trim().toLowerCase() === "grpc" ? "grpc" : "http";
+    endpoints[signal] = httpUrl(perSignal[signal]) ?? (generic === null
+      ? null
+      : transport === "grpc" ? generic : agentOtelSignalUrl(generic, signal));
+    transports[signal] = transport;
   }
   const capture = noCapture();
   for (const key of AGENT_OTEL_CAPTURE_KEYS) capture[key] = truthy(env[CLAUDE_CAPTURE_ENV[key]]);
@@ -136,7 +152,7 @@ export function claudeManagedOtelFromEnv(
   // Telemetry switched on with nowhere managed to send it is still a managed decision about
   // telemetry; telemetry neither enabled nor routed is a policy about something else.
   if (!routes && !truthy(env.CLAUDE_CODE_ENABLE_TELEMETRY)) return null;
-  return { source, disabled: false, endpoints, capture };
+  return { source, disabled: false, endpoints, transports, capture };
 }
 
 // ---- Codex: `config_toml_base64`, a whole config.toml in a preference key ----
@@ -232,6 +248,7 @@ export function codexManagedOtelFromToml(
 ): ManagedAgentOtel | null {
   if (values.size === 0) return null;
   const endpoints = noEndpoints();
+  const transports: ManagedAgentOtel["transports"] = {};
   let explicitNone = 0;
   for (const signal of AGENT_OTEL_SIGNALS) {
     const base = CODEX_EXPORTER_KEY[signal];
@@ -241,7 +258,10 @@ export function codexManagedOtelFromToml(
     }
     for (const transport of ["otlp-http", "otlp-grpc"]) {
       const endpoint = values.get(`${base}.${transport}.endpoint`);
-      if (typeof endpoint === "string" && httpUrl(endpoint) !== null) endpoints[signal] = endpoint;
+      if (typeof endpoint === "string" && httpUrl(endpoint) !== null) {
+        endpoints[signal] = endpoint;
+        transports[signal] = transport === "otlp-http" ? "http" : "grpc";
+      }
     }
   }
   const capture = noCapture();
@@ -252,6 +272,7 @@ export function codexManagedOtelFromToml(
     source,
     disabled: !routes && explicitNone === AGENT_OTEL_SIGNALS.length,
     endpoints,
+    transports,
     capture,
   };
 }

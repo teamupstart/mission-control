@@ -38,7 +38,8 @@ Codex app-server    --OTLP json, x-mission-otel-relay token-->  | daemon /v1/...
     are forwarded but never written to the ledger.
 - The relay forwards every export these routes receive while a signal is on. That includes
   Cost-switch metrics from terminal Claude sessions.
-- An upstream that targets this daemon is never forwarded to.
+- An upstream that targets this daemon is never forwarded to. Signal paths are appended to
+  the URL pathname, preserving any query parameters and excluding fragments.
 
 The relay answers locally regardless of what the upstream does. Upstream failures only
 increment counters. The only error text recorded is an HTTP status, `timeout`, or an error code
@@ -54,7 +55,13 @@ such as `ECONNREFUSED`. Bodies, headers and URLs are never logged.
 
 When device management applies, its routing and capture switches become the effective policy.
 Claude Code's policy speaks for capture, and Codex's fills any signal Claude's does not route.
-Stored Settings headers are never sent to a managed destination.
+Stored Settings headers are never sent to a managed destination. Only OTLP/HTTP destinations
+are reusable by the relay: console exporters and managed gRPC routes do not become HTTP
+upstreams. Managed agents still export directly using their own configured transport. When
+no HTTP destination remains, the relay is shown as off even though its policy is managed.
+Relay traffic triggers a background policy refresh, so existing sessions notice managed
+routing changes without another launch or a Settings visit. An export already in flight
+may still use the previous cached policy.
 
 ## Per harness
 
@@ -85,15 +92,28 @@ will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home), after reviewing
 full-content capture default and removing any separately installed `npm:pi-otel` to avoid
 duplicate instrumentation:
 
+Use the AWS CLI with a read-only CodeArtifact profile; UMT is not required. The temporary npm
+configuration routes only `@upstart` to CodeArtifact and leaves public npm resolution alone:
+
 ```sh
-# Configure read-only @upstart npm access via the supported UMT flow first.
-umt artifacts --tools npm
+export AWS_PROFILE=YOUR_CODEARTIFACT_READONLY_PROFILE
+export CODEARTIFACT_AUTH_TOKEN="$(aws codeartifact get-authorization-token \
+  --domain code-artifacts-prod --domain-owner 801997600626 --region us-east-1 \
+  --query authorizationToken --output text)"
+export NPM_CONFIG_USERCONFIG="$(mktemp)"
+chmod 600 "$NPM_CONFIG_USERCONFIG"
+trap 'rm -f "$NPM_CONFIG_USERCONFIG"; unset CODEARTIFACT_AUTH_TOKEN NPM_CONFIG_USERCONFIG' EXIT
+printf '%s\n' \
+  '@upstart:registry=https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/' \
+  '//code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/:_authToken=${CODEARTIFACT_AUTH_TOKEN}' \
+  > "$NPM_CONFIG_USERCONFIG"
 pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
 pi list
 ```
 
-An isolated validation can instead set `PI_CODING_AGENT_DIR` to a disposable directory and use
-a short-lived `NPM_CONFIG_USERCONFIG` with a CodeArtifact token. See the
+For isolated validation, set `PI_CODING_AGENT_DIR` to a disposable directory before installing.
+If UMT is already installed, `umt artifacts --tools npm` is an alternative authentication
+setup; do not combine its persistent npm config with the temporary override above. See the
 [Pi package consumer instructions](https://github.com/nigel-upstart/pi-buildout/blob/main/packages/README.md#consumer-setup-read-only).
 The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
 all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -141,7 +161,8 @@ failure means "no managed policy", and launches are never blocked.
 
 - **Claude Code**: reuses the Cost reader's precedence walk (`readManagedClaudeEnvKeys` in
   `environment/claude-managed.ts`). The locations are the per-user profile, the machine profile,
-  then `managed-settings.json`. It keeps only routing and capture keys. `*_HEADERS` is never read.
+  then `managed-settings.json`. It keeps only routing and capture keys. `*_HEADERS` is never read. Routing includes the transport protocol, so an explicitly
+  configured gRPC endpoint is not reused for the HTTP relay.
 - **Codex**: `/Library/Managed Preferences/[<user>/]com.openai.codex.plist`, key
   `config_toml_base64`, decoded and read by a subset reader. The reader looks only inside
   `[otel…]` tables and skips everything else unread. If it cannot read an `otel` line, the

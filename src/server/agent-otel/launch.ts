@@ -152,7 +152,9 @@ export function harnessMode(agent: AgentType, policy: AgentOtelPolicy): AgentOte
   const rule = HARNESS_OTEL_RULES[agent];
   if (!rule.plumbed) return "extension";
   if (rule.managed(policy) !== null) return "managed";
-  return policy.source === "off" ? "off" : "relay";
+  return AGENT_OTEL_SIGNALS.some((signal) => policy.signals[signal] && policy.upstream[signal] !== null)
+    ? "relay"
+    : "off";
 }
 
 export function harnessStatuses(policy: AgentOtelPolicy): AgentOtelHarnessStatus[] {

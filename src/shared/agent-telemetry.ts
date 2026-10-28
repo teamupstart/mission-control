@@ -95,8 +95,11 @@ const HeaderSchema = z.object({
     const problem = agentOtelHeaderNameProblem(name);
     if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   }),
-  // No CR or LF: a header value that could end the header is a request smuggled upstream.
-  value: z.string().min(1).max(4096).regex(/^[^\r\n]*$/, "Header values cannot span lines."),
+  // HTTP field values allow tab and Latin-1 text, not controls or arbitrary Unicode.
+  value: z.string().min(1).max(4096).regex(
+    /^[\t\x20-\x7e\x80-\xff]*$/,
+    "Header values must be Latin-1 text without control characters.",
+  ),
 });
 
 /**

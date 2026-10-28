@@ -58,10 +58,9 @@ export function resolveAgentOtelPolicy(input: {
       managed,
     };
   }
-  const base = config.endpoint.trim().replace(/\/+$/, "");
   const upstream = { logs: null, metrics: null, traces: null } as Record<AgentOtelSignal, string | null>;
   for (const signal of AGENT_OTEL_SIGNALS) {
-    if (config.signals[signal]) upstream[signal] = `${base}/v1/${signal}`;
+    if (config.signals[signal]) upstream[signal] = agentOtelSignalUrl(config.endpoint, signal);
   }
   return {
     source: "settings",
@@ -83,7 +82,9 @@ function managedPolicy(managed: ManagedAgentOtelState): AgentOtelPolicy {
   );
   const upstream = { logs: null, metrics: null, traces: null } as Record<AgentOtelSignal, string | null>;
   for (const signal of AGENT_OTEL_SIGNALS) {
-    upstream[signal] = sources.map((m) => m.endpoints[signal]).find((e) => e !== null) ?? null;
+    upstream[signal] = sources.find(
+      (m) => m.transports[signal] === "http" && m.endpoints[signal] !== null,
+    )?.endpoints[signal] ?? null;
   }
   const signals = {} as AgentOtelSignals;
   for (const signal of AGENT_OTEL_SIGNALS) signals[signal] = upstream[signal] !== null;
@@ -98,6 +99,14 @@ function managedPolicy(managed: ManagedAgentOtelState): AgentOtelPolicy {
     useStoredHeaders: false,
     managed,
   };
+}
+
+/** Append the signal path to a validated base URL, not to its query or fragment. */
+export function agentOtelSignalUrl(endpoint: string, signal: AgentOtelSignal): string {
+  const url = new URL(endpoint);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/v1/${signal}`;
+  url.hash = "";
+  return url.href;
 }
 
 /** A hostname, or null. The only part of a URL that Settings is ever sent. */

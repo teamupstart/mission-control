@@ -23,7 +23,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { agentOtelForwarder, agentOtelLaunch } = await import("../src/server/agent-otel/config.ts");
-const { setAgentOtelManagedDepsForTest } = await import("../src/server/agent-otel/managed.ts");
+const { managedAgentOtel, setAgentOtelManagedDepsForTest } = await import("../src/server/agent-otel/managed.ts");
 const { agentOtelRelayToken } = await import("../src/server/agent-otel/relay-token.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
@@ -163,6 +163,7 @@ test("an invalid config is refused at the route", async () => {
   assert.equal((await putConfig({ endpoint: "http://127.0.0.1:7317" })).status, 400);
   assert.equal((await putConfig({ headers: [{ name: "x-harness-token", value: "x" }] })).status, 400);
   assert.equal((await putConfig({ nonsense: true })).status, 400);
+  assert.equal((await putConfig({ headers: [{ name: "Authorization", value: "a\u0000b" }] })).status, 400);
 });
 
 test("the tee forwards raw bytes with their content type, and the ledger still sees metrics", async () => {
@@ -285,6 +286,22 @@ test("two spellings of one header name are refused", async () => {
   assert.equal(res.status, 400);
 });
 
+test("a gateway base path and query reach the upstream intact", async () => {
+  received.length = 0;
+  try {
+    assert.equal((await putConfig({ endpoint: `${SINK}/otel/?tenant=demo#diagnostics` })).status, 200);
+    const res = await call("POST", "/v1/logs", "{}", {
+      "content-type": "application/json",
+      "x-harness-token": TOKEN,
+    });
+    assert.equal(res.status, 200);
+    await settle();
+    assert.deepEqual(received.map((r) => r.url), ["/otel/v1/logs?tenant=demo"]);
+  } finally {
+    await putConfig({ endpoint: SINK });
+  }
+});
+
 test("a managed policy makes Settings read-only and the managed agent gets nothing", async () => {
   const plist = "/fx/Library/Managed Preferences/com.anthropic.claudecode.plist";
   setAgentOtelManagedDepsForTest(() => ({
@@ -292,7 +309,7 @@ test("a managed policy makes Settings read-only and the managed agent gets nothi
     fixture: true,
     root: "/fx",
     user: null,
-    readText: async () => ({ ok: false }) as never,
+    readText: async () => ({ ok: false, missing: true, reason: "missing" }),
     stat: async (path) => (path === plist ? { mtimeMs: 1, size: 1 } : "missing"),
     run: async () =>
       stubRun({
@@ -315,4 +332,58 @@ test("a managed policy makes Settings read-only and the managed agent gets nothi
   // Codex has no managed policy here, so it relays toward the managed destination.
   assert.ok((await agentOtelLaunch("codex")).args.length > 0);
   setAgentOtelManagedDepsForTest(null);
+});
+
+test("relay traffic notices managed destination changes and disablement without Settings", async () => {
+  const plist = "/fx/Library/Managed Preferences/com.anthropic.claudecode.plist";
+  let revision = 1;
+  let statCalls = 0;
+  let disabled = false;
+  let endpoint = `${SINK}/v1/logs`;
+  setAgentOtelManagedDepsForTest(() => ({
+    platform: "darwin",
+    fixture: true,
+    root: "/fx",
+    user: null,
+    readText: async () => ({ ok: false, missing: true, reason: "missing" }),
+    stat: async (path) => {
+      statCalls += 1;
+      return path === plist ? { mtimeMs: revision, size: 1 } : "missing";
+    },
+    run: async () => stubRun({ stdout: JSON.stringify({
+      CLAUDE_CODE_ENABLE_TELEMETRY: disabled ? "0" : "1",
+      OTEL_LOGS_EXPORTER: "otlp",
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint,
+    }), stderr: "", code: 0 }),
+  }));
+  const postLogs = () => call("POST", "/v1/logs", "{}", { "x-harness-token": TOKEN });
+  try {
+    await managedAgentOtel();
+    endpoint = `${SINK}/updated/v1/logs`;
+    revision += 1;
+    const beforeChange = statCalls;
+    assert.equal((await postLogs()).status, 200);
+    assert.ok(statCalls > beforeChange, "export traffic must initiate a policy refresh");
+    await managedAgentOtel(); // Join the refresh initiated by the export.
+    await settle();
+    received.length = 0;
+    assert.equal((await postLogs()).status, 200);
+    await settle();
+    assert.deepEqual(received.map((r) => r.url), ["/updated/v1/logs"]);
+
+    disabled = true;
+    revision += 1;
+    const beforeDisable = statCalls;
+    assert.equal((await postLogs()).status, 200);
+    assert.ok(statCalls > beforeDisable);
+    await managedAgentOtel();
+    await settle();
+    received.length = 0;
+    assert.equal((await postLogs()).status, 200);
+    await settle();
+    assert.equal(received.length, 0);
+    await managedAgentOtel();
+  } finally {
+    setAgentOtelManagedDepsForTest(null);
+  }
 });

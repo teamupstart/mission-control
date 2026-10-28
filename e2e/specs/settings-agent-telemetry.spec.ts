@@ -117,6 +117,30 @@ test.describe("unmanaged", () => {
   });
 });
 
+test.describe("managed off", () => {
+  const policyRoot = mkdtempSync(join(tmpdir(), "mission-e2e-agent-otel-off-"));
+  const policyDir = join(policyRoot, "Library", "Application Support", "ClaudeCode");
+  mkdirSync(policyDir, { recursive: true });
+  writeFileSync(join(policyDir, "managed-settings.json"), JSON.stringify({
+    env: { CLAUDE_CODE_ENABLE_TELEMETRY: "0" },
+  }));
+  test.afterAll(() => rmSync(policyRoot, { recursive: true, force: true }));
+  test.use({ daemonEnv: { MISSION_MANAGED_SETTINGS_ROOT: policyRoot } });
+
+  test("managed telemetry disabled does not claim the relay is on", async ({ dashboard, daemon }) => {
+    await dashboard.goto(`${daemon.baseURL}/#/settings/agent-telemetry`);
+    await expect(dashboard.getByRole("status").filter({ hasText: "Managed by your organization." })).toBeVisible();
+    const toggle = dashboard.getByLabel("Relay SDK agent telemetry", { exact: true });
+    await expect(toggle).not.toBeChecked();
+    await expect(toggle).toBeDisabled();
+    await expect(dashboard.getByText("Off. Your organization's managed policy provides no OTLP/HTTP destination for this relay.")).toBeVisible();
+    const harnesses = dashboard.getByRole("list", { name: "Agent telemetry by harness" });
+    await expect(harnesses).toContainText("Your organization's managed policy turns Claude Code's telemetry off.");
+    await expect(harnesses).toContainText("Codex: Off.");
+    await shoot(dashboard, "agent-telemetry-managed-off");
+  });
+});
+
 test.describe("managed", () => {
   const policyRoot = mkdtempSync(join(tmpdir(), "mission-e2e-agent-otel-policy-"));
   const policyDir = join(policyRoot, "Library", "Application Support", "ClaudeCode");

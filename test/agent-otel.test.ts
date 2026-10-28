@@ -101,9 +101,53 @@ test("a Claude managed env with only a generic endpoint appends OTLP's default p
   assert.deepEqual(managed?.endpoints, { logs: null, metrics: `${GATEWAY}/v1/metrics`, traces: null });
 });
 
+test("managed console exporters do not become remote OTLP routes", () => {
+  for (const exporter of ["console", "prometheus", "none", "console,otlp"]) {
+    const managed = claudeManagedOtelFromEnv("mdm", {
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      OTEL_METRICS_EXPORTER: exporter,
+      OTEL_EXPORTER_OTLP_ENDPOINT: GATEWAY,
+    });
+    assert.equal(
+      managed?.endpoints.metrics,
+      exporter === "console,otlp" ? `${GATEWAY}/v1/metrics` : null,
+    );
+  }
+});
+
+test("managed gRPC routes are not reused as HTTP relay destinations", () => {
+  const values = parseCodexOtelToml(`
+[otel.exporter.otlp-grpc]
+endpoint = "https://collector.example.com:4317"
+`);
+  assert.ok(values);
+  const codex = codexManagedOtelFromToml("mdm", values);
+  assert.equal(codex?.endpoints.logs, "https://collector.example.com:4317");
+  for (const managed of [
+    { claude: null, codex },
+    { claude: claudeManagedOtelFromEnv("mdm", {
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      OTEL_LOGS_EXPORTER: "otlp",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.com:4317",
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc",
+    }), codex: null },
+  ]) {
+    const policy = resolveAgentOtelPolicy({ config: settings(), hasHeaders: false, managed });
+    assert.equal(policy.source, "mdm");
+    assert.deepEqual(policy.upstream, { logs: null, metrics: null, traces: null });
+    assert.deepEqual(claudeAgentOtelEnv(policy, RELAY), {});
+    assert.deepEqual(codexAgentOtelArgs(policy, RELAY), []);
+  }
+});
+
 test("a Claude managed env that turns telemetry off is managed and disabled", () => {
   const managed = claudeManagedOtelFromEnv("mdm", { CLAUDE_CODE_ENABLE_TELEMETRY: "0" });
   assert.equal(managed?.disabled, true);
+  const policy = resolveAgentOtelPolicy({
+    config: settings(), hasHeaders: false, managed: { claude: managed, codex: null },
+  });
+  assert.equal(harnessMode("claude", policy), "managed");
+  assert.equal(harnessMode("codex", policy), "off");
   assert.equal(claudeManagedOtelFromEnv("mdm", {}), null);
 });
 
@@ -141,7 +185,7 @@ function fakeDeps(
     root: "/fx",
     user: "ada",
     stat: async (path) => (path in files ? { mtimeMs: 1, size: 1 } : "missing"),
-    readText: async () => ({ ok: false, reason: "missing" }) as never,
+    readText: async () => ({ ok: false, missing: true, reason: "missing" }),
     run: async (bin, args) => {
       calls.push(`${bin} ${args.join(" ")}`);
       const path = args.at(-1)!;
@@ -222,6 +266,33 @@ test("precedence: managed policy, then Settings, then off", () => {
   assert.equal(plain.source, "off");
 });
 
+test("signal paths preserve a gateway's base path and query", () => {
+  for (const endpoint of [
+    "https://collector.example.com/otel/?tenant=demo#diagnostics",
+    "https://collector.example.com/otel?tenant=demo",
+  ]) {
+    const expected = {
+      logs: "https://collector.example.com/otel/v1/logs?tenant=demo",
+      metrics: "https://collector.example.com/otel/v1/metrics?tenant=demo",
+      traces: "https://collector.example.com/otel/v1/traces?tenant=demo",
+    };
+    const policy = resolveAgentOtelPolicy({
+      config: settings({ endpoint }),
+      hasHeaders: false,
+      managed: { claude: null, codex: null },
+    });
+    assert.deepEqual(policy.upstream, expected);
+    const managed = claudeManagedOtelFromEnv("mdm", {
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      OTEL_LOGS_EXPORTER: "otlp",
+      OTEL_METRICS_EXPORTER: "otlp",
+      OTEL_TRACES_EXPORTER: "otlp",
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+    });
+    assert.deepEqual(managed?.endpoints, expected);
+  }
+});
+
 test("Claude relays through per-signal env with the daemon token, and capture only turns on", () => {
   const policy = resolveAgentOtelPolicy({
     config: settings({ capture: { userPrompts: true, toolDetails: false, toolContent: false, assistantResponses: true, rawApiBodies: false } }),
@@ -297,6 +368,21 @@ test("header names the relay owns are refused at the schema", () => {
   }
   assert.equal(AgentTelemetryPatchSchema.safeParse({ headers: [{ name: "Authorization", value: "a\r\nb" }] }).success, false);
   assert.equal(AgentTelemetryPatchSchema.safeParse({ headers: [{ name: "Authorization", value: "Bearer x" }] }).success, true);
+});
+
+test("upstream header values must be sendable HTTP field values", () => {
+  for (const value of ["a\u0000b", "a\u0001b", "a\u007fb", "a🚀b"]) {
+    assert.equal(
+      AgentTelemetryPatchSchema.safeParse({ headers: [{ name: "Authorization", value }] }).success,
+      false,
+    );
+  }
+  for (const value of ["Bearer valid-token", "a\tb", "aéb"]) {
+    assert.equal(
+      AgentTelemetryPatchSchema.safeParse({ headers: [{ name: "Authorization", value }] }).success,
+      true,
+    );
+  }
 });
 
 // ---- the relay's queue ----

@@ -2424,7 +2424,9 @@ local fixtures cannot make a test pass. An unconfigured or unavailable check ret
 explicit skipped outcome; this policy does not invent a test result.
 
 Report-only edits leave publication content unchanged but change evidence identity, so evidence
-reviews can be refreshed. Resumption probes include full tree identity and policy version; an old
+reviews can be refreshed. Resumption probes include full tree identity, policy version and raw
+hashes of the prior snapshot's retained artifacts. Git normalization cannot hide changed report
+bytes, and missing or unreadable receipt sources count as changed. An old
 blocked capture can acquire the new proof on its next submission without modifying history.
 Existing snapshots without the policy keep the conservative dirty-tree rule. Missing or pruned
 retention receipts cannot authorize an exemption. Externally supplied ensemble artifacts still

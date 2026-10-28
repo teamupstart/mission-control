@@ -55,8 +55,9 @@ import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
-import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { captureWorktreeTree, isolatedGitEnvironment } from "../git/worktree-tree.ts";
 import { captureWorkflowPublication } from "./publication.ts";
+import { inspectCheckoutTextArtifact } from "./images.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -1350,6 +1351,7 @@ export async function readWorkflowContext(
 export interface WorkflowEvidenceProbe {
   contentTreeOid?: string;
   publicationVersion?: 1;
+  localArtifactHashes?: Array<{ path: string; sha256: string | null }>;
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
@@ -1359,6 +1361,7 @@ export interface WorkflowEvidenceProbe {
 export async function readWorkflowEvidenceProbe(
   registry: Registry,
   binding: WorkflowBinding,
+  retainedArtifacts: readonly { path: string }[] = [],
 ): Promise<WorkflowEvidenceProbe> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -1368,9 +1371,22 @@ export async function readWorkflowEvidenceProbe(
   if (!checkout) throw new Error("The bound session has no working directory");
   const work = await readRepositoryWorkEvidence(checkout);
   const { treeOid: contentTreeOid } = await captureWorktreeTree(checkout);
+  // Git can normalize distinct report bytes to one blob. Re-read only the prior snapshot's
+  // retained paths, without rediscovering or validating report groups on every observer tick.
+  let artifactRoot: string | null = null;
+  if (retainedArtifacts.length) {
+    const root = await run("git", ["-C", checkout, "rev-parse", "--show-toplevel"], { env: isolatedGitEnvironment() });
+    if (root.code === 0) artifactRoot = realpathSync(root.stdout.trim());
+  }
+  const localArtifactHashes = await Promise.all(retainedArtifacts.map(async ({ path }) => ({
+    path,
+    sha256: artifactRoot
+      ? await inspectCheckoutTextArtifact(artifactRoot, path).then((artifact) => artifact.sha256, () => null) : null,
+  })));
   return {
     contentTreeOid,
     publicationVersion: 1,
+    localArtifactHashes,
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
     diffFingerprint: sha(JSON.stringify({
@@ -1385,8 +1401,12 @@ export function probeMatchesEvidence(
   probe: WorkflowEvidenceProbe,
   evidence: WorkflowContextSnapshot["evidence"],
 ): boolean {
+  const retained = evidence.publication?.localArtifacts ?? [];
+  const hashes = probe.localArtifactHashes ?? [];
   return (probe.publicationVersion === undefined || probe.publicationVersion === evidence.publication?.version)
     && (probe.contentTreeOid === undefined || probe.contentTreeOid === evidence.contentTreeOid)
+    && hashes.length === retained.length
+    && retained.every((artifact) => hashes.some((hash) => hash.path === artifact.path && hash.sha256 === artifact.sha256))
     && probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])

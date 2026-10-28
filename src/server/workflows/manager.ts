@@ -2262,7 +2262,7 @@ export class WorkflowManager {
      * entirely rather than getting a flag of its own to keep in step.
      */
     if (!input.resubmitUnchanged) {
-      const probe = await this.probeRepository(binding).catch(() => null);
+      const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
         this.store.setRunState(
@@ -7881,9 +7881,9 @@ export class WorkflowManager {
    * the cheap pre-filter and the whole reason there is no "capture then discard" mode: an
    * idle repair session with unchanged work must leave the run exactly where it is.
    * Re-reading the diff, the transcript window and the standards on every tick to discover
-   * unchanged repair work is not free. `readWorkflowEvidenceProbe` costs two git commands and
-   * reads the repository only. Every field it reads is a fingerprint input, so a differing
-   * probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
+   * unchanged repair work is not free. `readWorkflowEvidenceProbe` reads Git identity and the
+   * prior snapshot's retained artifact bytes only. Every field it reads is a fingerprint input,
+   * so a differing probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
    * detects edits inside a path that was already dirty in the failed round. The converse is
    * deliberately not true: a transcript-only change leaves the probe matching while the full
    * fingerprint has moved, and a repair that changed no code is not a repair.
@@ -7898,8 +7898,10 @@ export class WorkflowManager {
    * opened. Returning the read's own promise keeps the caller to the single turn the git call
    * itself needs, which is what it has always cost.
    */
-  private probeRepository(binding: WorkflowBinding): Promise<WorkflowEvidenceProbe> {
-    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding);
+  private probeRepository(binding: WorkflowBinding, submission: WorkflowSubmission): Promise<WorkflowEvidenceProbe> {
+    const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const retained = parsed.success ? parsed.data.evidence.publication?.localArtifacts : undefined;
+    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding, retained);
   }
 
   /**
@@ -8023,7 +8025,8 @@ export class WorkflowManager {
   ): Promise<void> {
     const scheduled = this.store.getRun(runId);
     const scheduledBinding = scheduled ? this.store.getBinding(scheduled.bindingId) : null;
-    if (!scheduled || !scheduledBinding) return;
+    const scheduledSubmission = this.store.getSubmission(submissionId);
+    if (!scheduled || !scheduledBinding || !scheduledSubmission) return;
 
     /*
      * The repository read comes FIRST, and every other gate is asked after it.
@@ -8033,7 +8036,7 @@ export class WorkflowManager {
      * had the chance to change yet, which is the same as not rechecking at all. Two git reads
      * take long enough for a session to pick up its turn.
      */
-    const probe = await this.probeRepository(scheduledBinding).catch(() => null);
+    const probe = await this.probeRepository(scheduledBinding, scheduledSubmission).catch(() => null);
     if (!probe) return;
 
     const eligible = this.resumableRun(runId, this.registry.snapshot().sessions, now);
@@ -8113,7 +8116,7 @@ export class WorkflowManager {
     }
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
-    const probe = await this.probeRepository(binding);
+    const probe = await this.probeRepository(binding, latest);
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
     if (unchanged) {

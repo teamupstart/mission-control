@@ -241,7 +241,8 @@ test("report-only edits preserve publication identity but refresh the evidence p
   assert.notEqual(after.contentTreeOid, before.contentTreeOid);
   const old = { ...evidence(before), headSha: "abcd", diffFingerprint: "same", workingTreeStatus: ["?? docs/"] };
   const probe = { headSha: old.headSha, diffFingerprint: old.diffFingerprint, workingTreeStatus: old.workingTreeStatus,
-    contentTreeOid: after.contentTreeOid, publicationVersion: 1 as const };
+    contentTreeOid: after.contentTreeOid, publicationVersion: 1 as const,
+    localArtifactHashes: before.publication.localArtifacts };
   assert.equal(probeMatchesEvidence(probe, old), false);
   assert.equal(probeMatchesEvidence({ ...probe, contentTreeOid: before.contentTreeOid }, old), true);
   const legacy = { ...old, publication: undefined };

@@ -4,6 +4,10 @@ import {
   bindDelegatedTurn,
   contestDelegatedTurn,
   deleteDelegatedTurn,
+  deleteOtherSend,
+  insertOtherSend,
+  loadOtherSends,
+  pruneOtherSends,
   insertDelegatedTurn,
   loadDelegatedTurns,
   pruneDelegatedTurns as pruneRows,
@@ -42,6 +46,8 @@ import { injectionFingerprint } from "./injections.ts";
  * never produced a turn from claiming a much later operator turn with the same words.
  */
 const DELIVERY_LAG_MS = 24 * 60 * 60_000;
+/** A turn's timestamp may round below the moment its delivery was recorded. */
+const DELIVERY_SKEW_MS = 5_000;
 /** Forward page size for the binding walk. */
 const BIND_PAGE_TURNS = 50;
 
@@ -56,9 +62,13 @@ const cache = new Map<string, DelegatedTurnRow[]>();
 const scanned = new Map<string, number>();
 /**
  * Recent non-delegated sends, per target conversation and fingerprint, with the transcript size
- * when each began. In memory: it only needs to outlive a send that is still in flight.
+ * when each began. Persisted in `session_other_sends` and loaded lazily per conversation, because
+ * a send can stay in flight across a restart: a pasted draft is submitted whenever the operator
+ * presses Enter, and a controller sending the same words after the restart must still see it.
  */
 const otherSends = new Map<string, OtherSend[]>();
+/** Conversations whose persisted sends have been loaded into `otherSends` this process. */
+const sendsLoaded = new Set<string>();
 /** Rows whose window closed with no turn of theirs: never scanned again this process. */
 const expired = new Set<string>();
 /**
@@ -91,6 +101,7 @@ function senderOf(row: DelegatedTurnRow): string {
 
 /** One non-delegated send; `offset` is null when the transcript size could not be read. */
 interface OtherSend {
+  id: string;
   at: number;
   offset: number | null;
 }
@@ -127,6 +138,7 @@ const SWEEP_INTERVAL_MS = 60_000;
 function sweepOtherSends(now: number): void {
   if (now - lastSweep < SWEEP_INTERVAL_MS) return;
   lastSweep = now;
+  pruneOtherSends(now - DELIVERY_LAG_MS);
   for (const [key, sends] of otherSends) {
     const recent = sends.filter((send) => now - send.at <= DELIVERY_LAG_MS);
     if (recent.length) otherSends.set(key, recent);
@@ -134,8 +146,21 @@ function sweepOtherSends(now: number): void {
   }
 }
 
+/** Bring a conversation's persisted sends into memory once per process. */
+function loadSends(noteKey: string, now: number): void {
+  if (sendsLoaded.has(noteKey)) return;
+  sendsLoaded.add(noteKey);
+  for (const row of loadOtherSends(noteKey, now - DELIVERY_LAG_MS)) {
+    const key = sendKey(noteKey, row.fingerprint);
+    const sends = otherSends.get(key) ?? [];
+    if (!sends.some((send) => send.id === row.id)) sends.push({ id: row.id, at: row.sentAt, offset: row.transcriptOffset });
+    otherSends.set(key, sends);
+  }
+}
+
 function recentSends(noteKey: string, fingerprint: string, now: number): OtherSend[] {
   sweepOtherSends(now);
+  loadSends(noteKey, now);
   const key = sendKey(noteKey, fingerprint);
   const recent = (otherSends.get(key) ?? []).filter((send) => now - send.at <= DELIVERY_LAG_MS);
   if (recent.length) otherSends.set(key, recent);
@@ -232,7 +257,8 @@ export function reserveDelegatedTurn(
 export function noteOtherSend(conversation: DelegatedConversation, text: string, now = Date.now()): OtherSendHandle {
   const fingerprint = injectionFingerprint(text);
   const sends = recentSends(conversation.key, fingerprint, now);
-  const send: OtherSend = { at: now, offset: sizeOf(conversation.transcript) };
+  const send: OtherSend = { id: randomUUID(), at: now, offset: sizeOf(conversation.transcript) };
+  insertOtherSend({ id: send.id, noteKey: conversation.key, fingerprint, sentAt: send.at, transcriptOffset: send.offset });
   sends.push(send);
   otherSends.set(sendKey(conversation.key, fingerprint), sends);
   const handle: OtherSendHandle = { key: conversation.key, fingerprint, send };
@@ -257,8 +283,9 @@ export interface OtherSendHandle {
  * operator attempt does not cost the controller its label.
  */
 export function withdrawOtherSend(handle: OtherSendHandle): void {
+  deleteOtherSend(handle.send.id);
   const key = sendKey(handle.key, handle.fingerprint);
-  const remaining = (otherSends.get(key) ?? []).filter((send) => send !== handle.send);
+  const remaining = (otherSends.get(key) ?? []).filter((send) => send.id !== handle.send.id);
   if (remaining.length) {
     otherSends.set(key, remaining);
     return;
@@ -273,7 +300,7 @@ export function withdrawOtherSend(handle: OtherSendHandle): void {
  * could be credited to the wrong name.
  */
 function reconsider(noteKey: string, fingerprint: string): void {
-  if (otherSends.has(sendKey(noteKey, fingerprint))) return;
+  if (recentSends(noteKey, fingerprint, Date.now()).length) return;
   const open = rowsFor(noteKey).filter((row) => row.fingerprint === fingerprint && row.messageId === null);
   if (new Set(open.map(senderOf)).size > 1) return;
   for (const row of open) if (row.contested) contest(row, false);
@@ -411,10 +438,13 @@ export function delegatedTurnSources(
     bindPending(rows, conversation.transcript, now);
   }
   const fingerprints = new Set(rows.map((row) => row.fingerprint));
-  // Words whose delivery cannot be bound - contested, or sent without a known boundary - within
-  // its window: a matching turn could be that delivery, so no other sender may be named either.
-  const unresolved = new Set(rows.filter((row) => row.messageId === null && (row.contested || row.transcriptOffset === null)
-    && !expired.has(row.id) && now - row.deliveredAt <= DELIVERY_LAG_MS).map((row) => row.fingerprint));
+  // Deliveries that cannot be bound - contested, or sent without a known boundary. A turn with
+  // their words written inside one's window could be that delivery, so no sender may be named
+  // for it. Judged on the TURN's own time, not the clock now, so the doubt stays with the turn
+  // for as long as the row is kept rather than lapsing once the window has passed.
+  const unresolvedRows = rows.filter((row) => row.messageId === null && (row.contested || row.transcriptOffset === null));
+  const couldBe = (fingerprint: string, m: TranscriptMessage) => unresolvedRows.some((row) => row.fingerprint === fingerprint
+    && (m.ts <= 0 || (m.ts >= row.deliveredAt - DELIVERY_SKEW_MS && m.ts - row.deliveredAt <= DELIVERY_LAG_MS)));
   const byId = new Map(rows.filter((row) => row.messageId !== null).map((row) => [row.messageId!, row]));
   const pageIds = new Set(messages.map((m) => m.id));
   // Timestamp fallback candidates, counted on both sides so an ambiguous key answers nothing.
@@ -449,7 +479,7 @@ export function delegatedTurnSources(
     const entry = key ? keyed.get(key) : undefined;
     const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
     if (row && conversation.transcript && uniqueAtTimestamp(row, conversation.transcript)) sources.set(m.id, sourceOf(row));
-    else if (unresolved.has(fingerprint)) ambiguous.add(m.id);
+    else if (couldBe(fingerprint, m)) ambiguous.add(m.id);
   }
   return { sources, contested, ambiguous };
 }
@@ -476,6 +506,7 @@ function forgetRowCaches(): void {
 export function forgetDelegatedTurnCache(): void {
   forgetRowCaches();
   otherSends.clear();
+  sendsLoaded.clear();
   lastSweep = 0;
 }
 

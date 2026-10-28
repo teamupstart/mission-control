@@ -250,10 +250,12 @@ by exact native id; the timestamp fallback for re-synthesized ids (Codex) applie
 whole transcript, not just the page, holds exactly one user turn with those words at that
 timestamp, so a same-millisecond operator repeat is left unattributed rather than credited.
 Every other sender of words to the target - the `/send` and `/inject` direct arms and the
-pending-turn delivery seams - calls `noteOtherSend` before it writes; `/send` does so for an
+pending-turn delivery seams - calls `noteOtherSend` before it writes, which persists the send in
+`session_other_sends` so it still races a delegated send after a daemon restart; `/send` does so for an
 unsubmitted draft too, since the operator's Enter submits it outside Mission Control. While a
 delivery of some words is contested or boundary-less, `delegatedTurnSources` reports matching
-unbound turns as `ambiguous`, and `attributeTranscript` drops every live label on them,
+unbound turns written inside such a delivery's window (judged on the turn's own timestamp, so
+the doubt does not lapse) as `ambiguous`, and `attributeTranscript` drops every live label on them,
 Foreman's included, and marks them `originUnresolved` so a reader of the operator's own words
 (the retro correction scanner) skips them. Rivalry and `reconsider` compare the stored sender as
 id plus name, so one controller renamed between two in-flight identical sends counts as two. A delegated row whose

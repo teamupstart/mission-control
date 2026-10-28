@@ -732,6 +732,22 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_session_delegated_turns_age
       ON session_delegated_turns(delivered_at);
 
+    -- NON-DELEGATED SENDS STILL IN THEIR RACE WINDOW, so a delegated message of the same words
+    -- is contested even after a restart. A pasted, unsubmitted draft is one: the operator's Enter
+    -- turns it into a message outside Mission Control, perhaps after the daemon has restarted.
+    -- No message text, only its fingerprint; rows expire after the 24-hour race window.
+    CREATE TABLE IF NOT EXISTS session_other_sends (
+      id                TEXT PRIMARY KEY,
+      note_key          TEXT NOT NULL,   -- the target's noteKeyFor(s)
+      fingerprint       TEXT NOT NULL,   -- injectionFingerprint of the sent text
+      sent_at           INTEGER NOT NULL,
+      transcript_offset INTEGER          -- target transcript size at send; NULL if unknown
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_key
+      ON session_other_sends(note_key);
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
+      ON session_other_sends(sent_at);
+
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
     -- A session outlives the setting that launched it. Reading live configuration back to a
@@ -10615,6 +10631,44 @@ export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan
     )
     .run(olderThan, ...keys);
   return Number(r.changes);
+}
+
+/** One non-delegated send still inside its race window. */
+export interface OtherSendRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  sentAt: number;
+  transcriptOffset: number | null;
+}
+
+export function insertOtherSend(row: OtherSendRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset);
+}
+
+/** Take back a send with positive evidence that nothing landed. */
+export function deleteOtherSend(id: string): void {
+  openDb().prepare(`DELETE FROM session_other_sends WHERE id = ?`).run(id);
+}
+
+/** A conversation's sends newer than `since`, oldest first. */
+export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
+  return openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset
+         FROM session_other_sends WHERE note_key = ? AND sent_at >= ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey, since) as unknown as OtherSendRow[];
+}
+
+/** Drop sends past the race window, for every conversation. */
+export function pruneOtherSends(olderThan: number): number {
+  return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
 }
 
 // ---- session standing instructions (what a launch actually delivered) ----

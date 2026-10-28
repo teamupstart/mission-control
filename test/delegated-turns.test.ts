@@ -379,3 +379,25 @@ test("an unresolved turn is marked so readers of the operator's words can skip i
   const read = attributeTranscript("target-session-3", page, null, undefined, t.conversation(k));
   assert.deepEqual(read.map((m) => [m.origin, m.originUnresolved]), [[undefined, true], [undefined, undefined]]);
 });
+
+test("a pending operator draft survives a daemon restart and still contests a delegated send", () => {
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  // The operator pastes a draft without submitting it; then the daemon restarts.
+  noteOtherSend(t.conversation(k), "after restart", now);
+  forgetDelegatedTurnCache();
+  // A controller sends the same words after the restart; the operator submits first.
+  reserveDelegatedTurn(t.conversation(k), "after restart", first, now + 1);
+  const page = [t.append("operator", "after restart", now + 2), t.append("controller", "after restart", now + 3)];
+  assert.deepEqual(senders(t.conversation(k), page), [null, null]);
+});
+
+test("a turn inside a contested delivery's window stays unresolved after the window has passed", () => {
+  const t = fakeTranscript(); const k = key(); const sent = Date.now() - 3 * LAG;
+  reserveDelegatedTurn(t.conversation(k), "old race", first, sent);
+  noteOtherSend(t.conversation(k), "old race", sent + 1);
+  const inside = t.append("inside", "old race", sent + 10);
+  const after = t.append("after", "old race", sent + LAG + 1);
+  // Read days later: the turn written inside the window keeps its doubt, a much later one does not.
+  const { ambiguous } = delegatedTurnSources(t.conversation(k), [inside, after], sent + 3 * LAG);
+  assert.deepEqual([ambiguous.has("inside"), ambiguous.has("after")], [true, false]);
+});

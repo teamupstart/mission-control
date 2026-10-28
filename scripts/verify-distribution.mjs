@@ -44,7 +44,7 @@ export async function verifyDistributionApp(app, metadata, policy) {
 
 export function verifyDistributionDmg(dmg, policy) {
   macTool('/usr/bin/codesign', ['--verify', '--strict', '-R',
-    `anchor apple generic and certificate leaf[subject.OU] = "${policy.teamId}"`, dmg]);
+    `=anchor apple generic and certificate leaf[subject.OU] = "${policy.teamId}"`, dmg]);
   macTool('/usr/bin/xcrun', ['stapler', 'validate', dmg]);
   const assessment = macTool('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg]);
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);

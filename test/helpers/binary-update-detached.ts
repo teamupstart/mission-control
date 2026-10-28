@@ -27,7 +27,7 @@ function nativeTrustFixture(root: string, format: 'esm' | 'cjs'): string {
     fixtureCp.execFileSync = (command, args, options) => {
       if (command !== '/usr/bin/codesign') return fixtureExec(command, args, options);
       fixtureAssert.deepEqual(args.slice(0, -1), ['--verify', '--deep', '--strict', '--all-architectures', '-R',
-        'anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "S2FPCQK39Z"']);
+        '=anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "S2FPCQK39Z"']);
       fixtureTrust(command, args);
       return '';
     };

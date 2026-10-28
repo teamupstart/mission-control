@@ -71,8 +71,9 @@ export function verifyBinaryPublisher(bundle, publisher) {
     throw new Error('A trusted Developer ID and notarization policy are required');
   }
   const run = (command, args) => execFileSync(command, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000});
+  // codesign interprets -R as a file path unless the requirement starts with '='.
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', '-R',
-    `anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "${publisher.teamId}"`, bundle]);
+    `=anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "${publisher.teamId}"`, bundle]);
   const assessment = spawnSync('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle],
     {encoding: 'utf8', env: {...process.env, LC_ALL: 'C'}, timeout: 30_000});
   if (assessment.error || assessment.status !== 0 || !/^source=Notarized Developer ID$/m.test(assessment.stderr)) {

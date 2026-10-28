@@ -874,6 +874,31 @@ test("secure agent staging accepts only contained gitignored raster files", asyn
   }
 });
 
+test("canonical citations explain when no active workflow run receives the claim", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-citation-run-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "no-citation-run-note";
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [],
+      coverage: [{ clientCriterionId: "claim", criterionId: "criterion-from-another-run", criterion: "The result works",
+        proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const, links: [] }] };
+    for (const bound of [false, true]) {
+      if (bound) store.insertBinding({ id: "no-citation-run-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+        noteKey, sessionId: "no-citation-run-session", sessionAgent: "codex", sessionName: "No run yet",
+        sessionCwd: root, sessionRepoRoot: root, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+      const before = store.listWorkflowEvidence(noteKey);
+      await assert.rejects(stageAgentWorkflowEvidence(input), (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "unknown_criterion_id");
+        assert.match(error.message, /No active workflow run receives repository scope repo-01/);
+        assert.match(error.message, /omit criterionId until a repair message names the criteria/);
+        return true;
+      });
+      assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("canonical citations must belong to every run receiving the claim's repository scope", async () => {
   const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-primary-")));
   const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-secondary-")));
@@ -919,7 +944,13 @@ test("canonical citations must belong to every run receiving the claim's reposit
     ] as const) {
       await assert.rejects(stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof],
         coverage: [{ ...claim, repositoryScope, criterionId }] }),
-      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "unknown_criterion_id",
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "unknown_criterion_id");
+        if (repositoryScope === "repo-03") assert.match(error.message, /No active workflow run receives repository scope repo-03/);
+        else assert.match(error.message, /cites unknown criterionId/);
+        return true;
+      },
       `${repositoryScope} cannot borrow ${criterionId} from a different receiving run`);
       assert.deepEqual(store.listWorkflowEvidence(noteKey), before, "refusal stages neither proof nor claims and does not advance the generation");
     }

@@ -3098,6 +3098,29 @@ for (const oldScope of ["repo-01", "all"] as const) for (const captured of [fals
   });
 }
 
+test("withdrawing an unknown claim leaves evidence and repository generations unchanged", () => {
+  const { store, noteKey, binding, runId } = fixture(home);
+  const claim = { id: `${runId}-known`, clientCriterionId: "known", criterion: "The result works",
+    proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: home, links: [] };
+  store.stageWorkflowEvidence(noteKey, [], 2, null, [claim]);
+  const before = store.listWorkflowEvidence(noteKey);
+  const roots = [home, join(home, "sibling-checkout")];
+  const generations = roots.map(root => store.workflowEvidenceGeneration(noteKey, root));
+  assert.deepEqual(store.stageWorkflowEvidence(noteKey, [], 3, null, [], ["typo"]), before);
+  assert.deepEqual(roots.map(root => store.workflowEvidenceGeneration(noteKey, root)), generations);
+  assert.deepEqual(openDb().prepare("SELECT * FROM workflow_evidence_coverage_retirements WHERE note_key = ?").all(noteKey), []);
+
+  const parent = store.createInitialSubmission(
+    { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 4 },
+    { id: `${runId}-parent`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 4 });
+  openDb().prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ?").run(noteKey);
+  store.stageWorkflowEvidence(noteKey, [], 5, null, [], ["known"]);
+  const child = store.createRepairSubmission({ id: `${runId}-child`, runId, round: 2,
+    triggerSource: "manual", triggerKey: `${runId}-child`, context: {}, evidence: {}, now: 6 });
+  assert.deepEqual([...store.retiredSubmissionCoverageIds(parent.submission.id, child.submission.id)], ["known"],
+    "a frozen-only claim still exists and must be retired");
+});
+
 for (const scope of ["repo-01", "all"] as const) for (const operation of ["binding", "supersedes", "withdraw"] as const) {
   test(`${scope} claim retirement via ${operation} advances only the affected repository generations`, () => {
     const { store, noteKey, runId } = fixture(home);

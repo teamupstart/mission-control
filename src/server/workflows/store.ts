@@ -5342,6 +5342,13 @@ export class WorkflowStore {
       const changedRetirements = new Map<string, Set<string> | null>();
       for (const id of new Set([...retireIds, ...scopedRetirements.keys()])) {
         const registration = existingCoverage.get(id);
+        // A typo is not a material evidence change. Frozen-only claims still count even
+        // when their mutable registration has already left the tray.
+        if (!existingCoverageRows.some(row => row.client_criterion_id === id)
+            && !this.db.prepare(`SELECT 1 FROM workflow_submission_evidence_coverage c
+              JOIN workflow_submissions s ON s.id = c.submission_id
+              JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+              WHERE b.note_key = ? AND c.client_criterion_id = ? LIMIT 1`).get(noteKey, id)) continue;
         // A replacement shares a generation with its predecessor's retirement. Only the
         // retired version ids tell us whether the current registration was already retired.
         const previous = retired.filter(row => row.client_criterion_id === id

@@ -331,10 +331,11 @@ export async function stageAgentWorkflowEvidence(input: {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const citedClaims = (input.coverage ?? []).filter((claim) => claim.criterionId);
   if (citedClaims.length > 0) {
-    const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).map((binding) => {
+    const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
       const run = input.store.activeRunForBinding(binding.id);
-      let criteria = run?.criteria?.canonicalCriteria;
-      if (run && !criteria) {
+      if (!run) return [];
+      let criteria = run.criteria?.canonicalCriteria;
+      if (!criteria) {
         let source = input.store.latestSubmission(run.id);
         const visited = new Set<string>();
         // Legacy runs keep criteria in capture packets. Failed image capture leaves no
@@ -350,16 +351,20 @@ export async function stageAgentWorkflowEvidence(input: {
           source = input.store.evidenceInheritanceSource(source)?.source ?? null;
         }
       }
-      return {
+      return [{
         checkoutRoot: binding.repoRoot || binding.sessionCwd || "",
         ids: new Set((criteria ?? []).map((criterion) => criterion.id)),
-      };
+      }];
     });
     for (const claim of citedClaims) {
       const selected = rootForScope(roots, claim.repositoryScope);
       // Match the checkout routing used when the store reserves scoped or all-scope claims.
       const recipients = criteriaByRun.filter((run) => claim.repositoryScope === "all" || run.checkoutRoot === selected.realRoot);
-      if (recipients.length === 0 || recipients.some((run) => !run.ids.has(claim.criterionId!))) {
+      if (recipients.length === 0) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `No active workflow run receives repository scope ${claim.repositoryScope}, so criterionId ${claim.criterionId} cannot be validated for coverage claim ${claim.clientCriterionId}; omit criterionId until a repair message names the criteria.`);
+      }
+      if (recipients.some((run) => !run.ids.has(claim.criterionId!))) {
         throw new WorkflowImageEvidenceError("unknown_criterion_id",
           `Coverage claim ${claim.clientCriterionId} cites unknown criterionId ${claim.criterionId} for repository scope ${claim.repositoryScope}. Use an exact id from every receiving run, or select the repository scope that owns it. To retire a claim use withdrawClientCriterionIds.`);
       }

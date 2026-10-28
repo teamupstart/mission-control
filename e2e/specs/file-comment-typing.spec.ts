@@ -148,7 +148,7 @@ test.describe("typing a comment with real keystrokes", () => {
     // spec. Without it, a fixture that quietly served `dist/` would leave a green spec
     // asserting nothing about the build it is named for.
     expect(
-      await page.evaluate(() => document.querySelector('script[src*="main.tsx"]') !== null),
+      await page.evaluate(() => document.querySelector('script[src*="bootstrap.ts"]') !== null),
       "the dev dashboard should be serving the unbundled entry module",
     ).toBe(true);
 

@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -72,6 +73,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
     });
   });
   await dashboard.reload();
+  await expectDashboardReady(dashboard);
 }
 
 test("the updater asks through a themed modal and its answer carries the question's id", async ({ dashboard }) => {

@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -183,6 +184,7 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
     /* never fulfilled: the config request stays out for the whole test */
   });
   await dashboard.reload();
+  await expectDashboardReady(dashboard);
 
   // Sitrep no longer consumes title-bar space; its direct entry is the Shift+P shortcut.
   await dashboard.keyboard.press("Shift+P");

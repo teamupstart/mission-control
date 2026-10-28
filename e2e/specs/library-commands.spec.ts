@@ -306,6 +306,7 @@ test("changing only the run budget saves the whole slot, and it survives a reloa
    */
   await dashboard.goto(`${daemon.baseURL}/#/library/commands/build`);
   await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
+  await expect(dashboard.locator(".wf-command-revision")).not.toHaveText(WORKFLOW_COMMAND_UNKNOWN);
   await expect(dashboard.getByLabel("Default command")).toHaveValue("");
 
   const budget = dashboard.getByLabel("How often this Command may run");
@@ -357,6 +358,7 @@ test("an override, a nested override, and a removal all survive a reload", async
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
   await expect(dashboard.getByRole("heading", { name: "test", exact: true })).toBeVisible();
+  await expect(dashboard.locator(".wf-command-revision")).not.toHaveText(WORKFLOW_COMMAND_UNKNOWN);
   // A fresh slot has no default, so there is no "default above" for a repository to use and
   // every one of them skips. The empty state has to say which of those two states it is in -
   // the first thing a new operator reads here must not describe configuration that is absent.
@@ -468,6 +470,7 @@ test("the default and its exceptions are rows of one table, each showing its own
   mkdirSync(nested, { recursive: true });
 
   await dashboard.goto(`${daemon.baseURL}/#/library/commands/test`);
+  await expect(dashboard.locator(".wf-command-revision")).not.toHaveText(WORKFLOW_COMMAND_UNKNOWN);
   await dashboard.getByLabel("Default command").fill("make test");
   for (const [path, command] of [
     [daemon.repo, "npm run test:ci"],

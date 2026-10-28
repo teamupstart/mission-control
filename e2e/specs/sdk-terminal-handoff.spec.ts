@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
@@ -254,6 +255,7 @@ test("default Continue keeps an uncertain transfer visible after source removal 
     });
     await api(daemon, `/api/session-transfers/${pending.transfer.id}/recheck`, {});
     await daemon.crash(); await daemon.restart(); await dashboard.reload();
+    await expectDashboardReady(dashboard);
     await dashboard.keyboard.press("Shift+P");
     const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
     await expectContentClearsBorder(sitrep);
@@ -433,6 +435,7 @@ test.describe("Sitrep pagination", () => {
       }
     });
     await dashboard.reload();
+    await expectDashboardReady(dashboard);
     await dashboard.keyboard.press("Shift+P");
     const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
     await expectContentClearsBorder(sitrep);

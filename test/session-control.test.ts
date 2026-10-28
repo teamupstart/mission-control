@@ -31,7 +31,8 @@ const { sessionController } = await import("../src/server/session-control.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
 const { originOf, forgetInjections } = await import("../src/server/injections.ts");
 const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
-const { forgetDelegatedTurnCache } = await import("../src/server/delegated-turns.ts");
+const { forgetDelegatedTurnCache, reserveDelegatedTurn } = await import("../src/server/delegated-turns.ts");
+const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 const { noteKeyFor } = await import("../src/server/registry.ts");
 const { fakeTranscript } = await import("./helpers/fake-transcript.ts");
 const { sessionMessages } = await import("../src/server/harness/index.ts");
@@ -361,6 +362,28 @@ test("a queued human turn the driver did not accept does not cost the controller
   const controller = t2.append("controller", text, Date.now());
   const [read] = attributeTranscript(f.target.id, [controller], null, undefined, t2.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
   assert.deepEqual([read?.origin, read?.originSession?.id], ["session", f.caller.id]);
+});
+
+test("an unsubmitted terminal draft contests a delegated message of the same words", async () => {
+  const f = fixture();
+  const discovered = {
+    syntheticId: `proc:ttys9${++serial}:${serial}:0`, agent: "claude", name: "terminal target", nameSource: "process",
+    cwd: home, gitBranch: "main", pid: 7000 + serial, tty: `ttys9${serial}`,
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: `%${serial}` })], startedAt: 0,
+  } as unknown as import("../src/server/discovery/correlate.ts").DiscoveredSession;
+  f.registry.applyDiscovery([discovered]);
+  const terminal = f.registry.getSession(discovered.syntheticId)!;
+  assert.notEqual(terminal.runtime, "sdk");
+  const t = fakeTranscript();
+  const conversation = t.conversation(noteKeyFor(terminal));
+  const text = "Draft the release notes";
+  // A controller's message to the terminal target is still on its way...
+  reserveDelegatedTurn(conversation, text, { id: f.caller.id, name: f.caller.name });
+  // ...when the operator pastes the same words without submitting them.
+  await f.request(`/api/sessions/${terminal.id}/send`, { text, submit: false }, { ...f.headers, origin: "http://localhost", "x-mission-operation-actor": "human" });
+  const page = [t.append("operator", text, Date.now()), t.append("controller", text, Date.now() + 1)];
+  const read = attributeTranscript(terminal.id, page, null, undefined, conversation);
+  assert.deepEqual(read.map((m) => m.originSession?.id), [undefined, undefined]);
 });
 
 test("a human send racing a delegated send of the same words credits neither, in either order", async () => {

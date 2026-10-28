@@ -389,16 +389,21 @@ export function delegatedTurnSources(
   conversation: DelegatedConversation | null | undefined,
   messages: readonly TranscriptMessage[],
   now = Date.now(),
-): { sources: Map<string, TurnOriginSession>; contested: Set<string> } {
+): { sources: Map<string, TurnOriginSession>; contested: Set<string>; ambiguous: Set<string> } {
   const sources = new Map<string, TurnOriginSession>();
   const contested = new Set<string>();
-  if (!conversation) return { sources, contested };
+  const ambiguous = new Set<string>();
+  if (!conversation) return { sources, contested, ambiguous };
   const rows = rowsFor(conversation.key);
-  if (!rows.length) return { sources, contested };
+  if (!rows.length) return { sources, contested, ambiguous };
   if (conversation.transcript && rows.some((row) => row.messageId === null && !row.contested && row.transcriptOffset !== null)) {
     bindPending(rows, conversation.transcript, now);
   }
   const fingerprints = new Set(rows.map((row) => row.fingerprint));
+  // Words whose delivery cannot be bound - contested, or sent without a known boundary - within
+  // its window: a matching turn could be that delivery, so no other sender may be named either.
+  const unresolved = new Set(rows.filter((row) => row.messageId === null && (row.contested || row.transcriptOffset === null)
+    && !expired.has(row.id) && now - row.deliveredAt <= DELIVERY_LAG_MS).map((row) => row.fingerprint));
   const byId = new Map(rows.filter((row) => row.messageId !== null).map((row) => [row.messageId!, row]));
   const pageIds = new Set(messages.map((m) => m.id));
   // Timestamp fallback candidates, counted on both sides so an ambiguous key answers nothing.
@@ -433,8 +438,9 @@ export function delegatedTurnSources(
     const entry = key ? keyed.get(key) : undefined;
     const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
     if (row && conversation.transcript && uniqueAtTimestamp(row, conversation.transcript)) sources.set(m.id, sourceOf(row));
+    else if (unresolved.has(fingerprint)) ambiguous.add(m.id);
   }
-  return { sources, contested };
+  return { sources, contested, ambiguous };
 }
 
 /**

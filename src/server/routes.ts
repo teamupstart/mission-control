@@ -5419,9 +5419,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(result, result.ok ? 200 : 409);
     }
     // These words may race a delegated send of the same ones; say so before they are written.
-    const otherSend = parsed.data.submit || session.runtime === "sdk"
-      ? noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text)
-      : null;
+    // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
+    // Mission Control, so it stays in flight until the race window closes.
+    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.

@@ -250,7 +250,11 @@ by exact native id; the timestamp fallback for re-synthesized ids (Codex) applie
 whole transcript, not just the page, holds exactly one user turn with those words at that
 timestamp, so a same-millisecond operator repeat is left unattributed rather than credited.
 Every other sender of words to the target - the `/send` and `/inject` direct arms and the
-pending-turn delivery seams - calls `noteOtherSend` before it writes. A delegated row whose
+pending-turn delivery seams - calls `noteOtherSend` before it writes; `/send` does so for an
+unsubmitted draft too, since the operator's Enter submits it outside Mission Control. While a
+delivery of some words is contested or boundary-less, `delegatedTurnSources` reports matching
+unbound turns as `ambiguous`, and `attributeTranscript` drops every live label on them,
+Foreman's included. A delegated row whose
 words race such a send, in either order, is marked `contested`, persisted, and never bound. An
 in-flight check never credits a landed turn to another send while a contested or boundary-less
 delivery of the same words is unbound. A send with positive evidence that nothing landed

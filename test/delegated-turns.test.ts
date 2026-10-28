@@ -11,6 +11,8 @@ process.env.HARNESS_HOME = home;
 const { delegatedTurnSources, forgetDelegatedTurnCache, noteOtherSend, pruneDelegatedTurns, releaseDelegatedTurn, rememberedOtherSendKeys, reserveDelegatedTurn, withdrawOtherSend } =
   await import("../src/server/delegated-turns.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
+const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => { openDb().exec("DELETE FROM session_delegated_turns"); forgetDelegatedTurnCache(); });
 
@@ -323,4 +325,28 @@ test("once every session has exited, old rows of finished conversations are prun
   const t = fakeTranscript();
   const recent = t.append("recent-turn", "c", now + 1);
   assert.deepEqual(senders(t.conversation("recent"), [recent]), [first.id]);
+});
+
+test("a contested turn carries no live label either, Foreman's included", () => {
+  forgetInjections();
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  reserveDelegatedTurn(t.conversation(k), "deploy now", first, now);
+  // Foreman injects the same words while the controller's message is still on its way.
+  noteOtherSend(t.conversation(k), "deploy now", now + 1);
+  recordInjection("target-session", "deploy now", "foreman");
+  const page = [t.append("one", "deploy now", now + 2), t.append("two", "deploy now", now + 3)];
+  const read = attributeTranscript("target-session", page, null, undefined, t.conversation(k));
+  assert.deepEqual(read.map((m) => [m.origin, m.originSession?.id]), [[undefined, undefined], [undefined, undefined]]);
+});
+
+test("a later Foreman message whose words have no unresolved delivery keeps its label", () => {
+  forgetInjections();
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  reserveDelegatedTurn(t.conversation(k), "status?", first, now);
+  const controller = t.append("controller", "status?", now + 1);
+  assert.deepEqual(senders(t.conversation(k), [controller]), [first.id]);
+  recordInjection("target-session-2", "status?", "foreman");
+  const foreman = t.append("foreman", "status?", now + 60_000);
+  const read = attributeTranscript("target-session-2", [controller, foreman], null, undefined, t.conversation(k));
+  assert.deepEqual(read.map((m) => [m.origin, m.originSession?.id]), [["session", first.id], ["foreman", undefined]]);
 });

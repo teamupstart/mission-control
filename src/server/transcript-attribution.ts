@@ -50,8 +50,12 @@ export function attributeTranscript(
     const originSession = delegated.sources.get(message.id);
     const live = originOf(sessionId, message.text);
     // A turn whose words this conversation delegated, but which no delivery claims, is the
-    // operator repeating them; the text-keyed live label would credit the controller.
-    const origin = originSession ? "session" : live === "session" && delegated.contested.has(message.id) ? undefined : live;
+    // operator repeating them; the text-keyed live label would credit the controller. And while
+    // a delivery of those words is unresolved, the turn could be it, so no live label - Foreman's
+    // included - names its author either.
+    const origin = originSession
+      ? "session"
+      : delegated.ambiguous.has(message.id) || (live === "session" && delegated.contested.has(message.id)) ? undefined : live;
     const marker = launch && anchor !== null && launch.messageId === null
       ? { ...launch, messageId: anchor }
       : launch;

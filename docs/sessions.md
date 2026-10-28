@@ -1992,8 +1992,9 @@ in between: each delivery claims the first turn with its words written to the tr
 it was sent, so neither a turn you wrote just before it nor a later repeat is mistaken for it.
 If you send the same words while the controller's message is still on its way, so that either
 turn could be written first, neither is labelled: the message is never credited to the
-controller when it might be yours. A send of yours that is refused before anything reaches the
-session does not count as a race. The same holds between two controlling sessions: if both send
+controller when it might be yours, nor labelled as Foreman's. A draft you paste without
+submitting counts as a send, because pressing Enter sends it. A send of yours that is refused
+before anything reaches the session does not count as a race. The same holds between two controlling sessions: if both send
 identical words before either message reaches the transcript, neither is labelled, because
 either could have arrived first. A second controller sending after the first one's message has
 arrived keeps both labels. Review answers retain

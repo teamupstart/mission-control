@@ -2401,7 +2401,8 @@ HTML, binary companions, source files beside a report, and arbitrary evidence re
 create publication exemptions. Existing gitignored evidence continues through the evidence tray.
 
 The daemon preserves the exact report bytes in the existing submission text-evidence store before
-using the exemption, with path, byte count and SHA-256 receipts. Workflow text limits apply:
+using the exemption, with path, byte count and SHA-256 receipts. Receipt verification reads raw
+worktree bytes independently of Git clean filters and line-ending normalization. Workflow text limits apply:
 64 KiB per file, 48 files and 384 KiB total including other text evidence. The submission's
 reserved text evidence consumes that budget first. A report and its companions that do not fit
 stay together in the publication tree, with a retention-limit problem, rather than failing the

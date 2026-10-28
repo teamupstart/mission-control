@@ -102,7 +102,11 @@ export async function captureWorktreeTree(
       const entry = requireOk("git ls-files", await git(worktreePath,
         ["ls-files", "--stage", "--", artifact.path], env));
       if (!/^100(?:644|755) /.test(entry)) throw new Error(`Local artifact is not a regular file: ${artifact.path}`);
-      const blob = await git(worktreePath, ["show", `:${artifact.path}`], env);
+      // Receipts describe raw retained bytes. The temporary index may contain a different
+      // representation after clean filters or line-ending normalization.
+      const rawOid = requireObjectId("raw artifact object", requireOk("git hash-object",
+        await git(worktreePath, ["hash-object", "-w", "--no-filters", "--", artifact.path], env)));
+      const blob = await git(worktreePath, ["cat-file", "blob", rawOid], env);
       if (blob.code !== 0 || createHash("sha256").update(blob.stdout).digest("hex") !== artifact.sha256) {
         throw new Error(`Local artifact changed during capture: ${artifact.path}`);
       }

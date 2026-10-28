@@ -199,6 +199,38 @@ test("snapshot rejects artifact bytes that changed after validation", async () =
   await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath, sha256 }] }), /changed during capture/);
 });
 
+for (const filter of ["CRLF normalization", "clean filter"]) {
+  test(`retained report receipts use raw bytes with ${filter}`, async () => {
+    const root = repo();
+    git(root, "config", "core.autocrlf", filter === "CRLF normalization" ? "true" : "false");
+    git(root, "config", "filter.report.clean", "sed -e s/Verified/Normalized/g -e s/Changed/Normalized/g");
+    writeFileSync(join(root, ".gitattributes"), filter === "CRLF normalization"
+      ? "*.html text\n" : "*.html filter=report\n");
+    git(root, "add", ".gitattributes");
+    git(root, "commit", "-qm", "report filter");
+    const content = html + "\r\n";
+    report(root, content);
+    const rawSha = createHash("sha256").update(content).digest("hex");
+    const filteredOid = git(root, "hash-object", `--path=${reportPath}`, reportPath);
+    assert.notEqual(filteredOid, git(root, "hash-object", "--no-filters", reportPath));
+    const indexBefore = readFileSync(join(root, ".git/index"));
+    const capture = await captureWorkflowPublication(root);
+    assert.equal(capture.artifacts[0]?.content, content);
+    assert.equal(capture.artifacts[0]?.sha256, rawSha);
+    assert.equal(capture.publication.treeOid, git(root, "rev-parse", "HEAD^{tree}"));
+    assert.deepEqual(capture.publication.unpublishedPaths, []);
+    assert.deepEqual(readFileSync(join(root, ".git/index")), indexBefore);
+    assert.equal(readFileSync(join(root, reportPath), "utf8"), content);
+
+    // Even when Git produces the same blob, changed raw receipt bytes must be refused.
+    report(root, filter === "CRLF normalization" ? content.replace(/\r\n/g, "\n")
+      : content.replace("Verified", "Changed"));
+    assert.equal(git(root, "hash-object", `--path=${reportPath}`, reportPath), filteredOid);
+    await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath,
+      sha256: rawSha }] }), /changed during capture/);
+  });
+}
+
 test("report-only edits preserve publication identity but refresh the evidence probe", async () => {
   const root = repo();
   report(root);

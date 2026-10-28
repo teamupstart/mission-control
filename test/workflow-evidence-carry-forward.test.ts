@@ -2846,6 +2846,63 @@ for (const failedCapture of [false, true]) test(`an id-bound replacement retires
   } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
+for (const explicit of [false, true]) test(`a claim covering two criteria is ${explicit ? "fully retired by explicit supersedes" : "preserved when only one criterion is replaced"}`, async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-shared-claim-")));
+  try {
+    writeFileSync(join(checkout, "proof.log"), "both criteria passed");
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const canonicalCriteria = [
+      { id: "canonical-a", text: "The owner accepts the change", material: true, suggestedProofClass: null },
+      { id: "canonical-b", text: "Tests are required", material: true, suggestedProofClass: null },
+    ];
+    const old = { id: `${runId}-old`, clientCriterionId: "shared", criterion: "Tested owner acceptance",
+      proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: checkout,
+      links: [{ clientItemId: "proof", role: "execution" as const }] };
+    store.stageWorkflowEvidence(noteKey, [logWrite({ id: `${runId}-proof`, clientItemId: "proof", root: checkout,
+      locator: "proof.log", caption: "Both criteria", body: "both criteria passed" })], 2, null, [old]);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-first`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    const criterionMappings = canonicalCriteria.map(criterion => ({ criterionId: criterion.id, matchedClientCriterionIds: ["shared"] }));
+    const context = WorkflowContextSnapshotSchema.parse({
+      primaryGoal: { rawPrompt: "Prove both criteria", refined: null, sourceNoteKey: noteKey },
+      humanDecisions: [], constraints: [], acceptanceCriteria: [], priorPersonaFeedback: [], canonicalCriteria, criterionMappings,
+      session: { agent: "codex", name: "work", cwd: checkout, branch: "feature" },
+      evidence: { headSha: "abc", diffFingerprint: "diff", diff: "patch", diffTruncated: false,
+        workingTreeDirty: false, workingTreeStatus: [], workingTreeStatusTruncated: false,
+        transcript: [], transcriptAnchor: 1, transcriptTruncated: false, standards: [], standardsTruncated: false },
+      compaction: { status: "fallback", runner: null, model: null, error: null },
+    });
+    store.updateSubmissionCapture(first.submission.id, { context: workflowJson(context), evidence: {},
+      fingerprint: "first", repositoryFingerprint: "tree-1", status: "running" }, 3);
+    assert.equal(evaluateWorkflowEvidenceReadiness({ canonicalCriteria, criterionMappings,
+      coverage: store.listSubmissionCoverage(first.submission.id),
+      evidence: store.submissionFrozenEvidenceIdentities(first.submission.id) }).status, "ready");
+    store.stageWorkflowEvidence(noteKey, [], 4, null, [{ ...old, id: `${runId}-replacement`,
+      clientCriterionId: "replacement-a", criterionId: "canonical-a", ...(explicit ? { supersedes: ["shared"] } : {}) }]);
+    for (const round of [2, 3]) {
+      const child = store.createRepairSubmission({ id: `${runId}-round-${round}`, runId, round,
+        triggerSource: "manual", triggerKey: `${runId}-round-${round}`, context: {}, evidence: {}, now: 5 + round });
+      await inheritSubmissionEvidence(new WorkflowStore(), child.submission, 5 + round);
+      store.freezeDeferredSubmissionCoverage({ submissionId: child.submission.id, now: 5 + round });
+      const coverage = store.listSubmissionCoverage(child.submission.id);
+      assert.deepEqual(coverage.map(claim => claim.clientCriterionId).sort(), explicit ? ["replacement-a"] : ["replacement-a", "shared"],
+        "implicit replacement preserves the other criterion's claim; explicit supersedes retires the whole claim");
+      const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria,
+        criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage, { proposedMappings: criterionMappings }),
+        coverage, evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
+      assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "replacement-a");
+      assert.deepEqual(readiness.criteria[0]?.gaps, []);
+      assert.equal(readiness.criteria[1]?.matchedClientCriterionId, explicit ? null : "shared");
+      assert.deepEqual(readiness.criteria[1]?.gaps, explicit ? ["missing_coverage"] : []);
+      assert.equal(readiness.status, explicit ? "gaps" : "ready");
+      assert.deepEqual(readiness.warningCodes, []);
+    }
+    assert.deepEqual(store.listSubmissionCoverage(first.submission.id).map(claim => claim.clientCriterionId), ["shared"]);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
 test("a pinned claim whose text matches a second criterion covers only its id before and after carry-forward", async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pinned-carry-")));
   try {

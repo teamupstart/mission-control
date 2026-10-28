@@ -1278,7 +1278,9 @@ or corrected. The tool checks `workflow-coverage-mutations-v1` before sending ca
 withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
 when the tool reports an incompatible daemon.
 
-One uncited claim may answer several criteria. When several claims still answer one criterion,
+One uncited claim may answer several criteria. Replacing one criterion with an id-bound claim
+preserves a prior uncited claim that still answers another criterion; explicit `supersedes`
+retires the whole claim. When several claims still answer one criterion,
 `ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
 selected in stable caller-id order, and displays the competing ids. It never combines incomplete
 claims to manufacture a complete proof. If none is complete, the representative's invalid links,

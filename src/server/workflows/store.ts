@@ -5313,8 +5313,13 @@ export class WorkflowStore {
           if (mapping.criterionId !== claim.criterionId) continue;
           for (const id of mapping.matchedClientCriterionIds) {
             const prior = existingCoverage.get(id);
+            // An uncited claim can still prove another criterion. The new binding wins here
+            // without retiring that shared proof; explicit supersedes retires the whole id.
+            const coversAnotherCriterion = !prior?.criterion_id && priorMappings.some((other) =>
+              other.criterionId !== claim.criterionId && other.matchedClientCriterionIds.includes(id));
             if (id !== claim.clientCriterionId && (!prior || sameScope(prior))
-                && (!prior?.criterion_id || prior.criterion_id === claim.criterionId)) retireIds.add(id);
+                && (!prior?.criterion_id || prior.criterion_id === claim.criterionId)
+                && !coversAnotherCriterion) retireIds.add(id);
           }
         }
       }

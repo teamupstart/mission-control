@@ -238,6 +238,53 @@ test("launches carry the relay env and -c overrides while Settings relays", asyn
   assert.deepEqual(await agentOtelLaunch("pi"), { env: {}, args: [] });
 });
 
+test("a chunked export over the cap is refused while it is read, with no declared length", async () => {
+  const { MAX_OTLP_BODY_BYTES } = await import("../src/server/agent-otel/relay.ts");
+  const chunk = new Uint8Array(1024 * 1024);
+  let sent = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent > MAX_OTLP_BODY_BYTES + chunk.byteLength) return controller.close();
+      sent += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+  });
+  const res = await app.fetch(
+    new Request("http://127.0.0.1:7317/v1/logs", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "x-harness-token": TOKEN, "content-type": "application/json" },
+      body: stream,
+      // @ts-expect-error Node's fetch needs this for a streamed request body.
+      duplex: "half",
+    }),
+  );
+  assert.equal(res.status, 413);
+  // It stopped reading at the cap rather than draining the whole stream first.
+  assert.ok(sent <= MAX_OTLP_BODY_BYTES + 2 * chunk.byteLength);
+});
+
+test("a relay token with non-ASCII characters is refused, not thrown on", async () => {
+  const sameLength = "é".repeat(agentOtelRelayToken().length);
+  const res = await app.fetch(
+    new Request("http://127.0.0.1:7317/v1/logs", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "x-mission-otel-relay": sameLength },
+      body: "{}",
+    }),
+  );
+  assert.equal(res.status, 401);
+});
+
+test("two spellings of one header name are refused", async () => {
+  const res = await putConfig({
+    headers: [
+      { name: "Authorization", value: "a" },
+      { name: "authorization", value: "b" },
+    ],
+  });
+  assert.equal(res.status, 400);
+});
+
 test("a managed policy makes Settings read-only and the managed agent gets nothing", async () => {
   const plist = "/fx/Library/Managed Preferences/com.anthropic.claudecode.plist";
   setAgentOtelManagedDepsForTest(() => ({

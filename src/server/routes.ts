@@ -4579,13 +4579,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       c.json({ error: `export too large; the limit is ${MAX_OTLP_BODY_BYTES} bytes` }, 413);
     const declared = Number(c.req.header("content-length"));
     if (Number.isFinite(declared) && declared > MAX_OTLP_BODY_BYTES) return tooLarge();
-    let body: Uint8Array;
+    // Counted while it is read, because the declared length is optional: a chunked export
+    // carries none, and buffering it whole before measuring would let one request take as
+    // much memory as it likes.
+    const stream = c.req.raw.body;
+    if (stream === null) return new Uint8Array(0);
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = stream.getReader();
     try {
-      body = new Uint8Array(await c.req.arrayBuffer());
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_OTLP_BODY_BYTES) {
+          await reader.cancel().catch(() => {});
+          return tooLarge();
+        }
+        chunks.push(value);
+      }
     } catch {
       return c.json({ error: "could not read the export body" }, 503);
     }
-    return body.byteLength > MAX_OTLP_BODY_BYTES ? tooLarge() : body;
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return body;
   };
 
   const teeOtlp = (c: Context, signal: AgentOtelSignal, body: Uint8Array): void => {

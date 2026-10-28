@@ -109,7 +109,16 @@ export const AgentTelemetryPatchSchema = z
     endpoint: z.string().max(2048).optional(),
     signals: SignalsSchema.partial().optional(),
     capture: CaptureSchema.partial().optional(),
-    headers: z.array(HeaderSchema).max(AGENT_OTEL_MAX_HEADERS).optional(),
+    headers: z
+      .array(HeaderSchema)
+      .max(AGENT_OTEL_MAX_HEADERS)
+      // Header names are case-insensitive; two spellings of one name would be stored as two
+      // rows and joined into one corrupted value on the wire.
+      .refine(
+        (headers) => new Set(headers.map((h) => h.name.toLowerCase())).size === headers.length,
+        "Each header name may appear only once.",
+      )
+      .optional(),
   })
   .strict();
 export type AgentTelemetryPatch = z.infer<typeof AgentTelemetryPatchSchema>;

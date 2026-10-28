@@ -18,6 +18,10 @@ export function agentOtelRelayToken(): string {
 }
 
 export function checkAgentOtelRelayToken(provided: string | null | undefined): boolean {
-  if (typeof provided !== "string" || provided.length !== TOKEN.length) return false;
-  return timingSafeEqual(Buffer.from(provided), Buffer.from(TOKEN));
+  if (typeof provided !== "string") return false;
+  // Byte lengths, not string lengths: a header with non-ASCII characters can match the
+  // token's length in characters and still differ in bytes, and `timingSafeEqual` throws then.
+  const given = Buffer.from(provided);
+  const expected = Buffer.from(TOKEN);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }

@@ -350,3 +350,13 @@ test("a later Foreman message whose words have no unresolved delivery keeps its 
   const read = attributeTranscript("target-session-2", [controller, foreman], null, undefined, t.conversation(k));
   assert.deepEqual(read.map((m) => [m.origin, m.originSession?.id]), [["session", first.id], ["foreman", undefined]]);
 });
+
+test("a delivery whose located transcript file was missing at send is never bound", () => {
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  const older = t.append("older", "vanished file", now - 60_000);
+  t.failSize("missing");
+  reserveDelegatedTurn(t.conversation(k), "vanished file", first, now);
+  t.failSize(false);
+  const controller = t.append("controller", "vanished file", now + 1);
+  assert.deepEqual(senders(t.conversation(k), [older, controller]), [null, null]);
+});

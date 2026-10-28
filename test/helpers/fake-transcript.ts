@@ -11,9 +11,10 @@ const TURN_BYTES = 100;
  */
 export function fakeTranscript() {
   const turns: TranscriptMessage[] = [];
-  let sizeFails = false;
+  let sizeFails: boolean | "missing" = false;
   const read = {
     size: () => {
+      if (sizeFails === "missing") return null;
       if (sizeFails) throw new Error("transcript size unreadable");
       return turns.length * TURN_BYTES;
     },
@@ -26,8 +27,8 @@ export function fakeTranscript() {
   return {
     turns,
     size: () => turns.length * TURN_BYTES,
-    /** Make the reader's `size` throw, as a transient stat failure would. */
-    failSize(on: boolean) {
+    /** Make the reader's `size` throw, as a transient stat failure would, or report a missing file. */
+    failSize(on: boolean | "missing") {
       sizeFails = on;
     },
     append(id: string, text: string, ts: number): TranscriptMessage {

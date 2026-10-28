@@ -95,7 +95,8 @@ interface OtherSend {
 function sizeOf(transcript: SessionMessages | null): number | null {
   if (!transcript) return null;
   try {
-    return transcript.read.size(transcript.path) ?? 0;
+    // The reader answers null for a located file that is missing: as unknown as no transcript.
+    return transcript.read.size(transcript.path) ?? null;
   } catch {
     return null;
   }

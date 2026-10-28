@@ -722,7 +722,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       controller_id   TEXT NOT NULL,   -- the sending session's id
       controller_name TEXT NOT NULL,   -- its name when it sent the message
       delivered_at    INTEGER NOT NULL,
-      transcript_offset INTEGER,        -- target transcript size at send, 0 if absent, NULL if unreadable
+      transcript_offset INTEGER,        -- target transcript size at send; NULL if none was located or its size was unreadable
       contested       INTEGER NOT NULL DEFAULT 0, -- 1: another send of the same words raced it
       message_id      TEXT,            -- native id of the bound turn, NULL until seen
       message_ts      INTEGER          -- that turn's timestamp, for re-synthesized ids
@@ -10540,7 +10540,7 @@ export interface DelegatedTurnRow {
   controllerId: string;
   controllerName: string;
   deliveredAt: number;
-  /** The target transcript's size at send; null when it could not be read, and the row never binds. */
+  /** The target transcript's size at send; null when none was located or its size could not be read, and the row never binds. */
   transcriptOffset: number | null;
   /** Another send of the same words was in flight with it, so its turn cannot be told apart. */
   contested: boolean;

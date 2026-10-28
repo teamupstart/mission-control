@@ -45,7 +45,7 @@ export function submissionCoverageSelection(store: WorkflowStore, submission: Wo
     });
   }
   if (!previous || !target) return previous;
-  const retired = store.retiredSubmissionCoverageIds(submission.id, target.stagedImageGeneration ?? 0);
+  const retired = store.retiredSubmissionCoverageIds(submission.id, target.id);
   return { ...previous, criteria: previous.criteria.map(row => ({
     ...row, matchedClientCriterionIds: row.matchedClientCriterionIds.filter(id => !retired.has(id)),
   })) };

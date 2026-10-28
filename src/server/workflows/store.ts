@@ -5668,10 +5668,18 @@ export class WorkflowStore {
           now,
         );
       }
+      const retirementSequence = changedRetireIds.length > 0 ? this.coverageRetirementSequence() + 1 : 0;
       for (const id of changedRetireIds) {
-        this.db.prepare(`INSERT OR IGNORE INTO workflow_evidence_coverage_retirements (note_key, client_criterion_id, generation)
-          VALUES (?, ?, ?)`)
-          .run(noteKey, id, owner.generation);
+        const versions = this.db.prepare(`SELECT DISTINCT c.staging_id FROM workflow_submission_evidence_coverage c
+          JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{ staging_id: string }>;
+        const stagingIds = new Set(versions.map(row => row.staging_id));
+        const registration = existingCoverage.get(id);
+        if (registration) stagingIds.add(registration.id);
+        this.db.prepare(`INSERT OR IGNORE INTO workflow_evidence_coverage_retirements
+          (note_key, client_criterion_id, generation, sequence, staging_ids_json) VALUES (?, ?, ?, ?, ?)`)
+          .run(noteKey, id, owner.generation, retirementSequence, JSON.stringify([...stagingIds]));
         this.db.prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND client_criterion_id = ?")
           .run(noteKey, id);
       }
@@ -5847,17 +5855,23 @@ export class WorkflowStore {
     return this.stageWorkflowEvidence(noteKey, [], now, null, [], [clientCriterionId]);
   }
 
-  /** Claims from this frozen packet explicitly retired by a later snapshot's boundary. */
-  retiredSubmissionCoverageIds(submissionId: string, throughGeneration: number): Set<string> {
+  private coverageRetirementSequence(): number {
+    // Reserved snapshots keep the clock monotonic even after old retirement rows are pruned.
+    return (this.db.prepare(`SELECT MAX(
+      COALESCE((SELECT MAX(sequence) FROM workflow_evidence_coverage_retirements), 0),
+      COALESCE((SELECT MAX(coverage_retirement_sequence) FROM workflow_submissions), 0)
+    ) AS sequence`).get() as { sequence: number }).sequence;
+  }
+
+  /** Claim versions retired before the target reservation, independent of conversation reattachment. */
+  retiredSubmissionCoverageIds(submissionId: string, targetId: string): Set<string> {
     const rows = this.db.prepare(`SELECT DISTINCT c.client_criterion_id
       FROM workflow_submission_evidence_coverage c
-      JOIN workflow_submissions s ON s.id = c.submission_id
-      JOIN workflow_runs run ON run.id = s.run_id
-      JOIN workflow_bindings b ON b.id = run.binding_id
       JOIN workflow_evidence_coverage_retirements r
-        ON r.note_key = b.note_key AND r.client_criterion_id = c.client_criterion_id
-      WHERE c.submission_id = ? AND r.generation >= c.generation AND r.generation <= ?`)
-      .all(submissionId, throughGeneration) as Array<{ client_criterion_id: string }>;
+      JOIN json_each(r.staging_ids_json) version ON version.value = c.staging_id
+      JOIN workflow_submissions target ON target.id = ? AND r.sequence <= target.coverage_retirement_sequence
+      WHERE c.submission_id = ?`)
+      .all(targetId, submissionId) as Array<{ client_criterion_id: string }>;
     return new Set(rows.map(row => row.client_criterion_id));
   }
 
@@ -6365,17 +6379,10 @@ export class WorkflowStore {
      * is not a claim the limit turned away.
      */
     const declaredHere = new Set(ownCoverage.map((claim) => claim.clientCriterionId));
-    const target = this.getSubmission(input.submissionId)!;
-    const run = this.getRun(source.runId);
-    const binding = run ? this.getBinding(run.bindingId) : null;
-    const retirements = new Map((this.db.prepare(
-      `SELECT client_criterion_id, MAX(generation) AS generation FROM workflow_evidence_coverage_retirements
-       WHERE note_key = ? AND generation <= ? GROUP BY client_criterion_id`,
-    ).all(binding?.noteKey ?? "", target.stagedImageGeneration ?? 0) as Array<{ client_criterion_id: string; generation: number }>)
-      .map((row) => [row.client_criterion_id, row.generation]));
+    const retirements = this.retiredSubmissionCoverageIds(input.sourceSubmissionId, input.submissionId);
     for (const { claim, row } of orderedCoverage) {
       if (declaredHere.has(claim.clientCriterionId)) continue;
-      if ((retirements.get(claim.clientCriterionId) ?? -1) >= row.generation) continue;
+      if (retirements.has(claim.clientCriterionId)) continue;
       if (claim.criterionId && ownCoverage.some((own) => own.criterionId === claim.criterionId)) continue;
       if (claimBudget <= 0) {
         truncated.claims += 1;
@@ -10818,7 +10825,12 @@ export class WorkflowStore {
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_evidence_staging WHERE note_key = ?`).run(noteKey);
-      this.db.prepare("DELETE FROM workflow_evidence_coverage_retirements WHERE note_key = ?").run(noteKey);
+      this.db.prepare(`DELETE FROM workflow_evidence_coverage_retirements WHERE
+        (note_key = ? OR NOT EXISTS (SELECT 1 FROM workflow_evidence_owners owner
+          WHERE owner.note_key = workflow_evidence_coverage_retirements.note_key)) AND NOT EXISTS (
+        SELECT 1 FROM json_each(staging_ids_json) version
+        JOIN workflow_submission_evidence_coverage c ON c.staging_id = version.value
+      )`).run(noteKey);
       this.db.prepare(
         `DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ?`,
       ).run(noteKey);
@@ -10982,6 +10994,8 @@ export class WorkflowStore {
         input.status ?? "capturing",
         input.now,
       );
+      this.db.prepare("UPDATE workflow_submissions SET coverage_retirement_sequence = ? WHERE id = ?")
+        .run(this.coverageRetirementSequence(), input.id);
       if (input.reserveEvidence !== false) this.reserveWorkflowEvidenceInTransaction(
         input.id,
         input.evidenceGroupKey ?? input.triggerKey,

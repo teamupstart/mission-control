@@ -1294,7 +1294,10 @@ re-evaluates legacy ambiguity with the current rules. Claims whose canonical ids
 must be re-registered with the intended id; no text heuristic can reconstruct author intent.
 Recovery honors claim retirements committed before it starts while retaining the parent's frozen
 evidence; it does not capture later staged proof into that recovered snapshot.
-The database upgrade only creates the retirement ledger; it does not modify historical claims.
+The database upgrade creates the retirement ledger and records retired registration versions and
+each submission's retirement cutoff. Historical claims remain unchanged. Retirement follows a
+claim version across conversation reattachment; a fresh registration with the same caller id is
+a new version. Resetting the old conversation retains retirement records still needed by that run.
 A resubmit after an image capture failure walks past the incomplete capture to retain earlier
 coverage and evidence, while preserving verification across changed repository snapshots.
 

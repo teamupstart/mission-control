@@ -4,13 +4,14 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { WorkflowContextSnapshot, WorkflowEvidenceImage } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-carry-forward-"));
 process.env.MISSION_HOME = join(home, "state");
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const {
@@ -54,9 +55,8 @@ function retainedBodies(): Array<{ path: string; bytes: number }> {
 }
 
 let ordinal = 0;
-function fixture(checkout: string) {
+function fixture(checkout: string, store = new WorkflowStore()) {
   ordinal += 1;
-  const store = new WorkflowStore();
   const noteKey = `carry-note-${ordinal}`;
   const binding = store.insertBinding({
     id: `carry-binding-${ordinal}`,
@@ -2737,6 +2737,79 @@ for (const operation of ["withdraw", "supersedes"] as const) {
     assert.deepEqual(after.coverage, before.coverage, "the existing claim stays staged unchanged and no replacement is added");
   });
 }
+
+test("retired claim versions stay retired after reattachment to another conversation", async () => {
+  const { store, noteKey, binding, runId } = fixture(home);
+  const old = { id: `${runId}-old`, clientCriterionId: "claim", criterion: "The result works",
+    proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: home, links: [] };
+  store.stageWorkflowEvidence(noteKey, [], 2, null, [old]);
+  const parent = store.createInitialSubmission(
+    { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+    { id: `${runId}-parent`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+  store.stageWorkflowEvidence(noteKey, [], 4, null, [], ["claim"]);
+  const newNote = `${noteKey}-reattached`;
+  store.reattachBinding(binding.id, { noteKey: newNote, sessionId: "reattached-session", sessionAgent: "codex",
+    sessionName: "reattached", sessionCwd: home, sessionRepoRoot: home }, 5);
+  store.resetForNoteKey(noteKey);
+  const child = store.createRepairSubmission({ id: `${runId}-child`, runId, round: 2,
+    triggerSource: "manual", triggerKey: `${runId}-child`, context: {}, evidence: {}, now: 6 });
+  await inheritSubmissionEvidence(new WorkflowStore(), child.submission, 6);
+  assert.deepEqual(store.listSubmissionCoverage(child.submission.id), [], "changing note keys cannot revive the retired version");
+  store.stageWorkflowEvidence(newNote, [], 7, null, [{ ...old, id: `${runId}-fresh` }]);
+  const fresh = store.createRepairSubmission({ id: `${runId}-fresh-round`, runId, round: 3,
+    triggerSource: "manual", triggerKey: `${runId}-fresh-round`, context: {}, evidence: {}, now: 8 });
+  const reserved = store.createRepairSubmission({ id: `${runId}-reserved`, runId, round: 4,
+    triggerSource: "manual", triggerKey: `${runId}-reserved`, context: {}, evidence: {}, now: 8 });
+  store.stageWorkflowEvidence(newNote, [], 9, null, [], ["claim"]);
+  await inheritSubmissionEvidence(new WorkflowStore(), reserved.submission, 10);
+  assert.equal(store.listSubmissionCoverage(reserved.submission.id).length, 1,
+    "the fresh version survives the old withdrawal and later retirement cannot change a reserved snapshot");
+  assert.equal(store.listSubmissionCoverage(fresh.submission.id).length, 1);
+  const next = store.createRepairSubmission({ id: `${runId}-next`, runId, round: 5,
+    triggerSource: "manual", triggerKey: `${runId}-next`, context: {}, evidence: {}, now: 11 });
+  await inheritSubmissionEvidence(new WorkflowStore(), next.submission, 11);
+  assert.deepEqual(store.listSubmissionCoverage(next.submission.id), []);
+  assert.equal(store.listSubmissionCoverage(parent.submission.id).length, 1, "the original frozen packet stays intact");
+  store.resetForNoteKey(newNote);
+  assert.equal(openDb().prepare("SELECT COUNT(*) AS count FROM workflow_evidence_coverage_retirements WHERE note_key = ?")
+    .get(noteKey)?.count, 0, "retained retirement history is removed once the reattached run is reset too");
+});
+
+test("legacy retirement migration preserves snapshot boundaries and is idempotent", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    upgradeDatabaseToCurrentSchema(db);
+    const { store, noteKey, binding, runId } = fixture(home, new WorkflowStore(db));
+    store.stageWorkflowEvidence(noteKey, [], 2, null, [{ id: `${runId}-old`, clientCriterionId: "claim", criterion: "Result",
+      proofClass: "focused_execution", repositoryScope: "all", sourceRoot: home, links: [] }]);
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-parent`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    store.stageWorkflowEvidence(noteKey, [], 4, null, [], ["claim"]);
+    const child = store.createRepairSubmission({ id: `${runId}-child`, runId, round: 2,
+      triggerSource: "manual", triggerKey: `${runId}-child`, context: {}, evidence: {}, now: 5 });
+    db.exec(`DROP INDEX idx_workflow_coverage_retirement_sequence;
+      DROP INDEX idx_workflow_submission_retirement_sequence;
+      ALTER TABLE workflow_evidence_coverage_retirements DROP COLUMN sequence;
+      ALTER TABLE workflow_evidence_coverage_retirements DROP COLUMN staging_ids_json;
+      ALTER TABLE workflow_submissions DROP COLUMN coverage_retirement_sequence; PRAGMA user_version = 6;`);
+    db.exec(`CREATE TRIGGER refuse_retirement_upgrade BEFORE UPDATE ON workflow_evidence_coverage_retirements
+      BEGIN SELECT RAISE(ABORT, 'interrupted retirement upgrade'); END;`);
+    assert.throws(() => upgradeDatabaseToCurrentSchema(db), /interrupted retirement upgrade/);
+    assert.equal(db.prepare("PRAGMA table_info(workflow_evidence_coverage_retirements)").all()
+      .some(column => column.name === "sequence"), false, "an interrupted upgrade rolls back its schema changes too");
+    db.exec("DROP TRIGGER refuse_retirement_upgrade");
+    upgradeDatabaseToCurrentSchema(db);
+    const migrated = db.prepare("SELECT * FROM workflow_evidence_coverage_retirements").all();
+    upgradeDatabaseToCurrentSchema(db);
+    assert.deepEqual(db.prepare("SELECT * FROM workflow_evidence_coverage_retirements").all(), migrated);
+    assert.deepEqual([...store.retiredSubmissionCoverageIds(parent.submission.id, parent.submission.id)], []);
+    assert.deepEqual([...store.retiredSubmissionCoverageIds(parent.submission.id, child.submission.id)], ["claim"]);
+    await inheritSubmissionEvidence(store, child.submission, 6);
+    assert.deepEqual(store.listSubmissionCoverage(child.submission.id), []);
+    assert.equal(store.listSubmissionCoverage(parent.submission.id).length, 1);
+  } finally { db.close(); }
+});
 
 for (const scope of ["repo-01", "all"] as const) for (const operation of ["binding", "supersedes", "withdraw"] as const) {
   test(`${scope} claim retirement via ${operation} advances only the affected repository generations`, () => {

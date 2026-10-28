@@ -10599,15 +10599,19 @@ export function bindDelegatedTurn(id: string, messageId: string, messageTs: numb
   return Number(r.changes) > 0;
 }
 
-/** `pruneSessionLaunchTurns`' safety property: a live key is never touched, and none known deletes nothing. */
-export function pruneDelegatedTurns(liveKeys: Iterable<string>, olderThan: number): number {
+/**
+ * Delete rows older than `olderThan` whose conversation holds no live key. A live key is never
+ * touched. `liveKeys` null means liveness is unknown and deletes nothing; an EMPTY list is a
+ * known answer - every session has exited - and prunes every old row.
+ */
+export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan: number): number {
+  if (liveKeys === null) return 0;
   const keys = [...new Set(liveKeys)];
-  if (!keys.length) return 0;
   const placeholders = keys.map(() => "?").join(",");
   const r = openDb()
     .prepare(
       `DELETE FROM session_delegated_turns
-         WHERE delivered_at < ? AND note_key NOT IN (${placeholders})`,
+         WHERE delivered_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
     )
     .run(olderThan, ...keys);
   return Number(r.changes);

@@ -7808,10 +7808,13 @@ export class Registry extends EventEmitter {
     return this.launchTurns.get(noteKeyFor(s)) ?? null;
   }
 
-  /** Delegated-turn senders, pruned on the launch markers' terms: live keys are never touched. */
+  /**
+   * Delegated-turn senders: live keys are never touched. Before the first sweep liveness is
+   * unknown and nothing is pruned; after it, an empty session map is a known "none live", so
+   * old rows of finished conversations still go.
+   */
   pruneDelegatedTurns(olderThan: number): number {
-    if (!this.sweptSessions) return 0;
-    return pruneDelegatedTurns([...this.sessions.values()].map((s) => noteKeyFor(s)), olderThan);
+    return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
   }
 
   /**

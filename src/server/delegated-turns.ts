@@ -437,8 +437,11 @@ export function delegatedTurnSources(
   return { sources, contested };
 }
 
-/** Drop rows of conversations no live session holds, on the goal table's prune tick. */
-export function pruneDelegatedTurns(liveKeys: Iterable<string>, olderThan: number): number {
+/**
+ * Drop rows of conversations no live session holds, on the goal table's prune tick. Null live
+ * keys mean liveness is unknown and prune nothing; an empty list means no session is live.
+ */
+export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan: number): number {
   const removed = pruneRows(liveKeys, olderThan);
   // Only the row caches: live conversations' in-flight sends must survive another's prune.
   if (removed) forgetRowCaches();

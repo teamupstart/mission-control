@@ -176,13 +176,13 @@ test("a cold cache does not count a new delivery twice", () => {
   assert.deepEqual(senders(t.conversation(k), [a, b]), [first.id, null]);
 });
 
-test("pruning spares live conversations and does nothing when liveness is unknown", () => {
+test("pruning spares live conversations, does nothing when liveness is unknown, and clears all when none are live", () => {
   const t = fakeTranscript();
   reserveDelegatedTurn(t.conversation("live"), "a", first, 1);
   reserveDelegatedTurn(t.conversation("gone"), "b", first, 1);
   const a = t.append("x", "a", 2);
   const b = t.append("y", "b", 3);
-  assert.equal(pruneDelegatedTurns([], 10), 0);
+  assert.equal(pruneDelegatedTurns(null, 10), 0);
   assert.equal(pruneDelegatedTurns(["live"], 10), 1);
   assert.deepEqual(senders(t.conversation("live"), [a]), [first.id]);
   assert.deepEqual(senders(t.conversation("gone"), [b]), [null]);
@@ -311,4 +311,16 @@ test("pruning another conversation keeps this conversation's in-flight sends", (
   reserveDelegatedTurn(t.conversation(k), "still racing", first, now + 1);
   const page = [t.append("human", "still racing", now + 2), t.append("controller", "still racing", now + 3)];
   assert.deepEqual(senders(t.conversation(k), page), [null, null]);
+});
+
+test("once every session has exited, old rows of finished conversations are pruned", () => {
+  const now = Date.now();
+  reserveDelegatedTurn(fakeTranscript().conversation("finished-a"), "a", first, now - 10 * LAG);
+  reserveDelegatedTurn(fakeTranscript().conversation("finished-b"), "b", first, now - 10 * LAG);
+  reserveDelegatedTurn(fakeTranscript().conversation("recent"), "c", first, now);
+  // A known-empty live set: the registry swept and no session remains.
+  assert.equal(pruneDelegatedTurns([], now - LAG), 2);
+  const t = fakeTranscript();
+  const recent = t.append("recent-turn", "c", now + 1);
+  assert.deepEqual(senders(t.conversation("recent"), [recent]), [first.id]);
 });

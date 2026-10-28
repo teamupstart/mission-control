@@ -5842,6 +5842,20 @@ export class WorkflowStore {
     return this.stageWorkflowEvidence(noteKey, [], now, null, [], [clientCriterionId]);
   }
 
+  /** Claims from this frozen packet explicitly retired by a later snapshot's boundary. */
+  retiredSubmissionCoverageIds(submissionId: string, throughGeneration: number): Set<string> {
+    const rows = this.db.prepare(`SELECT DISTINCT c.client_criterion_id
+      FROM workflow_submission_evidence_coverage c
+      JOIN workflow_submissions s ON s.id = c.submission_id
+      JOIN workflow_runs run ON run.id = s.run_id
+      JOIN workflow_bindings b ON b.id = run.binding_id
+      JOIN workflow_evidence_coverage_retirements r
+        ON r.note_key = b.note_key AND r.client_criterion_id = c.client_criterion_id
+      WHERE c.submission_id = ? AND r.generation >= c.generation AND r.generation <= ?`)
+      .all(submissionId, throughGeneration) as Array<{ client_criterion_id: string }>;
+    return new Set(rows.map(row => row.client_criterion_id));
+  }
+
   listReservedWorkflowEvidence(submissionId: string): WorkflowReservedEvidence[] {
     return (this.db.prepare(
       `SELECT s.*, r.ordinal
@@ -9329,8 +9343,11 @@ export class WorkflowStore {
         triggerSource: input.automatic ? "session" : "manual", triggerKey: key, mode: parent.mode,
         context: workflowJson(recovered), evidence: workflowJson(context.evidence), reserveEvidence: false, now: input.now,
       });
+      // Keep the parent's frozen proof, but honor withdrawals committed before this recovery.
+      const generation = Math.max(parent.stagedImageGeneration ?? 0,
+        this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
       this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
-        .run(parent.stagedImageGeneration ?? 0, input.id);
+        .run(generation, input.id);
       this.inheritSubmissionEvidenceInTransaction({
         submissionId: input.id, sourceSubmissionId: parent.id,
         stagingIds: this.listInheritableSubmissionEvidence(parent.id).map((item) => item.stagingId), now: input.now,

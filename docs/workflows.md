@@ -1292,6 +1292,8 @@ Existing runs require a recheck, not a rewrite of their immutable submissions. T
 **Recover inherited coverage** action (or `recover-evidence` via MCP) creates a new snapshot and
 re-evaluates legacy ambiguity with the current rules. Claims whose canonical ids were stripped
 must be re-registered with the intended id; no text heuristic can reconstruct author intent.
+Recovery honors claim retirements committed before it starts while retaining the parent's frozen
+evidence; it does not capture later staged proof into that recovered snapshot.
 The database upgrade only creates the retirement ledger; it does not modify historical claims.
 A resubmit after an image capture failure walks past the incomplete capture to retain earlier
 coverage and evidence, while preserving verification across changed repository snapshots.

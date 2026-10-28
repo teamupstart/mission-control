@@ -7060,7 +7060,7 @@ export class WorkflowManager {
           canonicalCriteria: context.canonicalCriteria ?? [],
           criterionMappings: context.criterionMappings ?? [],
           coverage: frozenCoverage,
-          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource) : undefined,
+          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource, currentSubmission) : undefined,
           sourceSubmissionId: selectionSource?.id ?? null,
         }),
       });

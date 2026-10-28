@@ -2060,8 +2060,8 @@ test("registration rejects unknown ids atomically and freezes an authoritative r
   assert.equal(h.store.getSubmission(retried.value.submission.id)!.readiness?.status, "ready");
 });
 
-test("an existing ambiguous_mapping snapshot recovers with its frozen valid evidence", async (t) => {
-  const id = "legacy-ambiguity-recheck";
+for (const withdraw of [false, true]) test(`an existing ambiguous_mapping snapshot recovers ${withdraw ? "after withdrawing a duplicate" : "with its frozen valid evidence"}`, async (t) => {
+  const id = `legacy-ambiguity-recheck-${withdraw}`;
   const h = await harness(t, id);
   await stageRecoveryProof(h, id, "Rendered workflow state is inspectable");
   await h.manager.stageAgentEvidence(id, { images: [], coverage: [{
@@ -2081,11 +2081,27 @@ test("an existing ambiguous_mapping snapshot recovers with its frozen valid evid
     .run(JSON.stringify(legacy), source.id);
   openDb().prepare("UPDATE workflow_runs SET status = 'waiting_for_evidence_readiness', current_phase = 'evidence_readiness', completed_at = NULL WHERE id = ?")
     .run(run.id);
+  const parent = h.store.getSubmission(source.id)!;
+  const originalProof = h.store.listSubmissionTextArtifacts(source.id);
+  if (withdraw) {
+    await h.manager.stageAgentEvidence(id, { images: [], withdrawClientCriterionIds: ["repair-claim-v2"],
+      commandOutputs: [{ kind: "command", clientItemId: "later-proof", command: "check later work", exitCode: 0,
+        output: "passed", caption: "Evidence staged after the reviewed snapshot", repositoryScope: "all" }] });
+  }
+  const generation = h.store.workflowEvidenceGeneration(h.binding.noteKey, repositoryRoot);
   const recovered = await h.manager.recoverEvidence(run.id, source.id, "recheck");
   assert.equal(recovered.ok, true, JSON.stringify(recovered)); if (!recovered.ok) return;
   const current = h.store.getSubmission(recovered.value.submission.id)!;
+  assert.deepEqual(h.store.listSubmissionCoverage(current.id).map(claim => claim.clientCriterionId).sort(),
+    withdraw ? ["repair-claim"] : ["repair-claim", "repair-claim-v2"]);
+  assert.deepEqual(WorkflowContextSnapshotSchema.parse(current.context).coverageSelection?.criteria[0]?.matchedClientCriterionIds,
+    withdraw ? ["repair-claim"] : ["repair-claim", "repair-claim-v2"]);
+  assert.equal(current.stagedImageGeneration, generation, "recovery observes withdrawals already committed when it is reserved");
   assert.equal(current.readiness?.status, "ready");
-  assert.deepEqual(current.readiness?.warningCodes, ["ambiguous_mapping", "model_proof_class_disagreement"]);
+  assert.deepEqual(current.readiness?.warningCodes, withdraw ? ["model_proof_class_disagreement"] : ["ambiguous_mapping", "model_proof_class_disagreement"]);
   assert.equal(current.readiness?.criteria[0]?.links.length, 1);
-  assert.deepEqual(h.store.getSubmission(source.id)!.readiness, legacy, "recovery never rewrites the old packet");
+  assert.deepEqual(h.store.listSubmissionTextArtifacts(current.id).map(item => [item.sha256, item.content]),
+    originalProof.map(item => [item.sha256, item.content]), "recovery retains the parent's frozen proof without capturing later staged evidence");
+  assert.deepEqual(h.store.getSubmission(source.id), parent, "recovery never rewrites the old packet");
+  if (withdraw) assert.deepEqual(h.store.listWorkflowEvidence(h.binding.noteKey).artifacts.map(item => item.clientItemId), ["later-proof"]);
 });

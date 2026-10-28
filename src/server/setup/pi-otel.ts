@@ -7,7 +7,7 @@ import type { EnvironmentDeps } from "../environment/types.ts";
 const SettingsSchema = z.object({
   packages: z.array(z.union([
     z.string(),
-    z.object({ source: z.string(), extensions: z.array(z.string()).optional() }),
+    z.object({ source: z.string(), extensions: z.array(z.string()).optional(), autoload: z.boolean().optional() }),
   ])).default([]),
 });
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -48,14 +48,14 @@ export async function piOtelPackageStatus(deps: EnvironmentDeps, configuredDir?:
     return { state: "unknown", why: "Pi settings could not be read as complete package configuration. Their contents are not shown.", evidence: settingsPath };
   }
   const packages = settings.data.packages.map((entry) =>
-    typeof entry === "string" ? { source: entry, extensions: undefined } : entry);
+    typeof entry === "string" ? { source: entry, extensions: undefined, autoload: undefined } : entry);
   if (packages.some((entry) => namesPackage(entry.source, "pi-otel"))) {
     return { state: "unknown", why: "A separate pi-otel package is registered. Check /otel status before switching; installing a second exporter can duplicate telemetry.", evidence: settingsPath };
   }
   const registered = packages.filter((entry) => namesPackage(entry.source, PI_OTEL_PACKAGE.name));
   if (registered.length === 0) return { state: "missing" };
-  if (registered.length !== 1 || registered[0]!.extensions !== undefined) {
-    return { state: "unknown", why: "Pi package resource filters or duplicate declarations are configured. Use pi config and /otel status to verify that OTel is selected.", evidence: settingsPath };
+  if (registered.length !== 1 || registered[0]!.extensions !== undefined || registered[0]!.autoload === false) {
+    return { state: "unknown", why: "Pi package autoload is disabled, resource filters or duplicate declarations are configured. Use pi config and /otel status to verify that OTel is selected.", evidence: settingsPath };
   }
   const packageDir = join(agentDir, "npm", "node_modules", PI_OTEL_PACKAGE.name);
   const manifestPath = join(packageDir, "package.json");

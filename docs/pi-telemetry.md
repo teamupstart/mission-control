@@ -10,30 +10,34 @@ that provides tools and lifecycle reporting.
 
 The separately maintained [`@upstart/pi-router-otel`](https://github.com/nigel-upstart/pi-buildout/tree/main/packages/pi-router-otel)
 package loads both the Pi router and the same vendored OTel extension used in `pi-buildout`;
-it is not telemetry-only. It is **not** a
-Mission Control npm dependency or part of the app bundle. Pi discovers it from its own agent
+it is not telemetry-only. It is **not** a Mission Control npm dependency or part of the app bundle. Pi discovers it from its own agent
 home, including when Mission Control embeds Pi's SDK. Install it only in the Pi home the daemon
 will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home), after reviewing the package's
 full-content capture default and removing any separately installed `npm:pi-otel` to avoid
-duplicate instrumentation:
+duplicate instrumentation.
 
-Use the AWS CLI with a read-only CodeArtifact profile; UMT is not required. The temporary npm
-configuration routes only `@upstart` to CodeArtifact and leaves public npm resolution alone:
+Use the AWS CLI with a read-only CodeArtifact profile; UMT is not required. The subshell below
+removes its temporary npm configuration and credentials when it finishes, including on failure.
+Only `@upstart` is routed to CodeArtifact; public npm resolution is unchanged:
 
 ```sh
-export AWS_PROFILE=YOUR_CODEARTIFACT_READONLY_PROFILE
-export CODEARTIFACT_AUTH_TOKEN="$(aws codeartifact get-authorization-token \
-  --domain code-artifacts-prod --domain-owner 801997600626 --region us-east-1 \
-  --query authorizationToken --output text)"
-export NPM_CONFIG_USERCONFIG="$(mktemp)"
-chmod 600 "$NPM_CONFIG_USERCONFIG"
-trap 'rm -f "$NPM_CONFIG_USERCONFIG"; unset CODEARTIFACT_AUTH_TOKEN NPM_CONFIG_USERCONFIG' EXIT
-printf '%s\n' \
-  '@upstart:registry=https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/' \
-  '//code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/:_authToken=${CODEARTIFACT_AUTH_TOKEN}' \
-  > "$NPM_CONFIG_USERCONFIG"
-pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
-pi list
+(
+  set -eu
+  export AWS_PROFILE=YOUR_CODEARTIFACT_READONLY_PROFILE
+  CODEARTIFACT_AUTH_TOKEN="$(aws codeartifact get-authorization-token \
+    --domain code-artifacts-prod --domain-owner 801997600626 --region us-east-1 \
+    --query authorizationToken --output text)"
+  NPM_CONFIG_USERCONFIG="$(mktemp)"
+  export CODEARTIFACT_AUTH_TOKEN NPM_CONFIG_USERCONFIG
+  trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+  chmod 600 "$NPM_CONFIG_USERCONFIG"
+  printf '%s\n' \
+    '@upstart:registry=https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/' \
+    '//code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/:_authToken=${CODEARTIFACT_AUTH_TOKEN}' \
+    > "$NPM_CONFIG_USERCONFIG"
+  pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
+  pi list
+)
 ```
 
 For isolated validation, set `PI_CODING_AGENT_DIR` to a disposable directory before installing.
@@ -44,7 +48,6 @@ The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP
 all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
 overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
 
-
 ## Verify and opt out
 
 - Press **Re-check** in Setup after installing. The row checks user-level registration, the
@@ -52,7 +55,7 @@ overrides its destination. The staging gateway is VPN/IP restricted, unlike a lo
   It does not execute package code, call a model, contact npm or verify downstream indexing.
 - The check uses the daemon's `PI_CODING_AGENT_DIR`, or `~/.pi/agent`. Use that same directory
   for `pi install`; a terminal using another home does not repair the daemon's installation.
-- A filtered package entry, duplicate declarations, unreadable or truncated settings, an
+- Disabled package autoload, a filtered entry, duplicate declarations, unreadable or truncated settings, an
   unsupported manifest, a non-exact version range/tag or a separate `npm:pi-otel` registration
   reports **Unknown**, not Ready. An installed version that differs from its registered pin
   reports **Needs setup**.

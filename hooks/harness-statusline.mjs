@@ -45,7 +45,7 @@ function innerCommand() {
     const recorded = readFileSync(join(stateDir(), "statusline-inner"), "utf8").trim();
     if (recorded) return recorded;
   } catch {
-    // none recorded - fall through to the default
+    // No readable saved command; leave the inner command unset.
   }
   return null;
 }

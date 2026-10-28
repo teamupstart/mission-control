@@ -169,6 +169,8 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   await step.getByRole("button", { name: "Open Setup" }).click();
   step = tourStep(page, "Install what you will use");
   await expect(step).toBeVisible();
+  await expect(step).toContainText("Nothing installs automatically.");
+  await expect(step).toContainText("In the desktop app, choose Install Claude integrations to install or repair Mission-owned hooks and MCP.");
   await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
   // The rail and its rows as one spotlight. The tour does not walk the families: which one
   // is worth opening depends on what this machine turns out to be missing.

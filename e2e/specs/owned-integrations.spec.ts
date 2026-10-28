@@ -58,3 +58,32 @@ test("desktop repair action runs the real installer and reports preserved custom
     }
   } finally {rmSync(home,{recursive:true,force:true});}
 });
+
+test("rejected desktop repair shows retry guidance and re-enables the action", async ({page,daemon}) => {
+  await page.addInitScript(() => {
+    let attempts = 0;
+    Object.defineProperty(window, "missionDesktop", {value: {
+      isDesktop: true,
+      onOpenSettings: () => () => {},
+      installIntegrations: async () => {
+        if (++attempts === 1) throw new Error("Synthetic desktop bridge rejection");
+        return {ok: true, message: "Integration retry completed."};
+      },
+    }});
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+  const panel = page.getByLabel("Mission-owned integrations");
+  const install = panel.getByRole("button");
+  await expect(install).toHaveText("Install Claude integrations");
+  await install.click();
+  await expect(panel.getByRole("status")).toHaveText("Integration repair could not finish. Check the app log and retry.");
+  await expect(install).toBeEnabled();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync("e2e/.artifacts/setup-node-runtime", {recursive: true});
+    await page.screenshot({path: "e2e/.artifacts/setup-node-runtime/repair-rejected.png", fullPage: true});
+  }
+  await install.click();
+  await expect(panel.getByRole("status")).toHaveText("Integration retry completed.");
+  await expect(install).toBeEnabled();
+});

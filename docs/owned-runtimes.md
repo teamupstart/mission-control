@@ -85,10 +85,31 @@ shipped Claude and Codex reports against a synthetic loopback receiver, MCP and 
 handshakes, statusline delegation, Pi installer and resume check using real local Electron.
 It uses a checkout pinning Node 18, first absent host commands and then recording traps for
 node/npm/npx. It does not contact a model or touch an operator's app/config/state.
-Focused tests cover source installs, existing-registration repair, custom commands, disabled
-entries, quoting, repeat repair and concurrent publication. Browser coverage exercises Setup,
-real repair action feedback, Pi installation and the existing migration UI. Both OS color
-preferences are checked; the dashboard remains intentionally dark-only.
+
+### Observed implementation checks (2026-10-28 UTC)
+
+These are results from the recorded Phase 5 executions, not guarantees for later commits or
+signed releases. The retained Mission Control artifacts below contain the completed command
+output; evidence files are not committed to the repository.
+
+| Execution | Observed result and limits | Retained evidence |
+| --- | --- | --- |
+| Local Electron probe, `node --import tsx scripts/verify-owned-runtimes.ts` | Shipped helpers, MCP/Pi handshakes, registration repair and saved-command delegation passed with absent host commands and node/npm/npx traps; zero trap hits. Synthetic state and an Electron app-path adapter isolate operator data. | Repair capture[^phase5-repair-evidence], `phase5-coderabbit-runtime-command-output.txt`, artifact `txt_3a76a2735684ab7440413156c7b50ae3`. |
+| Focused implementation and repair tests | Initial 290 tests passed, including source installs, custom/disabled preservation, quoting and concurrent publication; a later 40-test repair run also passed. | Initial capture[^phase5-initial-evidence], `phase5-focused.log`, artifact `txt_df719727eb348f5a94184dc120b99e95`; repair capture[^phase5-repair-evidence], `phase5-coderabbit-focused-command-output.txt`, artifact `txt_4ba215f881bda7bda6b9be1f7463014e`. |
+| Setup, Pi and migration browser checks | 30 tests passed, including repair feedback and both OS color preferences; the dashboard remains dark-only. Agents and runtime-origin replies were fixtures, and the desktop bridge invoked the installer against synthetic files. | Initial capture[^phase5-initial-evidence], `phase5-browser.log`, artifact `txt_91f05b029e0ffbe8fd3701b92dc3927d`. |
+
+[^phase5-initial-evidence]: Mission Control workflow run `c49cb390-fbc2-43f4-95d4-761d088c7a2a`,
+    round 1, segment 0, submission `3001888f-e6e3-4f88-ad2b-389a062483b9`, captured
+    2026-10-28 at 01:11 UTC from the initial uncommitted Phase 5 implementation.
+
+[^phase5-repair-evidence]: Mission Control workflow run `43d0f1fd-e316-486c-911c-ce4d3413bfe8`,
+    round 1, segment 0, submission `f86900be-7457-44b0-a2bb-5baae43d241d`, captured
+    2026-10-28 at 02:26 UTC at head `4e9efadaddd2ed0c412f195be670098cee81b09b`.
+
+These observations do not establish signing, notarization, Gatekeeper acceptance or a real
+signed installation, stable/alpha update or recovery. Those journeys remain R1/R2 qualification.
+
+### Combined signed journey checklist
 
 R2 consumes this inventory and the registered focused, bundled-runtime and browser evidence.
 Use the following combined checklist with the exact signed inputs required by

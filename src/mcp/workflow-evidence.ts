@@ -29,10 +29,12 @@ type WorkflowEvidenceToolInput = {
     caption: string;
     repositoryScope: string;
   }>;
+  withdrawClientCriterionIds?: string[];
   coverage?: Array<{
     clientCriterionId: string;
     criterion: string;
     criterionId?: string;
+    supersedes?: string[];
     proofClass: WorkflowEvidenceProofClass;
     repositoryScope: string;
     links: Array<{ clientItemId: string; role: WorkflowEvidenceProofRole }>;
@@ -68,13 +70,16 @@ export async function submitWorkflowEvidenceToDaemon(
   identity: WorkflowEvidenceIdentity,
   request: WorkflowEvidenceRequest,
 ): Promise<WorkflowEvidenceToolResult> {
-  const { images, artifacts, commandOutputs, coverage } = input;
+  const { images, artifacts, commandOutputs, coverage, withdrawClientCriterionIds } = input;
+  const needsMutations = Boolean(withdrawClientCriterionIds?.length
+    || coverage?.some((claim) => claim.criterionId || claim.supersedes?.length));
   try {
-    if (workflowEvidenceNeedsCriterionMappedCapability({ coverage, commandOutputs })) {
+    if (needsMutations || workflowEvidenceNeedsCriterionMappedCapability({ coverage, commandOutputs })) {
       const health = await request("/api/health", "GET");
       const supported = health.ok && daemonHealthSupports(
         await health.json() as unknown,
-        DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence,
+        needsMutations ? DAEMON_PROTOCOL_CAPABILITIES.workflowCoverageMutations
+          : DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence,
       );
       if (!supported) {
         return {
@@ -94,6 +99,7 @@ export async function submitWorkflowEvidenceToDaemon(
         ...artifact,
       })),
       coverage: coverage ?? [],
+      ...(withdrawClientCriterionIds ? { withdrawClientCriterionIds } : {}),
     });
     if (!res.ok) {
       return {
@@ -116,7 +122,8 @@ export async function submitWorkflowEvidenceToDaemon(
     return {
       text: `Registered ${images?.length ?? 0} image(s), `
         + `${(artifacts?.length ?? 0) + (commandOutputs?.length ?? 0)} text artifact(s), `
-        + `and ${coverage?.length ?? 0} coverage claim(s) at generation ${body.generation ?? 0}.`,
+        + `and ${coverage?.length ?? 0} coverage claim(s) at generation ${body.generation ?? 0}.`
+        + (withdrawClientCriterionIds?.length ? ` Withdrew ${withdrawClientCriterionIds.length} coverage claim(s).` : ""),
       isError: false,
     };
   } catch (error) {

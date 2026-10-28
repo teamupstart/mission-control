@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 98 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 99 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>98</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>99</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -590,7 +590,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>24 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>25 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -603,6 +603,7 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_evidence_scope_generations</code><p>Repository-specific evidence generation high-water marks, keyed by stable session note and resolved source root, so unrelated repositories do not wake each other's workflows.</p></div>
                 <div class="table-row"><code>workflow_evidence_staging</code><p>Mutable image or UTF-8 text-artifact metadata staged for the next eligible submission. Command exit status remains structured beside the immutable display content. Server-only source locators remain here and never enter model context or API responses.</p></div>
                 <div class="table-row"><code>workflow_evidence_coverage_staging</code><p>Mutable, bounded author claims mapping acceptance criteria and proof roles to staged evidence. Claims share evidence ownership, generation, and reservation semantics.</p></div>
+                <div class="table-row"><code>workflow_evidence_coverage_retirements</code><p>Conversation-scoped claim withdrawals and supersession markers, keyed by reservation generation. Prevents later submissions from reviving retired coverage while preserving frozen history.</p></div>
                 <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged evidence to each immutable submission that reserved it, written in the submission transaction so capture can resume after interruption.</p></div>
                 <div class="table-row"><code>workflow_submission_images</code><p>Immutable submission-owned image metadata and retained body locators, including digest, order, availability, and pruning state.</p></div>
                 <div class="table-row"><code>workflow_submission_evidence_coverage</code><p>Immutable submission-owned acceptance-criterion claims and evidence-role links, frozen atomically with the evidence they reference.</p></div>

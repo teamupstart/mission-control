@@ -34,6 +34,7 @@ import {
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   workflowCommandEvidenceContent,
 } from "@shared/workflow.ts";
+import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "../config.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
@@ -323,9 +324,23 @@ export async function stageAgentWorkflowEvidence(input: {
   artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   coverage?: readonly WorkflowEvidenceCoverageClaim[];
+  withdrawClientCriterionIds?: readonly string[];
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
+  const canonicalIds = new Set(input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
+    const run = input.store.activeRunForBinding(binding.id);
+    if (!run) return [];
+    if (run.criteria) return run.criteria.canonicalCriteria.map((criterion) => criterion.id);
+    const context = WorkflowContextSnapshotSchema.safeParse(input.store.latestSubmission(run.id)?.context);
+    return context.success ? context.data.canonicalCriteria.map((criterion) => criterion.id) : [];
+  }));
+  for (const claim of input.coverage ?? []) {
+    if (claim.criterionId && !canonicalIds.has(claim.criterionId)) {
+      throw new WorkflowImageEvidenceError("unknown_criterion_id",
+        `Coverage claim ${claim.clientCriterionId} cites unknown criterionId ${claim.criterionId}. Use an exact id from this run, or omit criterionId. To retire a claim use withdrawClientCriterionIds.`);
+    }
+  }
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const writes: WorkflowStagedEvidenceWrite[] = [];
   const coverageWrites: WorkflowStagedEvidenceCoverageWrite[] = [];
@@ -459,6 +474,7 @@ export async function stageAgentWorkflowEvidence(input: {
     input.now,
     input.episodeKey ?? null,
     coverageWrites,
+    input.withdrawClientCriterionIds,
   );
 }
 
@@ -933,20 +949,28 @@ export async function inheritSubmissionEvidence(
   submission: WorkflowSubmission,
   now = Date.now(),
 ): Promise<number> {
-  const resolved = store.evidenceInheritanceSource(submission);
-  if (!resolved) return 0;
-  const candidates = store.listInheritableSubmissionEvidence(resolved.source.id);
-  const carried: string[] = [];
-  for (const item of candidates) {
-    if (resolved.mode === "round" && !(await carriedEvidenceStillMatches(item))) continue;
-    carried.push(item.stagingId);
+  let resolved = store.evidenceInheritanceSource(submission);
+  const visited = new Set<string>([submission.id]);
+  let verifySources = false;
+  let total = 0;
+  // A failed image capture never reached inheritance. Walk through that incomplete packet
+  // to the last completed capture, giving the child's and nearest parent's evidence priority.
+  while (resolved && !visited.has(resolved.source.id)) {
+    visited.add(resolved.source.id);
+    verifySources ||= resolved.mode === "round";
+    const candidates = store.listInheritableSubmissionEvidence(resolved.source.id);
+    const carried: string[] = [];
+    for (const item of candidates) {
+      if (verifySources && !(await carriedEvidenceStillMatches(item))) continue;
+      carried.push(item.stagingId);
+    }
+    total += store.inheritSubmissionEvidence({
+      submissionId: submission.id, sourceSubmissionId: resolved.source.id, stagingIds: carried, now,
+    });
+    if (resolved.source.repositoryFingerprint || resolved.source.status !== "failed") break;
+    resolved = store.evidenceInheritanceSource(resolved.source);
   }
-  return store.inheritSubmissionEvidence({
-    submissionId: submission.id,
-    sourceSubmissionId: resolved.source.id,
-    stagingIds: carried,
-    now,
-  });
+  return total;
 }
 
 export function resolveSubmissionImageInputs(

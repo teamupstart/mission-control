@@ -25,6 +25,7 @@ import {
   normalizedWorkflowCriterionText as normalizedCriterionText,
   workflowCoverageCitationAllowsText,
   workflowCrossCriterionClaimIds,
+  workflowCriterionClaimIds,
 } from "@shared/workflow.ts";
 import {
   freezeWorkflowRunIntent,
@@ -306,9 +307,13 @@ export function reconcileWorkflowCriterionMappings(
     if (!indexes || indexes.size !== 1) continue;
     matches[[...indexes][0]!]!.push(claim.clientCriterionId);
   }
-  return criteria.map((criterion, ordinal) => ({
+  const proposals = criteria.map((criterion, ordinal) => ({
     criterionId: criterion.id,
     matchedClientCriterionIds: [...new Set(matches[ordinal])].sort(),
+  }));
+  return criteria.map((criterion) => ({
+    criterionId: criterion.id,
+    matchedClientCriterionIds: workflowCriterionClaimIds(criterion.id, proposals, coverage),
   }));
 }
 

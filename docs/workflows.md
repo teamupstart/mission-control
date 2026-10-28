@@ -1202,14 +1202,15 @@ Every carried claim is retained even when a limit refused some of the evidence i
 the link pointing at the absent item is dropped, because citing evidence that is not there
 invents a gap rather than finding one.
 
-Every frozen coverage claim of the previous submission is retained whole, with its own claim id,
+Each active coverage claim of the previous submission is retained whole, with its own claim id,
 proof class, repository scope, and link set, marked with the submission it came from. The one
 bound is the frozen-coverage limit: a submission's coverage is read through a schema capped at
 `maxClaims`, so a carry that ignored it would make that coverage unreadable rather than larger.
 It binds only when a parent already at the cap meets a child that declared claims of its own, and
 reaching it is recorded as `evidence_carry_truncated` alongside the evidence counts. A claim
 re-declared under the same id is the same claim, and the author's current wording wins; a
-different id for the same criterion is a different claim and is retained beside it.
+new caller id bound to the same canonical `criterionId` replaces the older claims.
+Explicitly superseded and withdrawn claims are excluded before the carry budget is spent.
 
 A claim whose links do not all resolve inside the submission is left in the tray rather than
 frozen, because freezing a claim beside evidence the submission does not hold would be a
@@ -1222,13 +1223,16 @@ claim and the exact links that would not resolve, so a claim the author register
 find is inspectable rather than silent.
 
 Readiness persists the effective claim selection separately from retained ancestry. A new
-unique declaration replaces the selected claim for that criterion. Two current declarations
-remain ambiguous, with one exception: where they share a criterion's exact wording and exactly
-one of them satisfies its declared proof class, that one supersedes the other. A reserved claim
-cannot be amended, so re-registering under a new criterion id is the only repair open to an
-author, and this is what keeps following that instruction from wedging the run. Differing
-wording, or two declarations that both satisfy their class, stay ambiguous: the first are two
-assertions and the second is a choice between author statements.
+explicit binding takes priority over semantic matches. Re-registering a claim under the same
+`clientCriterionId` updates its mutable registration, including its canonical binding, while
+past submissions remain immutable. Identical updates are idempotent.
+
+Use `coverage[].supersedes: ["old-client-id"]` to replace differently worded claims atomically,
+or `withdrawClientCriterionIds: ["old-client-id"]` to retire claims without registering a
+replacement. Withdrawal is idempotent and applies to reserved and inherited claims as well as
+staged claims. A call cannot both register and retire the same caller id. Retirement markers
+are scoped to the conversation and reservation generation, so later rounds cannot revive an
+old claim and replaying a prior capture cannot apply a future withdrawal.
 
 A later repair of another criterion retains the earlier selection. Missing
 selected claims or links become gaps instead of reviving an older claim. Each new snapshot
@@ -1265,21 +1269,26 @@ including its own text, readiness records the citation under `rejectedCitations`
 `unknown_criterion_id`, and the repair packet names the claim and the id it cited before listing
 the criteria that went uncovered because of it.
 
-A claim CARRIED from an earlier submission is the one exception. Its cited id may no longer
-resolve, and the author of the repair in front of it cannot withdraw an id they did not write, so
-it keeps the pre-citation behaviour: matched by its own text, and eligible for semantic
-reconciliation like any uncited claim. `classifyWorkflowCoverageCitation` in
-`src/shared/workflow.ts` decides which of those four cases a citation is, and criterion mapping,
-the reconciliation provider filter and readiness all read it rather than re-deriving the rule.
-The field is optional on the wire and absent from every historical row, so an older daemon strips
-it and matches by text as before.
+Inherited claims follow the same citation rules. New registrations with an unknown id return
+`unknown_criterion_id` immediately and atomically, before staging any evidence. Legacy frozen
+unknown citations remain visible as readiness gaps until withdrawn or corrected. The tool
+checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
+withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
+when the tool reports an incompatible daemon.
 
-One claim may answer several criteria, and each of them counts it. Linking one evidence item from
-several claims has always been allowed, so a claim covering two criteria is the same proof a
-compliant author would have written as two claims citing one item; discarding it proved nothing
-and cost the criterion it did answer every one of its links. Two claims matched to ONE criterion
-remains `ambiguous_mapping`, because a criterion carries a single author proof class and there is
-nothing to choose between them. The repair packet names the competing claim ids.
+One uncited claim may answer several criteria. When several claims still answer one criterion,
+`ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
+selected in stable caller-id order, and displays the competing ids. It never combines incomplete
+claims to manufacture a complete proof. If none is complete, the representative's invalid links,
+scope conflicts, or missing required roles still block. Missing coverage also remains a hard gap.
+
+Existing runs require a recheck, not a rewrite of their immutable submissions. The Runs view's
+**Recover inherited coverage** action (or `recover-evidence` via MCP) creates a new snapshot and
+re-evaluates legacy ambiguity with the current rules. Claims whose canonical ids were stripped
+must be re-registered with the intended id; no text heuristic can reconstruct author intent.
+The database upgrade only creates the retirement ledger; it does not modify historical claims.
+A resubmit after an image capture failure walks past the incomplete capture to retain earlier
+coverage and evidence, while preserving verification across changed repository snapshots.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including

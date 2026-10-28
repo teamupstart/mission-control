@@ -267,7 +267,9 @@ Personas each own one reviewing concern. Session actions can send authored instr
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
-round, with applicable evidence carried forward between submissions.
+round, with applicable evidence carried forward between submissions. Canonical criterion IDs bind
+claims directly; authors can replace or withdraw claims without losing prior proof. Duplicate
+valid coverage produces a warning while missing or invalid proof still blocks readiness.
 You can retry failed criterion mapping from the dashboard. See
 [workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 

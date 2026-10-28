@@ -1177,6 +1177,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
       ON workflow_evidence_coverage_staging(reserved_group_key, state);
 
+    -- Conversation-owned retirement markers suppress ancestry without rewriting frozen history.
+    CREATE TABLE IF NOT EXISTS workflow_evidence_coverage_retirements (
+      note_key              TEXT NOT NULL,
+      client_criterion_id   TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      PRIMARY KEY(note_key, client_criterion_id, generation)
+    );
+
     CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
       staging_id            TEXT NOT NULL,
       submission_id         TEXT NOT NULL,

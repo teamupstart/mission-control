@@ -2204,7 +2204,7 @@ test("a claim whose link drifted out of scope is left staged rather than frozen 
  *
  * Round 1 proves a `visual` criterion one role short, so the preflight reports
  * `missing_execution`. The repair registers a replacement claim under a new criterion id -
- * which is what `coverage_reserved` instructs - and that claim cites the command output round 1
+ * using explicit replacement semantics - and that claim cites the command output round 1
  * already registered. Before the deferred freeze existed, freeze-time coherence ran against the
  * staged tray plus this submission's own reservations, the parent's command output belonged to
  * neither, and the replacement was dropped with no row, no event and no error. The criterion was
@@ -2308,6 +2308,7 @@ test("a replacement claim citing the parent's reserved proof is frozen, not sile
       null,
       [{
         id: "r2-claim",
+        criterionId: "ac-trust-link",
         clientCriterionId: "ac-error-message-includes-trust-link-v2",
         criterion: criterionText,
         proofClass: "visual",
@@ -2346,6 +2347,7 @@ test("a replacement claim citing the parent's reserved proof is frozen, not sile
       "the carry made both links resolvable, so the replacement is frozen after it",
     );
     assert.deepEqual(deferred.unresolved, []);
+    assert.equal(store.listSubmissionCoverage(reserved.submission.id).find(claim => claim.clientCriterionId.endsWith("-v2"))?.criterionId, "ac-trust-link");
 
     assert.deepEqual(
       store.listSubmissionCoverage(reserved.submission.id)
@@ -2436,7 +2438,7 @@ test("a claim the carry cannot rescue is reported as left staged rather than pas
   }
 });
 
-test("both reservation refusals name the repair that actually works", () => {
+test("reserved evidence names its repair and reserved coverage can be updated", () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refusals-")));
   try {
     writeFileSync(join(checkout, "shot.png"), PNG);
@@ -2472,13 +2474,12 @@ test("both reservation refusals name the repair that actually works", () => {
         assert.ok(error instanceof WorkflowImageEvidenceError);
         assert.equal(error.code, "evidence_reserved");
         assert.match(error.message, /Register the new content under a new id/);
-        assert.match(error.message, /new criterion id/, "and says what that means for the claim citing it");
-        assert.match(error.message, /criterion text identical/);
+        assert.match(error.message, /same clientCriterionId/, "and names the mutable claim update");
+        assert.match(error.message, /supersedes naming the old clientCriterionId/);
         return true;
       },
     );
-    assert.throws(
-      () => store.stageWorkflowEvidence(noteKey, [], 5, null, [{
+    const updated = store.stageWorkflowEvidence(noteKey, [], 5, null, [{
         id: "refusal-claim",
         clientCriterionId: "panel-renders",
         criterion: "The panel renders",
@@ -2489,24 +2490,9 @@ test("both reservation refusals name the repair that actually works", () => {
           { clientItemId: "shot", role: "rendered_output" as const },
           { clientItemId: "shot", role: "execution" as const },
         ],
-      }]),
-      (error: unknown) => {
-        assert.ok(error instanceof WorkflowImageEvidenceError);
-        assert.equal(error.code, "coverage_reserved");
-        assert.match(error.message, /Register the new claim under a new criterion id/);
-        assert.match(
-          error.message,
-          /criterion text identical/,
-          "the instruction has to state the condition that makes the replacement supersede",
-        );
-        assert.match(
-          error.message,
-          /may cite evidence an earlier submission already froze/,
-          "and that citing an earlier round's proof is allowed, which is what was unclear",
-        );
-        return true;
-      },
-    );
+      }]);
+    assert.equal(updated.coverage?.[0]?.links.length, 2);
+
   } finally {
     rmSync(checkout, { recursive: true, force: true });
   }
@@ -2730,4 +2716,218 @@ test("a claim refused for room is reported as room, not as a link that failed", 
   } finally {
     rmSync(checkout, { recursive: true, force: true });
   }
+});
+
+for (const operation of ["withdraw", "supersedes"] as const) {
+  test(`conflicting claim mutation via ${operation} rejects atomically`, () => {
+    const { store, noteKey, runId } = fixture(home);
+    const original = { id: `${runId}-claim`, clientCriterionId: "existing", criterion: "Original description",
+      proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: home, links: [] };
+    const before = store.stageWorkflowEvidence(noteKey, [], 2, null, [original]);
+    const updated = { ...original, criterion: "Changed description" };
+    const replacement = { ...original, id: `${runId}-replacement`, clientCriterionId: "replacement", supersedes: ["existing"] };
+
+    assert.throws(() => store.stageWorkflowEvidence(noteKey, [], 3, null,
+      operation === "supersedes" ? [updated, replacement] : [updated],
+      operation === "withdraw" ? ["existing"] : []),
+    (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "coverage_invalid");
+
+    const after = new WorkflowStore().listWorkflowEvidence(noteKey);
+    assert.equal(after.generation, before.generation, "a rejected mutation does not advance the generation");
+    assert.deepEqual(after.coverage, before.coverage, "the existing claim stays staged unchanged and no replacement is added");
+  });
+}
+
+for (const operation of ["binding", "supersedes", "withdraw"] as const) {
+  test(`retired claims stay out of later Persona rounds after ${operation}`, async () => {
+    const { store, noteKey, binding, runId } = fixture(home);
+    const old = { id: `${runId}-old`, clientCriterionId: "old", criterion: "Old description",
+      criterionId: "canonical-1", proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const, sourceRoot: home, links: [] };
+    store.stageWorkflowEvidence(noteKey, [], 2, null, [old]);
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-parent`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    const replacement = { ...old, id: `${runId}-new`, clientCriterionId: "old-v2", criterion: "New description",
+      ...(operation === "supersedes" ? { criterionId: undefined, supersedes: ["old"] } : {}) };
+    const staged = store.stageWorkflowEvidence(noteKey, [], 4, null,
+      operation === "withdraw" ? [] : [replacement], operation === "withdraw" ? ["old"] : []);
+    assert.deepEqual(staged.coverage?.map(c => c.clientCriterionId), operation === "withdraw" ? [] : ["old-v2"]);
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 5);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 5);
+    const child = store.reserveEvidenceReadinessRefinement({ id: `${runId}-child`, runId,
+      waitingSubmissionId: parent.submission.id, triggerKey: `${runId}-retry`, manualRetry: true, now: 6 });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    if (operation === "withdraw") {
+      assert.equal(store.stageWorkflowEvidence(noteKey, [], 7, null, [], ["old"]).generation, staged.generation,
+        "repeated withdrawal is idempotent");
+      store.stageWorkflowEvidence(noteKey, [], 8, null, [{ ...old, id: `${runId}-restaged` }]);
+      store.stageWorkflowEvidence(noteKey, [], 9, null, [], ["old"]);
+      // Later re-registration and withdrawal cannot erase the earlier snapshot's retirement.
+    }
+    await inheritSubmissionEvidence(store, child.submission, 7);
+    assert.deepEqual(store.listSubmissionCoverage(child.submission.id).map(c => c.clientCriterionId),
+      operation === "withdraw" ? [] : ["old-v2"]);
+    assert.equal(store.listSubmissionCoverage(parent.submission.id)[0]?.clientCriterionId, "old", "history is immutable");
+    // Repeat inheritance after restarting the store: retirement is durable, not an in-memory filter.
+    await inheritSubmissionEvidence(new WorkflowStore(), child.submission, 8);
+    assert.equal(store.listSubmissionCoverage(child.submission.id).some(c => c.clientCriterionId === "old"), false);
+    const nextRound = store.createRepairSubmission({ id: `${runId}-next-round`, runId, round: 2,
+      triggerSource: "manual", triggerKey: `${runId}-persona-repair`, context: {}, evidence: {}, now: 10 });
+    await inheritSubmissionEvidence(store, nextRound.submission, 10);
+    assert.deepEqual(store.listSubmissionCoverage(nextRound.submission.id).map(c => c.clientCriterionId),
+      operation === "withdraw" ? [] : ["old-v2"], "a later Persona round cannot revive the retired claim");
+  });
+}
+
+
+for (const failedCapture of [false, true]) test(`an id-bound replacement retires a semantic claim ${failedCapture ? "after image_changed" : "without supersedes"}`, async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-semantic-replacement-")));
+  try {
+    writeFileSync(join(checkout, "proof.log"), "focused checks passed");
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const canonicalCriteria = [{ id: "canonical-1", text: "The result is correct", material: true, suggestedProofClass: null }];
+    const old = { id: `${runId}-old`, clientCriterionId: "old", criterion: "Focused proof of the result",
+      proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: checkout,
+      links: [{ clientItemId: "proof", role: "execution" as const }] };
+    store.stageWorkflowEvidence(noteKey, [logWrite({ id: `${runId}-proof`, clientItemId: "proof", root: checkout,
+      locator: "proof.log", caption: "Focused checks", body: "focused checks passed" })], 2, null, [old]);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-first`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    const context = WorkflowContextSnapshotSchema.parse({
+      primaryGoal: { rawPrompt: "Prove the result", refined: null, sourceNoteKey: noteKey },
+      humanDecisions: [], constraints: [], acceptanceCriteria: [], priorPersonaFeedback: [], canonicalCriteria,
+      criterionMappings: [{ criterionId: "canonical-1", matchedClientCriterionIds: ["old"] }],
+      session: { agent: "codex", name: "work", cwd: checkout, branch: "feature" },
+      evidence: { headSha: "abc", diffFingerprint: "diff", diff: "patch", diffTruncated: false,
+        workingTreeDirty: false, workingTreeStatus: [], workingTreeStatusTruncated: false,
+        transcript: [], transcriptAnchor: 1, transcriptTruncated: false, standards: [], standardsTruncated: false },
+      compaction: { status: "fallback", runner: null, model: null, error: null },
+    });
+    store.updateSubmissionCapture(first.submission.id, { context: workflowJson(context), evidence: {},
+      fingerprint: "first", repositoryFingerprint: "tree-1", status: "running" }, 3);
+    if (failedCapture) {
+      writeFileSync(join(checkout, "image.png"), PNG);
+      store.stageWorkflowEvidence(noteKey, [imageWrite({ id: `${runId}-image`, clientItemId: "image", root: checkout,
+        locator: "image.png", caption: "Rendered result", bytes: PNG })], 4);
+      const failed = store.createRepairSubmission({ id: `${runId}-failed`, runId, round: 2,
+        triggerSource: "manual", triggerKey: `${runId}-image-repair`, context: {}, evidence: {}, now: 5 });
+      const changed = Buffer.concat([PNG, Buffer.from("changed")]);
+      writeFileSync(join(checkout, "image.png"), changed);
+      await assert.rejects(captureSubmissionImages(store, failed.submission.id, 5),
+        (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "image_changed");
+      store.failEvidencePreparation({ submissionId: failed.submission.id, kind: "capture", automatic: false,
+        detail: { code: "image_changed", error: "Evidence image changed after it was staged" }, now: 6 });
+      store.stageWorkflowEvidence(noteKey, [imageWrite({ id: `${runId}-image-v2`, clientItemId: "image-v2", root: checkout,
+        locator: "image.png", caption: "Rendered result retaken", bytes: changed })], 7);
+    }
+    const replacement = { ...old, id: `${runId}-replacement`, clientCriterionId: "old-v2", criterionId: "canonical-1" };
+    store.stageWorkflowEvidence(noteKey, [], 8, null, [replacement]);
+    const repairRound = failedCapture ? 3 : 2;
+    for (const round of [repairRound, repairRound + 1]) {
+      const child = store.createRepairSubmission({ id: `${runId}-round-${round}`, runId, round,
+        triggerSource: "manual", triggerKey: `${runId}-round-${round}`, context: {}, evidence: {}, now: 10 + round });
+      await captureSubmissionImages(store, child.submission.id, 10 + round);
+      await inheritSubmissionEvidence(new WorkflowStore(), child.submission, 10 + round);
+      store.freezeDeferredSubmissionCoverage({ submissionId: child.submission.id, now: 10 + round });
+      const coverage = store.listSubmissionCoverage(child.submission.id);
+      assert.deepEqual(coverage.map(claim => claim.clientCriterionId), ["old-v2"], `round ${round} excludes the retired semantic claim`);
+      const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria,
+        criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage), coverage,
+        evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
+      assert.equal(readiness.status, "ready");
+      assert.deepEqual(readiness.warningCodes, []);
+    }
+    assert.deepEqual(store.listSubmissionCoverage(first.submission.id).map(claim => claim.clientCriterionId), ["old"],
+      "replacement preserves the immutable source snapshot");
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test("a pinned claim whose text matches a second criterion covers only its id before and after carry-forward", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pinned-carry-")));
+  try {
+    writeFileSync(join(checkout, "proof.log"), "focused checks passed");
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const canonicalCriteria = [
+      { id: "canonical-a", text: "The owner accepts the change", material: true, suggestedProofClass: null },
+      { id: "canonical-b", text: "Tests are required", material: true, suggestedProofClass: null },
+    ];
+    store.stageWorkflowEvidence(noteKey, [logWrite({ id: `${runId}-proof`, clientItemId: "proof", root: checkout,
+      locator: "proof.log", caption: "Focused checks", body: "focused checks passed" })], 2, null,
+    [{ id: `${runId}-claim`, clientCriterionId: "pinned", criterionId: "canonical-a", criterion: "Tests are required",
+      proofClass: "focused_execution", repositoryScope: "all", sourceRoot: checkout,
+      links: [{ clientItemId: "proof", role: "execution" }] }]);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-first`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, { context: {}, evidence: {}, fingerprint: "first",
+      repositoryFingerprint: "tree-1", status: "running" }, 3);
+    const child = store.createRepairSubmission({ id: `${runId}-child`, runId, round: 2,
+      triggerSource: "manual", triggerKey: `${runId}-round-2`, context: {}, evidence: {}, now: 4 });
+    await inheritSubmissionEvidence(store, child.submission, 4);
+    assert.equal(store.listSubmissionCoverage(child.submission.id)[0]?.inheritedFromSubmissionId, first.submission.id);
+    for (const submission of [first.submission, child.submission]) {
+      const coverage = store.listSubmissionCoverage(submission.id);
+      // Even a persisted semantic proposal for B cannot override the citation to A.
+      const legacyMappings = canonicalCriteria.map(criterion => ({ criterionId: criterion.id, matchedClientCriterionIds: ["pinned"] }));
+      const reconciled = reconcileWorkflowCriterionMappings(canonicalCriteria, coverage, { proposedMappings: legacyMappings });
+      assert.deepEqual(reconciled.map(mapping => mapping.matchedClientCriterionIds), [["pinned"], []]);
+      for (const criterionMappings of [reconciled, legacyMappings]) {
+        const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria, criterionMappings, coverage,
+          evidence: store.submissionFrozenEvidenceIdentities(submission.id) });
+        assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "pinned");
+        assert.deepEqual(readiness.criteria[0]?.gaps, []);
+        assert.equal(readiness.criteria[0]?.links.length, 1);
+        assert.equal(readiness.criteria[1]?.matchedClientCriterionId, null);
+        assert.deepEqual(readiness.criteria[1]?.gaps, ["missing_coverage"]);
+        assert.deepEqual(readiness.criteria[1]?.links, []);
+      }
+    }
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
+});
+
+test("an image_changed capture failure does not sever previous coverage on resubmit", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-image-carry-")));
+  try {
+    writeFileSync(join(checkout, "proof.log"), "all criteria passed");
+    writeFileSync(join(checkout, "image.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [logWrite({ id: `${runId}-proof`, clientItemId: "proof", root: checkout,
+      locator: "proof.log", caption: "Focused checks", body: "all criteria passed" })], 2, null,
+      [1, 2, 3].map(n => ({ id: `${runId}-claim-${n}`, clientCriterionId: `claim-${n}`, criterion: `Criterion ${n}`,
+        proofClass: "focused_execution", repositoryScope: "all", sourceRoot: checkout,
+        links: [{ clientItemId: "proof", role: "execution" }] })));
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+      { id: `${runId}-first`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, { context: {}, evidence: {}, fingerprint: "first", repositoryFingerprint: "tree-1", status: "running" }, 3);
+    store.stageWorkflowEvidence(noteKey, [imageWrite({ id: `${runId}-image`, clientItemId: "image", root: checkout,
+      locator: "image.png", caption: "Rendered result", bytes: PNG })], 4);
+    const failed = store.createRepairSubmission({ id: `${runId}-failed`, runId, round: 2,
+      triggerSource: "manual", triggerKey: `${runId}-round-2`, context: {}, evidence: {}, now: 5 });
+    const changed = Buffer.concat([PNG, Buffer.from("changed")]);
+    writeFileSync(join(checkout, "image.png"), changed);
+    await assert.rejects(captureSubmissionImages(store, failed.submission.id, 5),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "image_changed");
+    store.failEvidencePreparation({ submissionId: failed.submission.id, kind: "capture", automatic: false,
+      detail: { code: "image_changed", error: "Evidence image changed after it was staged" }, now: 6 });
+    store.stageWorkflowEvidence(noteKey, [imageWrite({ id: `${runId}-image-v2`, clientItemId: "image-v2", root: checkout,
+      locator: "image.png", caption: "Rendered result retaken", bytes: changed })], 7);
+    const child = store.createRepairSubmission({ id: `${runId}-retry`, runId, round: 3,
+      triggerSource: "manual", triggerKey: `${runId}-round-3`, context: {}, evidence: {}, now: 8 });
+    await captureSubmissionImages(store, child.submission.id, 8);
+    await inheritSubmissionEvidence(store, child.submission, 8);
+    const coverage = store.listSubmissionCoverage(child.submission.id);
+    assert.equal(coverage.length, 3, "capture failed before it could inherit round one's claims");
+    const canonicalCriteria = [1, 2, 3].map(n => ({ id: `c${n}`, text: `Criterion ${n}`, material: true, suggestedProofClass: null }));
+    const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria,
+      criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage), coverage,
+      evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
+    assert.equal(readiness.status, "ready");
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
 });

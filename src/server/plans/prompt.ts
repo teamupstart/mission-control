@@ -52,7 +52,7 @@ export const PLAN_PHASED_SKILL_ID = "phased-plan";
 /** Both, in the order they are needed - which is the order a refusal reports them in. */
 export const PLAN_SKILL_IDS = [PLAN_HTML_SKILL_ID, PLAN_PHASED_SKILL_ID] as const;
 
-const PHASED_FOLLOW_UP = `Always offer the phased implementation follow-up as the last selectable decision in \`${PLAN_DECISIONS_TOOL}\` for every root plan review, even when there are no other open choices. Let the human choose to break up and schedule the plan or stop after the plan.`;
+const PHASED_FOLLOW_UP = `Always offer the phased implementation follow-up once per root plan, on its first review, as the last selectable decision in \`${PLAN_DECISIONS_TOOL}\`, even when there are no other open choices. Let the human choose to break up and schedule the plan or stop after the plan. Later repair and re-approval reviews retain the submitted choice without repeating the offer.`;
 const PHASED_SELECTION = "Only invoke phased-plan after the human selects it; a decline or dismissal does not authorize scheduling. Do not recursively offer it for derived phases.";
 
 /**

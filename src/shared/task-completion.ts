@@ -87,7 +87,7 @@ const SHIP_CONTRACT: TaskCompletionContract = {
   ],
 };
 
-const PLAN_PHASING_REQUIREMENT = "the human has been offered the selectable phased-plan follow-up to break up and schedule the root plan or stop, even when there are no other open choices; only their selection authorizes phasing and scheduling, and derived phases do not require another offer";
+const PLAN_PHASING_REQUIREMENT = "the human has been offered the selectable phased-plan follow-up once per root plan, on its first review, to break up and schedule it or stop, even when there are no other open choices; only their selection authorizes phasing and scheduling, and later repair or re-approval reviews retain that choice without another offer, as do derived phases";
 
 const PLAN_CONTRACT: TaskCompletionContract = {
   kind: "plan",

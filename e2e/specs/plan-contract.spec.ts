@@ -145,6 +145,8 @@ for (const storage of ["repository", "local"] as const) {
     await expect(card).toContainText("request_plan_decisions");
     await expect(card).toContainText("Always offer the phased implementation follow-up");
     await expect(card).toContainText("even when there are no other open choices");
+    await expect(card).toContainText("once per root plan, on its first review");
+    await expect(card).toContainText("Later repair and re-approval reviews retain the submitted choice without repeating the offer");
     await expect(card).toContainText("Only invoke phased-plan after the human selects it");
     // Where the artifacts belong, so the plan lands somewhere the phase tasks can point at.
     // The directory rather than the whole shape: `<name>` is the skill's own placeholder and
@@ -158,85 +160,89 @@ for (const storage of ["repository", "local"] as const) {
     await shoot(dashboard, `${storage}-plan-contract-delivered`, card);
   });
 
-  test(`a ${storage} plan with no other open choices presents and returns the selectable phasing follow-up`, async ({ dashboard, daemon }) => {
-    await enablePlanningSkills(daemon);
-    const policy = await fetch(`${daemon.baseURL}/api/skills/config`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ planStorage: storage }),
+  for (const selectedId of ["phased-plan", "stop"] as const) {
+    test(`a ${storage} plan with no other open choices presents and returns ${selectedId}`, async ({ dashboard, daemon }) => {
+      await enablePlanningSkills(daemon);
+      const policy = await fetch(`${daemon.baseURL}/api/skills/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ planStorage: storage }),
+      });
+      expect(policy.ok).toBe(true);
+      const dialog = await openDispatch(dashboard, daemon, TASK);
+      await kindSelect(dialog).selectOption("plan");
+      await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
+      await expectContentClearsBorder(dialog);
+      await submit(dialog);
+      await expect(dialog).toBeHidden();
+
+      let session!: Session;
+      await expect.poll(async () => {
+        const snapshot = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+        const matching = snapshot.find((candidate) => candidate.task?.kind === "plan" && candidate.goal?.text === TASK);
+        if (!matching) return false;
+        session = matching;
+        return Boolean(session?.agentSessionId && session.state === "idle");
+      }).toBe(true);
+      await dashboard.getByRole("navigation", { name: "Sessions" }).getByRole("button").filter({
+        has: dashboard.getByText(session.name, { exact: true }),
+      }).click();
+
+      // Use the shipped skill's actual decision, with no extra questions. The real built MCP
+      // server creates the review and blocks; the browser supplies the answer. No model runs.
+      const skill = readFileSync(new URL("../../skills/html-plans/SKILL.md", import.meta.url), "utf8");
+      const example = skill.match(/```json\n(\{\s*"id":\s*"implementation-follow-up"[\s\S]*?)\n```/);
+      expect(example, "html-plans must publish the standalone implementation-follow-up decision as JSON").not.toBeNull();
+      const followUp = JSON.parse(example![1]!) as PlanDecision;
+      expect(followUp.id).toBe("implementation-follow-up");
+      const client = new Client({ name: "plan-follow-up-browser", version: "1" });
+      try {
+        await client.connect(new StdioClientTransport({
+          command: process.execPath,
+          args: [fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url))],
+          cwd: session.cwd,
+          env: {
+            MISSION_HOME: daemon.home,
+            MISSION_PORT: new URL(daemon.baseURL).port,
+            MISSION_SESSION_ID: session.id,
+            MISSION_API_TOKEN: readFileSync(`${daemon.home}/token`, "utf8").trim(),
+          },
+          stderr: "pipe",
+        }));
+        // Each storage/answer pair gets its own fresh session and one root-plan follow-up.
+        const pending = client.callTool({ name: "request_plan_decisions", arguments: {
+          title: "Archives library plan",
+          plan: "# Archives library plan\n\nKeep the existing archive reader and add its entry to the dashboard. The plan has no unresolved design choices. Review the implementation follow-up below.",
+          decisions: [followUp],
+        } });
+        let finished = false;
+        void pending.then(() => { finished = true; }, () => { finished = true; });
+        await dashboard.locator(".console-detail").getByRole("button", { name: "to review" }).click();
+        const form = dashboard.locator(".review-modal");
+        await expect(form).toContainText(followUp.question);
+        await expect(form.getByRole("radio")).toHaveCount(2);
+        const phase = form.getByRole("radio", { name: /Create phased implementation plan/ });
+        const stop = form.getByRole("radio", { name: /Stop after this plan/ });
+        await expect(phase).not.toBeChecked();
+        await expect(stop).not.toBeChecked();
+        await expect(form.getByRole("button", { name: "Submit" })).toBeDisabled();
+        expect(finished, "request_plan_decisions must wait for the human's selection").toBe(false);
+        await expectContentClearsBorder(form);
+        await (selectedId === "phased-plan" ? phase : stop).check();
+        await shoot(dashboard, `${storage}-phasing-choice-${selectedId}`, form);
+        await form.getByRole("button", { name: "Submit" }).click();
+        await expect(form).toBeHidden();
+        const result = await pending;
+        expect(result.isError).not.toBe(true);
+        const chosen = followUp.options.find((option) => option.id === selectedId)!;
+        const declined = followUp.options.find((option) => option.id !== selectedId)!;
+        expect(JSON.stringify(result.content)).toContain(chosen.label);
+        expect(JSON.stringify(result.content)).not.toContain(declined.label);
+      } finally {
+        await client.close();
+      }
     });
-    expect(policy.ok).toBe(true);
-    const dialog = await openDispatch(dashboard, daemon, TASK);
-    await kindSelect(dialog).selectOption("plan");
-    await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
-    await expectContentClearsBorder(dialog);
-    await submit(dialog);
-    await expect(dialog).toBeHidden();
-
-    let session!: Session;
-    await expect.poll(async () => {
-      const snapshot = await (await fetch(`${daemon.baseURL}/api/sessions`)).json();
-      session = snapshot.sessions?.[0] ?? snapshot[0];
-      return Boolean(session?.agentSessionId && session.state === "idle");
-    }).toBe(true);
-    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
-
-    // Use the shipped skill's actual decision, with no extra questions. The real built MCP
-    // server creates the review and blocks; the browser supplies the answer. No model runs.
-    const skill = readFileSync(new URL("../../skills/html-plans/SKILL.md", import.meta.url), "utf8");
-    const example = skill.match(/```json\n(\{[\s\S]*?)\n```/);
-    expect(example).not.toBeNull();
-    const followUp = JSON.parse(example![1]!) as PlanDecision;
-    expect(followUp.id).toBe("implementation-follow-up");
-    const client = new Client({ name: "plan-follow-up-browser", version: "1" });
-    try {
-      await client.connect(new StdioClientTransport({
-        command: process.execPath,
-        args: [fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url))],
-        cwd: session.cwd,
-        env: {
-          MISSION_HOME: daemon.home,
-          MISSION_PORT: new URL(daemon.baseURL).port,
-          MISSION_SESSION_ID: session.id,
-          MISSION_API_TOKEN: readFileSync(`${daemon.home}/token`, "utf8").trim(),
-        },
-        stderr: "pipe",
-      }));
-      // Cover accepting and declining in separate fresh sessions. Each root plan receives
-      // one follow-up, just as it does in normal use.
-      const selectedId = storage === "repository" ? "phased-plan" : "stop";
-      const pending = client.callTool({ name: "request_plan_decisions", arguments: {
-        title: "Archives library plan",
-        plan: "# Archives library plan\n\nKeep the existing archive reader and add its entry to the dashboard. The plan has no unresolved design choices. Review the implementation follow-up below.",
-        decisions: [followUp],
-      } });
-      let finished = false;
-      void pending.then(() => { finished = true; }, () => { finished = true; });
-      await dashboard.locator(".console-detail").getByRole("button", { name: "to review" }).click();
-      const form = dashboard.locator(".review-modal");
-      await expect(form).toContainText(followUp.question);
-      await expect(form.getByRole("radio")).toHaveCount(2);
-      const phase = form.getByRole("radio", { name: /Create phased implementation plan/ });
-      const stop = form.getByRole("radio", { name: /Stop after this plan/ });
-      await expect(phase).not.toBeChecked();
-      await expect(stop).not.toBeChecked();
-      await expect(form.getByRole("button", { name: "Submit" })).toBeDisabled();
-      expect(finished, "request_plan_decisions must wait for the human's selection").toBe(false);
-      await expectContentClearsBorder(form);
-      await (selectedId === "phased-plan" ? phase : stop).check();
-      await shoot(dashboard, `${storage}-phasing-choice-${selectedId}`, form);
-      await form.getByRole("button", { name: "Submit" }).click();
-      await expect(form).toBeHidden();
-      const result = await pending;
-      expect(result.isError).not.toBe(true);
-      const chosen = followUp.options.find((option) => option.id === selectedId)!;
-      const declined = followUp.options.find((option) => option.id !== selectedId)!;
-      expect(JSON.stringify(result.content)).toContain(chosen.label);
-      expect(JSON.stringify(result.content)).not.toContain(declined.label);
-    } finally {
-      await client.close();
-    }
-  });
+  }
 }
 
 test("a plan dispatched with its default review receives the frozen plan evidence contract", async ({

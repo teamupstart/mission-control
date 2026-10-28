@@ -87,11 +87,14 @@ const SHIP_CONTRACT: TaskCompletionContract = {
   ],
 };
 
+const PLAN_PHASING_REQUIREMENT = "the human has been offered the selectable phased-plan follow-up to break up and schedule the root plan or stop, even when there are no other open choices; only their selection authorizes phasing and scheduling, and derived phases do not require another offer";
+
 const PLAN_CONTRACT: TaskCompletionContract = {
   kind: "plan",
   owner: "Mission Control",
   boundary: "the planning handoff to the bound workflow",
   complete: [
+    PLAN_PHASING_REQUIREMENT,
     "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
     "the plan's Markdown and rendered HTML are complete and consistent",
     "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
@@ -110,6 +113,7 @@ const LOCAL_PLAN_CONTRACT: TaskCompletionContract = {
   ...PLAN_CONTRACT,
   boundary: "the local plan publication handoff",
   complete: [
+    PLAN_PHASING_REQUIREMENT,
     "the complete final Markdown and HTML bundle is saved as an immutable local revision",
     "the human explicitly approved that exact final bundle through a managed plan review; dismissal is not approval",
     "requested phases carry exact structured Markdown inputs, local artifact prerequisites, and direct implementation merge dependencies",

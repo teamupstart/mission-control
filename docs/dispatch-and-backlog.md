@@ -326,6 +326,10 @@ In either mode, ask for the review - and for every open choice in it - through
 `request_plan_decisions` rather than in prose, and end that review with the phased
 implementation follow-up. Choose it and the phases are added to the same bundle and scheduled
 as dependency-linked backlog tasks gated by the saved plan's publication policy.
+The follow-up is required even when the plan has no other open choices, with an option to stop
+after the plan. Only selecting phasing authorizes the Phased Plan skill to break up and schedule
+the plan; declining or dismissing does not. Derived phases do not repeat the root plan's offer.
+Plan completion checks include this requirement in both storage modes.
 
 The contract **points at** that skill rather than restating it, which is the one place plan
 differs from scout in kind and not just in wording. A scout's contract repeats its skill,

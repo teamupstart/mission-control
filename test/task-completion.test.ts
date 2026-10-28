@@ -327,3 +327,17 @@ test("unbound plans keep skill-owned PR creation and other kinds keep their cont
   assert.match(delivered, /get_plan_publication_context/);
   assert.doesNotMatch(delivered, /## Plan task completion handoff/);
 });
+
+test("plan completion requires offering phasing in both storage modes", () => {
+  for (const storage of ["repository", "local"] as const) {
+    const contract = taskCompletionContract("plan", true, storage)!;
+    const requirement = contract.complete.find((item) => /offered.*selectable.*phased-plan/.test(item));
+    assert.ok(requirement, `${storage} completion must require the follow-up choice`);
+    assert.match(requirement, /even when there are no other open choices/);
+    assert.ok(buildVerifyPrompt(mkVerifyInput({ completionContract: contract })).includes(requirement));
+    const delivered = withTaskKindContract(mkTask({ kind: "plan", workflowId: "plan-review", planPolicy: { version: 2, storage, commitPlanHtml: false } }), "Plan the work", {
+      planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+    });
+    assert.ok(delivered.includes(requirement));
+  }
+});

@@ -67,12 +67,23 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   return sessionId;
 }
 
+/** The posture this spec's workflows were written under: Foreman complete, Preview delivery. */
+const PREVIEW_BINDING_DEFAULTS = {
+  triggerMode: "foreman_complete",
+  deliveryMode: "preview",
+  maxRepairRounds: 5,
+} as const;
+
 async function createWorkflow(daemon: DaemonHandle, review = false): Promise<string> {
   const persona = review ? await api<{ id: string }>(daemon, "/api/personas", {
     name: "Exhausted preflight reviewer", guidanceMarkdown: "Review the available evidence. E2E_PASS_VERDICT",
   }) : null;
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E criterion mapped evidence",
+    // Preview, stated rather than inherited: a new draft now defaults to Live, which needs a
+    // Trust grant this fixture's repository does not have, and Live delivery is not what this
+    // spec is about.
+    bindingDefaults: PREVIEW_BINDING_DEFAULTS,
     draft: persona ? {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -632,7 +643,7 @@ manualPreflightTest("criterion readiness waits, repairs in the same round, and r
   const repairedRounds = dashboard.getByRole("region", { name: "Rounds" });
   await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
   await expect(repairedRounds
-    .getByText("captured to repair evidence preflight gaps", { exact: false })).toBeVisible();
+    .getByText("captured to repair evidence preparation", { exact: false })).toBeVisible();
   await repairedRounds.getByRole("button", { name: "Explain this round" }).click();
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "04-repaired-same-round", readiness);
@@ -844,6 +855,7 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E readiness disagreement",
+    bindingDefaults: PREVIEW_BINDING_DEFAULTS,
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },

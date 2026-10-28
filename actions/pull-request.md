@@ -20,9 +20,10 @@ its own repository, and leave the others to theirs.
 
 Write for a reviewer who has not been in this session and will not read the transcript.
 
-The skill owns the shape, and it is two top-level sections. `## For Humans` carries the why,
-a concise description of the total feature, the tradeoffs, the known gaps, the durable evidence,
-and the recommended follow-up work, each under its own heading. For every UI-based change, attach
+The skill owns the shape, and it is two top-level sections. `## For Humans` leads with concise
+bullets of what changed and why, followed by durable evidence. Include tradeoffs, known gaps,
+and follow-up work only when significant and directly relevant to decisions or outcomes in this
+task. Omit empty subsections, routine choices, and ancillary details. For every UI-based change, attach
 screenshots of the working feature to the pull request description or a comment for human review.
 Evidence files are never committed to the repository: produce them in a gitignored location and
 upload them to the pull request. Inspect screenshots before upload and redact secrets, credentials,

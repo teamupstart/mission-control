@@ -57,6 +57,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
+  "src/main/binary-enrollment.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "OS-provided Bash launches the verified app's binary-install bootstrap before daemon startup without a host Node runtime or locator snapshot" },
+  ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
@@ -65,12 +68,20 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFileSync", command: "command.path", contract: "locator-result", reason: "Migration MCP inspection uses the configured harness CLI and its resolved child environment." },
     { operation: "execFile", command: 'join(plan.source, "Contents/MacOS/Mission Control")', contract: "verified-migration-source", reason: "Login cleanup launches the retained source only after validating its pinned bundle identity; its nonce-bound entry exits before runtime startup." },
   ],
+  "src/main/update-binary-download.ts": [
+    { operation: "spawn", command: "options.command", contract: "resolved-path-parameter", reason: "binary transport receives the locator-selected GitHub CLI path and child environment" },
+  ],
+  "src/main/update-binary-platform.ts": [
+    { operation: "execFileSync", command: "command", contract: "fixed-os-utility", reason: "bounded OS version, architecture and plist reads use fixed macOS utilities" },
+  ],
+  "src/main/update-binary.ts": [
+    { operation: "fork", command: "options.worker", contract: "current-runtime", reason: "bundled binary preparation worker explicitly forks with process.execPath and Electron run-as-node, without a host Node lookup" },
+  ],
   "src/main/update-build.ts": [
     { operation: "spawn", command: "request.node", contract: "current-runtime", reason: "absolute runtime selected by Electron" },
   ],
   "src/main/updater.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved GitHub CLI" },
-    { operation: "spawn", command: "args.node", contract: "current-runtime", reason: "absolute detached helper runtime" },
   ],
   "src/main/update-runtime.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded probes of locator-selected Node and npm, and fixed OS env for child-runtime identity" },
@@ -265,12 +276,13 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "bootstrap-login-shell":
       return boundary.command === "shell";
     case "current-runtime":
-      return ["args.node", "descriptor.command", "request.node", "process.execPath"].includes(boundary.command);
+      return ["descriptor.command", "request.node", "process.execPath"].includes(boundary.command)
+        || (boundary.operation === "fork" && boundary.command === "options.worker");
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
     // into a variable, so a literal never reaches the call and the declaration above names the
     // one reason a fixed utility is invoked directly.
     case "fixed-os-utility":
-      return boundary.command === "executable";
+      return ["executable", "command"].includes(boundary.command);
     case "locator-result":
       return ["executable.path", "command.path", "resolved"].includes(boundary.command);
     case "verified-migration-source":
@@ -278,7 +290,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "operator-command":
       return boundary.command === "runtime.command";
     case "resolved-path-parameter":
-      return boundary.command === "executable";
+      return ["executable", "options.command"].includes(boundary.command);
     case "test-provider":
       return boundary.command === "bin";
   }

@@ -781,7 +781,8 @@ async function smokeDetachedUpdateHelper() {
   try {
     const packaging = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
     for (const file of UPDATE_HELPER_FILES) {
-      if (!packaging.includes(`  - ${file}\n`)) throw new Error(`Detached dependency missing from package: ${file}`);
+      const included = packaging.includes(`  - ${file}\n`) || (file.startsWith("dist/") && packaging.includes("  - dist/**/*\n"));
+      if (!included) throw new Error(`Detached dependency missing from package: ${file}`);
       const target = join(root, file);
       await mkdir(dirname(target), {recursive: true});
       await copyFile(new URL(`../${file}`, import.meta.url), target);
@@ -789,6 +790,14 @@ async function smokeDetachedUpdateHelper() {
     const result = await run(process.execPath, [join(root, "scripts/apply-update.mjs"), "--target-tag", "v1.0.0"]);
     if (result.code !== 1 || !result.output.includes("missing sourceClone")) throw new Error("The detached helper could not load its complete dependency graph.");
     console.log("[smoke] detached update helper loads with only its packaged copy inventory");
+    const binary = await run(process.execPath, [join(root, "scripts/install-binary.mjs")]);
+    if (binary.code !== 1 || !binary.output.includes("Use scripts/install.sh")) throw new Error("The binary installer could not load its packaged dependency graph.");
+    console.log("[smoke] binary installer loads its packaged graph and refuses an unverified host-runtime launch");
+    const worker = join(root, "update-binary-worker.cjs");
+    await copyFile(new URL("../dist/main/update-binary-worker.cjs", import.meta.url), worker);
+    const prepared = await run(process.execPath, [worker]);
+    if (prepared.code !== 0) throw new Error("The binary preparation worker could not load without checkout dependencies.");
+    console.log("[smoke] binary preparation worker loads standalone without a checkout or node_modules");
   } catch (error) { fail(String(error)); }
   finally { await rm(root, {recursive: true, force: true}); }
 }

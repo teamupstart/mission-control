@@ -50,12 +50,14 @@ const POLL_MS = 100;
  * The arrangement a demo daemon opens on, one of `LAYOUT_MODES`.
  *
  * The Board, because a demo is read before it is driven: a column per state answers "what is this
- * fleet doing" in one look, where Cards asks the viewer to read five headers and add them up. The
+ * fleet doing" in one look, where the Console's rail asks the viewer to read every row. The
  * seeded fleet is arranged for exactly that reading - work in progress, two cards waiting on a
  * human, one approved - and a column count says it without a word of narration.
  *
  * Applied on EVERY boot, beside the runtime override above and for the same reason: this launcher
- * asserts the demo's configuration rather than hoping a persistent state root still holds it. The
+ * asserts the demo's configuration rather than hoping a persistent state root still holds it. That
+ * is why the write stays now that Board is also the shipped default: the default reaches only a
+ * root that never stored a layout, and a demo root has stored one since its first boot. The
  * cost is deliberate and small - an operator who switches layout mid-demo keeps that switch for as
  * long as the daemon runs, and the next `npm run demo` opens on the Board again, which is what a
  * presentation surface should do.
@@ -81,7 +83,7 @@ export function demoUiConfigBody() {
  *
  * The failure this exists for is silent: `UiConfigPatchSchema` is a partial, so a key this
  * launcher spelled wrong is valid input that sets nothing, answers 200, and leaves the demo
- * opening on the shipped `grid` default. Reading the echo is the only way to tell that apart from
+ * opening on whatever layout the state root last stored. Reading the echo is the only way to tell that apart from
  * a write that landed - and it has to be a strict equality against the config the route reports,
  * because an absent field and a stored `grid` are the same mistake with different spellings.
  */

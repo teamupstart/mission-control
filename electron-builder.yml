@@ -9,13 +9,17 @@
 # (dist/satellites/hook.mjs, dist/mcp/server.mjs) with an EXTERNAL node that
 # can't read inside an asar archive, so they must be plain files on disk.
 appId: com.mission-control.app
-productName: Mission Control
+productName: Agent Mission Control
 copyright: Copyright © 2026 Jordan Mance
 
 asar: false
 
 # Eligible legacy system installs offer relocation during accepted updates.
 extraMetadata:
+  missionInstallTransaction:
+    protocol: 1
+    appNaming: 1
+    receiptSchemas: [1, 2]
   missionInstallMigration:
     protocol: 1
     automatic: true
@@ -52,7 +56,20 @@ files:
   # Copied to a temp directory before it outlives and replaces the app bundle.
   # Keep the detached helper and its dependency graph as plain files with asar disabled.
   # The bundle-swap module owns the narrowly scoped in-place macOS authorization prompt.
+  - scripts/update-helper-runtime.mjs
+  - scripts/update-helper-files.mjs
+  - scripts/install.sh
+  - scripts/install-binary.mjs
+  - scripts/binary-install-policy.mjs
+  - scripts/install-staged-app.mjs
+  - src/shared/app-naming.mjs
+  - src/shared/binary-distribution.mjs
+  - src/shared/binary-publisher-policy.mjs
+  - src/shared/owned-runtime.mjs
+  - src/shared/install-receipt.mjs
+  - src/shared/harness-runtime.mjs
   - scripts/apply-update.mjs
+  - scripts/mac-app-lifecycle.mjs
   - scripts/app-bundle-swap.mjs
   - scripts/update-lock.mjs
   - scripts/install-migration.mjs
@@ -72,6 +89,10 @@ mac:
       arch: arm64
     - target: dir
       arch: arm64
+  # executableName also changes the outer .app filename in electron-builder.
+  # Override only the executable plist key to preserve registered satellite commands.
+  extendInfo:
+    CFBundleExecutable: Mission Control
   category: public.app-category.developer-tools
   icon: build/icon.icns
   # Local, unsigned/ad-hoc build (this Mac only). electron-builder applies an
@@ -82,7 +103,7 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
 
 dmg:
-  title: Mission Control
+  title: Agent Mission Control
   # Stated rather than defaulted, and the default is what had to go: electron-builder's built-in
   # layout puts an alias to /Applications beside the app, which teaches every recipient to
   # install system-wide - the one destination that needs an administrator password and the one

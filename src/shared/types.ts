@@ -523,6 +523,8 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /** Explicit controller grant for this live work episode; absent means off. */
+  sessionControlEnabled?: boolean;
   /**
    * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
@@ -1858,6 +1860,7 @@ export interface SkillRow extends SkillCatalogEntry {
 
 /** Everything the skills panel draws, in one read. */
 export interface SkillsView {
+  alwaysDraftPr: boolean;
   commitPlanHtml: boolean;
   planStorage: "repository" | "local";
   /** The master switch. Off means nothing is symlinked, whatever the rows say. */
@@ -1876,8 +1879,8 @@ export interface SkillsView {
   problems: string[];
 }
 
-/** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */
-export type PrState = "open" | "merged";
+/** The states we surface for a session's PR, including closed without merging. */
+export type PrState = "open" | "merged" | "closed";
 
 /** Rolled-up CI status for a session's PR. A single failing check dominates. */
 export type PrChecks = "passing" | "failing" | "pending";
@@ -1903,7 +1906,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -2480,7 +2483,7 @@ export type ReviewStatus =
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
  */
-export type ReviewActor = "human" | "foreman";
+export type ReviewActor = "human" | "foreman" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -3400,7 +3403,7 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
 
 /**
  * Messages on the per-session transcript SSE stream

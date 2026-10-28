@@ -54,6 +54,21 @@ test("Files redraws when an input visible in the workspace changes", () => {
     false,
   );
   assert.equal(fileWorkspacePropsEqual(previous, { ...previous, fileCommentThreads: [] }), false);
+  // The Publish control's gate: losing the pane that a turn would reach must redraw it.
+  assert.equal(
+    fileWorkspacePropsEqual(previous, {
+      ...previous,
+      session: { ...session, terminals: [{ kind: "multiplexer" }] } as unknown as Session,
+    }),
+    false,
+  );
+  assert.equal(
+    fileWorkspacePropsEqual(previous, {
+      ...previous,
+      session: { ...session, pipeline: { runId: "run-1" } } as unknown as Session,
+    }),
+    false,
+  );
   assert.equal(
     fileWorkspacePropsEqual(previous, { ...previous, controller: {} as SessionFilesController }),
     false,

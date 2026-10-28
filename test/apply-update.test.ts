@@ -1,10 +1,12 @@
 import { detachedUpdateHelperSources } from "../src/main/updater.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import test from "node:test";
+import { inspectBundle, prepareSourceUpdate } from "../scripts/install-staged-app.mjs";
+import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 import {
   acquireHelperLock,
   claimEntryName,
@@ -17,8 +19,8 @@ import {
   releaseHelperLock,
   stagingEntryName,
   INSTALL_TIMEOUT_MS,
-  STAGED_INSTALL_TIMEOUT_MS,
   installFailureSummary,
+  openAppForRelaunch,
   parseArgs,
   processIsAlive,
   realApplyOperations,
@@ -28,6 +30,7 @@ import {
   runApplyUpdate,
   sanitizeDiagnostic,
 } from "../scripts/apply-update.mjs";
+import { COMMAND_TIMEOUT_MS } from "../scripts/mac-app-lifecycle.mjs";
 
 function args(stateDirectory: string) {
   return {
@@ -100,7 +103,7 @@ const FIXTURE_ENTRY = claimEntryName({ createdAtMs: 1_000_000, pid: 4242 });
 function operations(
   options: {
     installFails?: boolean;
-    launchFails?: boolean;
+    launchFailures?: number;
     retainFails?: boolean;
     waitFails?: boolean;
     restoreFails?: boolean;
@@ -116,9 +119,14 @@ function operations(
   } = {},
 ) {
   const actions: string[] = [];
-  let firstLaunch = true;
+  let launches = 0;
   const locks = new Map<string, string>();
   const ops = {
+    preflight: async (_bundle: string) => {},
+    waitForBundle: async (_bundle: string) => {},
+    prepareLaunch: async (_bundle: string) => {},
+    verifyLaunch: async (_bundle: string, _nonce: string) => {},
+    stopLaunch: async (_bundle: string, _nonce: string) => {},
     exists: (path: string) => !path.includes("rollback-") && !path.includes("failed-"),
     remove: (path: string) => actions.push(`remove:${path}`),
     move: (from: string, to: string) => actions.push(`move:${from}->${to}`),
@@ -141,9 +149,10 @@ function operations(
       appsDir: string,
       stagedBundle: string | null = null,
       stagedRevision: string | null = null,
+      stagedDigest: string | null = null,
     ) => {
       actions.push(
-        `install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}:rev=${stagedRevision ?? "none"}`,
+        `install:${node}:${script}:${tag}:${appsDir}:staged=${stagedBundle ?? "none"}:rev=${stagedRevision ?? "none"}${stagedDigest ? `:digest=${stagedDigest}` : ""}`,
       );
       if (options.installFails) throw new Error("deliberate build failure at /tmp/private");
     },
@@ -166,8 +175,7 @@ function operations(
     }),
     launch: (path: string) => {
       actions.push(`launch:${path}`);
-      if (options.launchFails && firstLaunch) {
-        firstLaunch = false;
+      if (++launches <= (options.launchFailures ?? 0)) {
         throw new Error("launch failed");
       }
     },
@@ -304,18 +312,18 @@ test("a deliberate build failure restores both app and receipt before relaunchin
   assert.ok(receiptRestoreIndex >= 0 && receiptRestoreIndex < launchIndex);
 });
 
-test("a relaunch failure also rolls back and tries the restored app", async (t) => {
+test("two open failures roll back and try the restored app", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "mission-apply-launch-failure-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
-  const f = operations({ launchFails: true });
+  const f = operations({ launchFailures: 2 });
 
   const result = await runApplyUpdate(args(state), f.ops);
   const launches = f.actions.filter((action) => action === "launch:/Applications/Mission Control.app");
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.equal(result.ok, false);
-  assert.equal(launches.length, 2);
+  assert.equal(launches.length, 3);
   assert.equal(outcome.result, "failure");
   assert.match(outcome.message, /launch failed/);
 });
@@ -336,6 +344,7 @@ test("helper argv is explicit and complete", () => {
         // neither a bundle nor a pin, and still has to be applied.
         stagedBundle: null,
         stagedRevision: null,
+        stagedDigest: null,
         sourceClone: "/clone",
         targetTag: "v1.2.4",
         appPath: "/Applications/Mission Control.app",
@@ -1083,9 +1092,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
 
 
 test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", async (t) => {
-  // The app now builds before it quits, so the work left here is the swap. What proves it is
-  // the argument reaching the install script: `--from-staged` selects its swap-and-receipt
-  // half, and the minutes of `npm ci` never happen in the dark.
+  // The helper forwards the accepted bundle identity to the shared staged operation.
   const state = await mkdtemp(join(tmpdir(), "mission-apply-staged-"));
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
@@ -1093,21 +1100,20 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   const f = operations();
 
   const result = await runApplyUpdate(
-    { ...args(state), stagedBundle: bundle, stagedRevision: "4242-1700000000000" },
+    { ...args(state), stagedBundle: bundle, stagedRevision: "4242-1700000000000", stagedDigest: "d".repeat(64) },
     f.ops,
   );
   const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
 
   assert.deepEqual(result, { ok: true, message: null });
   assert.equal(outcome.result, "success");
-  // The bundle AND the pin the app took when it verified it. This helper forwards both without
-  // interpreting either: the script that performs the swap is the last reader that can check.
+  // The bundle, root revision and content digest all reach the final installation boundary.
   assert.ok(
     f.actions.some(
       (action) =>
         action.startsWith(`install:${process.execPath}:`) &&
         action.endsWith(
-          `/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}:rev=4242-1700000000000`,
+          `/scripts/install-app.mjs:v1.2.4:/Applications:staged=${bundle}:rev=4242-1700000000000:digest=${"d".repeat(64)}`,
         ),
     ),
     f.actions.join("\n"),
@@ -1119,58 +1125,47 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
 });
 
-test("a staged install is bounded in minutes and forwards the bundle to the install script", async (t) => {
-  // Asserted against realApplyOperations, because both the flag and the shorter bound live
-  // inside the real spawnSync call and no injected `install` can see either.
+test("legacy staged handoff refuses edited bundle bytes even when revision and package identity are unchanged", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mission-legacy-digest-")));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const appPath = join(root, "apps/Mission Control.app");
+  const candidate = join(root, "candidate.app");
+  for (const bundle of [appPath, candidate]) {
+    await mkdir(join(bundle, "Contents/Resources/app"), {recursive: true});
+    await writeFile(join(bundle, "Contents/Info.plist"), '<key>CFBundleShortVersionString</key><string>1.2.4</string>');
+    await writeFile(join(bundle, "Contents/Resources/app/package.json"), JSON.stringify({version: "1.2.4", missionCommit: "a".repeat(40)}));
+    await writeFile(join(bundle, "Contents/Resources/app/payload.txt"), "accepted bytes");
+  }
+  const receipt = {schema: 1, repo: "teamupstart/mission-control", appPath, sourceClone: "/must-not-run",
+    installedVersion: "1.2.4", installedCommit: "a".repeat(40), releaseTag: "v1.2.4", installedAt: "2026-10-14T00:00:00.000Z"};
+  const receiptPath = join(root, "install-receipt.json");
+  const receiptBytes = `\n${JSON.stringify(receipt, null, 2)}\n\n`;
+  await writeFile(receiptPath, receiptBytes);
+  const descriptor = prepareSourceUpdate({receipt, bundle: candidate, targetTag: "v1.2.4"});
+  const prior = inspectBundle(appPath);
+  const packageBytes = await readFile(join(candidate, "Contents/Resources/app/package.json"));
+  await writeFile(join(candidate, "Contents/Resources/app/payload.txt"), "rejected bytes");
+  assert.equal(stagedBundleRevision(await lstat(candidate)), descriptor.revision);
+  assert.deepEqual(await readFile(join(candidate, "Contents/Resources/app/package.json")), packageBytes);
+  const ops = realApplyOperations(join(root, "update.log"));
+  assert.throws(() => ops.install(process.execPath, "/must-not-run/install-app.mjs", "v1.2.4", dirname(appPath),
+    candidate, descriptor.revision, descriptor.digest), /accepted staged app bytes changed/);
+  assert.deepEqual(inspectBundle(appPath), prior);
+  assert.equal(await readFile(receiptPath, "utf8"), receiptBytes);
+  await writeFile(join(candidate, "Contents/Resources/app/payload.txt"), "accepted bytes");
+  ops.install(process.execPath, "/must-not-run/install-app.mjs", "v1.2.4", dirname(appPath), candidate, descriptor.revision, descriptor.digest);
+  assert.equal(inspectBundle(appPath).digest, descriptor.digest, "unchanged accepted bytes still install");
+});
+
+test("a staged install rejects an absent receipt before executing a source installer", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-apply-staged-args-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const echo = join(root, "echo-args.mjs");
-  await writeFile(
-    echo,
-    "import { writeFileSync } from 'node:fs';\n" +
-      "writeFileSync(process.env.MISSION_TEST_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n",
-  );
-  const argsFile = join(root, "args.json");
-  process.env.MISSION_TEST_ARGS_FILE = argsFile;
-  t.after(() => {
-    delete process.env.MISSION_TEST_ARGS_FILE;
-  });
-  const bundle = join(root, "Mission Control.app");
-
-  const ops = realApplyOperations(join(root, "update.log"), 5_000, 5_000);
-  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle, "99-1700000000000");
-  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
-    "--ref",
-    "v1.2.4",
-    "--apps-dir",
-    "/Applications",
-    "--from-staged",
-    bundle,
-    "--staged-revision",
-    "99-1700000000000",
-  ]);
-
-  // A handoff from an app that predates the pin carries no token, and must still install.
-  ops.install(process.execPath, echo, "v1.2.4", "/Applications", bundle);
-  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
-    "--ref",
-    "v1.2.4",
-    "--apps-dir",
-    "/Applications",
-    "--from-staged",
-    bundle,
-  ]);
-
-  const wedged = join(root, "wedged.mjs");
-  await writeFile(wedged, "setTimeout(() => {}, 60_000);\n");
-  const bounded = realApplyOperations(join(root, "update.log"), 60_000, 300);
-  assert.throws(
-    () => bounded.install(process.execPath, wedged, "v1.2.4", "/Applications", bundle),
-    // "install", not "build": there is nothing to build by this point, and the words a person
-    // reads should say which half of the update stopped.
-    /the install did not finish within .* minutes and was stopped/,
-  );
-  assert.equal(STAGED_INSTALL_TIMEOUT_MS, 10 * 60 * 1000);
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const script = join(root, "must-not-run.mjs");
+  const executed = join(root, "executed");
+  await writeFile(script, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(executed)}, 'bad');`);
+  const ops = realApplyOperations(join(root, "update.log"));
+  assert.throws(() => ops.install(process.execPath, script, "v1.2.4", root, join(root, "candidate.app")), /managed receipt/);
+  assert.equal(await readFile(executed).then(() => true, () => false), false);
 });
 
 test('migration helper argv rejects incomplete tuples and duplicate arguments without changing old argv', () => {
@@ -1179,4 +1174,164 @@ test('migration helper argv rejects incomplete tuples and duplicate arguments wi
   assert.match(parseArgs([...base, '--source-app', '/Applications/Mission Control.app']).problem!, /complete/);
   assert.match(parseArgs([...base, '--app-path', '/other']).problem!, /invalid/);
   assert.equal(parseArgs([...base, '--source-app', '/Applications/Mission Control.app', '--target-app', '/Users/Fixture/Applications/Mission Control.app', '--migration-plan', '/private/plan.json', '--staged-bundle', '/build/app', '--staged-revision', 'pinned']).problem, null);
+  const staged = [...base, '--staged-bundle', '/build/app', '--staged-revision', 'pinned'];
+  assert.equal(parseArgs(staged).problem, null, 'older staged handoffs without a digest remain readable');
+  assert.equal(parseArgs([...staged, '--staged-digest', 'd'.repeat(64)]).args?.stagedDigest, 'd'.repeat(64));
+  assert.match(parseArgs([...staged, '--staged-digest', 'not-a-digest']).problem!, /SHA-256/);
+  assert.match(parseArgs([...base, '--staged-digest', 'd'.repeat(64)]).problem!, /pinned staged bundle/);
+});
+
+test("launch conflicts refuse the swap and never relaunch or remove the user's job", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-preflight-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.preflight = async () => { throw new Error("Launchd job com.mission-control.recovery-20260918: launchctl bootout 'gui/501/com.mission-control.recovery-20260918'"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((action) => /^(install|launch|restore):/.test(action)));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "failure");
+  assert.match(outcome.message, /launchctl bootout 'gui\/501\/com.mission-control.recovery-20260918'/);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("the bundle exit and registration barriers precede relaunch, and only verified launch records success", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-verified-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.waitForBundle = async () => { f.actions.push("bundle-exit"); };
+  f.ops.prepareLaunch = async () => { f.actions.push("lsregister-and-old-exit"); };
+  f.ops.verifyLaunch = async () => {
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+    assert.ok(f.actions.includes("bundle-exit"));
+    assert.ok(f.actions.includes("lsregister-and-old-exit"));
+    assert.ok(f.actions.indexOf("bundle-exit") < f.actions.findIndex((a) => a.startsWith("install:")));
+    assert.ok(f.actions.indexOf("lsregister-and-old-exit") < f.actions.findIndex((a) => a.startsWith("launch:")));
+    f.actions.push("verified");
+  };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, true);
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).launchVerified, true);
+});
+
+test("an unregistered launch is stopped safely, retried once, then failed and rolled back", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-unverified-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => { verifications++; throw new Error("LaunchServices launch could not be verified"); };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.equal(verifications, 2);
+  assert.equal(f.actions.filter((a) => a === "stop-attempt").length, 2);
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "failure");
+  assert.ok(f.actions.some((a) => a.startsWith("restore:")));
+});
+
+test("a verified second launch records success after one cleanup without rolling back", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-retry-success-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => {
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+    if (++verifications === 1) throw new Error("LaunchServices launch could not be verified");
+  };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  assert.deepEqual(await runApplyUpdate(args(state), f.ops), {ok: true, message: null});
+  assert.equal(verifications, 2);
+  assert.deepEqual(f.actions.filter((action) => action === "stop-attempt" || action.startsWith("launch:")), [
+    `launch:${args(state).appPath}`, "stop-attempt", `launch:${args(state).appPath}`,
+  ]);
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "success");
+  assert.equal(outcome.launchVerified, true);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("a transient open failure gets one guarded retry and records success only after verification", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-open-retry-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations({launchFailures: 1});
+  f.ops.preflight = async () => { f.actions.push("preflight"); };
+  f.ops.stopLaunch = async () => { f.actions.push("stop-attempt"); };
+  f.ops.waitForBundle = async () => { f.actions.push("bundle-exit"); };
+  f.ops.prepareLaunch = async () => { f.actions.push("prepare-launch"); };
+  let verifications = 0;
+  f.ops.verifyLaunch = async () => {
+    verifications++;
+    assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "in-progress");
+  };
+  assert.deepEqual(await runApplyUpdate(args(state), f.ops), {ok: true, message: null});
+  const launch = `launch:${args(state).appPath}`;
+  const afterFirstLaunch = f.actions.slice(f.actions.indexOf(launch)).filter((action) =>
+    action === launch || ["preflight", "stop-attempt", "bundle-exit", "prepare-launch"].includes(action));
+  assert.deepEqual(afterFirstLaunch, [launch, "stop-attempt", "bundle-exit", "prepare-launch", "preflight", launch]);
+  assert.equal(verifications, 1, "only the successful open reaches verification");
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "success");
+  assert.equal(outcome.launchVerified, true);
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("rollback retains the backup instead of replacing a bundle with an unowned live process", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-unowned-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.verifyLaunch = async () => { throw new Error("unverified"); };
+  f.ops.stopLaunch = async () => { throw new Error("outside this attempt"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((a) => a.startsWith("restore:")));
+  assert.ok(f.actions.some((a) => a.endsWith(RETAINED_FAILURE_DIR_NAME) && a.startsWith("copy:")));
+});
+
+
+test("a process appearing during the backup prevents both installation and rollback over that live bundle", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-late-process-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  let barriers = 0;
+  f.ops.waitForBundle = async () => {
+    if (++barriers === 2) throw new Error("bundle process 123 is still running");
+  };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.equal(barriers, 2);
+  assert.ok(!f.actions.some((a) => /^(install|restore|launch):/.test(a)));
+  assert.equal(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).result, "failure");
+  assert.ok(f.actions.includes(`lock-release:${FIXTURE_ENTRY}`));
+});
+
+test("a stale LaunchServices registration prevents launching the replacement or restored bundle", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-stale-registration-"));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const f = operations();
+  f.ops.prepareLaunch = async () => { throw new Error("LaunchServices still lists an old instance"); };
+  assert.equal((await runApplyUpdate(args(state), f.ops)).ok, false);
+  assert.ok(!f.actions.some((a) => a.startsWith("launch:")));
+  assert.ok(f.actions.some((a) => a.startsWith("restore:")));
+  assert.match(JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8")).message, /LaunchServices/);
+});
+
+test("the update relaunch's open gets COMMAND_TIMEOUT_MS, so one slower than the former 5s still relaunches", () => {
+  // Modeled on `spawnSync`: a command slower than its `timeout` is killed and reports
+  // ETIMEDOUT in `error`; otherwise it exits with its own status.
+  const nonce = "a".repeat(32);
+  for (const [duration, outcome] of [[7_000, "relaunches"], [COMMAND_TIMEOUT_MS + 1, "times out"]] as const) {
+    const calls: Array<{ command: string; args: string[]; timeout: number; runAsNode: string | undefined }> = [];
+    const spawn = (command: string, args: string[], options: { timeout: number; env: NodeJS.ProcessEnv }) => {
+      calls.push({ command, args, timeout: options.timeout, runAsNode: options.env.ELECTRON_RUN_AS_NODE });
+      return duration > options.timeout
+        ? { error: Object.assign(new Error("spawnSync /usr/bin/open ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null }
+        : { status: 0 };
+    };
+    const relaunch = () => openAppForRelaunch("/Applications/Mission Control.app", nonce, spawn);
+    if (outcome === "relaunches") relaunch();
+    else assert.throws(relaunch, { code: "ETIMEDOUT" });
+    assert.deepEqual(calls, [{
+      command: "/usr/bin/open",
+      args: ["/Applications/Mission Control.app", "--args", "--mission-update-launch", nonce],
+      timeout: COMMAND_TIMEOUT_MS,
+      runAsNode: undefined,
+    }], `a ${duration}ms open ${outcome}`);
+  }
 });

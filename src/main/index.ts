@@ -1,3 +1,5 @@
+import { logMain } from "./main-log.ts";
+import { observeUpdateLaunch, unmanagedLaunchMessage } from "./launch-health.ts";
 import { removeMigrationSourceLogin } from "./migration-integration-ports.ts";
 import { migrationStartupGate } from "../../scripts/migration-runtime.mjs";
 import { repairMigration } from "../../scripts/install-migration.mjs";
@@ -28,6 +30,8 @@ import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
+import { armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -38,7 +42,7 @@ import {
 import type { UpdateSnapshot } from "../shared/update.ts";
 import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
-import { UpdateDialogPresenter } from "./update-dialog.ts";
+import { UpdateDialogPresenter, type DialogDelivery } from "./update-dialog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { readReceipt } from "../shared/install-receipt.mjs";
@@ -49,6 +53,9 @@ import {
   type InstallIdentity,
 } from "./install-identity.ts";
 import { runningBundlePath, startPackagedShell } from "./startup-handover.ts";
+import { readBinaryEnrollment, startBinaryEnrollment } from "./binary-enrollment.ts";
+import { temporaryInstallLocation } from "../../scripts/binary-install-policy.mjs";
+import { confirmBinaryInstallation } from "./binary-install-window.ts";
 
 app.setName("Mission Control");
 
@@ -128,6 +135,7 @@ function showIntegrationResult(title: string, message: string): void {
  * unthemed auto-update surface is the thing being removed, not a fallback worth keeping.
  */
 const updateDialogPresenter = new UpdateDialogPresenter({
+  log: logMain,
   canPresent: () => {
     const win = getMainWindow();
     if (!win || win.isDestroyed() || !win.isVisible()) return false;
@@ -148,8 +156,8 @@ const updateDialogPresenter = new UpdateDialogPresenter({
 });
 
 /** Ask, and translate the modal's two words back into the updater's own vocabulary. */
-function askUpdate(content: UpdateDialogContent): Promise<UpdateDialogChoice> {
-  return updateDialogPresenter.present(content);
+function askUpdate(content: UpdateDialogContent, delivery?: DialogDelivery): Promise<UpdateDialogChoice> {
+  return updateDialogPresenter.present(content, delivery);
 }
 
 const updateDialogs: UpdateDialogs = {
@@ -181,8 +189,8 @@ const updateDialogs: UpdateDialogs = {
   async error(message) {
     await askUpdate(UPDATE_DIALOGS.error(message));
   },
-  async outcome(outcome) {
-    await askUpdate(UPDATE_DIALOGS.outcome(outcome));
+  async outcome(outcome, delivery) {
+    await askUpdate(UPDATE_DIALOGS.outcome(outcome), delivery);
   },
 };
 
@@ -224,12 +232,9 @@ function registerIpc(updateController: UpdateController): void {
     showIntegrationResult("Integrations", r.message);
     return r;
   });
-  ipcMain.on("mission:product-issue-report-click", (event, input: unknown) => {
-    event.returnValue = false;
-    const mainContents = getMainWindow()?.webContents;
-    if (!mainContents || event.sender !== mainContents) return;
-    event.returnValue = armProductIssueAuthorization(input);
-  });
+  const dashboard = () => getMainWindow()?.webContents;
+  serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
+  serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
   ipcMain.handle("mission:update-set-alpha", (event, alpha: boolean) => {
@@ -239,7 +244,12 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-apply", () => updateController.apply());
   ipcMain.handle("mission:update-install", () => updateController.install());
   ipcMain.handle("mission:update-keep-system", (event) => event.sender === getMainWindow()?.webContents ? updateController.keepSystem() : false);
-  ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair() : undefined);
+  ipcMain.handle("mission:binary-install-state", (event) => event.sender === getMainWindow()?.webContents && runningBundle ? readBinaryEnrollment(runningBundle, stateDir()) : null);
+  ipcMain.handle("mission:binary-install-enroll", (event) => {
+    if (event.sender !== getMainWindow()?.webContents || !runningBundle) throw new Error("Enrollment requires the packaged application window");
+    return startBinaryEnrollment(runningBundle, stateDir());
+  });
+  ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair(true) : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
@@ -249,6 +259,10 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.on("mission:update-dialog-ready", (event) => {
     if (event.sender !== getMainWindow()?.webContents) return;
     updateDialogPresenter.attach();
+  });
+  ipcMain.on("mission:update-dialog-received", (event, id: unknown) => {
+    if (event.sender !== getMainWindow()?.webContents) return;
+    updateDialogPresenter.received(id);
   });
   ipcMain.on("mission:update-dialog-choice", (event, payload: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return;
@@ -291,6 +305,21 @@ function stopShell(): void {
 app.on("before-quit", stopShell);
 
 app.whenReady().then(async () => {
+  let temporaryInstall = false;
+  try { temporaryInstall = !!runningBundle && temporaryInstallLocation(runningBundle); }
+  catch (error) {
+    dialog.showErrorBox("Installation location needs attention", error instanceof Error ? error.message : String(error));
+    app.exit(1); return;
+  }
+  if (runningBundle && temporaryInstall) {
+    try {
+      const enrollment = readBinaryEnrollment(runningBundle, stateDir());
+      if (!enrollment?.action) throw new Error(enrollment?.message ?? "Copy this developer app into Applications before opening it.");
+      if (await confirmBinaryInstallation(enrollment)) await startBinaryEnrollment(runningBundle, stateDir());
+    } catch (error) { dialog.showErrorBox("Installation needs attention", error instanceof Error ? error.message : String(error)); }
+    app.exit(0);
+    return;
+  }
   if (process.argv.includes("--mission-migration-remove-login")) {
     try {
       if (!runningBundle) throw new Error("Login cleanup requires a packaged source app.");
@@ -304,7 +333,7 @@ app.whenReady().then(async () => {
     const gate = await startupGate();
     if (!gate.proceed) { app.exit(0); return; }
     migratedStartup = gate.committed;
-    requireFreshDaemon = gate.fresh;
+    requireFreshDaemon = gate.fresh || process.argv.includes("--mission-binary-first-launch");
     const startup = startPackagedShell({app, identity: () => readInstallState().identity, log: (line) => console.error(line)});
     if (!startup.proceed) return;
     if (gate.committed && readInstallState().receipt?.appPath !== runningBundle) {
@@ -325,6 +354,9 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
     cb(permission === "notifications");
   });
+
+  const launchWarning = runningBundle && process.platform === "darwin" ? await unmanagedLaunchMessage(runningBundle) : null;
+  if (launchWarning) logMain(`unmanaged app launch: ${launchWarning}`);
 
   backgroundStart = ownElectronBackgroundStart(
     process.env.MISSION_DEV_SERVER_URL,
@@ -355,7 +387,8 @@ app.whenReady().then(async () => {
       if (background && !isQuitting()) return updater?.retryMigrationRepair();
     }).catch((error: unknown) => console.error(error));
   });
-  createWindow(paths.preload);
+  const mainWindow = createWindow(paths.preload, launchWarning);
+  if (runningBundle) observeUpdateLaunch(mainWindow.webContents, runningBundle, stateDir());
   updater = new UpdateController(
     createDefaultUpdaterPort({
       packaged: app.isPackaged,
@@ -370,12 +403,13 @@ app.whenReady().then(async () => {
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),
       dialogs: updateDialogs,
       migrationInventory: (plan) => inspectMigrationIntegrations(plan, migrationIntegrationPorts()),
-      repairMigration: async () => { await repairMigration(stateDir(), (journal) => repairMigrationIntegrations(journal, migrationIntegrationPorts())); },
+      repairMigration: async (confirmLogin) => { await repairMigration(stateDir(), (journal) => repairMigrationIntegrations(journal, migrationIntegrationPorts(), {confirmLogin})); },
     }),
   );
   registerIpc(updater);
   stopUpdateSubscription = updater.subscribe(pushUpdateSnapshot);
   const updaterStart = updater.start();
+  if (launchWarning) void updateDialogs.error(launchWarning);
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });

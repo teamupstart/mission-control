@@ -308,14 +308,14 @@ test("future engine states are closed before any route can write them", () => {
   }
 });
 
-test("new workflow drafts default submission to Foreman complete", () => {
+test("new workflow drafts default submission to Foreman complete with Live delivery", () => {
   const draft = CreateWorkflowSchema.parse({ name: "Review" });
   assert.equal(draft.draft.nodes.filter((node) => node.kind === "session").length, 1);
   assert.equal(draft.draft.edges.length, 0);
   assert.deepEqual(draft.completionPolicy, { kind: "none" });
   assert.deepEqual(draft.bindingDefaults, {
     triggerMode: "foreman_complete",
-    deliveryMode: "preview",
+    deliveryMode: "live",
     maxRepairRounds: 5,
   });
 });

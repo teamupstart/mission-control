@@ -4,12 +4,12 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
-import type { WorkflowHumanDecision } from "../src/shared/workflow.ts";
+import type { WorkflowEvidenceCoverageClaim, WorkflowHumanDecision } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-evidence-preflight-"));
 process.env.MISSION_HOME = home;
@@ -24,6 +24,7 @@ const { fallbackWorkflowContext, compactWorkflowContext, readWorkflowContextRaw 
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+const { workflowCaptureFailure } = await import("../src/shared/workflow-lifecycle.ts");
 const { openDb } = await import("../src/server/db.ts");
 
 const repositoryRoot = process.cwd();
@@ -88,6 +89,9 @@ async function harness(
     head?: { sha: string };
     cwd?: string;
     readContextRaw?: typeof readWorkflowContextRaw;
+    resumptionPolicy?: "auto" | "manual";
+    deliveryMode?: "live" | "preview";
+    uncertainDelivery?: boolean;
   } = {},
 ) {
   const registry = new Registry();
@@ -127,9 +131,9 @@ async function harness(
       ],
     },
     completionPolicy: { kind: "none" },
-    resumptionPolicy: "auto",
+    resumptionPolicy: options.resumptionPolicy ?? "auto",
     evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "criterion_mapped_v1",
-    bindingDefaults: { triggerMode: "manual", deliveryMode: "live", maxRepairRounds: 5 },
+    bindingDefaults: { triggerMode: "manual", deliveryMode: options.deliveryMode ?? "live", maxRepairRounds: 5 },
     createdAt: 1,
     updatedAt: 1,
   });
@@ -166,6 +170,7 @@ async function harness(
       const blocked = beforeWrite?.();
       if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
       injected.push(payload);
+      if (options.uncertainDelivery) throw new Error("Delivery outcome unknown");
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
@@ -1548,7 +1553,14 @@ for (const action of ["resubmit", "grant"] as const) {
     assert.equal(h.store.listSubmissions(run.id).length, 2);
     assert.equal(calls, 4, "restart must spend only the original operation's remaining calls");
     await h.manager.sweepResumptions(Date.now() + 180_000);
-    assert.equal(calls, 4, "later sweeps cannot spend more on the settled operation");
+    if (action === "grant" && interruptedAttempt === 2) {
+      assert.equal(calls, 6, "a settled automatic run may reserve a separate bounded recovery operation");
+      assert.equal(h.store.latestSubmission(run.id)?.refinementReason, "evidence_recovery");
+      assert.equal(WorkflowContextSnapshotSchema.parse(h.store.getSubmission(checkpoint.id)!.context).reconciliation?.attempts, 2,
+        "the exhausted checkpoint itself must never refill");
+    } else {
+      assert.equal(calls, 4, "a completed or busy session cannot start another recovery");
+    }
   });
 }
 
@@ -1636,4 +1648,432 @@ test("sequential A and B preflight repairs retain A's winner through real frozen
     openDb().prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(ctx), row.id);
   }
   assert.deepEqual(submissionCoverageSelection(h.store, h.store.getSubmission(current.id)!)?.criteria.map((row) => row.matchedClientCriterionIds), [["a1"], ["b1"]]);
+});
+
+
+async function captureFailureHarness(t: TestContext, id: string, options: Parameters<typeof harness>[3] & {
+  failure?: "changed" | "missing" | "invalid_utf8";
+  coverage?: WorkflowEvidenceCoverageClaim[];
+} = {}) {
+  const { failure = "changed", coverage, ...workflowOptions } = options;
+  const h = await harness(t, id, undefined, { evidenceReadinessPolicy: "off", ...workflowOptions });
+  mkdirSync(join(repositoryRoot, ".evidence"), { recursive: true });
+  const dir = mkdtempSync(join(repositoryRoot, ".evidence", "capture-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "handoff.md");
+  const imagePath = join(dir, "retained.png");
+  writeFileSync(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  await h.manager.stageAgentEvidence(id, { images: [{ kind: "agent", clientItemId: "retained-image",
+    path: relative(repositoryRoot, imagePath), caption: "Valid proof frozen before text capture failed", repositoryScope: "all" }] });
+  const register = async (clientItemId: string, claims?: WorkflowEvidenceCoverageClaim[]) => {
+    const staged = await h.manager.stageAgentEvidence(id, {
+      images: [], artifacts: [{ kind: "text", clientItemId, path: relative(repositoryRoot, path),
+        caption: "Handoff proof", repositoryScope: "all" }],
+      coverage: claims,
+    });
+    assert.ok(staged.artifacts?.some((item) => item.clientItemId === clientItemId));
+  };
+  writeFileSync(path, "Original handoff\n");
+  await register("original-handoff", coverage);
+  switch (failure) {
+    case "missing": rmSync(path); break;
+    case "invalid_utf8": writeFileSync(path, Buffer.from([0xff, 0xfe])); break;
+    case "changed":
+      writeFileSync(path, "Corrected handoff with focused rollback evidence\n");
+      await register("corrected-handoff");
+      break;
+  }
+  const result = await h.manager.submit(h.binding.id, { requestId: "capture-failure" });
+  assert.equal(result.ok, false);
+  const run = h.store.activeRunForBinding(h.binding.id)!;
+  assert.equal(run.currentPhase, options.uncertainDelivery ? "delivery_uncertain" : "image_evidence_capture");
+  return { ...h, run, path, register };
+}
+
+for (const failure of ["missing", "invalid_utf8"] as const) {
+  test(`capture repair replaces ${failure} agent proof and activates review`, async (t) => {
+    const id = `capture-repair-${failure}`;
+    const h = await captureFailureHarness(t, id, { failure });
+    const original = h.store.latestSubmission(h.run.id)!;
+    const reservations = h.store.listReservedWorkflowEvidence(original.id);
+    const captureFailure = workflowCaptureFailure({
+      status: h.run.status, phase: h.run.currentPhase, gateState: h.run.gateState,
+    });
+    assert.ok(captureFailure);
+    assert.equal(captureFailure.code, failure === "missing" ? "artifact_path" : "artifact_encoding");
+    assert.equal(captureFailure.itemClientId, "original-handoff");
+    assert.equal(h.store.listAttempts(original.id).length, 0);
+    await waitFor(() => h.store.listDeliveries(h.run.id).some((delivery) =>
+      delivery.kind === "evidence_capture_repair" && delivery.state === "delivered"), "repair was not delivered");
+    const packet = h.injected[0]!;
+    assert.equal(h.injected.length, 1);
+    assert.match(packet, /original-handoff: handoff\.md/);
+    assert.ok(packet.includes(relative(repositoryRoot, h.path)));
+    assert.match(packet, failure === "missing" ? /path does not exist/ : /must be valid UTF-8/);
+    assert.match(packet, /Regenerate missing or invalid proof/);
+    assert.match(packet, /NEW item id/);
+
+    writeFileSync(h.path, "Regenerated valid handoff proof\n");
+    await h.register("replacement-handoff");
+    h.registry.getSession(id)!.state = "idle";
+    await h.manager.sweepResumptions(Date.now() + 60_000);
+    await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "replacement proof did not reach review");
+    const child = h.store.latestSubmission(h.run.id)!;
+    assert.equal(child.round, original.round);
+    assert.equal(child.segment, original.segment + 1);
+    assert.equal(child.refinementReason, "evidence_capture_repair");
+    assert.equal(h.store.listAttempts(child.id).filter((attempt) => attempt.persona).length, 1);
+    assert.deepEqual(h.store.listSubmissionTextArtifacts(child.id).map((artifact) => artifact.content),
+      ["Regenerated valid handoff proof\n"]);
+    assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((item) => item.clientItemId === "original-handoff"), false);
+    assert.deepEqual(h.store.getSubmission(original.id), original);
+    assert.deepEqual(h.store.listReservedWorkflowEvidence(original.id), reservations);
+  });
+}
+
+for (const staleLink of [false, true]) {
+  test(`capture repair enforces readiness with ${staleLink ? "a stale" : "a replacement"} coverage link`, async (t) => {
+    const id = `capture-repair-coverage-${staleLink}`;
+    const originalClaim: WorkflowEvidenceCoverageClaim = {
+      clientCriterionId: "claim-0",
+      criterion: "Rendered workflow state is inspectable",
+      proofClass: "rendered_artifact",
+      repositoryScope: "all",
+      links: [{ clientItemId: "original-handoff", role: "deliverable" }],
+    };
+    const h = await captureFailureHarness(t, id, {
+      evidenceReadinessPolicy: "criterion_mapped_v1", coverage: [originalClaim],
+    });
+    const original = h.store.latestSubmission(h.run.id)!;
+    const originalCoverage = h.store.listSubmissionCoverage(original.id);
+    await waitFor(() => h.store.listDeliveries(h.run.id).some((delivery) =>
+      delivery.kind === "evidence_capture_repair" && delivery.state === "delivered"), "capture repair was not delivered");
+    assert.match(h.injected[0]!, /Update coverage links to the replacement ids/);
+    await h.register("replacement-handoff", [{
+      ...originalClaim, clientCriterionId: "replacement-claim",
+      links: [{ clientItemId: staleLink ? "original-handoff" : "replacement-handoff", role: "deliverable" }],
+    }]);
+    h.registry.getSession(id)!.state = "idle";
+    await h.manager.sweepResumptions(Date.now() + 60_000);
+    await waitFor(() => h.store.getRun(h.run.id)?.status ===
+      (staleLink ? "waiting_for_evidence_readiness" : "completed"), "capture repair did not reach enforced readiness");
+    const child = h.store.latestSubmission(h.run.id)!;
+    assert.equal(child.round, original.round);
+    assert.equal(child.segment, original.segment + 1);
+    assert.equal(child.refinementReason, "evidence_capture_repair");
+    assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
+    assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((item) => item.clientItemId === "original-handoff"), false);
+    assert.deepEqual(h.store.getSubmission(original.id), original);
+    assert.deepEqual(h.store.listSubmissionCoverage(original.id), originalCoverage);
+
+    if (staleLink) {
+      assert.equal(child.readiness?.status, "gaps");
+      assert.deepEqual(child.readiness.gapCodes, ["missing_deliverable_or_rendered_output"]);
+      assert.equal(h.store.listAttempts(child.id).length, 0, "a stale link cannot activate reviewers");
+      assert.equal(h.store.listSubmissionCoverage(child.id).some((claim) => claim.clientCriterionId === "replacement-claim"), false);
+      await waitFor(() => h.store.listDeliveries(h.run.id).some((delivery) => delivery.submissionId === child.id
+        && delivery.kind === "evidence_readiness" && delivery.state === "delivered"), "coverage repair was not delivered");
+      const criterionId = child.readiness.criteria[0]!.criterionId;
+      // The unresolved claim stayed staged, so its links can be corrected under the same id.
+      const staged = await h.manager.stageAgentEvidence(id, { images: [], coverage: [{
+        ...originalClaim, clientCriterionId: "replacement-claim", criterionId,
+        links: [{ clientItemId: "replacement-handoff", role: "deliverable" }],
+      }] });
+      assert.ok(staged.coverage?.some((claim) => claim.clientCriterionId === "replacement-claim"));
+      h.registry.getSession(id)!.state = "idle";
+      await h.manager.sweepResumptions(Date.now() + 120_000);
+      await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "corrected coverage did not activate review");
+      assert.deepEqual(h.store.getSubmission(child.id), child, "coverage repair must retain the gapped snapshot");
+    }
+    const reviewed = h.store.latestSubmission(h.run.id)!;
+    assert.equal(reviewed.round, original.round);
+    assert.equal(reviewed.segment, staleLink ? 2 : 1);
+    assert.equal(reviewed.readiness?.status, "ready");
+    assert.deepEqual(reviewed.readiness.gapCodes, []);
+    assert.equal(reviewed.readiness.criteria[0]?.matchedClientCriterionId, "replacement-claim");
+    assert.equal(h.store.listAttempts(reviewed.id).filter((attempt) => attempt.persona).length, 1);
+    assert.deepEqual(h.store.listSubmissionCoverage(reviewed.id).find((claim) =>
+      claim.clientCriterionId === "replacement-claim")?.links, [{ clientItemId: "replacement-handoff", role: "deliverable" }]);
+  });
+}
+
+test("capture repair delivers once across restart, excludes stale reservations and activates review in the same round", async (t) => {
+  const id = "capture-repair-complete";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "repair was not delivered");
+  const original = h.store.latestSubmission(h.run.id)!;
+  const oldReservations = h.store.listReservedWorkflowEvidence(original.id);
+  assert.equal(h.store.listAttempts(original.id).length, 0);
+  assert.equal(h.injected.length, 1);
+  assert.match(h.injected[0]!, /original-handoff/);
+  assert.match(h.injected[0]!, /NEW item id/);
+  assert.match(h.injected[0]!, /same round/);
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "idle alone must not retry stale proof");
+  await h.manager.stop(); h.manager.start();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.injected.length, 1, "restart must not resend confirmed delivery");
+  await h.register("replacement-handoff");
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "corrected proof did not reach reviewers");
+  const child = h.store.latestSubmission(h.run.id)!;
+  assert.equal(child.round, 1);
+  assert.equal(child.segment, 1);
+  assert.equal(child.refinementReason, "evidence_capture_repair");
+  assert.deepEqual(h.store.getSubmission(original.id), original);
+  assert.deepEqual(h.store.listReservedWorkflowEvidence(original.id), oldReservations);
+  assert.equal(h.store.listSubmissionTextArtifacts(original.id).length, 0);
+  assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
+  assert.equal(h.store.listSubmissionImages(original.id).length, 1);
+  assert.equal(h.store.listSubmissionImages(child.id)[0]?.sha256, h.store.listSubmissionImages(original.id)[0]?.sha256);
+  assert.deepEqual(h.store.listReservedWorkflowEvidence(child.id).map((item) => item.clientItemId).sort(), ["replacement-handoff", "retained-image"]);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+});
+
+for (const options of [{ resumptionPolicy: "manual" as const }, { deliveryMode: "preview" as const }]) {
+  test(`capture repair respects ${JSON.stringify(options)}`, async (t) => {
+    const id = `capture-boundary-${Object.values(options)[0]}`;
+    const h = await captureFailureHarness(t, id, options);
+    h.registry.getSession(id)!.state = "idle";
+    await h.register("replacement");
+    await h.manager.sweepResumptions(Date.now() + 120_000);
+    assert.equal(h.injected.length, 0);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+  });
+}
+
+test("capture repair is bounded and cancellation cannot revive it", async (t) => {
+  const id = "capture-repair-exhaustion";
+  const h = await captureFailureHarness(t, id);
+  h.registry.getSession(id)!.state = "idle";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await waitFor(() => h.store.listDeliveries(h.run.id).filter((d) => d.state === "delivered").length === attempt, "missing repair packet");
+    await h.register(`still-changing-${attempt}`);
+    writeFileSync(h.path, `The file moved again ${attempt}\n`);
+    await h.manager.sweepResumptions(Date.now() + 120_000);
+  }
+  const failure = h.store.getRun(h.run.id)!;
+  assert.match(JSON.stringify(failure.gateState), /"state":"exhausted"/);
+  await h.register("finally-stable");
+  await h.manager.stop(); h.manager.start();
+  await h.manager.sweepResumptions(Date.now() + 240_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 4);
+  assert.equal(h.injected.length, 3);
+  assert.equal(h.store.listAttempts(h.store.latestSubmission(h.run.id)!.id).length, 0);
+  h.store.cancelRun(h.run.id, "cancelled:test");
+  await h.manager.sweepResumptions(Date.now() + 300_000);
+  assert.equal(h.store.getRun(h.run.id)?.status, "cancelled");
+});
+
+for (const succeeds of [false, true]) test(`automatic mapping recovery ${succeeds ? "succeeds" : "exhausts"} with a durable delay and frozen evidence`, async (t) => {
+  let calls = 0;
+  const id = `automatic-mapping-${succeeds}`;
+  const h = await harness(t, id, undefined, {
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+        constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"],
+        canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }],
+      } }),
+    }),
+    reconcileContext: async () => {
+      calls++;
+      return succeeds && calls > 2
+        ? { kind: "ok", value: { criterionMappings: [{ canonicalCriterionOrdinal: 1, matchedClientCriterionIds: ["repair-claim"] }] } }
+        : { kind: "failed", cause: "transport", reason: "mapping unavailable" };
+    },
+  });
+  await stageRecoveryProof(h, id, "The user can inspect the rendered result");
+  const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run, submission } = created.value;
+  const original = h.store.getSubmission(submission.id);
+  h.registry.getSession(id)!.state = "idle";
+  const { workflowPreparationRecovery } = await import("../src/shared/workflow-lifecycle.ts");
+  const recovery = () => { const current = h.store.getRun(run.id)!; return workflowPreparationRecovery({ status: current.status, phase: current.currentPhase, gateState: current.gateState }); };
+  const first = recovery()!;
+  assert.equal(first.attempts, 0);
+  assert.equal(calls, 2);
+  await h.manager.sweepResumptions(first.retryAt! - 1);
+  assert.equal(calls, 2);
+  await h.manager.stop(); h.manager.start();
+  assert.deepEqual(recovery(), first, "restart cannot reset the delay or allowance");
+  await h.manager.sweepResumptions(first.retryAt! + 60_000);
+  if (succeeds) {
+    await waitFor(() => h.store.getRun(run.id)?.status === "completed", "mapping recovery did not activate reviewers");
+    assert.equal(calls, 3);
+  } else {
+    const second = recovery()!;
+    assert.equal(second.attempts, 1);
+    await h.manager.sweepResumptions(second.retryAt! - 1);
+    assert.equal(calls, 4);
+    await h.manager.sweepResumptions(second.retryAt! + 60_000);
+    assert.equal(calls, 6);
+    assert.equal(recovery()?.state, "exhausted");
+    await h.manager.sweepResumptions(Date.now() + 600_000);
+    assert.equal(calls, 6);
+  }
+  assert.equal(h.injected.length, 0, "system mapping failure must not ask the agent to edit proof");
+  assert.deepEqual(h.store.getSubmission(submission.id), original);
+  assert.equal(h.store.latestSubmission(run.id)?.round, 1);
+  assert.deepEqual(h.store.listSubmissionTextArtifacts(h.store.latestSubmission(run.id)!.id).map((v) => v.sha256),
+    h.store.listSubmissionTextArtifacts(submission.id).map((v) => v.sha256));
+});
+
+
+test("uncertain capture repair cannot recapture until the operator confirms delivery", async (t) => {
+  const id = "capture-uncertain";
+  const h = await captureFailureHarness(t, id, { uncertainDelivery: true });
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "uncertain"), "delivery was not uncertain");
+  h.registry.getSession(id)!.state = "idle";
+  await h.register("replacement");
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+  const delivery = h.store.listDeliveries(h.run.id)[0]!;
+  const confirmed = h.store.resolveUncertainDelivery(delivery.id, "mark_delivered", "operator-resolution");
+  assert.ok(confirmed);
+  assert.equal(confirmed.rearmed, null);
+  assert.equal(h.store.getRun(h.run.id)?.currentPhase, "image_evidence_capture");
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /original-handoff/);
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "confirmed repair did not continue");
+  assert.equal(h.injected.length, 1);
+});
+
+test("idle capture repair without new proof becomes an explicit stalled block", async (t) => {
+  const id = "capture-no-progress";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  h.registry.getSession(id)!.state = "idle";
+  const idleAt = Date.now() + 60_000;
+  await h.manager.sweepResumptions(idleAt);
+  await h.manager.stop(); h.manager.start();
+  await h.manager.sweepResumptions(idleAt + 15 * 60_000 - 1);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/);
+  await h.manager.sweepResumptions(idleAt + 15 * 60_000);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+  assert.equal(h.injected.length, 1);
+});
+
+for (const heldBy of ["working", "permission"] as const) {
+  test(`capture repair idle allowance excludes time ${heldBy === "working" ? "working" : "awaiting permission"}`, async (t) => {
+    const id = `capture-idle-${heldBy}`;
+    const h = await captureFailureHarness(t, id);
+    await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+    const session = h.registry.getSession(id)!;
+    const hold = () => {
+      session.state = heldBy === "working" ? "working" : "idle";
+      session.pendingReviews = heldBy === "permission" ? 1 : 0;
+    };
+    const settle = () => { session.state = "idle"; session.pendingReviews = 0; };
+    const started = Date.now() + 60_000;
+    hold();
+    await h.manager.sweepResumptions(started);
+    await h.manager.sweepResumptions(started + 20 * 60_000);
+    settle();
+    await h.manager.sweepResumptions(started + 21 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/,
+      "the first eligible sweep must not count working or permission time");
+    await h.manager.sweepResumptions(started + 30 * 60_000);
+    hold();
+    await h.manager.sweepResumptions(started + 31 * 60_000);
+    await h.manager.stop(); h.manager.start();
+    await h.manager.sweepResumptions(started + 50 * 60_000);
+    settle();
+    await h.manager.sweepResumptions(started + 51 * 60_000);
+    await h.manager.sweepResumptions(started + 66 * 60_000 - 1);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/,
+      "a busy or permission interval must reset the idle allowance, including across restart");
+    await h.manager.sweepResumptions(started + 66 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1);
+    assert.equal(h.injected.length, 1);
+  });
+}
+
+test("capture repair observes intervening activity even when the session settles between sweeps", async (t) => {
+  const id = "capture-idle-intervening-activity";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  const session = h.registry.getSession(id)!;
+  const idleAt = Date.now() + 60_000;
+  session.state = "idle";
+  await h.manager.sweepResumptions(idleAt);
+  session.lastActivity = idleAt + 10 * 60_000;
+  await h.manager.sweepResumptions(idleAt + 20 * 60_000);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"pending"/);
+  await h.manager.sweepResumptions(idleAt + 35 * 60_000);
+  assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+});
+
+for (const replace of [false, true]) test(`unrelated evidence preserves capture repair ${replace ? "until relevant proof arrives" : "until the idle deadline"}`, async (t) => {
+  const id = `capture-unrelated-evidence-${replace}`;
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  const parent = h.store.latestSubmission(h.run.id)!;
+  const idleAt = Date.now() + 60_000;
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(idleAt);
+  const unrelatedPath = join(h.path, "..", "unrelated.md");
+  writeFileSync(unrelatedPath, "Unrelated artifact\n");
+  for (let i = 1; i <= 3; i++) {
+    await h.manager.stageAgentEvidence(id, {
+      images: [], commandOutputs: i === 1 ? [{ kind: "command", clientItemId: "unrelated-command",
+        command: `check unrelated ${i}`, output: "passed", exitCode: 0,
+        caption: "Unrelated verification", repositoryScope: "all" }] : [],
+      artifacts: i === 2 ? [{ kind: "text", clientItemId: "unrelated-file", path: relative(repositoryRoot, unrelatedPath),
+        caption: "Unrelated file", repositoryScope: "all" }] : [],
+      coverage: i === 3 ? [{ clientCriterionId: "unrelated-claim", criterion: "Unrelated behavior",
+        proofClass: "focused_execution", repositoryScope: "all",
+        links: [{ clientItemId: "unrelated-command", role: "execution" }] }] : [],
+    });
+    assert.ok(h.store.workflowEvidenceGeneration(h.binding.noteKey, repositoryRoot) > parent.stagedImageGeneration!);
+    await h.manager.sweepResumptions(idleAt + i * 60_000);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1, "unrelated proof cannot spend a repair attempt");
+  }
+  if (replace) {
+    await h.register("replacement-after-unrelated");
+    await h.manager.sweepResumptions(idleAt + 4 * 60_000);
+    await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "relevant replacement did not reach review");
+    assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+    assert.equal(h.store.latestSubmission(h.run.id)?.segment, 1);
+  } else {
+    await h.manager.sweepResumptions(idleAt + 15 * 60_000);
+    assert.match(JSON.stringify(h.store.getRun(h.run.id)?.gateState), /"state":"stalled"/);
+  }
+  assert.equal(h.injected.length, 1);
+});
+
+test("restart resumes an atomically reserved capture child without spending a second segment", async (t) => {
+  const id = "capture-reserved-restart";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  await h.register("replacement");
+  const parent = h.store.latestSubmission(h.run.id)!;
+  const child = h.store.reserveEvidenceCaptureRepair({ id: "reserved-capture-child", runId: h.run.id, parentId: parent.id, now: Date.now() });
+  assert.ok(child);
+  await h.manager.stop(); h.manager.start();
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "orphaned child did not resume");
+  assert.equal(h.store.latestSubmission(h.run.id)?.id, child.id);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+  assert.equal(h.injected.length, 1);
+});
+
+
+test("restaging the already-correct registration repairs capture without changing its bytes or generation", async (t) => {
+  const id = "capture-restage-identical";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "no delivery");
+  const parent = h.store.latestSubmission(h.run.id)!;
+  await h.register("corrected-handoff");
+  assert.equal(h.store.workflowEvidenceGeneration(h.binding.noteKey, repositoryRoot), parent.stagedImageGeneration);
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "restaging unchanged correct proof was missed");
+  const child = h.store.latestSubmission(h.run.id)!;
+  assert.equal(child.round, parent.round);
+  assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
+  assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((v) => v.clientItemId === "original-handoff"), false);
 });

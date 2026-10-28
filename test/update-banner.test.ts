@@ -185,7 +185,7 @@ test("a build in progress renders a real, valued progress bar and a way out", ()
   assert.match(html, new RegExp(`role="progressbar"[^>]*aria-valuenow="${percent}"`));
   assert.match(html, new RegExp(`width:${percent}%`));
   assert.match(html, /aria-valuemin="0"[^>]*aria-valuemax="100"/);
-  assert.match(html, new RegExp(`aria-valuetext="Installing dependencies, step ${step} of ${steps}"`));
+  assert.match(html, new RegExp(`aria-valuetext="Installing dependencies · step ${step} of ${steps}"`));
   const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   assert.ok(text.includes(UPDATE_COPY.preparing.title("0.2.0")), text);
   assert.match(text, /Installing dependencies · step 6 of 8/);

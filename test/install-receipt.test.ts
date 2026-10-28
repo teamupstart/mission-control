@@ -13,7 +13,7 @@ import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-re
 
 function receipt(overrides: Record<string, unknown> = {}) {
   return {
-    schema: INSTALL_RECEIPT_SCHEMA,
+    schema: 1,
     repo: CANONICAL_REPO,
     releaseTag: "v0.1.0",
     installedVersion: "0.1.0",

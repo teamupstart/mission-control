@@ -93,6 +93,13 @@ processes sharing one host; it does not serialize separate runners. CI currently
 shards with a target of three minutes or less for every browser-test step. That target is measured,
 not enforced with a timeout, so a slow run retains its complete failure diagnostics.
 
+Finish the build before starting a browser run. After acquiring the host lease, global setup
+copies `dist/web` once into a private temporary directory and all ordinary fixture daemons serve
+that snapshot. Vite clears its output during a rebuild; serving that mutable output allowed a
+page to receive an index whose JavaScript disappeared before it loaded, surfacing as a missing
+Dispatch button. The snapshot protects in-flight tests from later builds and is removed at
+teardown. This is build isolation, not a retry or a longer readiness timeout.
+
 Useful flags:
 
 ```sh
@@ -1296,7 +1303,7 @@ band that stopped existing and two controls that moved into a row which already 
 what a picture answers is whether the row still reads as a tab strip.
 
 `01-console-detail-tab-toolbar.png` is the console detail at the default 1280px window: three
-bands - head, `PATH`/`BRANCH`, tab strip - with **Terminal view**, **Terminal** and
+bands - head, `PATH`/`BRANCH`, tab strip - with **Session control**, **Conversation view**, **Terminal** and
 **Claude Code** at the far end of the tabs, Foreman past them, and the transcript starting
 directly under the row. The worktree band that used to sit between them is gone, and the path
 appears exactly once, in the row above.

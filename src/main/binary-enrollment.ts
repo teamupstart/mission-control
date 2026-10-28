@@ -1,0 +1,58 @@
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { executableChildEnv } from "../server/executables/locator.ts";
+import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
+import { binaryEnrollmentChoice, type BinaryEnrollment } from "../shared/binary-enrollment.ts";
+import { validateBinaryBuildMetadata } from "../shared/binary-distribution.mjs";
+import { binaryPublisherPolicy } from "../shared/binary-publisher-policy.mjs";
+import { verifyBinaryPublisher } from "../../scripts/install-staged-app.mjs";
+import { userAppsDir } from "../../scripts/install-destination.mjs";
+import { readBinaryReceipt, temporaryInstallLocation } from "../../scripts/binary-install-policy.mjs";
+
+export function readBinaryEnrollment(bundle: string, stateDirectory: string): BinaryEnrollment | null {
+  const metadata = JSON.parse(readFileSync(join(bundle, "Contents/Resources/app/package.json"), "utf8")).missionBinary;
+  if (!metadata) return null; // Source/developer builds retain their explicit installer.
+  const problem = validateBinaryBuildMetadata(metadata);
+  if (problem) return {action: null, destination: bundle, message: problem};
+  try {
+    verifyBinaryPublisher(bundle, binaryPublisherPolicy());
+    return binaryEnrollmentChoice({bundle, home: homedir(), temporary: temporaryInstallLocation(bundle), managedPath: readBinaryReceipt(stateDirectory)?.appPath ?? null});
+  } catch (error) {
+    return {action: null, destination: bundle, message: error instanceof Error ? error.message : String(error)};
+  }
+}
+
+export async function startBinaryEnrollment(bundle: string, stateDirectory: string): Promise<{started: boolean; message: string}> {
+  const status = readBinaryEnrollment(bundle, stateDirectory);
+  if (!status?.action) throw new Error(status?.message ?? "This source build uses the source installer");
+  const root = join(bundle, "Contents/Resources/app");
+  const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).missionBinary;
+  const args = [join(root, "scripts/install.sh"), "--ref", metadata.releaseTag ?? metadata.commit];
+  if (status.action === "enroll") {
+    const directory = dirname(bundle);
+    const personal = userAppsDir();
+    const isPersonal = existsSync(personal) && realpathSync(directory) === realpathSync(personal);
+    args.push("--enroll", ...(directory === "/Applications" ? ["--scope", "system"]
+      : isPersonal ? ["--scope", "user"] : ["--apps-dir", directory]));
+  }
+  // No destination override on mounted installs: the shared resolver preserves a
+  // current receipt, or chooses the canonical personal directory for a fresh user.
+  mkdirSync(stateDirectory, {recursive: true, mode: 0o700});
+  const logPath = join(stateDirectory, "binary-install.log");
+  const fd = openSync(logPath, "a", 0o600);
+  const env = executableChildEnv({...process.env, MISSION_HOME: stateDirectory}, ["ELECTRON_RUN_AS_NODE"]);
+  const executable = FIXED_OS_EXECUTABLES.bash;
+  let child;
+  try { child = spawn(executable, args, {env, detached: status.action === "install", stdio: ["ignore", fd, fd]}); }
+  finally { closeSync(fd); }
+  await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  if (status.action === "install") {
+    child.unref();
+    return {started: true, message: `Installation started. Progress and recovery details: ${logPath}`};
+  }
+  const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+  if (code !== 0) throw new Error(`Enrollment could not complete. Your existing installation was preserved. See ${logPath} for the reason.`);
+  return {started: true, message: "This copied app is now managed. Reopen Mission Control to enable automatic binary updates, or use the signed installer for recovery."};
+}

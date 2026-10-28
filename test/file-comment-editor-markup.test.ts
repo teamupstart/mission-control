@@ -236,8 +236,47 @@ test("the extracted Files window carries no key for it, because the key is not i
 
 test("an image disables the control with a reason instead of hiding it", () => {
   const html = workspace({ kind: "image", text: null });
-  assert.match(html, /aria-label="Comment mode"[^>]*disabled/, "the control is present and dead");
+  // `aria-disabled`, as in the Diff tab: the control stays focusable, so the reason in its
+  // tooltip reaches the keyboard. They are one shared control, `FileCommentControls`.
+  assert.match(html, /aria-label="Comment mode"[^>]*aria-disabled="true"/, "the control is present and dead");
+  assert.doesNotMatch(html, /aria-label="Comment mode"[^>]*aria-keyshortcuts/, "and claims no key");
   assert.ok(hasTooltip(html, "An image has no lines to comment on"), "and says why");
+});
+
+test("the file list marks a file that carries comments, with what its colour says", () => {
+  const unanswered = workspace();
+  assert.doesNotMatch(unanswered, /file-comment-badge/, "a file with no thread carries no mark");
+
+  const html = workspace({
+    threads: [thread(), thread({ id: "t-2", shortId: "MC-b52e", status: "resolved" })],
+  });
+  // Inside the file's own option, so the count is part of that row's accessible name.
+  assert.match(
+    html,
+    /role="option"[^>]*>[\s\S]*?<span class="file-comment-badge is-open" role="img" aria-label="2 comments, 1 open">[\s\S]*?2<\/span>/,
+  );
+
+  const answered = workspace({
+    threads: [thread({
+      status: "answered",
+      messageCount: 2,
+      messages: [
+        thread().messages[0]!,
+        {
+          id: "m-2",
+          threadId: "t-1",
+          author: "agent",
+          sessionId: SESSION,
+          body: "Fixed the table.",
+          deliveredAt: null,
+          readAt: null,
+          createdAt: 1_700_000_000_100,
+          updatedAt: 1_700_000_000_100,
+        },
+      ],
+    })],
+  });
+  assert.match(answered, /class="file-comment-badge is-unread" role="img" aria-label="1 comment, 1 unread reply"/);
 });
 
 test("retained Pipeline evidence keeps threads readable without authoring controls", () => {

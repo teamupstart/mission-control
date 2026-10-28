@@ -352,6 +352,7 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
  * reason `InjectPromptSchema.origin` states at length: a caller that forgets the field
  * should under-claim, never over-claim, and almost every caller IS a human.
  */
+// Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
 /** A message the user sends into a session from the dashboard. */
@@ -390,6 +391,7 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * exactly as the dashboard does, so it declares itself rather than being inferred - and the
  * default is the human, because every other caller IS one.
  */
+// Delegated session identity is server-owned and never accepted in a request body.
 const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
@@ -874,7 +876,7 @@ export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
-  by: z.enum(["human", "foreman"]).optional().default("human"),
+  by: AnswerActorSchema,
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -1075,7 +1077,8 @@ export const DispatchSchema = z
     effort: EffortLevelSchema.optional(),
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
-     * plan tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
+     * and the machine default for other kinds.
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
@@ -1739,10 +1742,10 @@ export const ForemanConfigSchema = z.object({
    * Whether Foreman is switched on at all. On by default, and that authorises far less than
    * it sounds like.
    *
-   * `mode` still ships `dry-run`, so Foreman drafts and never sends; `repoAllowlist` still
-   * ships empty, so `mayActLive` is false everywhere; and the worker is a SEPARATE PROCESS
-   * (`npm run foreman`) that nothing here starts. Enabled with no worker running is enabled
-   * and idle.
+   * `repoAllowlist` still ships empty, so `mayActLive` is false everywhere even though `mode`
+   * ships `live`, and Foreman drafts rather than sends until a human grants a repository in
+   * Trust. The worker is a SEPARATE PROCESS (`npm run foreman`) that nothing here starts.
+   * Enabled with no worker running is enabled and idle.
    *
    * It flipped because it had become a gate in front of something else: `bindingModeBlock`
    * refuses a `foreman_complete` binding outright when this is false, so the automatic repair
@@ -1751,7 +1754,16 @@ export const ForemanConfigSchema = z.object({
    * persisted `false` and keeps it - this default is only read when nobody ever answered.
    */
   enabled: z.boolean().default(true),
-  mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
+  /**
+   * Ships `live`, on `liveEnabled`'s reasoning in `@shared/workflow.ts`: the allowlist is the
+   * consent, and it ships empty, so a fresh install still types into no session until a
+   * repository is granted in Trust. A `dry-run` default in front of that grant meant the
+   * grant alone never made Foreman act, and the operator had to find a second switch.
+   *
+   * Only read when nobody ever answered. `setForemanConfig` persists the whole parsed blob,
+   * so an install that has saved any Foreman setting keeps the mode it already had.
+   */
+  mode: z.enum(["dry-run", "live", "semi-auto"]).default("live"),
   /**
    * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
    *
@@ -2270,6 +2282,8 @@ export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
  * Schema defaults retain the meaning of sparse records saved by older builds.
  */
 export const SkillsConfigSchema = z.object({
+  /** Shared by direct skill invocations and workflow PR phases. */
+  alwaysDraftPr: z.boolean().default(false),
   /** Pinned by new managed plans; rendered previews are retained regardless. */
   commitPlanHtml: z.boolean().default(false),
   planStorage: z.enum(["repository", "local"]).default("repository"),
@@ -2308,7 +2322,7 @@ export const SkillsConfigSchema = z.object({
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /** Partial update of the skills config from the dashboard. */
-export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true })
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true, commitPlanHtml: true, planStorage: true, alwaysDraftPr: true })
   .partial()
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
@@ -3370,7 +3384,15 @@ export function seedHiddenDisplayItems(raw: unknown): unknown {
 }
 
 export const UI_CONFIG_DEFAULTS = {
-  layout: "console",
+  /**
+   * Board, which is the product's intended first view. Retiring Cards (#706) moved this to
+   * Console by accident, and fresh installs opened in Console from then on.
+   *
+   * Only a profile that never stored a layout reads this. Any write to `app_config.ui`
+   * persists the whole parsed blob, so an install that has saved any preference keeps the
+   * layout it already had, including a Console it was handed by the old default.
+   */
+  layout: "board",
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -4339,6 +4361,11 @@ export const EditWorkItemSchema = z.object({
 });
 export type EditWorkItem = z.infer<typeof EditWorkItemSchema>;
 
+/** Delegated approval binds consent to the proposal the controller inspected. */
+export const ApproveWorkItemSchema = z.object({
+  revision: EditWorkItemSchema.shape.revision,
+}).strict();
+
 /** Reorder a queue: the full id list in the new authored order, renumbered in a txn. */
 export const ReorderQueueSchema = z.object({
   ids: z.array(z.string().min(1)).min(1),
@@ -5202,6 +5229,7 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     // "inherit the Persona's own routing", and a default would write the field onto every
     // legacy graph the moment one was read back.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -5233,6 +5261,7 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     position: WorkflowPointSchema,
     // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
     executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
+    recheckAfterRepair: z.boolean().optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is
@@ -6149,6 +6178,7 @@ export const DeleteWorkflowSchema = ValidateWorkflowSchema;
 export const CreateWorkflowBindingSchema = z.object({
   workflowVersionId: WorkflowIdSchema,
   sessionId: z.string().min(1).max(500),
+  replaceBindingId: WorkflowIdSchema.optional(),
   triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).optional(),
   deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).optional(),
   maxRepairRounds: z
@@ -7999,3 +8029,42 @@ export const SessionTransferQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });
+
+
+/** A dashboard-only grant. No dispatch, task, schedule or global default accepts it. */
+export const SessionControlGrantSchema = z.object({ enabled: z.boolean(), requestId: z.string().uuid().optional() }).strict();
+const ControlIdSchema = z.string().min(1).max(256);
+export const SessionControlReadSchema = z.object({
+  sessionId: ControlIdSchema.optional(),
+  transcript: z.boolean().optional().default(false),
+}).strict();
+
+/** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
+export const SessionControlActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("message"), text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH) }).strict(),
+  z.object({ action: z.literal("interrupt") }).strict(),
+  z.object({ action: z.literal("select_option"), requestId: z.string().min(1), number: z.number().int().min(1).max(99), label: z.string().min(1) }).strict(),
+  z.object({ action: z.literal("submit_options"), form: SubmitOptionsSchema.refine(
+    (form) => !form.answers || Boolean(form.requestId),
+    { message: "delegated SDK form answers require the current requestId", path: ["requestId"] },
+  ) }).strict(),
+  z.object({ action: z.literal("resolve_review"), reviewId: ControlIdSchema, resolution: ResolveReviewSchema }).strict(),
+  z.object({ action: z.literal("pending_deliver"), turnId: ControlIdSchema, revision: z.number().int().min(0), delivery: z.enum(["steer", "interrupt"]) }).strict(),
+  z.object({ action: z.literal("pending_recall"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_retry"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("pending_resolve"), turnId: ControlIdSchema, revision: z.number().int().min(0) }).strict(),
+  z.object({ action: z.literal("queue_add"), intent: AddWorkItemSchema.shape.intent }).strict(),
+  z.object({ action: z.literal("queue_edit"), itemId: ControlIdSchema, intent: EditWorkItemSchema.shape.intent, revision: EditWorkItemSchema.shape.revision }).strict(),
+  z.object({ action: z.literal("queue_remove"), itemId: ControlIdSchema }).strict(),
+  z.object({ action: z.literal("queue_approve"), itemId: ControlIdSchema, revision: ApproveWorkItemSchema.shape.revision }).strict(),
+  z.object({ action: z.literal("queue_reorder"), ids: ReorderQueueSchema.shape.ids }).strict(),
+  z.object({ action: z.literal("rename"), name: RenameSchema.shape.name }).strict(),
+  z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),
+  z.object({ action: z.literal("set_effort"), effort: SetSessionEffortSchema.shape.effort }).strict(),
+  z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
+]);
+export const SessionControlRequestSchema = z.object({
+  sessionId: ControlIdSchema,
+  command: SessionControlActionSchema,
+}).strict();
+export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;

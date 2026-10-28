@@ -99,3 +99,13 @@ test("a single-repo task keeps the multi-repo row absent", () => {
   assert.equal(detail([]).includes("task-repo-pr"), false);
   assert.equal(renderToStaticMarkup(createElement(TaskRepoPrs, { repoPrs: [] })), "");
 });
+
+
+test("closed per-repository PRs retain their link and closed tooltip", () => {
+  const html = detail([{ ...REPO_PRS[0]!, prState: "closed", mergedAt: null }]);
+  assert.match(html, /class="task-repo-pr pr-closed"/);
+  assert.match(html, /href="https:\/\/github.com\/example\/api\/pull\/10"/);
+  assert.ok(tooltipLabels(html).includes(
+    "/Users/dev/work/api (primary repo) - pull request #10 closed - open on GitHub",
+  ));
+});

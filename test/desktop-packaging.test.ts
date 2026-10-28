@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import {createRequire} from "node:module";
+const require = createRequire(import.meta.url);
 
 function repoFile(rel: string): string {
   return readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -46,16 +48,16 @@ test("the disk image ships the app and an offline Read Me, and no Applications a
   assert.doesNotMatch(dmg, /\/Users\//u);
 });
 
-test("the disk image Read Me explains personal install, system install, and managed updates", () => {
-  // The dmg is an UNMANAGED distribution artifact: dragging the app across records no receipt,
-  // so the app cannot update itself afterwards. The Read Me is the only place that can say so,
-  // because the alias it replaced said nothing at all.
+test("the disk image Read Me distinguishes signed enrollment from developer installs", () => {
   const readme = repoFile("build/dmg/readme.txt");
   assert.match(readme, /UNMANAGED/u);
-  assert.match(readme, /Applications folder\n {3}inside your home folder/u);
-  assert.match(readme, /\/Applications folder at the top level/u);
+  assert.match(readme, /Applications folder inside your home folder/u);
+  assert.match(readme, /copy it into \/Applications/u);
   assert.match(readme, /make install/u);
-  assert.match(readme, /--scope system/u);
+  assert.match(readme, /Enroll this copied app/u);
+  assert.match(readme, /No host Node, npm, npx, Git or compilation/u);
+  assert.match(readme, /Old Mission Control\.app receipts migrate to Agent Mission Control\.app/u);
+  assert.match(readme, /older saved bootstraps cannot consume the renamed release layout/u);
   assert.doesNotMatch(readme, /\/Users\//u, "no build account's home may reach a recipient");
 });
 
@@ -70,4 +72,14 @@ test("the developer install stages a sibling instead of deleting the installed a
   assert.match(recipe, /node scripts\/install-dev-app\.mjs/u);
   assert.doesNotMatch(recipe, /rm -rf/u);
   assert.doesNotMatch(recipe, /cp -R/u);
+});
+
+// Exercise builder name resolution: executableName would silently undo the outer rename.
+test("electron-builder resolves the new bundle while the plist preserves the satellite executable", () => {
+  const config = require('js-yaml').load(repoFile('electron-builder.yml'));
+  const {AppInfo} = require('app-builder-lib/out/appInfo.js');
+  const info = new AppInfo({metadata: JSON.parse(repoFile('package.json')), config}, null, config.mac);
+  assert.equal(info.productFilename + '.app', 'Agent Mission Control.app');
+  assert.equal(config.mac.extendInfo.CFBundleExecutable, 'Mission Control');
+  assert.equal(info.macBundleIdentifier, 'com.mission-control.app');
 });

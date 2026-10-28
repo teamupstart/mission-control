@@ -1,5 +1,10 @@
 # Release verification
 
+For signed stable and exact-commit alpha **asset production**, use the
+[signed distribution verification guide](../release-verification.md). Its signing and
+publication prerequisites are separate from the source-updater journey below. No signed
+publication has been qualified yet, and the installed updater still builds from source.
+
 How to prove, against a real GitHub Release, that someone can clone Mission Control, install it,
 be offered an update, accept it, and come back running the new version - and that a failed update
 leaves the previous app working.
@@ -191,9 +196,9 @@ git -C "$SB/state/app-src" describe --tags --exact-match
 **Observed:** 70s from click to `result: "success"` when the app itself did the build - almost all
 of it before the quit, with the window up and the bar advancing, and only seconds of it after.
 The build is allowed 45 minutes wherever it runs (`INSTALL_TIMEOUT_MS`, and `STAGE_TIMEOUT_MS` in
-the app) because a cold npm cache is far slower; the staged install that follows is allowed ten
-(`STAGED_INSTALL_TIMEOUT_MS`), which is a copy, a receipt, and room for an administrator panel to
-be answered. Treat a minute as the floor, not the expectation.
+the app) because a cold npm cache is far slower. The prepared bundle is applied through the
+shared staged transaction, with separate bounds on bundle copies, administrator authorization,
+and readiness waits. Treat a minute as the floor, not the expectation.
 
 Also confirm the deferral shortcut: prepare an update, choose **Later** at the ready banner, then
 check again and accept. The second acceptance must reach **ready to install** immediately, with no

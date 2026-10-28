@@ -26,6 +26,9 @@ async function createPublishedWorkflow(
 ): Promise<{ workflowId: string; versionId: string }> {
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name,
+    // Preview, stated rather than inherited: a new draft now defaults to Live, which needs a
+    // Trust grant this fixture's repository does not have.
+    bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "preview", maxRepairRounds: 5 },
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },

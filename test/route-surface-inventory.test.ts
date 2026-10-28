@@ -54,10 +54,10 @@ function concrete(path: string): string {
 }
 
 test("every route registered in source is present in the composed surface", () => {
-  const source = readFileSync(
-    fileURLToPath(new URL("../src/server/routes.ts", import.meta.url)),
+  const source = ["routes.ts", "session-control.ts", "workflows/mcp.ts"].map((file) => readFileSync(
+    fileURLToPath(new URL(`../src/server/${file}`, import.meta.url)),
     "utf8",
-  );
+  )).join("\n");
   const declared = source.match(/^ {2}app\.(get|post|put|patch|delete)\(/gm)?.length ?? 0;
   const composed = routeKeys(buildApp(FORWARD)).length;
   assert.ok(declared > 300, `expected the full surface in source, saw ${declared}`);

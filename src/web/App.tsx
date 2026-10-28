@@ -110,7 +110,7 @@ import {
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { matchesSessionFilter } from "./lib/fleet-filter.ts";
-import type { BacklogTrustView } from "./lib/backlog-copy.ts";
+import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
 import {
   OverlayHost,
@@ -2758,6 +2758,7 @@ export function App(): React.JSX.Element {
     files,
     fileCommentThreads,
     fileCommentReviews,
+    fileCommentsLoaded: hasSnapshot,
     fileLineRequest,
     fileCommentRequest,
     onReset: setResetSessionId,
@@ -3673,7 +3674,7 @@ export function App(): React.JSX.Element {
     )
     : libraryShelf === "commands"
     ? (
-      // The one Library surface with a CLOSED catalog: four built-in slots, no New, and the
+      // The one Library surface with a CLOSED catalog: built-in slots, no New, and the
       // live views straight off the snapshot rather than a second fetch of the same rows.
       <main className="lib-surface">
         <CommandLibrary
@@ -3989,7 +3990,7 @@ export function App(): React.JSX.Element {
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
         />
-        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} />
+        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} snapshot={desktopUpdates.snapshot} />
         <SettingsRestoredBanner
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}
@@ -4281,12 +4282,13 @@ export function App(): React.JSX.Element {
             now={Date.now()}
             // The same three values the Foreman popover reads, from the same hook: the
             // config the switch writes, the derived readout, and the gate that decides
-            // whether an armed autopilot actually launches anything (`worker.ts` takes
-            // `enabled && mode === "live"`). Threaded rather than re-fetched, so the two
-            // surfaces cannot disagree about a switch they both write.
+            // whether an armed autopilot actually launches anything (`autopilotGate`: the
+            // worker's `enabled && mode === "live"`, then a granted repository). Threaded
+            // rather than re-fetched, so the two surfaces cannot disagree about a switch
+            // they both write.
             autoBacklog={foreman.config?.autoBacklog ?? null}
             autopilot={foreman.status?.autopilot ?? null}
-            autopilotLaunches={foremanEnabled && foremanMode === "live"}
+            autopilotGate={autopilotGate(foreman.config)}
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             backlogTrust={backlogTrust}
             onManageTrust={openForemanTrust}
@@ -4335,6 +4337,7 @@ export function App(): React.JSX.Element {
             controller={files}
             fileCommentThreads={fileCommentThreads}
             fileCommentReviews={fileCommentReviews}
+            fileCommentsLoaded={hasSnapshot}
             fileLineRequest={fileLineRequest}
             fileCommentRequest={fileCommentRequest}
             onClose={closeFiles}

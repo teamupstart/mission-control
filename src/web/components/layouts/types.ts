@@ -138,6 +138,8 @@ export interface SessionViewProps {
   fileCommentThreads?: FileCommentThread[];
   /** Each session's walkthrough run state. At most one row per session; empty until one starts. */
   fileCommentReviews?: FileCommentReview[];
+  /** Whether the two lists above are the daemon's answer yet: the event stream's first snapshot. */
+  fileCommentsLoaded?: boolean;
   /** Which source line the reader deep-linked to, and how many times they asked. */
   fileLineRequest?: { sessionId: string; path: string; line: number; nonce: number } | null;
   /** Which rendered file should enter comment mode, and how many times it was requested. */

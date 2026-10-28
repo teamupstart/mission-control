@@ -359,6 +359,7 @@ test("a narrow Files toolbar keeps both modes and every action visible", async (
     modes.getByRole("button", { name: "Editor" }),
     toolbar.getByRole("button", { name: "Comment mode" }),
     toolbar.getByRole("button", { name: "Comments" }),
+    toolbar.getByRole("button", { name: /^Publish as/ }),
     toolbar.getByRole("button", { name: /^Open in/ }),
     toolbar.getByRole("button", { name: "Extract files window" }),
   ];
@@ -419,6 +420,34 @@ test("a PNG opens as a fitted, read-only image preview", async ({ dashboard, dae
   await expect(modes.getByRole("button", { name: "Editor" })).toBeDisabled();
   await expect(dashboard.getByText("Read only", { exact: true })).toBeVisible();
   await shoot(dashboard, "png-opens-in-preview");
+});
+
+test("an image's Comment control stays reachable and a key press does not turn it on", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFilesTab(dashboard, daemon);
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  await files.getByRole("option", { name: IMAGE }).click();
+  await expect(dashboard.getByLabel(`Preview of ${IMAGE}`).getByRole("img", { name: IMAGE })).toBeVisible();
+
+  // `aria-disabled`, not `disabled`: the control stays in the tab order so its reason reaches
+  // the keyboard - which also means Enter and Space still reach it, and must do nothing.
+  const commentMode = dashboard.getByRole("button", { name: "Comment mode" });
+  await expect(commentMode).toHaveAttribute("aria-disabled", "true");
+  await expect(commentMode).toHaveAccessibleDescription("An image has no lines to comment on");
+  await commentMode.focus();
+  await expect(commentMode).toBeFocused();
+  // Checked after EACH key, because each is a click: two presses that each toggled the mode
+  // would cancel out, and a check made only after both would read "off" either way.
+  for (const key of ["Enter", "Space"]) {
+    await dashboard.keyboard.press(key);
+    await expect(commentMode, `${key} left comment mode off`).toHaveAttribute("aria-pressed", "false");
+    await expect(dashboard.getByRole("button", { name: "Show resolved comments" })).toHaveCount(0);
+    await expect(dashboard.getByRole("region", { name: /^New comment on / })).toHaveCount(0);
+    await expect(dashboard.getByRole("textbox", { name: /^Comment on line / })).toHaveCount(0);
+  }
+  await expect(dashboard.getByLabel(`Preview of ${IMAGE}`)).toBeVisible();
 });
 
 test("bare e and p switch modes only in the integrated Files tab", async ({

@@ -108,6 +108,7 @@ import {
 import {
   WORKFLOW_INSPECTOR_ENTRY_PHASE,
   WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
+  workflowPreparationRecovery,
   withInspectorGate,
   workflowInspectorGate,
   workflowRoundLimitParkedPhase,
@@ -207,6 +208,7 @@ import {
   renderUnchangedEvidenceNudge,
   renderWorkflowFeedback,
   renderEvidenceReadinessPacket,
+  renderEvidenceCaptureRepairPacket,
 } from "./feedback.ts";
 import { findingFingerprintAudit } from "./finding-audit.ts";
 import { repeatOffenders } from "./repeat-offender.ts";
@@ -1068,6 +1070,7 @@ export class WorkflowManager {
     status?: WorkflowRun["status"];
     workflowId?: string;
     session?: string;
+    owner?: { sessionId: string; noteKey: string };
   }): WorkflowRunPage {
     return this.store.listRunSummaryPage(input);
   }
@@ -1204,7 +1207,9 @@ export class WorkflowManager {
     if (prerequisite) return prerequisite;
     const noteKey = noteKeyFor(session);
     const current = this.store.activeBindingForNote(noteKey);
-    if (current) {
+    if ((current && !input.replaceBindingId)
+      || (input.replaceBindingId && (current?.id !== input.replaceBindingId
+        || current.workflowVersionId === input.workflowVersionId))) {
       return {
         ok: false,
         reason: "conflict",
@@ -1212,11 +1217,26 @@ export class WorkflowManager {
         current,
       };
     }
+    const insert = {
+      id: randomUUID(),
+      workflowVersionId: input.workflowVersionId,
+      noteKey,
+      sessionId: session.id,
+      sessionAgent: session.agent,
+      sessionName: session.name,
+      sessionCwd: session.cwd,
+      sessionRepoRoot: session.repoRoot,
+      triggerMode,
+      deliveryMode,
+      maxRepairRounds,
+      now,
+    };
     let created: WorkflowBinding;
+    let archived: Array<{ binding: WorkflowBinding; cancelledRunId: string | null }> = [];
     /*
-     * This try covers the INSERT and nothing else. It exists to translate one specific SQLite
-     * failure - the UNIQUE constraint on an active note key, lost to a concurrent caller - into
-     * a typed conflict, and anything else inside it gets read through that lens.
+     * This try covers only database writes: either the insert or the archive-and-insert
+     * transaction. It translates the UNIQUE constraint on an active note key, lost to a
+     * concurrent caller, into a typed conflict.
      *
      * Publishing sits outside for exactly that reason. It runs after the row is durably
      * committed, so a throw from it is not a failed bind: caught here it would either be
@@ -1226,20 +1246,19 @@ export class WorkflowManager {
      * response invented.
      */
     try {
-      created = this.store.insertBinding({
-        id: randomUUID(),
-        workflowVersionId: input.workflowVersionId,
-        noteKey,
-        sessionId: session.id,
-        sessionAgent: session.agent,
-        sessionName: session.name,
-        sessionCwd: session.cwd,
-        sessionRepoRoot: session.repoRoot,
-        triggerMode,
-        deliveryMode,
-        maxRepairRounds,
-        now,
-      });
+      if (input.replaceBindingId) {
+        const replaced = this.store.replaceBindingAndCancel(input.replaceBindingId, insert);
+        if (!replaced) return {
+          ok: false,
+          reason: "conflict",
+          message: "This conversation's workflow binding changed; reload and try again",
+          current: this.store.activeBindingForNote(noteKey),
+        };
+        archived = replaced.archived;
+        created = replaced.created;
+      } else {
+        created = this.store.insertBinding(insert);
+      }
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         return {
@@ -1250,6 +1269,10 @@ export class WorkflowManager {
         };
       }
       throw error;
+    }
+    for (const old of archived) {
+      if (old.cancelledRunId) this.publishRun(old.cancelledRunId);
+      this.publishBinding(old.binding.id);
     }
     // Every arm lands here - the dispatch one included, since `bindDispatchedTaskWorkflow`
     // creates its binding through this method. Publishing HERE rather than at each caller is
@@ -4963,6 +4986,102 @@ export class WorkflowManager {
     }));
   }
 
+  private automaticEvidencePreparation(binding: WorkflowBinding, submission: WorkflowSubmission): boolean {
+    const run = this.store.getRun(submission.runId);
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
+    if (version?.resumptionPolicy !== "auto" || binding.deliveryMode !== "live"
+        || binding.state !== "active" || submission.mode !== "full_workflow"
+        || !session || session.state === "exited" || noteKeyFor(session) !== binding.noteKey
+        || binding.sessionCwd !== session.cwd || binding.sessionRepoRoot !== session.repoRoot
+        || (binding.sessionAgent !== null && binding.sessionAgent !== session.agent)) return false;
+    // Action continuations and external artifacts own a different activation route. Never
+    // turn a shipping capture into a new review from Session, or discard an expected HEAD.
+    let current: WorkflowSubmission | null = submission;
+    while (current) {
+      if ((WORKFLOW_EXTERNAL_SOURCE_KINDS as readonly string[]).includes(current.triggerSource)
+          || current.refinementReason === "session_action") return false;
+      if (!current.parentSubmissionId) break;
+      const parent = previousEvidenceSubmission(this.store, current);
+      if (!parent) return false;
+      current = parent;
+    }
+    return true;
+  }
+
+  private scheduleEvidenceCaptureRepair(submissionId: string): void {
+    this.trackBackgroundTask(this.prepareEvidenceCaptureRepair(submissionId).catch((error) => {
+      const submission = this.store.getSubmission(submissionId);
+      if (!submission) return;
+      this.store.setRunState(submission.runId, "blocked", "delivery_prepare_error", {
+        submissionId, error: error instanceof Error ? error.message : String(error),
+      });
+      this.publishRun(submission.runId);
+    }));
+  }
+
+  private async prepareEvidenceCaptureRepair(submissionId: string): Promise<void> {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const recovery = run ? workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState }) : null;
+    if (!submission || !run || !binding?.sessionId || this.store.latestSubmission(run.id)?.id !== submission.id
+        || recovery?.kind !== "capture" || recovery.state !== "pending"
+        || !this.automaticEvidencePreparation(binding, submission)) return;
+    const prior = this.store.listDeliveries(run.id).find((delivery) =>
+      delivery.submissionId === submission.id && delivery.kind === "evidence_capture_repair");
+    if (prior) {
+      if (prior.state === "prepared") await this.deliverPrepared(prior.id, false);
+      return;
+    }
+    const failure = this.store.evidencePreparationFailure(submission.id);
+    if (!failure) return;
+    const rendered = renderEvidenceCaptureRepairPacket({
+      runId: run.id, round: submission.round, attempt: recovery.attempts + 1, limit: recovery.limit,
+      error: String(failure.error), sources: this.store.listReservedWorkflowEvidence(submission.id),
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(), runId: run.id, submissionId: submission.id, kind: "evidence_capture_repair",
+      sessionId: binding.sessionId, noteKey: binding.noteKey,
+      payload: rendered.payload, payloadSha256: rendered.payloadSha256,
+    });
+    this.publishRun(run.id);
+    await this.deliverPrepared(prepared.delivery.id, false);
+  }
+
+  private async resumeEvidencePreparation(runId: string, now: number): Promise<void> {
+    const run = this.store.getRun(runId);
+    const latest = run ? this.store.latestSubmission(run.id) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const recovery = run ? workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState }) : null;
+    if (!run || !latest || !binding || recovery?.state !== "pending"
+        || recovery.submissionId !== latest.id) return;
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
+    const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
+      && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
+      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you";
+    if (!eligible) {
+      if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
+        this.publishRun(runId);
+      }
+      return;
+    }
+    const child = recovery.kind === "capture"
+      ? this.store.reserveEvidenceCaptureRepair({ id: randomUUID(), runId, parentId: latest.id, now })
+      : this.store.reserveEvidenceRecovery({
+        id: randomUUID(), runId, parentId: latest.id, requestId: `automatic:${latest.id}`,
+        reason: "automatic_mapping_recovery", automatic: true, now,
+      })?.submission;
+    if (!child) {
+      if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({
+        runId, now, settledSince: session.lastActivity ?? session.firstSeen,
+      })) this.publishRun(runId);
+      return;
+    }
+    this.publishRun(runId);
+    await this.captureAndActivate(binding, this.store.getRun(runId)!, child, undefined, true);
+  }
+
   private async prepareEvidenceReadinessDelivery(submissionId: string): Promise<void> {
     const submission = this.store.getSubmission(submissionId);
     const run = submission ? this.store.getRun(submission.runId) : null;
@@ -5017,6 +5136,10 @@ export class WorkflowManager {
     const inScope = (run: WorkflowRun | null): boolean => Boolean(run &&
       (noteKey === undefined || this.store.getBinding(run.bindingId)?.noteKey === noteKey));
     for (const run of this.store.listRuns()) {
+      if (inScope(run) && workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState })?.kind === "capture") {
+        const latest = this.store.latestSubmission(run.id);
+        if (latest) this.scheduleEvidenceCaptureRepair(latest.id);
+      }
       if (run.status !== "waiting_for_pr" || !inScope(run)) continue;
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const binding = this.store.getBinding(run.bindingId);
@@ -5055,6 +5178,15 @@ export class WorkflowManager {
         || binding?.deliveryMode !== "live"
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
+      if (delivery.kind === "evidence_capture_repair") {
+        // A temporary delivery block may replace the capture phase. Its durable failure
+        // receipt still owns this packet; confirmed delivery restores that phase and detail.
+        if (this.store.evidencePreparationFailure(delivery.submissionId)
+            && ["image_evidence_capture", "delivery_blocked"].includes(run.currentPhase)) {
+          this.schedulePreparedDelivery(delivery.id);
+        }
+        continue;
+      }
       // An unchanged-evidence nudge is prepared and sent in one turn, so finding one still
       // `prepared` means the daemon stopped inside that window or the pane was briefly
       // unreachable. Its submission is `failed` rather than `waiting_for_session`, so the loop
@@ -5386,6 +5518,8 @@ export class WorkflowManager {
       workflowEvidence: versionSupportsWorkflowEvidence(version),
       pullRequestCi: snapshot.completion.kind === "pull_request"
         && this.options.trackCiFailures?.() === true,
+      pullRequestPolicy: snapshot.completion.kind === "pull_request"
+        || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -5757,6 +5891,7 @@ export class WorkflowManager {
       observedAt: pr.observedAt,
       sessionId: pr.sessionId,
       adoptedAt: pr.adoptedAt,
+      checkout: pr.cwd,
     }));
   }
 
@@ -6041,6 +6176,12 @@ export class WorkflowManager {
     // hard-wired to the pull-request skill by the completion policy that produced it, while an
     // action reads its ATTEMPT's frozen snapshot - never the live library, so an edit to the
     // action cannot change what an in-flight run demands.
+    if (delivery.kind === "evidence_capture_repair") {
+      const latest = this.store.latestSubmission(run.id);
+      if (latest?.id !== delivery.submissionId || !this.automaticEvidencePreparation(binding, latest)) {
+        return "evidence_repair_superseded";
+      }
+    }
     if (delivery.kind === "session_action") {
       const attempt = delivery.nodeAttemptId ? this.store.getAttempt(delivery.nodeAttemptId) : null;
       if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) {
@@ -6107,7 +6248,10 @@ export class WorkflowManager {
           if (attempt?.state === "waiting") return other;
           continue;
         }
-        if (run.status === "waiting_for_session" && other.submissionId === latest?.id) return other;
+        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
+        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
+            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
+            && other.submissionId === latest?.id) return other;
       }
     }
     return null;
@@ -6885,6 +7029,7 @@ export class WorkflowManager {
         const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
         const grant = parent ? this.store.runRepairGrant(run.id) : null;
         const startsMappingOperation = submission.triggerSource === "manual"
+          || submission.refinementReason === "evidence_recovery"
           || Boolean(parent && grant && parent.round <= grant.round && grant.round < submission.round);
         // An explicit retry or the first round after a grant gets a fresh failure budget.
         // Completed mappings stay cached. A checkpoint on THIS submission always wins,
@@ -7075,10 +7220,12 @@ export class WorkflowManager {
       }
       if (enforcingReadiness && context.reconciliation?.status !== "complete"
           && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
-        this.store.setSubmissionState(submission.id, "failed", Date.now());
-        const blocked = this.store.setRunState(run.id, "blocked", "evidence_reconciliation_error", {
-          submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete",
-        }, Date.now());
+        const blocked = this.store.failEvidencePreparation({
+          submissionId: submission.id, kind: "mapping",
+          automatic: this.automaticEvidencePreparation(binding, submission),
+          detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
+          now: Date.now(),
+        });
         this.store.appendEvent(run.id, "evidence_reconciliation_error", {
           submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
         }, Date.now());
@@ -7123,7 +7270,6 @@ export class WorkflowManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.captureIsActive(run.id, submission.id)) {
-        this.store.setSubmissionState(submission.id, "failed", Date.now());
         const imageFailure = error instanceof WorkflowImageEvidenceError;
         const phase = imageFailure ? "image_evidence_capture" : "capture_error";
         // Omitted rather than null when there is no item: the decoder reads absent and null
@@ -7136,7 +7282,18 @@ export class WorkflowManager {
             ? { itemName: failingItem.displayName, itemClientId: failingItem.clientItemId }
             : {}),
         };
-        this.store.setRunState(run.id, "blocked", phase, detail, Date.now());
+        if (imageFailure) {
+          const agentSource = failingItem && this.store.listReservedWorkflowEvidence(submission.id)
+            .some((item) => item.clientItemId === failingItem.clientItemId && item.sourceKind === "agent");
+          this.store.failEvidencePreparation({
+            submissionId: submission.id, kind: "capture", detail, now: Date.now(),
+            automatic: Boolean(agentSource) && this.automaticEvidencePreparation(binding, submission),
+          });
+          this.scheduleEvidenceCaptureRepair(submission.id);
+        } else {
+          this.store.setSubmissionState(submission.id, "failed", Date.now());
+          this.store.setRunState(run.id, "blocked", phase, detail, Date.now());
+        }
         this.store.appendEvent(run.id, phase, {
           submissionId: submission.id,
           ...detail,
@@ -7445,6 +7602,24 @@ export class WorkflowManager {
       for (const run of this.store.listRuns()) {
         const binding = this.store.getBinding(run.bindingId);
         if (binding && transferForNote(binding.noteKey)) continue;
+        if (workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState })) {
+          try {
+            await this.resumeEvidencePreparation(run.id, now);
+          } catch (error) {
+            const current = this.store.getRun(run.id);
+            const message = error instanceof Error ? error.message : String(error);
+            if (current?.status === "blocked" && current.currentPhase === run.currentPhase) {
+              this.store.setRunState(run.id, "blocked", "capture_error", {
+                error: `Evidence preparation recovery could not reserve its next attempt: ${message}`,
+              }, now);
+              this.store.appendEvent(run.id, "evidence_preparation_resumption_failed", { error: message }, now);
+              this.publishRun(run.id);
+            }
+            workflowLog("error", { event: "evidence_preparation_resumption_failed", run: run.id,
+              error: error instanceof Error ? error.name : "unknown" });
+          }
+          continue;
+        }
         if (
           run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)
@@ -7504,6 +7679,16 @@ export class WorkflowManager {
     if (this.captureLocks.has(binding.noteKey)) return;
     if (this.continueExhaustedEvidenceReadiness(run.id, latest.id, binding, now)) return;
 
+    if ((latest.refinementReason === "evidence_capture_repair" || latest.refinementReason === "evidence_recovery")
+        && latest.triggerSource === "session" && this.automaticEvidencePreparation(binding, latest)) {
+      const resumed = run.status === "capturing" && latest.status === "capturing"
+        ? { run, submission: latest }
+        : this.store.resumeCapture(run.id, latest.id, ["capture_interrupted"], now);
+      if (resumed) {
+        await this.captureAndActivate(binding, resumed.run, resumed.submission, undefined, true);
+        return;
+      }
+    }
     const checkpoint = WorkflowContextSnapshotSchema.safeParse(latest.context);
     if (
       latest.segment === 0

@@ -12,11 +12,12 @@ import type {
   FileCommentReview,
   FileCommentThread,
   PendingTurn,
+  Session,
   SessionFileDocument,
   SessionState,
 } from "@shared/types.ts";
 import type { HtmlBlockPathStep } from "@shared/protocol.ts";
-import { boundQuote, normalizeQuote } from "@shared/file-comment-anchor.ts";
+import { boundQuote, normalizeQuote, reanchor } from "@shared/file-comment-anchor.ts";
 import {
   holdsQueuePosition,
   isOutstandingThreadStatus,
@@ -94,6 +95,17 @@ function isBlockHtmlCommentDisplay(display: string): boolean {
  */
 export function isCommentableDocument(document: SessionFileDocument): boolean {
   return document.kind !== "image" && document.text !== null;
+}
+
+/**
+ * Whether this session's checkout is pinned provider evidence that takes no new comment.
+ *
+ * Its threads stay readable - a retained review is still evidence - but nothing on it opens a
+ * composer, replies, or resolves. One predicate for every surface that draws comments, so the
+ * Files tab and the Diff tab cannot disagree about which sessions are writable.
+ */
+export function isReadOnlyWorkspace(session: Pick<Session, "workspace">): boolean {
+  return session.workspace?.authority === "provider" && !session.workspace.capabilities.write;
 }
 
 /** Split exactly as CodeMirror numbers lines, so line N here is line N on screen. */
@@ -301,6 +313,46 @@ export function threadsForFile(
     .sort((a, b) => a.startLine - b.startLine || a.createdAt - b.createdAt);
 }
 
+/**
+ * Where each thread is drawn in the file's CURRENT text.
+ *
+ * The durable row keeps a thread's identity; the current bytes decide where it is drawn.
+ * Delivery re-anchors queued comments on the daemon, but an answered thread can outlive an
+ * edit above its quote without entering that path again. Deriving its display anchor here
+ * keeps every surface that draws it on the same current line, while the next human reply
+ * still uses the existing thread id and lets the daemon persist the move before delivery.
+ * The document revision keeps unchanged files on the cheap path; a newly loaded revision
+ * triggers the same bounded quote search the daemon uses.
+ *
+ * Shared by the Files workspace and the Diff tab, so a thread is never on one line in one
+ * tab and on another line in the other.
+ */
+export function reanchorThreadsForDisplay(
+  threads: readonly FileCommentThread[],
+  text: string,
+  revision: string | null,
+): FileCommentThread[] {
+  return threads.map((thread) => {
+    const outcome = reanchor(thread, text, revision);
+    if (outcome.kind === "outdated") {
+      return thread.outdated ? thread : { ...thread, outdated: true };
+    }
+    if (
+      thread.startLine === outcome.startLine
+      && thread.endLine === outcome.endLine
+      && thread.revision === outcome.revision
+      && thread.outdated === false
+    ) return thread;
+    return {
+      ...thread,
+      startLine: outcome.startLine,
+      endLine: outcome.endLine,
+      revision: outcome.revision,
+      outdated: false,
+    };
+  });
+}
+
 /** Anchor line to the threads on it, in the order they were written. */
 export function threadsByLine(
   threads: readonly FileCommentThread[],
@@ -476,6 +528,61 @@ export function unreadAgentReplies(
   return unread;
 }
 
+/** What a file list says about the comments on one file. */
+export interface FileCommentSummary {
+  /** Every thread the Comments index lists for the file, closed ones included. */
+  total: number;
+  /** Threads nobody has closed yet. */
+  open: number;
+  /** Agent replies on the file nobody has read, counted as `unreadAgentReplies` counts them. */
+  unread: number;
+}
+
+/**
+ * Each commented file in one session, keyed by Files-relative path - the file lists' markers.
+ *
+ * The same population as the Comments index (`threadsForFile` with resolved shown), so the
+ * count beside a file in the list is the count on that file's Comments button, in the Files
+ * tab and the Diff tab alike. One pass over the wire list rather than a filter per row, because
+ * a checkout lists thousands of files and only a handful of them carry comments.
+ */
+export function fileCommentSummaries(
+  threads: readonly FileCommentThread[],
+  sessionId: string,
+): ReadonlyMap<string, FileCommentSummary> {
+  const byPath = new Map<string, FileCommentSummary>();
+  for (const thread of threads) {
+    if (thread.sessionId !== sessionId || thread.status === "orphaned") continue;
+    const summary = byPath.get(thread.path) ?? { total: 0, open: 0, unread: 0 };
+    summary.total += 1;
+    if (thread.status !== "resolved") {
+      summary.open += 1;
+      for (const message of thread.messages) {
+        if (message.author === "agent" && message.readAt === null) summary.unread += 1;
+      }
+    }
+    byPath.set(thread.path, summary);
+  }
+  return byPath;
+}
+
+/** How a file's marker reads to a screen reader, which is everything its colour says. */
+export function fileCommentSummaryLabel(summary: FileCommentSummary): string {
+  const count = `${summary.total} ${summary.total === 1 ? "comment" : "comments"}`;
+  if (summary.unread > 0) {
+    return `${count}, ${summary.unread} unread ${summary.unread === 1 ? "reply" : "replies"}`;
+  }
+  if (summary.open === 0) return summary.total === 1 ? `${count}, resolved` : `${count}, all resolved`;
+  if (summary.open < summary.total) return `${count}, ${summary.open} open`;
+  return count;
+}
+
+/** The marker's visual class: an unread answer outranks an open thread, which outranks none. */
+export function fileCommentSummaryTone(summary: FileCommentSummary): string {
+  if (summary.unread > 0) return "is-unread";
+  return summary.open > 0 ? "is-open" : "is-resolved";
+}
+
 export function reviewQueue(
   threads: readonly FileCommentThread[],
   sessionId: string,
@@ -488,6 +595,36 @@ export function reviewQueue(
 /** The comment out with the agent right now, or null between two turns. */
 export function outstandingThread(queue: readonly FileCommentThread[]): FileCommentThread | null {
   return queue.find((thread) => isOutstandingThreadStatus(thread.status)) ?? null;
+}
+
+/** What the Files workspace's walkthrough has already seen go out. */
+export interface OutstandingFollow {
+  /** False until the comment state was known while this workspace was open. */
+  armed: boolean;
+  followedId: string | null;
+}
+
+/**
+ * Whether the comment out with the agent now is one to take the reader to: one that went out
+ * while they were reading, and not one that was already out when they arrived.
+ *
+ * Nothing is followed before the comment state is known (`loaded`, the first snapshot). The
+ * first look after that arms the follow and counts whatever is already out as followed, so a
+ * workspace opened on a file the reader asked for - or one that mounted before its comment data
+ * arrived - is not pulled off it by a comment that went out earlier. After that each new
+ * outstanding comment is followed once, by id.
+ */
+export function stepOutstandingFollow(
+  previous: OutstandingFollow,
+  loaded: boolean,
+  outstandingId: string | null,
+): { next: OutstandingFollow; follow: boolean } {
+  if (!loaded) return { next: previous, follow: false };
+  if (!previous.armed) return { next: { armed: true, followedId: outstandingId }, follow: false };
+  if (outstandingId === null || outstandingId === previous.followedId) {
+    return { next: previous, follow: false };
+  }
+  return { next: { armed: true, followedId: outstandingId }, follow: true };
 }
 
 /**

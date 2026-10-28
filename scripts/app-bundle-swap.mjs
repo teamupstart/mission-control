@@ -1,22 +1,28 @@
 // The macOS application swap is the only part of a managed install that may need
 // administrator authorization. Keep checkout, dependency installation, packaging, and receipt
 // writes in the signed-in account. This module is copied beside the detached update helper, so
-// it may import only node: builtins.
+// it imports only Node builtins and the bundled shared naming constants, and loads
+// the copied native filesystem addon only for exclusive app publication.
 
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import {
   accessSync,
   constants as fsConstants,
   existsSync,
   lstatSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-export const APP_BUNDLE_NAME = "Mission Control.app";
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME } from "../src/shared/app-naming.mjs";
+export { APP_BUNDLE_NAME };
 /**
  * The one directory an administrator prompt may ever install into.
  *
@@ -93,9 +99,9 @@ export function bundleOwnerSpec(uid, gid) {
 
 export function stagingPaths({ appsDir, pid }) {
   return {
-    staged: join(appsDir, `.${APP_BUNDLE_NAME}.incoming-${pid}`),
-    previous: join(appsDir, `.${APP_BUNDLE_NAME}.previous-${pid}`),
-    failed: join(appsDir, `.${APP_BUNDLE_NAME}.failed-update`),
+    staged: join(appsDir, `.${LEGACY_APP_BUNDLE_NAME}.incoming-${pid}`),
+    previous: join(appsDir, `.${LEGACY_APP_BUNDLE_NAME}.previous-${pid}`),
+    failed: join(appsDir, `.${LEGACY_APP_BUNDLE_NAME}.failed-update`),
   };
 }
 
@@ -166,7 +172,7 @@ export function privilegedBundleSwapCommand({
   const exactAppsDir = resolve(appsDir);
   const exactAppPath = resolve(appPath);
   const expectedAppPath = join(SYSTEM_APPS_DIR, APP_BUNDLE_NAME);
-  if (exactAppsDir !== SYSTEM_APPS_DIR || exactAppPath !== expectedAppPath) {
+  if (exactAppsDir !== SYSTEM_APPS_DIR || ![expectedAppPath, join(SYSTEM_APPS_DIR, LEGACY_APP_BUNDLE_NAME)].includes(exactAppPath)) {
     return {
       command: null,
       problem: `administrator authorization is restricted to ${expectedAppPath}`,
@@ -203,19 +209,24 @@ export function attemptSwapAppBundle({
   appsDir,
   pid,
   keepPrevious = false,
+  verifyStaged = () => {},
   ops,
 }) {
   const { staged, previous, failed } = stagingPaths({ appsDir, pid });
   const why = (err) => (err instanceof Error ? err.message : String(err));
 
   ops.remove(staged);
+  let verifying = false;
   try {
     ops.copy(packagedApp, staged);
+    verifying = true;
+    verifyStaged(staged);
   } catch (err) {
     ops.remove(staged);
     return {
       problem: `could not stage the new app at ${staged}: ${why(err)}. ${appPath} is unchanged.`,
       appIntact: true,
+      verificationFailed: verifying,
       retainedAt: null,
       stranded: [],
     };
@@ -410,7 +421,7 @@ export function sweepDisplacedBundles({
     }
   },
 }) {
-  const prefix = `.${APP_BUNDLE_NAME}.previous-`;
+  const prefix = `.${LEGACY_APP_BUNDLE_NAME}.previous-`;
   const keep = `${prefix}${keepPid}`;
   const stranded = [];
   let entries = [];
@@ -463,13 +474,14 @@ export function replaceAppBundle({
   appsDir,
   pid,
   keepPrevious = false,
+  verifyStaged = () => {},
   prompt = ADMINISTRATOR_AUTHORIZATION_PROMPT,
   platform = process.platform,
   appsDirWritable = directoryIsWritable(appsDir),
   owner = bundleOwnerSpec(process.getuid?.(), process.getgid?.()),
   sweep = () => sweepDisplacedBundles({ appsDir, keepPid: pid }),
   ops = {
-    copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit" }),
+    copy: (from, to) => execFileSync("/bin/cp", ["-R", from, to], { stdio: "inherit", timeout: 10 * 60 * 1000 }),
     move: renameSync,
     remove: (path) => rmSync(path, { recursive: true, force: true }),
     exists: existsSync,
@@ -478,7 +490,7 @@ export function replaceAppBundle({
     execFileSync(
       "/usr/bin/osascript",
       ["-e", PRIVILEGED_SWAP_APPLESCRIPT, command, promptText],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10 * 60 * 1000 },
     );
   },
 }) {
@@ -501,6 +513,7 @@ export function replaceAppBundle({
       appsDir,
       pid,
       keepPrevious,
+      verifyStaged,
       ops,
     });
     if (!attempt.problem) {
@@ -517,7 +530,7 @@ export function replaceAppBundle({
       };
     }
     // Nothing an administrator can put right, or nothing left to safely retry over.
-    if (platform !== "darwin" || !attempt.appIntact) {
+    if (platform !== "darwin" || !attempt.appIntact || attempt.verificationFailed) {
       return {
         problem: attempt.problem,
         elevated: false,
@@ -560,5 +573,143 @@ export function replaceAppBundle({
       failedBundle: null,
       stranded,
     };
+  }
+}
+
+/** Reserve private staging on the destination volume. No public app path is written
+ * until publishRenamedApp atomically claims an unoccupied name. */
+export function reserveRenamedApp(target) {
+  const prefix = join(dirname(target), ".mission-rename-staging-");
+  try { return mkdtempSync(prefix); }
+  catch (error) {
+    if (!["EACCES", "EPERM"].includes(error.code) || target !== join(SYSTEM_APPS_DIR, APP_BUNDLE_NAME)) throw error;
+  }
+  const owner = bundleOwnerSpec(process.getuid?.(), process.getgid?.());
+  if (!owner) throw new Error("Cannot identify the installation owner");
+  const directory = execFileSync("/usr/bin/osascript", ["-e", PRIVILEGED_SWAP_APPLESCRIPT,
+    `set -eu\ndirectory=$(/usr/bin/mktemp -d ${shellQuote(`${prefix}XXXXXXXX`)})\n/usr/sbin/chown ${shellQuote(owner)} "$directory"\nprintf '%s' "$directory"`,
+    ADMINISTRATOR_AUTHORIZATION_PROMPT], {encoding: "utf8", timeout: 600_000});
+  const path = directory.trim();
+  const stat = lstatSync(path);
+  if (dirname(path) !== SYSTEM_APPS_DIR || !basename(path).startsWith(".mission-rename-staging-") ||
+    !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
+    throw new Error("The private app staging directory could not be verified");
+  }
+  return path;
+}
+
+// This native operation already ships with every app. Unlike fs.renameSync or mv -n,
+// it refuses an occupied name atomically, including an empty directory or a symlink.
+function renamePublicationBinding() {
+  const path = fileURLToPath(new URL("../dist/native/state-lock.node", import.meta.url));
+  const binding = createRequire(path)(path);
+  if (typeof binding.renameNoReplace !== "function") throw new Error("The packaged runtime lacks exclusive app publication");
+  return {path, rename: binding.renameNoReplace};
+}
+
+/** Authorization only repeats the exclusive publication, using this helper's own
+ * embedded runtime and shipped addon. No host Node, npm, compilation or copying into
+ * the public destination. Recheck the private source after the prompt as well. */
+export function renamedBundlePublicationCommand(source, target, expectedIdentity) {
+  requireDirectoryIdentity(expectedIdentity);
+  const script = `const fs = require('node:fs');
+const [addon, source, target, expected] = process.argv.slice(1);
+const stat = fs.lstatSync(source);
+if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev + ':' + stat.ino !== expected) throw new Error('Private app staging identity changed');
+require(addon).renameNoReplace(source, target);`;
+  return `/usr/bin/env -i ELECTRON_RUN_AS_NODE=1 ${shellQuote(process.execPath)} -e ${shellQuote(script)} ${[renamePublicationBinding().path, source, target, expectedIdentity].map(shellQuote).join(" ")}`;
+}
+
+export function publishRenamedApp(source, target, expectedIdentity, {
+  rename = (from, to) => renamePublicationBinding().rename(from, to),
+  runElevated = (command) => execFileSync("/usr/bin/osascript", ["-e", PRIVILEGED_SWAP_APPLESCRIPT,
+    command, ADMINISTRATOR_AUTHORIZATION_PROMPT], {encoding: "utf8", timeout: 600_000}),
+} = {}) {
+  requireDirectoryIdentity(expectedIdentity);
+  if (resolve(source) !== source || resolve(target) !== target || basename(target) !== APP_BUNDLE_NAME ||
+    basename(source) !== APP_BUNDLE_NAME || dirname(dirname(source)) !== dirname(target) ||
+    !basename(dirname(source)).startsWith(".mission-rename-staging-")) throw new Error("Invalid private app publication paths");
+  const stat = lstatSync(source);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || `${stat.dev}:${stat.ino}` !== expectedIdentity) throw new Error("Private app staging identity changed");
+  try { rename(source, target); }
+  catch (error) {
+    // The native operation distinguishes collision/absence from other rename errors.
+    // Only the exact system destination may retry an intact, unmodified source with
+    // authorization. The retry remains exclusive even if a destination arrived meanwhile.
+    if (error.code !== "ERENAME" || target !== join(SYSTEM_APPS_DIR, APP_BUNDLE_NAME)) throw error;
+    runElevated(renamedBundlePublicationCommand(source, target, expectedIdentity));
+  }
+}
+
+function requireDirectoryIdentity(identity) {
+  if (!/^\d+:\d+$/.test(identity)) throw new Error("Invalid cleanup directory identity");
+}
+
+/** Capture again AFTER authorization. Never run an elevated rm on a public app path,
+ * or on a user-owned holding path that could have changed while the prompt was open. */
+export function renamedBundleRemovalCommand(source, expectedIdentity) {
+  requireDirectoryIdentity(expectedIdentity);
+  if (resolve(source) !== source) throw new Error("Cleanup requires an absolute normalized path");
+  return [
+    "set -eu",
+    `source=${shellQuote(source)}`,
+    `expected=${shellQuote(expectedIdentity)}`,
+    'matches() { [ ! -L "$1" ] && [ -d "$1" ] && [ "$(/usr/bin/stat -f \'%d:%i\' "$1")" = "$expected" ]; }',
+    'matches "$source" || { echo "Cleanup directory identity changed: $source" >&2; exit 1; }',
+    `holding=$(/usr/bin/mktemp -d ${shellQuote(join(dirname(source), ".mission-rename-cleanup-XXXXXXXX"))})`,
+    // Only rmdir the empty container. A mismatched or partially removed capture is
+    // recovery material, and its exact path must survive in the authorization error.
+    'trap \'status=$?; /bin/rmdir "$holding" 2>/dev/null || echo "Cleanup stopped; inspect retained bundle at $holding/bundle.app" >&2; exit "$status"\' EXIT',
+    '/bin/mv "$source" "$holding/bundle.app"',
+    'matches "$holding/bundle.app" || { echo "Cleanup directory identity changed during capture" >&2; exit 1; }',
+    '/bin/rm -rf "$holding/bundle.app"',
+  ].join("\n");
+}
+
+/** The caller pins dev:ino BEFORE verifying the source digest, or takes the pin from
+ * the nonce-owned reservation. A rename into a private sibling captures one directory;
+ * checking it AFTER the move closes the public path check/remove race. A foreign capture
+ * is retained for manual recovery, never put back over a concurrently recreated path. */
+export function removeRenamedBundle(source, expectedIdentity, {
+  ops = {
+    identity: (path) => {
+      const s = lstatSync(path);
+      return s.isDirectory() && !s.isSymbolicLink() ? `${s.dev}:${s.ino}` : null;
+    },
+    makePrivateDirectory: mkdtempSync,
+    move: renameSync,
+    remove: (path) => rmSync(path, {recursive: true}),
+    removeDirectory: rmdirSync,
+  },
+  runElevated = (command) => execFileSync("/usr/bin/osascript", ["-e", PRIVILEGED_SWAP_APPLESCRIPT,
+    command, "Mission Control needs administrator permission to remove its attempt-owned app bundle in /Applications."],
+  {encoding: "utf8", timeout: 600_000}),
+} = {}) {
+  requireDirectoryIdentity(expectedIdentity);
+  let holding = null;
+  let captured = null;
+  const requireMatch = (path) => {
+    if (ops.identity(path) !== expectedIdentity) throw new Error(`Cleanup directory identity changed: ${path}`);
+  };
+  try {
+    try {
+      requireMatch(source);
+      holding = ops.makePrivateDirectory(join(dirname(source), ".mission-rename-cleanup-"));
+      const destination = join(holding, "bundle.app");
+      ops.move(source, destination);
+      captured = destination;
+      requireMatch(captured);
+      ops.remove(captured);
+    } catch (error) {
+      if (!["EACCES", "EPERM"].includes(error.code) || ![join(SYSTEM_APPS_DIR, LEGACY_APP_BUNDLE_NAME), join(SYSTEM_APPS_DIR, APP_BUNDLE_NAME)].includes(source)) throw error;
+      runElevated(renamedBundleRemovalCommand(captured ?? source, expectedIdentity));
+    }
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || error).trim();
+    throw new Error(`${detail}. Cleanup stopped; inspect ${captured ?? source} manually.`, {cause: error});
+  } finally {
+    // Never recursively clean the container: it may hold a different app or the
+    // only remaining copy of a bundle whose removal lacked permission.
+    if (holding) { try { ops.removeDirectory(holding); } catch {} }
   }
 }

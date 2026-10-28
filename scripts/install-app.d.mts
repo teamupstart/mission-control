@@ -39,10 +39,18 @@ export function removeSupersededInstaller(input: {
 export const PACKAGED_APP_RELATIVE_PATH: string;
 
 export const GH_ARGS: {
-  authStatus(): string[];
+  authProbe(): string[];
   releaseList(repo?: string): string[];
 };
 
+export const GH_PROBE_TIMEOUT_MS: number;
+export function ghCredentialProblem(input: {
+  run: (
+    command: string,
+    args: string[],
+    opts?: { timeout?: number },
+  ) => { status: number; stdout: string; stderr: string; timedOut?: boolean };
+}): string | null;
 export function parseRemote(url: string | null | undefined): ParsedRemote | null;
 export function canonicalRemoteUrl(transport: string, repo?: string): string;
 export function existingCloneCommands(input: {

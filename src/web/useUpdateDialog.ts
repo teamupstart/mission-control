@@ -27,6 +27,7 @@ export function queueUpdateDialog(
 
 interface DesktopUpdateDialogs {
   onDialog?(cb: (request: UpdateDialogRequest) => void): () => void;
+  receivedDialog?(id: string): void;
   answerDialog?(id: string, choice: UpdateDialogChoice): void;
 }
 
@@ -53,6 +54,11 @@ export function useUpdateDialog(): UpdateDialogState {
       if (isUpdateDialogRequest(next)) setQueue((current) => queueUpdateDialog(current, next));
     });
   }, [updates]);
+
+  const presentedId = queue[0]?.id;
+  useEffect(() => {
+    if (presentedId) updates?.receivedDialog?.(presentedId);
+  }, [updates, presentedId]);
 
   const answer = useCallback(
     (id: string, choice: UpdateDialogChoice) => {

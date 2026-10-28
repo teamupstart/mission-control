@@ -1,15 +1,19 @@
+import { APP_BUNDLE_NAME as CURRENT_APP_NAME, LEGACY_APP_BUNDLE_NAME, isManagedBundleName } from "../src/shared/app-naming.mjs";
 // Versioned, Node-only relocation contract. The detached helper owns this journal;
 // the target writes a separate acknowledgment and cannot publish its own receipt.
+import { execFileSync } from "node:child_process";
+import { prepareStagedInstall, validateStagedInstall, stageInstallBundle, inspectBundle, requireInstallSpace, verifyBinaryBuild } from "./install-staged-app.mjs";
+import { writeReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes, createHash } from "node:crypto";
 import {
   accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync,
   realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { validateReceipt, isTrustedInstallRepo } from "../src/shared/install-receipt-schema.mjs";
+import { basename, dirname, join, resolve } from "node:path";
+import { validateReceipt, isTrustedInstallRepo, CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
-import { APP_BUNDLE_NAME, SYSTEM_APPS_DIR, bundleShortVersion, replaceAppBundle } from "./app-bundle-swap.mjs";
+import { APP_BUNDLE_NAME, SYSTEM_APPS_DIR, reserveRenamedApp, publishRenamedApp, removeRenamedBundle, bundleShortVersion, replaceAppBundle, stagingPaths, RESTORE_AUTHORIZATION_PROMPT } from "./app-bundle-swap.mjs";
 import { inspectInstallDirectory, installDirectoryProblem } from "./install-destination.mjs";
 import { acquireHelperLock, releaseHelperLock, realHelperLockOperations, parseClaimEntryName, HELPER_LOCK_DIR_NAME } from "./update-lock.mjs";
 
@@ -17,7 +21,7 @@ export const MIGRATION_PROTOCOL = 1;
 export const MIGRATION_JOURNAL = "install-migration.json";
 export const MIGRATION_ACK = "install-migration-ready.json";
 export const MIGRATION_LAUNCH = "install-migration-launch.json";
-export const MIGRATION_STAGES = ["prepared", "target-staged", "target-ready", "receipt-committed", "repair-required", "complete", "restored", "target-launching"];
+export const MIGRATION_STAGES = ["prepared", "target-staged", "target-ready", "receipt-committed", "repair-required", "complete", "restored", "target-launching", "source-backed-up", "target-staging"];
 export const MIGRATION_TIMEOUT_MS = 120_000;
 const NONCE = /^[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
@@ -92,7 +96,7 @@ function canonicalDirectory(path) {
 
 /** Policy roots are injected only by filesystem tests. Production always uses homedir. */
 export function migrationPaths(home = homedir(), systemDirectory = SYSTEM_APPS_DIR) {
-  return { source: join(systemDirectory, APP_BUNDLE_NAME), target: join(home, "Applications", APP_BUNDLE_NAME) };
+  return { source: join(systemDirectory, LEGACY_APP_BUNDLE_NAME), target: join(home, "Applications", LEGACY_APP_BUNDLE_NAME) };
 }
 
 export function validateMigrationPaths(plan, { home = homedir(), systemDirectory = SYSTEM_APPS_DIR } = {}) {
@@ -111,7 +115,7 @@ export function validateMigrationPaths(plan, { home = homedir(), systemDirectory
   if (existsSync(dirname(plan.target)) && realpathSync(dirname(plan.target)) !== join(realHome, "Applications")) {
     throw new Error("The personal destination escapes this account's home.");
   }
-  if (existsSync(plan.source) && realpathSync(plan.source) !== join(realpathSync(systemDirectory), APP_BUNDLE_NAME)) {
+  if (existsSync(plan.source) && realpathSync(plan.source) !== join(realpathSync(systemDirectory), LEGACY_APP_BUNDLE_NAME)) {
     throw new Error("The system source must not be a symbolic link.");
   }
   if (canonicalDirectory(plan.stateDirectory) !== plan.stateDirectory) {
@@ -120,7 +124,7 @@ export function validateMigrationPaths(plan, { home = homedir(), systemDirectory
 }
 
 /** Read-only eligibility, after the updater has validated the staged build's pinned ref. */
-export function prepareMigration({ receipt, stagedBundle, stagedRevision, stateDirectory, home = homedir(), systemDirectory = SYSTEM_APPS_DIR }) {
+export function prepareMigration({ receipt, stagedBundle, stagedRevision, descriptor, stateDirectory, home = homedir(), systemDirectory = SYSTEM_APPS_DIR }) {
   if (validateReceipt(receipt) || !isTrustedInstallRepo(receipt.repo) || receipt.installScope !== undefined) return null;
   const paths = migrationPaths(home, systemDirectory);
   if (receipt.appPath !== paths.source) return null;
@@ -139,23 +143,120 @@ export function prepareMigration({ receipt, stagedBundle, stagedRevision, stateD
     protocol: MIGRATION_PROTOCOL, nonce: randomBytes(32).toString("hex"),
     ...paths, stateDirectory: realpathSync(stateDirectory), stagedBundle, stagedRevision,
     sourceIdentity, targetIdentity, oldReceipt: receipt,
-    intendedReceipt: { ...receipt, appPath: paths.target, installScope: "user", installedCommit: targetIdentity.commit,
+    intendedReceipt: { ...(descriptor?.receipt ?? receipt), appPath: paths.target, installScope: "user", installedCommit: targetIdentity.commit,
       installedVersion: targetIdentity.version, installedAt: new Date().toISOString() },
   };
+  plan.descriptor = descriptor
+    ? {...descriptor, receipt: plan.intendedReceipt}
+    : prepareStagedInstall({bundle: stagedBundle, revision: stagedRevision, receipt: plan.intendedReceipt});
+  validateStagedInstall(plan.descriptor);
   validateMigrationPaths(plan, { home, systemDirectory });
   if (lstatSync(plan.target, { throwIfNoEntry: false })) throw new Error("A personal Mission Control already exists. Move it aside yourself before retrying this update.");
   return plan;
 }
 
+/** Protocol 2 extends the existing journal to in-place installation. Protocol 1
+ * relocation records remain unchanged and retain their original policy. */
+export function prepareInPlaceInstall({descriptor, stateDirectory}) {
+  validateStagedInstall(descriptor);
+  stateDirectory = realpathSync(stateDirectory);
+  const oldReceiptText = readFileSync(join(stateDirectory, "install-receipt.json"), "utf8");
+  const oldReceipt = JSON.parse(oldReceiptText);
+  if (validateReceipt(oldReceipt)) throw new Error("The current installation receipt is invalid");
+  const target = descriptor.receipt.appPath;
+  const rename = oldReceipt.appPath === join(dirname(target), LEGACY_APP_BUNDLE_NAME) && target === join(dirname(target), CURRENT_APP_NAME);
+  if (target !== oldReceipt.appPath && !rename) throw new Error("An in-place install must preserve the recorded destination");
+  const source = oldReceipt.appPath;
+  if (rename && lstatSync(target, {throwIfNoEntry: false})) throw new Error("Agent Mission Control.app already exists. Move that copy aside explicitly; it will not be overwritten.");
+  if (stateDirectory === realpathSync(source) || stateDirectory.startsWith(`${realpathSync(source)}/`)) throw new Error("The state home must be outside the installed app");
+  const sourceIdentity = migrationBundleIdentity(source);
+  const targetIdentity = migrationBundleIdentity(descriptor.bundle);
+  const metadata = readMigrationJson(join(descriptor.bundle, "Contents/Resources/app/package.json")).missionInstallTransaction;
+  if (metadata?.protocol !== 1 || !metadata.receiptSchemas?.includes(descriptor.receipt.schema) || targetIdentity.protocol !== MIGRATION_PROTOCOL) throw new Error("The target does not support the installation transaction and receipt protocol");
+  if (rename && metadata.appNaming !== 1) throw new Error("The target cannot migrate the app name. Use the current signed installer.");
+  const nonce = randomBytes(32).toString("hex");
+  const plan = {protocol: rename ? 3 : 2, kind: rename ? "rename" : "in-place", nonce, source, target, stateDirectory,
+    stagedBundle: descriptor.bundle, stagedRevision: descriptor.revision, descriptor,
+    sourceIdentity, targetIdentity, oldReceipt, oldReceiptText, intendedReceipt: descriptor.receipt,
+    sourceDigest: inspectBundle(source).digest,
+    backup: join(stateDirectory, "install-attempts", nonce, "previous.app")};
+  validateMigrationPlan(plan);
+  return plan;
+}
+
+function validateInPlacePlan(plan) {
+  if (!["in-place", "rename"].includes(plan.kind) || !NONCE.test(plan.nonce ?? "") || validateReceipt(plan.oldReceipt) || validateReceipt(plan.intendedReceipt)) throw new Error("Invalid in-place installation plan");
+  const rename = plan.protocol === 3 && plan.kind === "rename";
+  if ((rename ? plan.source !== join(dirname(plan.target), LEGACY_APP_BUNDLE_NAME) || basename(plan.target) !== CURRENT_APP_NAME : plan.source !== plan.target) || plan.source !== plan.oldReceipt.appPath || plan.target !== plan.intendedReceipt.appPath ||
+    plan.oldReceipt.installScope !== plan.intendedReceipt.installScope || !isTrustedInstallRepo(plan.oldReceipt.repo) || !isTrustedInstallRepo(plan.intendedReceipt.repo)) throw new Error("The in-place installation policy changed");
+  if (typeof plan.oldReceiptText !== "string" || Buffer.byteLength(plan.oldReceiptText) > 64 * 1024 || receiptDigest(JSON.parse(plan.oldReceiptText)) !== receiptDigest(plan.oldReceipt)) throw new Error("Invalid exact receipt backup");
+  if (canonicalDirectory(plan.stateDirectory) !== plan.stateDirectory || plan.backup !== join(plan.stateDirectory, "install-attempts", plan.nonce, "previous.app") || !/^[a-f0-9]{64}$/.test(plan.sourceDigest)) throw new Error("Invalid in-place recovery paths");
+  if (plan.descriptor?.protocol !== 1 || plan.stagedBundle !== plan.descriptor.bundle || plan.stagedRevision !== plan.descriptor.revision || receiptDigest(plan.descriptor.receipt) !== receiptDigest(plan.intendedReceipt)) throw new Error("The accepted install descriptor changed");
+  if (plan.intendedReceipt.installedCommit !== plan.targetIdentity.commit || plan.intendedReceipt.installedVersion !== plan.targetIdentity.version || plan.targetIdentity.protocol !== MIGRATION_PROTOCOL) throw new Error("The intended receipt does not match the prepared build");
+  if (plan.oldReceipt.installedCommit ? plan.oldReceipt.installedCommit !== plan.sourceIdentity.commit : plan.oldReceipt.installedVersion !== plan.sourceIdentity.version) throw new Error("The installed app does not match its receipt");
+  const problem = installDirectoryProblem(inspectInstallDirectory(dirname(plan.target)));
+  if (problem) throw new Error(problem);
+  if (resolve(plan.source) !== plan.source || (existsSync(plan.source) && realpathSync(plan.source) !== join(realpathSync(dirname(plan.source)), basename(plan.source))) ||
+    resolve(plan.target) !== plan.target || !isManagedBundleName(basename(plan.target)) ||
+    (existsSync(plan.target) && realpathSync(plan.target) !== join(realpathSync(dirname(plan.target)), basename(plan.target)))) throw new Error("The installation destination resolves to another app");
+  return plan;
+}
+
+function receiptUnchanged(plan) {
+  return plan.kind ? readFileSync(join(plan.stateDirectory, "install-receipt.json"), "utf8") === plan.oldReceiptText
+    : receiptDigest(migrationReceipt(plan.stateDirectory)) === receiptDigest(plan.oldReceipt);
+}
+
+/** Keep the serialized descriptor and planned receipt together. Older relocation
+ * journals have no descriptor; updating their receipt must not invent one. */
+export function updateMigrationReceipt(plan, changes) {
+  const receipt = {...plan.intendedReceipt, ...changes};
+  const problem = validateReceipt(receipt);
+  if (problem) throw new Error(problem);
+  plan.intendedReceipt = receipt;
+  if (plan.descriptor) plan.descriptor = {...plan.descriptor, receipt};
+  return plan;
+}
+
+function ensureBackupDirectory(plan, exclusive = false) {
+  const attempts = dirname(dirname(plan.backup));
+  mkdirSync(attempts, {recursive: true, mode: 0o700});
+  if (lstatSync(attempts).isSymbolicLink() || realpathSync(attempts) !== attempts) throw new Error("The backup store must be a real private directory");
+  mkdirSync(dirname(plan.backup), {recursive: !exclusive, mode: 0o700});
+  if (lstatSync(dirname(plan.backup)).isSymbolicLink() || realpathSync(dirname(plan.backup)) !== dirname(plan.backup)) throw new Error("The attempt backup directory changed");
+}
+
+function stageInPlaceTarget(plan, checkpoint) {
+  validateStagedInstall(plan.descriptor);
+  if (inspectBundle(plan.target).digest !== plan.sourceDigest) throw new Error("The installed app changed before backup");
+  const bytes = inspectBundle(plan.target).bytes;
+  requireInstallSpace([{path: plan.stateDirectory, bytes}, {path: dirname(plan.target), bytes: plan.descriptor.bytes + bytes}]);
+  ensureBackupDirectory(plan, true);
+  if (existsSync(plan.backup)) throw new Error("The attempt backup already exists");
+  execFileSync("/bin/cp", ["-R", plan.target, plan.backup], {timeout: 10 * 60 * 1000});
+  if (inspectBundle(plan.backup).digest !== plan.sourceDigest || inspectBundle(plan.target).digest !== plan.sourceDigest) throw new Error("The recovery copy changed");
+  checkpoint("source-backed-up");
+  checkpoint("target-staging");
+  const swap = stageInstallBundle(plan.descriptor);
+  return swap.failedBundle ? {path: swap.failedBundle, pid: process.pid,
+    revision: stagedBundleRevision(lstatSync(swap.failedBundle))} : null;
+}
+
 export function validateMigrationPlan(plan, policy) {
-  if (!plan || plan.protocol !== MIGRATION_PROTOCOL || !NONCE.test(plan.nonce ?? "")) throw new Error("Unsupported or invalid migration protocol.");
+  if ((plan?.protocol === 2 && plan.kind === "in-place") || (plan?.protocol === 3 && plan.kind === "rename")) return validateInPlacePlan(plan);
+  // Protocol 1 predates kind. Do not let relocation validation admit a plan
+  // that execution would dispatch to the in-place transaction.
+  if (!plan || plan.protocol !== MIGRATION_PROTOCOL || plan.kind !== undefined || !NONCE.test(plan.nonce ?? "")) throw new Error("Unsupported or invalid migration protocol.");
   if (validateReceipt(plan.oldReceipt) || validateReceipt(plan.intendedReceipt) || !isTrustedInstallRepo(plan.oldReceipt.repo)) throw new Error("Invalid migration receipts.");
   if (plan.oldReceipt.installScope !== undefined || plan.oldReceipt.appPath !== plan.source || plan.intendedReceipt.appPath !== plan.target || plan.intendedReceipt.installScope !== "user") throw new Error("Invalid migration installation policy.");
   if (!SHA.test(plan.sourceIdentity?.commit ?? "") || !SHA.test(plan.targetIdentity?.commit ?? "") || plan.targetIdentity.protocol !== MIGRATION_PROTOCOL || plan.sourceIdentity.protocol !== MIGRATION_PROTOCOL) throw new Error("Invalid migration build identities.");
   if (typeof plan.sourceIdentity.revision !== "string" || !plan.sourceIdentity.revision || plan.sourceIdentity.revision.length > 512) throw new Error("Invalid migration source revision.");
   if (plan.sourceIdentity.automatic !== true || typeof plan.targetIdentity.automatic !== "boolean" || (plan.oldReceipt.installedCommit ? plan.oldReceipt.installedCommit !== plan.sourceIdentity.commit : plan.oldReceipt.installedVersion !== plan.sourceIdentity.version)) throw new Error("The source identity does not match the eligible legacy receipt.");
-  if (plan.intendedReceipt.installedCommit !== plan.targetIdentity.commit || plan.intendedReceipt.installedVersion !== plan.targetIdentity.version || plan.intendedReceipt.repo !== plan.oldReceipt.repo || plan.intendedReceipt.sourceClone !== plan.oldReceipt.sourceClone) throw new Error("The intended receipt does not match the prepared build.");
+  const sameRepository = plan.intendedReceipt.repo === plan.oldReceipt.repo || plan.intendedReceipt.repo === CANONICAL_REPO;
+  if (plan.intendedReceipt.installedCommit !== plan.targetIdentity.commit || plan.intendedReceipt.installedVersion !== plan.targetIdentity.version || !sameRepository || (plan.intendedReceipt.kind !== "binary" && plan.intendedReceipt.sourceClone !== plan.oldReceipt.sourceClone)) throw new Error("The intended receipt does not match the prepared build.");
   if (typeof plan.stagedBundle !== "string" || resolve(plan.stagedBundle) !== plan.stagedBundle || typeof plan.stagedRevision !== "string") throw new Error("Invalid staged migration bundle.");
+  if (plan.descriptor && (plan.descriptor.bundle !== plan.stagedBundle || plan.descriptor.revision !== plan.stagedRevision || receiptDigest(plan.descriptor.receipt) !== receiptDigest(plan.intendedReceipt))) throw new Error("The migration install descriptor changed");
+  if (plan.intendedReceipt.kind === "binary" && !plan.descriptor) throw new Error("A binary migration requires its verified descriptor");
   validateMigrationPaths(plan, policy);
   return plan;
 }
@@ -167,6 +268,13 @@ export function readMigrationJournal(stateDirectory, policy) {
   validateMigrationPlan(journal.plan, policy);
   const processRecord = (record) => record && Number.isInteger(record.pid) && record.pid > 0 && typeof record.identity === "string" && record.identity.length > 0 && record.identity.length < 8192;
   if (journal.plan.stateDirectory !== realpathSync(stateDirectory) || !MIGRATION_STAGES.includes(journal.stage) || !processRecord(journal.owner) || !["helper", "recovery"].includes(journal.ownerRole) || (journal.targetProcess !== null && !processRecord(journal.targetProcess)) || !validRepairs(journal.repairs)) throw new Error("Invalid migration journal.");
+  const retained = journal.retainedSwap;
+  if (retained !== undefined && retained !== null) {
+    if (journal.plan.kind !== "in-place" || !Number.isSafeInteger(retained.pid) || retained.pid < 1 ||
+      typeof retained.revision !== "string" || !retained.revision || retained.revision.length > 512) throw new Error("Invalid retained swap record.");
+    const paths = stagingPaths({appsDir: dirname(journal.plan.target), pid: retained.pid});
+    if (retained.path !== paths.previous && retained.path !== paths.failed) throw new Error("Invalid retained swap path.");
+  }
   return journal;
 }
 
@@ -178,15 +286,23 @@ export function migrationIsCommitted(journal, receipt) {
   return receipt !== null && receiptDigest(receipt) === receiptDigest(journal.plan.intendedReceipt);
 }
 
-function markerPath(bundle) { return join(bundle, ".mission-migration-owner.json"); }
+function markerPath(plan) {
+  // Signed rename targets must stay byte-for-byte identical to the accepted archive.
+  // Keep legacy protocol-1 ownership files readable at their original location.
+  return plan.kind === "rename" ? join(dirname(plan.backup), "target-owner.json") : join(plan.target, ".mission-migration-owner.json");
+}
 function directoryIdentity(path) { const s = lstatSync(path); return `${s.dev}:${s.ino}`; }
 
-export function ownsMigrationTarget(plan) {
+function migrationTargetDirectoryIdentity(plan) {
   try {
-    if (lstatSync(plan.target).isSymbolicLink()) return false;
-    const marker = readMigrationJson(markerPath(plan.target));
-    return marker.nonce === plan.nonce && marker.directory === directoryIdentity(plan.target);
-  } catch { return false; }
+    if (lstatSync(plan.target).isSymbolicLink()) return null;
+    const marker = readMigrationJson(markerPath(plan));
+    return marker.nonce === plan.nonce && marker.directory === directoryIdentity(plan.target) ? marker.directory : null;
+  } catch { return null; }
+}
+
+export function ownsMigrationTarget(plan) {
+  return migrationTargetDirectoryIdentity(plan) !== null;
 }
 
 /** Receipt-deferred entry at the existing bundle swap primitive. No installer CLI flag
@@ -196,17 +312,22 @@ export function stageMigrationTarget(plan, { policy, checkpoint = () => {} } = {
   validateMigrationPlan(plan, policy);
   const found = migrationBundleIdentity(plan.stagedBundle);
   if (!sameBuild(found, plan.targetIdentity) || found.revision !== plan.stagedRevision) throw new Error("The prepared migration bundle changed.");
+  if (plan.descriptor) validateStagedInstall(plan.descriptor);
   mkdirSync(dirname(plan.target), { recursive: true, mode: 0o755 });
   validateMigrationPaths(plan, policy);
   mkdirSync(plan.target, { mode: 0o700 }); // EEXIST is always a blocker, including a symlink.
-  atomicMigrationJson(markerPath(plan.target), { nonce: plan.nonce, directory: directoryIdentity(plan.target) });
+  atomicMigrationJson(markerPath(plan), { nonce: plan.nonce, directory: directoryIdentity(plan.target) });
   checkpoint("target-reserved");
   const staging = join(dirname(plan.target), `.mission-migration-${plan.nonce}`);
   mkdirSync(staging, { mode: 0o700 });
   const staged = join(staging, APP_BUNDLE_NAME);
   try {
-    const swapped = replaceAppBundle({ sourceBundle: plan.stagedBundle, appPath: staged, appsDir: staging, pid: process.pid, sweep: () => [] });
-    if (swapped.problem) throw new Error(swapped.problem);
+    if (plan.descriptor) stageInstallBundle({...plan.descriptor, receipt: {...plan.intendedReceipt, appPath: staged}});
+    else {
+      // Previously serialized protocol-1 journals predate accepted descriptors.
+      const swapped = replaceAppBundle({ sourceBundle: plan.stagedBundle, appPath: staged, appsDir: staging, pid: process.pid, sweep: () => [] });
+      if (swapped.problem) throw new Error(swapped.problem);
+    }
     if (!sameBuild(migrationBundleIdentity(staged), plan.targetIdentity) || (!sameBuild(migrationBundleIdentity(plan.stagedBundle), plan.targetIdentity) || migrationBundleIdentity(plan.stagedBundle).revision !== plan.stagedRevision)) throw new Error("The copied migration build changed.");
     if (!ownsMigrationTarget(plan)) throw new Error("The migration destination was replaced while staging.");
     renameSync(join(staged, "Contents"), join(plan.target, "Contents"));
@@ -217,7 +338,13 @@ export function stageMigrationTarget(plan, { policy, checkpoint = () => {} } = {
 }
 
 export function validateMigrationTarget(plan) {
+  if (plan.kind) {
+    if (plan.kind === "rename" && !ownsMigrationTarget(plan)) throw new Error("The renamed app reservation changed");
+    if (inspectBundle(plan.target).digest !== plan.descriptor.digest) throw new Error("The installed transaction target changed");
+    return;
+  }
   if (!ownsMigrationTarget(plan) || !sameBuild(migrationBundleIdentity(plan.target), plan.targetIdentity)) throw new Error("The personal migration target is missing or changed. Reinstall the personal app to recover.");
+  if (plan.intendedReceipt.kind === "binary") verifyBinaryBuild(plan.target, plan.intendedReceipt, plan.descriptor.publisher);
 }
 
 export function migrationReceipt(stateDirectory) {
@@ -295,10 +422,11 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
   return withMigrationLock(plan.stateDirectory, async (owner) => {
     validateMigrationPlan(plan, policy);
     if (!owner.identity) throw new Error("Could not identify the migration helper.");
-    if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt) || !sameSourceBundle(plan)) throw new Error("The system installation changed before the migration took ownership.");
+    if (!receiptUnchanged(plan) || !sameSourceBundle(plan)) throw new Error("The system installation changed before the migration took ownership.");
     const previous = readMigrationJournal(plan.stateDirectory, policy);
     if (previous && previous.stage !== "restored" && previous.stage !== "complete") throw new Error("An earlier migration needs recovery before another update.");
-    if (lstatSync(plan.target, { throwIfNoEntry: false })) throw new Error("The personal migration destination is occupied.");
+    if (plan.kind !== "in-place" && lstatSync(plan.target, { throwIfNoEntry: false })) throw new Error("The personal migration destination is occupied.");
+    if (plan.kind) validateStagedInstall(plan.descriptor);
     rmSync(join(plan.stateDirectory, MIGRATION_LAUNCH), {force: true});
     const journal = { plan, owner, ownerRole: "helper", stage: "prepared", repairs: [], inventory: ports.inventory, targetProcess: null };
     const publish = (stage) => {
@@ -308,12 +436,16 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
     };
     publish("prepared");
     try {
+      await ports.helperReady?.(journal);
       await ports.waitForParent();
       await ports.waitForDaemonExit();
-      stageMigrationTarget(plan, { policy, checkpoint: ports.checkpoint });
+      if (plan.kind === "in-place") journal.retainedSwap = stageInPlaceTarget(plan, publish);
+      else if (plan.kind === "rename") stageRenameTarget(plan, publish);
+      else stageMigrationTarget(plan, { policy, checkpoint: ports.checkpoint });
       publish("target-staged");
       // A crash after spawning but before recording the PID must never look like
       // an attempt that did not launch. The target also publishes its own identity.
+      validateMigrationTarget(plan);
       publish("target-launching");
       journal.targetProcess = await ports.launchTarget(plan);
       ports.checkpoint?.("target-launched");
@@ -321,10 +453,11 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
       await ports.waitForReady(journal);
       validateMigrationTarget(plan);
       publish("target-ready");
-      if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt)) throw new Error("The install receipt changed before migration commitment.");
-      atomicMigrationJson(join(plan.stateDirectory, "install-receipt.json"), plan.intendedReceipt);
+      if (!receiptUnchanged(plan)) throw new Error("The install receipt changed before migration commitment.");
+      writeReceipt(plan.intendedReceipt, join(plan.stateDirectory, "install-receipt.json"));
       ports.checkpoint?.("receipt-renamed");
       publish("receipt-committed");
+      if (plan.kind === "rename") retireRenameSource(plan);
       // The target waits until this helper releases the lock before taking repair ownership.
       return { committed: true, journal };
     } catch (error) {
@@ -368,6 +501,8 @@ function recordMigrationRecoveryFailure(journal, message) {
 }
 
 export async function restoreMigration(journal, ports, policy) {
+  if (journal.plan.kind === "in-place") return restoreInPlace(journal, ports);
+  if (journal.plan.kind === "rename") return restoreRename(journal, ports);
   const { plan } = journal;
   validateMigrationPlan(plan, policy);
   if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt)) throw new Error("The receipt changed. Recovery left both bundles untouched; inspect the installation before retrying.");
@@ -389,12 +524,44 @@ export async function restoreMigration(journal, ports, policy) {
   await ports.launchSource(plan.source);
 }
 
+async function restoreInPlace(journal, ports) {
+  const {plan} = journal;
+  validateMigrationPlan(plan);
+  if (!receiptUnchanged(plan)) throw new Error("The receipt changed; recovery preserved all material");
+  await ports.stopTarget(journal);
+  let current = null;
+  try { current = inspectBundle(plan.target).digest; } catch { /* Interrupted rename may leave no destination. */ }
+  if (current !== plan.sourceDigest) {
+    if (current !== null && current !== plan.descriptor.digest) throw new Error("The destination changed; recovery will not overwrite another installation");
+    if (inspectBundle(plan.backup).digest !== plan.sourceDigest) throw new Error("The retained app changed; recovery cannot proceed");
+    const restored = replaceAppBundle({sourceBundle: plan.backup, appPath: plan.target, appsDir: dirname(plan.target),
+      pid: process.pid, keepPrevious: true, prompt: RESTORE_AUTHORIZATION_PROMPT, sweep: () => []});
+    if (restored.problem) throw new Error(restored.problem);
+  }
+  if (inspectBundle(plan.target).digest !== plan.sourceDigest || !receiptUnchanged(plan)) throw new Error("Recovery verification failed");
+  journal.stage = "restored";
+  atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
+  atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {schema: 1, result: "failure",
+    targetVersion: plan.targetIdentity.version, recordedAt: new Date().toISOString(),
+    message: "The update did not commit. The previous app and exact installation receipt were preserved."});
+  // Older apps cannot parse protocol 2. Archive only after verified restoration and
+  // durable outcome, before launching the old reader. Keep backup and diagnostics.
+  ensureBackupDirectory(plan);
+  renameSync(join(plan.stateDirectory, MIGRATION_JOURNAL), join(dirname(plan.backup), "restored-journal.json"));
+  rmSync(join(plan.stateDirectory, MIGRATION_ACK), {force: true});
+  rmSync(join(plan.stateDirectory, MIGRATION_LAUNCH), {force: true});
+  await ports.launchSource(plan.source);
+}
+
 /** Recovery and post-start repair explicitly acquire the same lock after the helper exits. */
 export async function recoverMigration(stateDirectory, ports, { policy, lock } = {}) {
   return withMigrationLock(stateDirectory, async (owner) => {
     const journal = readMigrationJournal(stateDirectory, policy);
     if (!journal || journal.stage === "restored" || journal.stage === "complete") return journal;
     if (!owner.identity) throw new Error("Could not identify the recovery owner.");
+    await ports.helperReady?.(journal);
+    await ports.waitForParent?.();
+    await ports.waitForDaemonExit?.();
     if (!migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
       if (["receipt-committed", "repair-required"].includes(journal.stage)) throw new Error("The committed personal receipt changed. Reinstall the personal app; do not restore the older system runtime.");
       try { await restoreMigration(journal, ports, policy); }
@@ -402,9 +569,14 @@ export async function recoverMigration(stateDirectory, ports, { policy, lock } =
       return journal;
     }
     validateMigrationTarget(journal.plan);
+    if (journal.plan.kind === "rename") retireRenameSource(journal.plan);
     journal.owner = owner;
     journal.ownerRole = "recovery";
-    journal.stage = "receipt-committed";
+    journal.stage = journal.plan.kind === "in-place" ? "complete" : "receipt-committed";
+    if (journal.plan.kind) {
+      atomicMigrationJson(join(stateDirectory, "update-outcome.json"), {schema: 1, result: "success",
+        targetVersion: journal.plan.targetIdentity.version, recordedAt: new Date().toISOString()});
+    }
     atomicMigrationJson(join(stateDirectory, MIGRATION_JOURNAL), journal);
     return journal;
   }, lock);
@@ -416,6 +588,7 @@ export async function repairMigration(stateDirectory, repair, { policy, lock } =
     if (!journal || journal.stage === "complete" || journal.stage === "restored") return journal;
     if (!migrationIsCommitted(journal, migrationReceipt(stateDirectory))) throw new Error("The personal receipt changed; repair was not started.");
     validateMigrationTarget(journal.plan);
+    if (journal.plan.kind === "rename") retireRenameSource(journal.plan);
     journal.owner = owner;
     journal.ownerRole = "recovery";
     journal.stage = "repair-required";
@@ -427,4 +600,66 @@ export async function repairMigration(stateDirectory, repair, { policy, lock } =
     atomicMigrationJson(join(stateDirectory, MIGRATION_JOURNAL), journal);
     return journal;
   }, lock);
+}
+
+function stageRenameTarget(plan, checkpoint) {
+  validateStagedInstall(plan.descriptor);
+  if (!sameSourceBundle(plan) || inspectBundle(plan.source).digest !== plan.sourceDigest) throw new Error("The old app changed before migration");
+  const sourceBytes = inspectBundle(plan.source).bytes;
+  requireInstallSpace([{path: plan.stateDirectory, bytes: sourceBytes}, {path: dirname(plan.target), bytes: plan.descriptor.bytes}]);
+  ensureBackupDirectory(plan, true);
+  execFileSync("/bin/cp", ["-R", plan.source, plan.backup], {timeout: 600_000});
+  if (inspectBundle(plan.backup).digest !== plan.sourceDigest) throw new Error("The old-name recovery copy changed");
+  checkpoint("source-backed-up");
+  const staging = reserveRenamedApp(plan.target);
+  const staged = join(staging, APP_BUNDLE_NAME);
+  try {
+    checkpoint("target-staging");
+    // Preserve quarantine, modes and framework links entirely within our private
+    // directory. A changed public name is never a copy or chmod destination.
+    execFileSync("/bin/cp", ["-pR", plan.stagedBundle, staged], {timeout: 600_000});
+    if (inspectBundle(staged).digest !== plan.descriptor.digest) throw new Error("The private rename target changed while copying");
+    const identity = directoryIdentity(staged);
+    // Persist ownership BEFORE publication: the atomic move keeps dev:ino, so a
+    // crash immediately after it still leaves an identifiable recovery target.
+    atomicMigrationJson(markerPath(plan), {nonce: plan.nonce, directory: identity});
+    publishRenamedApp(staged, plan.target, identity);
+    validateMigrationTarget(plan);
+  } finally {
+    // Only private attempt material remains here, never a displaced public app.
+    // A protected system parent can require authorization to remove even this
+    // account's empty directory. Housekeeping must not undo publication or mask
+    // its original failure. Retain and report it without another prompt.
+    try { rmSync(staging, {recursive: true, force: true}); }
+    catch (error) { console.warn(`Private app staging remains at ${staging}; inspect it before manual removal: ${error.message}`); }
+  }
+}
+
+function retireRenameSource(plan) {
+  if (!existsSync(plan.source)) return;
+  const expectedIdentity = directoryIdentity(plan.source);
+  if (inspectBundle(plan.backup).digest !== plan.sourceDigest || !sameSourceBundle(plan) || inspectBundle(plan.source).digest !== plan.sourceDigest) throw new Error("The old-name app changed. Keep the committed renamed app and inspect the retained source manually.");
+  removeRenamedBundle(plan.source, expectedIdentity);
+}
+
+async function restoreRename(journal, ports) {
+  const {plan} = journal;
+  validateMigrationPlan(plan);
+  if (!receiptUnchanged(plan) || !sameSourceBundle(plan) || inspectBundle(plan.source).digest !== plan.sourceDigest) throw new Error("The old-name installation changed; recovery preserved both apps");
+  await ports.stopTarget(journal);
+  if (lstatSync(plan.target, {throwIfNoEntry: false})) {
+    const expectedIdentity = migrationTargetDirectoryIdentity(plan);
+    if (expectedIdentity === null) throw new Error("The rename destination is no longer owned by this attempt");
+    removeRenamedBundle(plan.target, expectedIdentity);
+  }
+  journal.stage = "restored";
+  atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
+  atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {schema: 1, result: "failure",
+    targetVersion: plan.targetIdentity.version, recordedAt: new Date().toISOString(),
+    message: "The app-name migration did not commit. The previous app and exact receipt are unchanged."});
+  ensureBackupDirectory(plan);
+  renameSync(join(plan.stateDirectory, MIGRATION_JOURNAL), join(dirname(plan.backup), "restored-journal.json"));
+  rmSync(join(plan.stateDirectory, MIGRATION_ACK), {force: true});
+  rmSync(join(plan.stateDirectory, MIGRATION_LAUNCH), {force: true});
+  await ports.launchSource(plan.source);
 }

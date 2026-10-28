@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
@@ -78,7 +78,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   return sessionId;
 }
 
-async function publishWorkflow(daemon: DaemonHandle): Promise<string> {
+async function publishWorkflow(daemon: DaemonHandle, automatic = false): Promise<string> {
   // A Persona node is not decoration: a version with no reviewer does not support image
   // evidence at all, so the reservation under test would never be taken. It never runs - the
   // submission is refused while its evidence is being frozen, which is the point.
@@ -90,6 +90,7 @@ async function publishWorkflow(daemon: DaemonHandle): Promise<string> {
   });
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E capture failure reason",
+    resumptionPolicy: automatic ? "auto" : "manual",
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 80 } },
@@ -177,7 +178,8 @@ function seedStaleEvidence(daemon: DaemonHandle, noteKey: string, cwd: string): 
   });
 }
 
-test("a run blocked by evidence capture says what failed, which item, and what to do", async ({
+for (const automatic of [false, true]) {
+test(`capture refusal explains ${automatic ? "automatic same-round recovery" : "manual recovery"}`, async ({
   dashboard,
   daemon,
 }) => {
@@ -190,7 +192,7 @@ test("a run blocked by evidence capture says what failed, which item, and what t
     repoAllowlist: [daemon.repo],
   }, "PUT");
   const sessionId = await dispatch(dashboard, daemon);
-  const versionId = await publishWorkflow(daemon);
+  const versionId = await publishWorkflow(daemon, automatic);
   const session = (await api<Array<{ id: string; cwd: string; agentSessionId?: string | null }>>(
     daemon,
     "/api/sessions",
@@ -238,6 +240,63 @@ test("a run blocked by evidence capture says what failed, which item, and what t
   await expect(why).toContainText(`${ITEM_NAME} (registered as ${ITEM_CLIENT_ID})`);
   await expect(why).not.toContainText("intact-evidence.png");
   await expect(why).toContainText("nothing was reviewed and no repair round was spent");
+  if (automatic) {
+    await expect(why).toContainText("Automatic evidence repair");
+    await expect(why).toContainText("same round");
+    await expect.poll(async () => {
+      const detail = await api<{ deliveries: Array<{ kind: string; state: string }> }>(daemon, `/api/workflow-runs/${runId}`);
+      return detail.deliveries.some((delivery) => delivery.kind === "evidence_capture_repair" && delivery.state === "delivered");
+    }).toBe(true);
+    // The daemon tests exercise these durable outcomes. Seed only their clock/budget
+    // disposition here to cover the operator's explanation without a real 15-minute wait.
+    const originalGate = withDaemonDb(daemon, (db) =>
+      (db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string }).gate_state_json);
+    const saved = JSON.parse(originalGate) as { preparationRecovery: Record<string, unknown> };
+    for (const state of ["stalled", "exhausted"]) {
+      withDaemonDb(daemon, (db) => db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(
+        JSON.stringify({ ...saved, preparationRecovery: { ...saved.preparationRecovery, state, ...(state === "exhausted" ? { attempts: 3 } : {}) } }), runId));
+      await dashboard.reload();
+      await expect(header).toContainText(state === "stalled" ? "no new evidence was registered within 15 minutes" : "stopped after 3 attempts");
+    }
+    for (const state of ["pending", "exhausted"]) {
+      withDaemonDb(daemon, (db) => db.prepare("UPDATE workflow_runs SET current_phase = 'evidence_reconciliation_error', gate_state_json = ? WHERE id = ?").run(
+        JSON.stringify({ submissionId: saved.preparationRecovery.submissionId, error: "Mapping unavailable", preparationRecovery: {
+          ...saved.preparationRecovery, kind: "mapping", state, attempts: state === "pending" ? 0 : 2, limit: 2, retryAt: Date.now() + 3_600_000,
+        } }), runId));
+      await dashboard.reload();
+      await expect(header).toContainText(state === "pending" ? "Criterion mapping will retry automatically" : "mapping recovery stopped after 2 attempts");
+    }
+    withDaemonDb(daemon, (db) => db.prepare("UPDATE workflow_runs SET current_phase = 'image_evidence_capture', gate_state_json = ? WHERE id = ?").run(originalGate, runId));
+    await dashboard.reload();
+    const cwd = realpathSync(session!.cwd);
+    mkdirSync(join(cwd, ".evidence"), { recursive: true });
+    writeFileSync(join(cwd, ".evidence", "replacement.png"), PNG);
+    writeFileSync(join(cwd, ".gitignore"), "\n.evidence/\nintact-evidence.png\n", { flag: "a" });
+    const response = await fetch(`${daemon.baseURL}/mcp/workflow-evidence`, {
+      method: "POST", headers: { "content-type": "application/json",
+        "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() },
+      body: JSON.stringify({ env: {}, sessionId, cwd, images: [{
+        kind: "agent", clientItemId: "corrected-capture", path: ".evidence/replacement.png",
+        caption: "The final stable capture", repositoryScope: "all",
+      }, {
+        // A new path alone cannot identify which failed proof it replaces. Restaging valid
+        // parent proof is the explicit repair signal described in the delivered packet.
+        kind: "agent", clientItemId: "phase1-intact-capture", path: "intact-evidence.png",
+        caption: "The screenshot that is still exactly what was registered", repositoryScope: "all",
+      }] }),
+    });
+    expect(response.ok, await response.text()).toBe(true);
+    await expect.poll(async () => {
+      const detail = await api<{ run: { status: string }; submissions: Array<{ round: number; segment: number }> }>(daemon, `/api/workflow-runs/${runId}`);
+      return detail.run.status;
+    }, { timeout: 60_000 }).toBe("completed");
+    await expect(header).toContainText("Complete");
+    const detail = await api<{ submissions: Array<{ round: number; segment: number; refinementReason: string | null }> }>(daemon, `/api/workflow-runs/${runId}`);
+    expect(detail.submissions).toHaveLength(2);
+    expect(detail.submissions[1]).toMatchObject({ round: 1, segment: 1, refinementReason: "evidence_capture_repair" });
+    await shoot(header, "02-corrected-evidence-completes-same-round");
+    return;
+  }
   await expect(why).toContainText("picked up by the next round and not by a resume");
   await expect(why).toContainText("resuming replays the same frozen reservation");
 
@@ -257,3 +316,5 @@ test("a run blocked by evidence capture says what failed, which item, and what t
   await dashboard.mouse.move(0, 0);
   await shoot(header, "01-capture-failure-names-the-item");
 });
+
+}

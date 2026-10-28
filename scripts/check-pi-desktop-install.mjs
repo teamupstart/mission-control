@@ -52,10 +52,10 @@ const env = { ...process.env, HOME: home, MISSION_HOME: state, TMPDIR: scratch,
 for (const key of Object.keys(env)) if (/^(MISSION|FLEET|HARNESS)_(API_TOKEN|API_TOKEN_FILE|MCP_SERVER|PI_EXTENSION|SESSION_ID|SCOUT_SUBMISSION_CREDENTIAL)$/.test(key)) delete env[key];
 let child; let browser;
 try {
-  console.log("Building current working snapshot through the standard Bash temporary-source installer.");
-  execFileSync("/bin/bash", [join(repo, "scripts/install.sh")], { cwd: root, env, stdio: "inherit", timeout: 600_000 });
+  console.log("Building current working snapshot through the explicit Bash temporary-source installer.");
+  execFileSync("/bin/bash", [join(repo, "scripts/install-source.sh")], { cwd: root, env, stdio: "inherit", timeout: 600_000 });
   assert.deepEqual(readdirSync(scratch).filter(name => /^mission-control-(bootstrap|install)/.test(name)), [], "Bash bootstrap and build source must be deleted");
-  const app = join(home, "Applications/Mission Control.app");
+  const app = join(home, "Applications/Agent Mission Control.app");
   const resources = join(app, "Contents/Resources/app");
   const runtime = join(app, "Contents/MacOS/Mission Control");
   assert.ok(existsSync(runtime));

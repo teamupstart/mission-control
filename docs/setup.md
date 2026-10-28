@@ -9,6 +9,18 @@ If you are installing Mission Control to use rather than to work on, read the il
 side, with screenshots, a required-versus-optional breakdown of every row, and how updates
 arrive.
 
+## Install the desktop binary
+
+For ordinary desktop use, the [binary installer and manual recovery route](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+requires macOS 12+ on Apple Silicon and native GitHub CLI authentication, without host Node,
+npm, npx, Git or local compilation. Signed release qualification is still pending; unavailable
+assets refuse installation. Existing source installs can be replaced in place by this command
+once assets are published, preserving their state and destination. Copied signed DMGs can enroll
+through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
+
+The commands below concern source development. Setup's universal Node row is retained until
+the separate integration-runtime phase; it is not a prerequisite for binary installation.
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
@@ -55,15 +67,15 @@ plugin installation, sign-in, restart, daemon certificate, and verification step
 without the plugin remain free of Upstart-specific setup chrome.
 
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
-installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
+source installer (currently Node.js 24). It reports a missing or older runtime as
 **Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**
 opens `brew install node` in the selected visible terminal to install or update Node.js and npm.
 This command requires Homebrew; if you manage Node another way, select a supported version in
 that manager instead. Read the command's exit status, then press **Re-check**. Opening the
 installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
 PATH still selects an older runtime, correct that selection and restart Mission Control with
-the corrected environment. The updater still performs its fuller Node/npm checks in the build
-directory before preparing an update.
+the corrected environment. Desktop binary updates do not use that host runtime. This Setup row remains for the separate
+integration-runtime phase; source development and third-party tools keep their own prerequisites.
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
@@ -215,3 +227,9 @@ To regenerate the committed README imagery after a dashboard change, first run
 `npx playwright install chromium` once on a new machine, then build and run
 `npm run docs:screenshots`. The capture tool uses its own disposable demo state root, fixed
 viewport, and local scenario players, so it does not use agent models or alter your normal demo.
+
+### Installed macOS name
+
+The current binary is Agent Mission Control.app. Use the current installer for an old-name
+installation; it preserves the existing folder, scope and state. Saved old bootstraps refuse
+the new layout. See [migration and compatibility](app-name-migration.md).

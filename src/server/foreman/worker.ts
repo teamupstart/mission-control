@@ -2140,7 +2140,11 @@ export async function processPromptedWrapup(
   // it is exactly the case that would otherwise make this trigger obnoxious - a Ship
   // it? card on every conversation. Stamped, because the answer will not change while
   // the session sits idle.
-  if (!diff.patch.trim()) {
+  // Local plan bundles live outside Git. Their bound validation still needs the ordinary
+  // verifier and completion claim, whose daemon gates enforce exact approval and evidence.
+  const localPlanValidation = session.task?.kind === "plan"
+    && session.task.planPolicy?.storage === "local" && planPublication?.owner === "workflow";
+  if (!diff.patch.trim() && !localPlanValidation) {
     // The consume IS the whole tick here, so its result is the tick's result. Swallowing
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
     // four loopback reads a pass against the daemon's single synchronous handle, which

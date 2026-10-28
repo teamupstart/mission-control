@@ -121,7 +121,7 @@ import {
   type WritebackNotice,
   type WritebackSignal,
 } from "@shared/task-source.ts";
-import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
+import { HUMAN_REVIEW_STATUSES, isConversationResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
   FILE_COMMENT_MESSAGES_PER_THREAD_MAX,
@@ -4351,7 +4351,7 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
       `SELECT * FROM reviews
         WHERE mcp_wait_detached_at IS NOT NULL
           AND continuation_queued_at IS NULL
-          AND resolved_by = 'human'
+          AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
           AND status IN ('approved', 'rejected', 'answered', 'dismissed')${suffix}
         ORDER BY resolved_at ASC, created_at ASC`,
     )
@@ -4381,7 +4381,7 @@ export function createReviewContinuationPendingTurn(input: {
           WHERE id = ?
             AND mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
-            AND resolved_by = 'human'
+            AND (resolved_by = 'human' OR resolved_by LIKE 'session:%')
             AND status IN ('approved', 'rejected', 'answered', 'dismissed')`,
       )
       .get(input.reviewId) as unknown as { present: number } | undefined;
@@ -4470,20 +4470,28 @@ export function loadPendingReviews(): ReviewItem[] {
  * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  return loadConversationReviewHistory(sessionId, limit, false);
+}
+
+export function loadConversationResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  return loadConversationReviewHistory(sessionId, limit, true);
+}
+
+function loadConversationReviewHistory(sessionId: string, limit: number, includeDelegated: boolean): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
   const rows = openDb()
     .prepare(
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND resolved_by = 'human'
+            AND (resolved_by = 'human'${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
        ) ORDER BY resolved_at ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
-  return rows.map(rowToReview).filter(isHumanResolvedReview);
+  return rows.map(rowToReview).filter(isConversationResolvedReview);
 }
 
 /**
@@ -6399,8 +6407,8 @@ export interface TaskRepoPrRecord {
  *
  * `prState` is derived rather than stored: a binding exists only for a pull request this
  * task opened, and the only transition the daemon records against it is the merge. A pull
- * request closed unmerged therefore still reads `open` here, which is the same thing the
- * session chip does with one - the poller simply stops reporting it.
+ * request closed unmerged therefore still reads `open` in this binding-only projection.
+ * Session summaries overlay the matching live poll observation to surface closure.
  */
 export function primaryRepoPrForTask(taskId: string): TaskRepoPrRecord {
   const current = taskWorkEpisodeForTask(taskId);

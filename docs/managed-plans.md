@@ -205,8 +205,11 @@ must complete. Before capture, the daemon freezes the exact approval/revision ma
 submission and requires retained evidence containing every Markdown filename and its full
 saved text. Register this with `submit_workflow_evidence`; paths alone are insufficient for
 tool-less reviewers. Manual bindings retain manual submission; automatic bindings start via
-Foreman after the planning handoff. Paused, failed, missing and superseded submissions block
-publication. Binding archival invalidates bound approval instead of silently publishing it.
+Foreman after the planning handoff. A workflow-bound local plan reaches completion verification
+even with an empty Git diff, because its bundle lives outside the checkout. An empty diff is
+neither proof of completion nor a reason to discard that handoff. Paused, failed, missing and
+superseded submissions block publication. Binding archival invalidates bound approval instead
+of silently publishing it.
 
 After approval, schedule phases with exact `planInputs` and `planPrerequisites` identities.
 The latter become distinct `type: "plan"` edges. Add `dependsOnTaskIds` for direct code phases;

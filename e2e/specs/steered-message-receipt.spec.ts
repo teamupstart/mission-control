@@ -198,7 +198,8 @@ test("the pill follows the steer's row when the conversation redraws it", async 
   await expect(pill).toHaveCount(0);
   // Switching drawing replaces the row's element while its id stays the same. The pill must
   // follow the new element, which is still in view, rather than the detached old one.
-  await card.getByRole("button", { name: "Terminal view" }).click();
+  await card.getByRole("button", { name: "Conversation view" }).click();
+  await dashboard.getByRole("menuitemradio", { name: "Terminal" }).click();
   await expect(card.getByRole("region", { name: "Conversation terminal" })).toBeVisible();
   await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
   await expect(steered).toBeInViewport();

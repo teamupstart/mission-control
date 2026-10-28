@@ -189,7 +189,9 @@ one press per layer - and a click anywhere outside it, or a scroll, puts it away
 **The footer says whether anything is going to act on that order at all.** It carries the
 backlog autopilot's switch and a live readout: `Autopilot on · 2/3 agents · takes the top row
 on its own`, or `full, waiting for one to free up`, or `nothing ready to take`, or - armed
-behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`.
+behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`, or -
+Live with no repository granted in Trust, which is a fresh install's state -
+`nothing launches until a repository is trusted for Foreman`.
 It is **the same switch** as **Auto-schedule the backlog** in the
 [Foreman popover](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet): one config field, one
 route, either surface. The readout deliberately does not repeat the header's
@@ -734,14 +736,15 @@ second probe or polling loop. The daemon binds dismissal to the displayed checks
 tab cannot suppress a repair-regression sequence that another tab already observed.
 
 The same fleet has two supported shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
-lets you switch live between them, and the choice persists per machine:
+lets you switch live between them, and the choice persists per machine. A fresh install opens
+on **Board**; an install that already stored a layout keeps it:
 
 | Layout | Shape | Good for |
 |--------|-------|----------|
+| **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
-| **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Stored preferences for the retired `grid` layout migrate to Console when loaded. New
+Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
 surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
@@ -754,11 +757,11 @@ available:
   **Conversation tab is the transcript and its reply box, and nothing else**: the workflow
   ladder lives in **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this
   run going* while Conversation answers *what was said*. The controls for getting *at* this
-  session - **Terminal view** and the two launchers - sit in the **tab strip** rather than
+  session - the **Session control** and **Conversation view** icon menus and the two launchers - sit in the **tab strip** rather than
   in a band above the transcript, since that row already runs the full width and its job is
   adjacent: the launchers choose *how* you view a session exactly as the tabs choose *what*.
-  On a narrow pane that row gives way in order - the tabs' chord hints, then the toggle's
-  word, then the launchers' words and chord hints, then Foreman's word - so it stays one
+  On a narrow pane that row gives way in order - the tabs' chord hints, then the menu
+  spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
   The **Board** drills into that same detail when you open a tile. In Console and Board, the
@@ -848,7 +851,7 @@ available:
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
-  ship, bugfix, scout, plan, pipeline or chat - on both surfaces, `ship` included. Each kind
+  ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the
   card's **Medallion**, which shows the icon alone and gives the word on hover. The console
   badge does the same only on a pane too narrow for anything else, where every other header
@@ -1067,12 +1070,50 @@ application, and says so rather than guessing). The row names what it found, so 
   change. Both records are `Record<OpenTargetId, …>`, so a declared target that nothing can
   launch does not compile.
 
+## Publish a file as a shareable page
+
+The file toolbar's **Publish** button, beside **Open in ▾**, shares the open file as a
+hosted page - most often a scout report at `docs/reports/<slug>/report.html`. Mission
+Control uploads nothing itself. The click sends the session one ordinary turn, through the
+same one-turn path as the reply box, asking its agent to publish that exact file with the
+agent's own tool. The toolbar confirms only that the request was sent: the conversation is
+where the agent replies with the link, or says why it could not publish. Each confirmation
+or refusal belongs to the file and session it was sent from: it is shown only while that
+file is open and stays with it until dismissed or published again, so a request still in
+flight when you move on, or publish a second file, never replaces another file's result.
+
+- **Claude Code publishes a Claude artifact.** The prompt tells Claude to call its
+  `Artifact` tool with `file_path` set to the open file, and not to edit, rewrite,
+  reformat or copy it first. That tool reads its content only from `file_path`, so the page
+  on claude.ai is the file on disk. A new artifact is private to you until you share it
+  from its page header. Artifacts need a Pro, Max, Team or Enterprise plan, a claude.ai
+  sign-in rather than an API key, and the Anthropic API rather than Bedrock or Vertex. The
+  Agent SDK has them off by default, so Mission Control launches embedded sessions with
+  `CLAUDE_CODE_ARTIFACT=1` unless you set that variable yourself; `enableArtifact: false`
+  in your Claude Code settings still turns the tool off. When the tool is not available,
+  the prompt asks Claude to say so and stop rather than publish something else.
+- **Codex and Pi cannot publish.** The button is drawn disabled with the reason. OpenAI's
+  nearest equivalent, Sites, is managed only from ChatGPT on the web or the desktop app, and
+  a Sites deploy may change a project to make it deployable.
+- **Only the tool's source types.** Claude publishes `.html`, `.htm` and `.md`; any other
+  file shows the button disabled with that list.
+- **Unsaved edits are not published.** The button waits for the file to be saved, so what
+  Claude reads is what you are looking at. A session that cannot take a turn - no pane, or
+  driven by a workflow engine - shows the button disabled with that reason.
+- **A published artifact is one page.** Relative links to files beside the report do not
+  resolve on claude.ai, so a report that links to a CSV or screenshot publishes with those
+  links dead.
+- **Adding a harness is one capability entry.** `artifactPublishing` in
+  `@shared/harness-capabilities.ts` carries either the label, the source types and the
+  prompt, or the sentence that explains why the harness cannot publish. The toolbar reads
+  only that entry.
+
 ## Conversation rendering
 
 The Conversation is drawn as a **terminal stream** by default - prompt lines in, stdout out,
 tool runs folded into one record, inside a frame with a live status line. It can instead be
 drawn as a **chat log**. **Settings → Display → Conversation** sets the default for
-every session, per machine; the **Terminal view** button flips that one session for as long
+every session, per machine; the **Conversation view** icon menu changes that one session for as long
 as the tab is open - in the strip above the conversation on a card, and in the detail's tab
 strip in Console and Board. Both renderings are the same panel over the
 same transcript, so find, the Observed activity rail, scroll-back, attachments and the
@@ -1178,7 +1219,8 @@ itself, still counts both.
 **Comment** in the Files toolbar turns on comment mode (<kbd>m</kbd>, in the integrated tab)
 for any file with source to read. With it on, clicking a line number - or a block of the
 rendered preview - opens a box under that line. An image has no lines and shows the control
-disabled with that as the reason.
+switched off with that as the reason. It stays focusable, so the reason is reachable from the
+keyboard as well as on hover.
 
 **This works in Preview as well as in the Editor.** A comment names a line and quotes it, but
 turning the control on over a rendered Markdown or HTML document takes nothing away and shrinks
@@ -1226,6 +1268,13 @@ state, message count, and most recent text. Selecting a row expands that thread 
 its anchor in the current reader: the rendered block in Preview and the source line in Editor.
 The rail is navigation rather than the review queue, so a thread remains findable after it is
 sent, answered, or resolved.
+
+The file list marks every file that carries comments, so a thread is findable before you open
+its file. The mark is a speech bubble with the same count as that file's **Comments** button.
+It is amber while an agent answer on the file is unread, blue while any thread is open, and
+dimmed once every thread on the file is resolved. Its accessible name says the same in words,
+for example "2 comments, 1 unread reply", and reads as part of the file's row. Opening the
+thread is what clears the amber, here and in the Diff tab alike.
 
 **Resolve** closes a thread, and only a person ever does - a thread does not close itself and
 an agent cannot close one. Closed threads stop being drawn inline, but remain in the
@@ -1279,6 +1328,57 @@ The exception is a comment you started and never submitted. A **draft** is not a
 comment - it is your composer with half a sentence in it, and the review queue does not list one
 - so pointing at its block reopens it with what you wrote still in it.
 
+#### Comment from the Diff tab
+
+The bar naming the file you are reading in the **Diff** tab carries the same comment controls
+as the Files toolbar, in the same order and with the same names: **Comment** (<kbd>m</kbd> while
+the diff reader owns focus), **Comments (N)**, **Review (N)** and, in comment mode, **Resolved**.
+They are one shared control, so they cannot drift apart. That bar stays put above the diff
+while its lines scroll, as the Files toolbar does, so **Comment**, **Comments** and **Open in
+Files** are in reach at the bottom of a long file as well as at the top. With it on, the new-side line number of
+every line that is in the working-tree file becomes a button; click one and the same box opens
+in a row directly under that line. Everything after that is the Files tab's: the draft is saved
+from the first keystroke, **Send** delivers it or queues it, <kbd>Esc</kbd> discards it, and the
+thread is the same row the Files tab draws. It anchors to the same Files-relative path, the same
+working-tree line and the same quoted text, so a comment written on a diff line shows as a
+marker on that line in the Files editor, and one written in Files shows in the diff whenever
+its line is part of a hunk. A marker in the diff expands the thread for a reply, **Resolve** or
+**Reopen**, and **Resolved** draws closed threads while comment mode is on. Comment mode stays
+on as you move between changed files, and is off again after a reload, as it is in Files.
+
+Only lines that exist in the working tree take a comment. A deleted line is text that is gone,
+and a hunk header belongs to git, so neither gets a button. The diff is a snapshot from when the
+tab loaded, so clicking a line re-reads the file first and the comment anchors to the file as it
+is on disk now. If the agent has rewritten that line since, the click says so instead of opening
+the box, and the line stops being clickable until you reload the diff. There is no Preview here;
+a diff is source, so every comment made from it is a line comment.
+
+The control says why when a file takes no comment, and stays focusable so the reason is
+reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
+working tree a comment anchors to), a **deleted** file, a **binary** file, and a file the Files
+tab cannot open because it is **outside the session's working directory**. **Comments** says
+why in the same cases, since none of those files has a working-tree path to list threads for.
+
+The **Changed files** list carries the Files list's comment mark beside each file that has
+threads, with the same count and colours, so you can see which files carry comments and which
+answers you have not read yet without opening each one. A single-commit diff marks nothing,
+for the same reason it takes no comment.
+
+**Comments** opens the file's comment index beside the diff. It is the Files tab's rail: every
+thread on the file, resolved ones included, with its location, state, message count and latest
+text. Selecting a row expands that thread and scrolls its line into view. A thread can sit on a
+line the diff does not show, for example one written in the Files tab on a line the change never
+touched. That thread opens in a panel pinned above the diff that names the line, with the full
+conversation, **Reply**, **Resolve** and **Reopen**. You can read and answer the agent's reply
+without leaving the Diff tab. The index stays open as you move between changed files, as comment
+mode does.
+
+**Review (N)** opens the session's review queue below the diff. It is the same queue as in the
+Files tab, with the same reorder, rewrite, drop, **Pause** and **Resume**. Opening a comment from
+it selects that comment's file in the diff and opens the thread there. A comment on a file this
+diff does not contain opens that file in the Files tab instead, even while another comment is
+out with the agent.
+
 ### Comments go to the agent as you send them
 
 **Send** in the comment box delivers the comment. There is no separate step to start a review:
@@ -1294,7 +1394,7 @@ that, the session settling idle for long enough that it has clearly moved on. On
 ever outstanding, and that is the whole design: you see each answer before the next comment
 goes. When the queue runs dry it simply waits for your next comment.
 
-**Review (N)** in the Files toolbar opens the queue: every comment this session holds, in the
+**Review (N)** in the Files toolbar, or in the Diff tab's file bar, opens the queue: every comment this session holds, in the
 order it will be delivered, across every file. A dot on the button means a comment is out with
 the agent. The panel does not open itself when a comment goes, so it never covers the file while
 you are writing the next one; it opens on its own only when delivery stops for a reason that
@@ -1417,7 +1517,10 @@ covers a session that simply ignores the tool exactly as it covers one that neve
 
 **Opening a file at a line works now.** A `path:line` link from a conversation, a diff, or a
 review finding scrolls the editor to that line rather than opening the file at the top, and the
-walkthrough uses the same route to take you to each comment as it goes out.
+walkthrough uses the same route to take you to each comment as it goes out. It follows comments
+that go out while the Files tab is open. A comment that was already out when you opened the tab
+does not pull you off the file you opened it on, whether you came from a link, **Open in Files**
+or the Diff tab's review queue.
 
 Markdown in the Files **Preview** has one additional capability: a fenced block tagged exactly
 `mermaid` renders automatically as a local diagram. Each diagram runs in its own opaque,
@@ -1585,7 +1688,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |
-| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click | Integrated Files tab on a file with source |
+| <kbd>m</kbd> | Turn [comment mode](#comment-on-a-line) on or off in the integrated Files tab, and show the file's source so there are lines to click; in the Diff tab, make the working-tree line numbers clickable | Integrated Files tab on a file with source, or the Diff reader on a file that takes comments |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the rendered file preview up or down. Preview claims <kbd>d</kbd> before the global Delete action | Integrated Files tab in Preview mode |
 | <kbd>Esc</kbd> or <kbd>⇧</kbd><kbd>Tab</kbd> | Return from the rendered file preview to the selected file; <kbd>Tab</kbd> enters Preview again | Focused integrated Files preview |
 | <kbd>l</kbd> | Open the file displayed in the Diff reader in Files | Focused Diff reader |
@@ -1694,8 +1797,8 @@ the override and leaves the shortcut unset until its default is free. The arrow 
 and can't be reassigned; neither can Fleet's twelve
 [session jump chords](#jumping-straight-to-a-session); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
-editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
-are in-surface keys rather than fleet chords - they only exist while their surface is active - so
+editor's four rows above, the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
+and the Diff reader's <kbd>m</kbd> are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
 are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
@@ -1716,7 +1819,7 @@ Editor and Comment controls; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure and its
 [jump key](#jumping-straight-to-a-session), which the Console rail row prints beside its state
 word; the Diff reader's
-Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
+Comment and Open in Files actions; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
 icon-only Delete controls name it in their tooltip. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.

@@ -1,4 +1,6 @@
 import type { FullConfig } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+import { snapshotWebBuild } from "./fixtures/web-build.ts";
 
 import {
   acquireE2eHostLease,
@@ -25,8 +27,20 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
     `[e2e] acquired the host lease with ${config.workers}/${E2E_MAX_WORKERS} workers `
     + `(pid ${lease.owner.pid})`,
   );
-  return async () => {
+  let build: ReturnType<typeof snapshotWebBuild>;
+  try {
+    build = snapshotWebBuild(fileURLToPath(new URL("../dist/web", import.meta.url)));
+    process.env.MC_E2E_WEB_SNAPSHOT = build.directory;
+  } catch (error) {
     await lease.release();
-    console.log(`[e2e] released the host lease (pid ${lease.owner.pid})`);
+    throw error;
+  }
+  return async () => {
+    try { build.dispose(); }
+    finally {
+      delete process.env.MC_E2E_WEB_SNAPSHOT;
+      await lease.release();
+      console.log(`[e2e] released the host lease (pid ${lease.owner.pid})`);
+    }
   };
 }

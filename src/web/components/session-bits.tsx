@@ -1644,7 +1644,9 @@ export function prChipView(session: Session): PrChipView | null {
     title:
       state === "merged"
         ? `Pull request ${label} merged - open on GitHub`
-        : `Open pull request ${label} - open on GitHub`,
+        : state === "closed"
+          ? `Pull request ${label} closed - open on GitHub`
+          : `Open pull request ${label} - open on GitHub`,
     failingTitle: "A CI check failed on this pull request - open on GitHub",
   };
 }
@@ -2044,7 +2046,8 @@ export function TaskRepoPrs({
       {repoPrs.map((entry) => {
         const number = prNumberIn(entry.prUrl);
         const label = number === null ? "PR" : `#${number}`;
-        const state: PrState = entry.prState === "merged" ? "merged" : "open";
+        const state: PrState =
+          entry.prState === "merged" || entry.prState === "closed" ? entry.prState : "open";
         const role = entry.primary ? "primary repo" : "attached repo";
         const name = repoLeaf(entry.repoRoot);
         if (!entry.prUrl) {
@@ -2063,11 +2066,7 @@ export function TaskRepoPrs({
         return (
           <Tooltip
             key={entry.repoRoot}
-            label={
-              state === "merged"
-                ? `${entry.repoRoot} (${role}) - pull request ${label} merged - open on GitHub`
-                : `${entry.repoRoot} (${role}) - pull request ${label} open - open on GitHub`
-            }
+            label={`${entry.repoRoot} (${role}) - pull request ${label} ${state} - open on GitHub`}
           >
             <a
               className={`task-repo-pr pr-${state}`}

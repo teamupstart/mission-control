@@ -20,6 +20,7 @@ import {
 } from "@shared/workflow.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
+import { NodeReviewPolicyEditor } from "./NodeReviewPolicyEditor.tsx";
 import { personaNodeRouting } from "./node-execution.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { missionRouteHash } from "./useWorkflowRoute.ts";
@@ -375,6 +376,12 @@ export function WorkflowProperties({
                   </select>
                 </Tooltip>
               </label>
+              <NodeReviewPolicyEditor
+                name={nodeLabel(workflow.draft, selectedNode, personas, sessionActions)}
+                enabled={selectedNode.recheckAfterRepair === true}
+                readOnly={readOnly}
+                onChange={(recheckAfterRepair) => replaceNode({ ...selectedNode, recheckAfterRepair })}
+              />
               <NodeExecutionEditor
                 // The rail is ONE mount that the selection re-points, so the form resyncs
                 // from these rather than from a `key`: selecting another node, swapping this

@@ -323,3 +323,86 @@ test("a single-repo task still shows one outcome and no per-repo lines", async (
   await expect(card.locator(".task-repo-pr")).toHaveCount(0);
   await shoot(dashboard, "single-repo-unchanged", card);
 });
+
+test("session PR links turn red when closed and recover when reopened or merged", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatchAcross(dashboard, daemon);
+  const session = await settledSession(daemon);
+  const task = await provisionedTask(daemon);
+  createTaskBranches(task);
+  await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
+  scriptPullRequests(daemon, task);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  const primary = card.getByRole("link", { name: /demo-repo/ });
+  const second = card.getByRole("link", { name: /second-repo/ });
+  await expect(primary).toHaveClass(/pr-open/);
+  await expect(second).toHaveClass(/pr-open/);
+  const createdAt = new Date().toISOString();
+  const rows: FakePullRequest[] = [
+    {
+      cwd: task.worktreePath!, url: PR_PRIMARY, number: 10,
+      state: "CLOSED", createdAt, mergedAt: null, headRefOid: "0".repeat(40),
+    },
+    {
+      cwd: task.extraRepos[0]!.worktreePath!, url: PR_SECOND, number: 20,
+      state: "CLOSED", createdAt, mergedAt: null, headRefOid: "0".repeat(40),
+    },
+  ];
+  writeGhPullRequests(daemon.home, rows);
+  await expect(primary).toHaveClass(/pr-closed/);
+  await expect(second).toHaveClass(/pr-closed/);
+  const red = await primary.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "color-mix(in oklab, var(--danger) 80%, var(--fg))";
+    el.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  await expect(primary).toHaveCSS("color", red);
+  await expect(second).toHaveCSS("color", red);
+  await expect(dashboard.locator(".rail-pr.pr-closed")).toHaveCount(1);
+  await expect(primary).toHaveAccessibleDescription(
+    `${daemon.repo} (primary repo) - pull request #10 closed - open on GitHub`,
+  );
+  await shoot(dashboard, "closed-pr-links", card);
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await expect(primary).toHaveClass(/pr-closed/);
+  expect((await api<TaskRow[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).toBe("running");
+
+  writeGhPullRequests(daemon.home, rows.map((row, i) => ({
+    ...row,
+    state: i === 0 ? "OPEN" : "MERGED",
+    mergedAt: i === 0 ? null : new Date().toISOString(),
+  })));
+  await expect(primary).toHaveClass(/pr-open/);
+  await expect(second).toHaveClass(/pr-merged/);
+  await shoot(dashboard, "reopened-and-merged-pr-links", card);
+
+  // The same primary PR is a flag on the Board, with a more specific CSS rule.
+  writeGhPullRequests(daemon.home, [rows[0]!, { ...rows[1]!, state: "MERGED", mergedAt: new Date().toISOString() }]);
+  await expect(primary).toHaveClass(/pr-closed/);
+  const configured = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "board" }),
+  });
+  expect(configured.ok).toBe(true);
+  await dashboard.reload();
+  const flag = dashboard.locator(".tile-flag.pr-closed");
+  await expect(flag).toHaveAttribute("href", PR_PRIMARY);
+  const danger = await flag.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--danger)";
+    el.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  await expect(flag).toHaveCSS("color", danger);
+  await shoot(dashboard, "closed-pr-board");
+});

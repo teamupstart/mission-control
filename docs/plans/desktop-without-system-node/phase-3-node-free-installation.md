@@ -2,11 +2,15 @@
 
 Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the prior phase handoffs before implementing. This phase document is a proposed route; adapt to verified repository facts and explain deviations in the PR. Repository: mission-control only.
 
+## Approved forward rollout, 2026-10-26
+
+Implementation supplies the standalone binary installer and enrollment flow. [R1 in the forward-rollout contract](forward-rollout.md#r1-first-signed-binary-and-migration) owns their signed release qualification.
+
 ## Outcome and entry criteria
 
 A macOS Apple Silicon user can install or replace Mission Control without system Node, npm, npx, git or Xcode build tools, including when the old app's updater cannot run. A manually copied app can enroll in managed installation at a verified destination.
 
-Direct phase prerequisite: Phase 2 merged; Phase 1 is inherited through it. Also wait for the planning publication edge. Confirm the real signed DMG/manifest, trusted publisher policy and C1-C4 APIs are available. Use an isolated test account/VM and fixture state for installation experiments. This phase must not replace the operator's live app or use its live state for verification.
+Direct phase prerequisite: Phase 2 merged; Phase 1 is inherited through it. Also wait for the planning publication edge. Confirm the merged trusted publisher policy and C1-C4 APIs. A real signed DMG/manifest is required for R1 rollout qualification, not for completing implementation against those contracts. Use an isolated test account/VM and fixture state for installation experiments. This phase must not replace the operator's live app or use its live state for verification.
 
 ## Scope and non-goals
 
@@ -50,15 +54,15 @@ Use the isolated single-file invocation from AGENTS.md for `test/install-shell.t
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add behavior specs for enrollment and mounted-DMG refusal, extending `e2e/specs/update-install-identity.spec.ts` and `e2e/specs/user-install-migration.spec.ts` or a focused new spec. Run them with `npm run test:e2e -- <spec paths>` after build. Any new modal must use the border-inset measurement helper. Keep all agent binaries faked.
 
-The mandatory packaged exercise is a fresh macOS account/VM with Node/npm/npx/git build tools absent. Verify signed first install, managed launch, rerun, explicit system/custom paths, copied-DMG enrollment, mounted-DMG refusal and replacement of an old schema-1 app whose host Node is absent. Repeat with sentinel commands that record unexpected invocations. Capture receipt identity, state preservation, old/new process identity and failure recovery without secrets or operator data. This is NC-1 and the install portion of NC-4; unit/browser fixtures alone do not satisfy it.
+Implementation evidence covers the bootstrap, enrollment and shared transaction boundaries above. Hand off those results to [R1](forward-rollout.md#r1-first-signed-binary-and-migration), which owns the signed first-install and legacy-migration matrix, inputs and completion criteria.
 
-## Merge and exit criteria
+## Implementation merge and rollout qualification
 
 - Standard binary bootstrap and manual enrollment install a trusted usable app without a host runtime or build toolchain.
 - Existing users can bypass their old updater without changing state home or silently changing install scope.
 - Source commands remain explicit and functional; binary receipts never enter a source-build path.
-- Scope, identity, interruption and receipt rollback cases pass; live packaged evidence accompanies the PR.
-- The published recovery installer exists before Phase 4 changes update behavior.
+- Scope, identity, interruption and receipt rollback regression cases pass; missing real inputs are identified without claiming signed execution.
+- R1 qualifies the first published recovery installer and legacy replacement. Phase 4 implementation may merge before that publication; actual downloads continue to require a complete trusted artifact.
 
 ## Downstream handoff
 

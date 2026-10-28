@@ -900,6 +900,8 @@ export class Registry extends EventEmitter {
    */
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
+  /** Explicit grants, bounded by live sessions and never persisted. */
+  private sessionControlGrants = new Map<string, string>();
   /** A terminal side effect must not cross the asynchronous reset boundary. */
   private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
@@ -1324,6 +1326,37 @@ export class Registry extends EventEmitter {
     this.emitEvent(restored);
   }
 
+  /** Shared binding for private click authorization and the resulting transient grant. */
+  sessionControlIdentity(id: string): string | null {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || session.state === "stopping" || this.sessionResetInProgress(id)) return null;
+    const episode = this.workEpisodeForSession(id);
+    if (!episode || episode.awaitingAgentRebind) return null;
+    return JSON.stringify([session.pid, session.agentSessionId, session.cwd, episode.episodeId, this.taskForSession(id, session.cwd)?.id ?? null]);
+  }
+
+  /** Grants never survive a daemon restart, reset, or replacement work episode. */
+  sessionControlEnabled(id: string): boolean {
+    const grant = this.sessionControlGrants.get(id);
+    if (!grant) return false;
+    const valid = grant === this.sessionControlIdentity(id);
+    if (!valid) this.sessionControlGrants.delete(id);
+    return valid;
+  }
+
+  setSessionControlEnabled(id: string, enabled: boolean): boolean {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited" || session.state === "stopping") return false;
+    const identity = this.sessionControlIdentity(id);
+    if (enabled && !identity) return false;
+    if (enabled) this.sessionControlGrants.set(id, identity!);
+    else this.sessionControlGrants.delete(id);
+    const next = { ...session, sessionControlEnabled: enabled };
+    this.sessions.set(id, next);
+    this.emitSession(next);
+    return true;
+  }
+
   getSession(id: string): Session | undefined {
     return this.sessions.get(id);
   }
@@ -1569,6 +1602,7 @@ export class Registry extends EventEmitter {
   }
 
   beginSessionReset(id: string): void {
+    if (this.sessionControlGrants.has(id)) this.setSessionControlEnabled(id, false);
     this.resettingSessionCounts.set(id, (this.resettingSessionCounts.get(id) ?? 0) + 1);
   }
 
@@ -1834,6 +1868,7 @@ export class Registry extends EventEmitter {
     if (LINE_INPUT_EVENTS.has(e.type)) this.scheduleLineRecompute();
   }
   private emitSession(s: Session): void {
+    s.sessionControlEnabled = this.sessionControlEnabled(s.id);
     this.emitEvent({ type: "session_upsert", session: s });
   }
 
@@ -2409,6 +2444,7 @@ export class Registry extends EventEmitter {
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
+      sessionControlEnabled: prev?.sessionControlEnabled ?? false,
       name: d.name,
       nameSource: d.nameSource,
       renameable: canRenameTerminal(d),
@@ -4981,7 +5017,7 @@ export class Registry extends EventEmitter {
   private repoPrSummaryFor(s: Session): TaskSummary | null {
     const task = this.activeTaskFor(s.id, s.cwd);
     if (!task || task.extraRepos.length === 0) return s.task;
-    return this.taskSummaryFor(s.id, s.cwd);
+    return this.taskSummaryFor(s.id, s.cwd, s.pipeline, s);
   }
 
   /**
@@ -5135,14 +5171,14 @@ export class Registry extends EventEmitter {
 
   /**
    * Reconcile each session's PR chip against what `gh` reported this tick.
-   * `found` holds the open-or-merged PR for every session that has one right now;
+   * `found` holds the open, merged, or closed PR for every session that has one right now;
    * `skip` holds sessions whose `gh` query failed (missing/unauthenticated `gh`, a
    * timeout) so their existing chip is left untouched rather than wrongly wiped.
    * Every other session is set to "no PR": that single rule retracts the chip when
    * the session is reset onto a branch with no matching PR (the branch drops out
    * of `found`) - so a reused session never carries a stale chip from its previous
    * branch. A merged PR stays in `found` (the poller keeps reporting it) and so
-   * lingers until the branch changes; only a closed-unmerged PR falls out.
+   * lingers until the branch changes, as does a closed-unmerged PR.
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
@@ -5230,7 +5266,7 @@ export class Registry extends EventEmitter {
       // request hangs off - so without this the card would go on saying "open" until some
       // unrelated event happened to rebuild it. Identical for a single-repo session, which
       // gets back the summary it already had.
-      const task = this.repoPrSummaryFor(live);
+      const task = this.repoPrSummaryFor({ ...live, prUrl: url, prState: state });
       const taskMoved = JSON.stringify(task) !== JSON.stringify(live.task);
       if (
         !taskMoved &&
@@ -6274,6 +6310,7 @@ export class Registry extends EventEmitter {
     // where "the row goes", so this is where it is forgotten.
     this.retroCorrections.delete(id);
     if (!this.sessions.delete(id)) return;
+    this.sessionControlGrants.delete(id);
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
     // liveness from this very map - so no sibling's hint is right until this runs.
@@ -6895,8 +6932,19 @@ export class Registry extends EventEmitter {
     sessionId: string,
     cwd: string | null,
     sessionPipeline: SessionPipelineLink | null = this.sessions.get(sessionId)?.pipeline ?? null,
+    session: Session | undefined = this.sessions.get(sessionId),
   ): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd, sessionPipeline);
+    const primaryPr = t && t.extraRepos.length > 0 ? primaryRepoPrForTask(t.id) : null;
+    // Bindings retain merge outcomes; the matching live observation also knows closure.
+    if (
+      primaryPr &&
+      primaryPr.mergedAt === null &&
+      session?.prUrl === primaryPr.prUrl &&
+      session?.prState
+    ) {
+      primaryPr.prState = session.prState;
+    }
     return t
       ? {
           id: t.id,
@@ -6924,7 +6972,7 @@ export class Registry extends EventEmitter {
           repoPrs:
             t.extraRepos.length === 0
               ? []
-              : taskRepoPrSummaries(t, primaryRepoPrForTask(t.id), (repoRoot, prUrl) =>
+              : taskRepoPrSummaries(t, primaryPr!, (repoRoot, prUrl) =>
                   this.repoPrFeedbackFor(sessionId, repoRoot, prUrl)),
         }
       : null;
@@ -9634,6 +9682,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // resolves to a new value with often nothing else on the session changing - left out,
   // the phase 3 rail control would swap only when something unrelated shook the card.
   foremanInvite: byValue,
+  sessionControlEnabled: byValue,
   name: byValue,
   nameSource: byValue,
   renameable: byValue,

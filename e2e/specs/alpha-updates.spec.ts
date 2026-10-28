@@ -1,3 +1,4 @@
+import { binaryOffer, binaryStaged } from "../../test/helpers/binary-update.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { UpdateController, ALPHA_RECHECK_MS } from "../../src/main/updater.ts";
@@ -14,16 +15,17 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
   let now = Date.now();
   let mainQueries = 0;
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => installedCommit,
     readAlpha: () => readUpdatePreferences(preferences).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(preferences, { alpha }); },
     installSnapshot: () => ({ receipt: { schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home, appPath: join(daemon.home, "fixture.app"), installedVersion: "1.2.3", installedCommit, releaseTag: "v1.2.3", installedAt: "2026-09-14T00:00:00.000Z" }, problem: null }),
-    latestRelease: async () => ({ tagName: "v1.2.4", name: "1.2.4", body: "Stable release improvements.", publishedAt: "2026-09-14T00:00:00Z", isDraft: false, isPrerelease: false }),
+    latestRelease: async () => ({ binary: binaryOffer(), tagName: "v1.2.4", name: "1.2.4", body: "Stable release improvements.", publishedAt: "2026-09-14T00:00:00Z", isDraft: false, isPrerelease: false }),
     latestMainCommit: async () => { mainQueries++; return { sha: head, message: "New main improvements.", committedAt: "2026-09-14T00:00:00Z" }; },
-    runtime: async () => ({ ok: true, node: process.execPath }),
-    stage: async ({ targetTag }) => {
-      stagedCommit = targetTag;
-      return { ok: true, staged: { version: "1.2.3", bundlePath: join(daemon.home, "staged.app"), revision: "fixture" } };
+    binaryForCommit: async commit => binaryOffer(commit, "alpha", "1.2.3"),
+    stage: async (request) => {
+      stagedCommit = request.targetTag;
+      return binaryStaged(request, join(daemon.home, "staged.app"), "fixture");
     },
     stagedBundleIdentity: () => ({ version: "1.2.3", revision: "fixture", commit: stagedCommit }),
     handoff: async ({ targetTag }) => { acceptedCommit = targetTag; },

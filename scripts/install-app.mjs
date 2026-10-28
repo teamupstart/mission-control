@@ -66,6 +66,8 @@
 // and checkout may rewrite this file on disk while its process is alive. Node loads the full
 // static module graph before execution; a later dynamic import would break that safety property.
 
+import { prepareStagedInstall, installStagedApp, bundleCommit as packagedSourceCommit } from "./install-staged-app.mjs";
+export { isolateStagedBundle } from "./install-staged-app.mjs";
 import { claimInstallReceiptWriter } from "./install-migration.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -90,7 +92,6 @@ import {
   APP_BUNDLE_NAME,
   SYSTEM_APPS_DIR,
   plistVersion,
-  replaceAppBundle,
   stagingPaths,
   swapAppBundle,
 } from "./app-bundle-swap.mjs";
@@ -98,7 +99,6 @@ import {
   describeInstallScope,
   inspectInstallDirectory,
   installDirectoryProblem,
-  mayCreateAppsDir,
   resolveInstallDestination,
   userAppsDir,
 } from "./install-destination.mjs";
@@ -109,13 +109,12 @@ import {
 } from "../src/shared/update-stages.mjs";
 import {
   stagedBundleRevision,
-  stagedRevisionProblem,
 } from "../src/shared/staged-bundle.mjs";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
 } from "../src/shared/install-receipt-schema.mjs";
-import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
+import { readReceipt, receiptPath } from "../src/shared/install-receipt.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import {
   archPrerequisiteMessage,
@@ -176,7 +175,9 @@ const GH_BIN = "gh";
  * is precisely the case it exists to stop.
  */
 export const GH_ARGS = {
-  authStatus: () => ["auth", "status"],
+  // Probes the ACTIVE credential (GITHUB_TOKEN or the active account). `gh auth status` exits
+  // non-zero when any stored account is stale, which blocked setups whose active one is fine.
+  authProbe: () => ["api", "user", "--jq", ".login"],
   releaseList: (repo = CANONICAL_REPO) => [
     "release",
     "list",
@@ -192,6 +193,27 @@ export const GH_ARGS = {
     "tagName",
   ],
 };
+
+/**
+ * The `gh` prerequisite: null when usable, else the sentence to show.
+ *
+ * Asks whether the active credential works (`gh api user`), not whether every stored account
+ * does, and carries gh's own output into the message. The probe is bounded by
+ * `GH_PROBE_TIMEOUT_MS`; an expired timeout gets its own message. `run` is injected like
+ * `newestStableRelease`'s, so tests need no gh binary, network or credential.
+ */
+export const GH_PROBE_TIMEOUT_MS = 15_000;
+
+export function ghCredentialProblem({ run }) {
+  const version = run(GH_BIN, ["--version"]);
+  if (version.status !== 0) return ghPrerequisiteMessage({ installed: false, authenticated: false });
+  const probe = run(GH_BIN, GH_ARGS.authProbe(), { timeout: GH_PROBE_TIMEOUT_MS });
+  // Decided from the spawn error, not from gh's text: an unanswered probe says nothing about
+  // the credential, so it must not read as "not authenticated".
+  if (probe.timedOut) return `gh did not respond within ${GH_PROBE_TIMEOUT_MS / 1000} seconds (network?)`;
+  const detail = String(probe.stderr || probe.stdout || "").trim().slice(0, 500);
+  return ghPrerequisiteMessage({ installed: true, authenticated: probe.status === 0, detail });
+}
 
 /** Parse a git remote URL into its repository slug and transport. */
 export function parseRemote(url) {
@@ -508,15 +530,7 @@ export function packagedVersionProblem({ packagedVersion, sourceVersion }) {
   return null;
 }
 
-/** Source identity is embedded in the app before signing, never inferred from a later checkout. */
-export function packagedSourceCommit(bundle) {
-  try {
-    const value = JSON.parse(readFileSync(join(bundle, "Contents", "Resources", "app", "package.json"), "utf8")).missionCommit;
-    return isCommitSha(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
+export { bundleCommit as packagedSourceCommit } from "./install-staged-app.mjs";
 
 // ---------------------------------------------------------------------------------------
 // CLI
@@ -617,6 +631,8 @@ function capture(command, args, opts = {}) {
     status: result.error ? 127 : (result.status ?? 1),
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? (result.error ? result.error.message : ""),
+    // spawnSync reports an expired `timeout` as an ETIMEDOUT spawn error, never as output.
+    timedOut: result.error?.code === "ETIMEDOUT",
   };
 }
 
@@ -650,86 +666,9 @@ function checkPrerequisites({ needsBuildTools }) {
   if (xcodeProblem) fail(xcodeProblem);
   ok("Xcode command line tools available");
 
-  const ghVersion = capture(GH_BIN, ["--version"]);
-  const ghAuth = ghVersion.status === 0 ? capture(GH_BIN, GH_ARGS.authStatus()) : null;
-  const ghProblem = ghPrerequisiteMessage({
-    installed: ghVersion.status === 0,
-    authenticated: ghAuth?.status === 0,
-  });
+  const ghProblem = ghCredentialProblem({ run: capture });
   if (ghProblem) fail(ghProblem);
   ok("gh authenticated");
-}
-
-/**
- * Take a verified bundle out of the shared clone, so that what gets copied cannot change.
- *
- * Checking the clone path and then copying from it leaves the classic time-of-check/time-of-use
- * window, and what lands in that window is a rebuild of the very directory being copied. The
- * rename is atomic and preserves the inode and mtime, so the pin still describes the bundle
- * afterwards, and the path being copied is then one nobody else has a name for.
- *
- * Three orderings here are load-bearing, and each one is a way of not damaging someone else's
- * work to protect our own:
- *
- * 1. **Check before moving.** A bundle that fails the pin belongs to whoever is rebuilding the
- *    clone - a concurrent `make install`, or a run still in progress - so it is left exactly
- *    where it is.
- * 2. **Check again after moving.** The microsecond between the first check and the rename is
- *    the only window left, and whatever was at the path during it comes across with the rename.
- * 3. **Put it back if that second check fails, and keep it if putting it back fails.** The
- *    other builder may already have recreated the path, in which case the restore cannot land -
- *    and then the moved directory is the only copy of THEIR build. It is left in place and its
- *    location reported, never cleaned up, because deleting it would finish the damage.
- *
- * Every mutation is injected so the race and the failure to recover from it are reachable in a
- * test; the real operations are supplied by the caller below.
- */
-export function isolateStagedBundle({ bundle, isolated, expectedRevision, bundleName, ops }) {
-  const pinProblem = (path) =>
-    stagedRevisionProblem({ expected: expectedRevision, found: ops.revision(path) });
-
-  const before = pinProblem(bundle);
-  if (before) return { sourceBundle: null, problem: before, keepIsolated: false, rescued: null, inPlace: null };
-  // Nothing pinned this, so it was not staged by an app: a plain `make install` built it in this
-  // same process moments ago and leaves it in `release/`, where a developer expects to find it.
-  if (!expectedRevision) {
-    return { sourceBundle: bundle, problem: null, keepIsolated: false, rescued: null, inPlace: null };
-  }
-
-  const moved = join(isolated, bundleName);
-  try {
-    ops.remove(isolated);
-    ops.makeDirectory(isolated);
-    ops.move(bundle, moved);
-  } catch (error) {
-    // A rename across filesystems is the realistic failure. Installing in place is what this
-    // script has always done, and the pin was already checked; only the window stays open.
-    try {
-      ops.remove(isolated);
-    } catch {
-      // It may not exist, and it is inside the state directory either way.
-    }
-    return {
-      sourceBundle: bundle,
-      problem: null,
-      keepIsolated: false,
-      rescued: null,
-      inPlace: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  const after = pinProblem(moved);
-  if (!after) {
-    return { sourceBundle: moved, problem: null, keepIsolated: false, rescued: null, inPlace: null };
-  }
-
-  // What came across is not what was checked, so it is not ours to install - or to delete.
-  try {
-    ops.move(moved, bundle);
-    return { sourceBundle: null, problem: after, keepIsolated: false, rescued: null, inPlace: null };
-  } catch {
-    return { sourceBundle: null, problem: after, keepIsolated: true, rescued: moved, inPlace: null };
-  }
 }
 
 /**
@@ -737,128 +676,31 @@ export function isolateStagedBundle({ bundle, isolated, expectedRevision, bundle
  * was installed. One owner, called by a whole run and by a staged install alike, because the
  * receipt an update writes and the receipt a fresh install writes have to be one receipt.
  */
-function swapAndRecord({
-  dryRun,
-  bundle,
-  appsDir,
-  installScope,
-  home,
-  repo,
-  ref,
-  source,
-  clone,
-  sourceVersion,
-  stagedRevision = null,
-  progress,
-}) {
-  const sourceCommit = dryRun ? null : packagedSourceCommit(bundle);
-  if (!dryRun) {
-    const problem = sourceCommitProblem(ref, sourceCommit);
-    if (problem) fail(problem);
-  }
+function swapAndRecord({dryRun, bundle, appsDir, installScope, home, repo, ref, source, clone, sourceVersion, stagedRevision = null, progress}) {
+  const existingReceipt = readReceipt();
+  const appPath = existingReceipt && dirname(existingReceipt.appPath) === appsDir ? existingReceipt.appPath : join(appsDir, APP_BUNDLE_NAME);
   progress("install");
   heading("Install");
-  const appPath = join(appsDir, APP_BUNDLE_NAME);
-  // Checked again here, not only before the build. A full install spends minutes fetching and
-  // packaging, and in that time the destination can be removed, replaced by a file, or pointed
-  // somewhere else entirely. This is the last look anything takes before a copy starts.
-  const destinationIssue = installDirectoryProblem(inspectInstallDirectory(appsDir, home));
-  if (destinationIssue) fail(destinationIssue);
   if (dryRun) {
-    // A dry run creates nothing, including the personal folder. `--stage-only` never reaches
-    // this function at all, so both preparation modes leave the destination and the receipt
-    // exactly as they found them.
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
-  } else {
-    // The one directory this script creates for itself. A Mac that has never held a personal
-    // app has no `~/Applications`, and making a first-time install fail on that is the entire
-    // friction the personal default exists to remove. Every other destination keeps the rule
-    // that it must already exist - see `mayCreateAppsDir`.
-    if (!existsSync(appsDir) && mayCreateAppsDir({ appsDir, home })) {
-      mkdirSync(appsDir, { recursive: true, mode: 0o755 });
-      ok(`created ${appsDir}`);
-    }
-    // Refuse first, isolate second, check again - and never delete what turns out to belong to
-    // somebody else. See `isolateStagedBundle`.
-    const isolated = join(stateDir(), `staged-install-${process.pid}`);
-    const isolation = isolateStagedBundle({
-      bundle,
-      isolated,
-      expectedRevision: stagedRevision,
-      bundleName: APP_BUNDLE_NAME,
-      ops: {
-        revision: (path) => stagedBundleRevision(statSync(path, { throwIfNoEntry: false })),
-        remove: (path) => rmSync(path, { recursive: true, force: true }),
-        makeDirectory: (path) => mkdirSync(path, { recursive: true }),
-        move: renameSync,
-      },
-    });
-
-    if (isolation.inPlace) {
-      warning(
-        `could not move the verified bundle out of the shared clone (${isolation.inPlace}); installing it where it is`,
-      );
-    }
-    if (isolation.problem) {
-      if (isolation.rescued) {
-        // The other builder's bundle, which this run moved and could not put back. Naming it is
-        // the only way anyone recovers it, and nothing here deletes it.
-        warning(
-          `a bundle that was replaced mid-install was moved to ${isolation.rescued} and could not be put back; it is left there for recovery`,
-        );
-      }
-      fail(isolation.problem);
-    }
-    if (isolation.sourceBundle !== bundle && !isolation.keepIsolated) {
-      // Ours, and temporary. `fail()` exits the process, so a hook rather than a finally block.
-      process.on("exit", () => {
-        try {
-          rmSync(isolated, { recursive: true, force: true });
-        } catch {
-          // Nothing useful to do at exit, and it is inside the state directory.
-        }
-      });
-      ok("moved the verified bundle out of the shared clone");
-    }
-    const sourceBundle = isolation.sourceBundle;
-
-    const swap = replaceAppBundle({
-      sourceBundle,
-      appPath,
-      appsDir,
-      pid: process.pid,
-    });
-    if (swap.problem) fail(swap.problem);
-    for (const stray of swap.stranded) {
-      // A bundle displaced by an earlier privileged install, which this account can rename but
-      // not delete. Naming it is the only way anyone reclaims the space, and it is a hidden
-      // sibling that Finder does not show.
-      warning(`${stray} is owned by another account and could not be removed; delete it with an administrator account`);
-    }
-    ok(`installed ${appPath}${swap.elevated ? " with administrator authorization" : ""}`);
-  }
-
-  progress("receipt");
-  heading("Receipt");
-  if (dryRun) {
+    progress("receipt");
     doing(`[dry-run] would write ${receiptPath()}`);
-  } else {
-    const written = writeReceipt({
-      schema: 1,
-      repo,
-      releaseTag: receiptReleaseTag({ ref, source }),
-      installedVersion: sourceVersion,
-      ...(sourceCommit ? { installedCommit: sourceCommit } : {}),
-      // Written only when someone actually chose. Absent means legacy, and the relocation that
-      // follows this change reads that absence as eligibility rather than as consent.
-      ...(installScope ? { installScope } : {}),
-      sourceClone: clone,
-      appPath,
-      installedAt: new Date().toISOString(),
-    });
-    ok(`wrote ${written}`);
+    return appPath;
   }
-  return appPath;
+  const sourceCommit = packagedSourceCommit(bundle);
+  const problem = sourceCommitProblem(ref, sourceCommit);
+  if (problem) fail(problem);
+  try {
+    const descriptor = prepareStagedInstall({bundle, revision: stagedRevision, receipt: {
+      schema: 1, repo, releaseTag: receiptReleaseTag({ref, source}), installedVersion: sourceVersion,
+      ...(sourceCommit ? {installedCommit: sourceCommit} : {}), ...(installScope ? {installScope} : {}),
+      sourceClone: clone, appPath, installedAt: new Date().toISOString(),
+    }});
+    installStagedApp(descriptor, {stateDirectory: stateDir(), home});
+    progress("receipt");
+    ok(`installed ${appPath} and wrote ${receiptPath()}`);
+    return appPath;
+  } catch (error) { fail(error.message); }
 }
 
 function installApp(options) {
@@ -919,7 +761,7 @@ function installApp(options) {
   const installScope = destination.installScope;
   if (!options.stageOnly) {
     console.log(
-      `   destination: ${join(appsDir, APP_BUNDLE_NAME)}  (${describeInstallScope(installScope)})`,
+      `   destination: ${previousReceipt && dirname(previousReceipt.appPath) === appsDir ? previousReceipt.appPath : join(appsDir, APP_BUNDLE_NAME)}  (${describeInstallScope(installScope)})`,
     );
     // Read-only, and deliberately before the minutes of work: a destination this account cannot
     // use is not worth a fetch and a package to discover. `swapAndRecord` looks again, because

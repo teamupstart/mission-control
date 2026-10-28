@@ -139,6 +139,7 @@ function seedBaseline(): void {
 
   setAppConfig(APP_CONFIG_ENTRIES.skills, SkillsConfigSchema.parse({
     enabled: false,
+    alwaysDraftPr: true,
     commitPlanHtml: true,
     skills: { alpha: true },
     generation: 7,
@@ -517,6 +518,7 @@ test("restore advances catalogs, preserves immutable history and every excluded 
 
   const skills = SkillsConfigSchema.parse(getAppConfig(APP_CONFIG_ENTRIES.skills));
   assert.equal(skills.commitPlanHtml, true, "restore retains the explicit plan HTML preference");
+  assert.equal(skills.alwaysDraftPr, true, "restore retains the shared draft PR preference");
   assert.equal(skills.enabled, false);
   assert.deepEqual(skills.skills, { alpha: true });
   assert.equal(skills.generation, 99);

@@ -139,12 +139,18 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
 export const FIXED_OS_EXECUTABLES = {
   env: "/usr/bin/env",
   sh: "/bin/sh",
+  // The macOS binary-install bootstrap uses the OS-provided Bash before daemon startup.
+  bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
   // an instance that is already running rather than starting a second one. Not searched, and
   // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there
   // is no locator snapshot yet and nothing to select between.
   open: "/usr/bin/open",
+  // Binary update platform checks use the OS tools, never an operator override.
+  swVers: "/usr/bin/sw_vers",
+  lipo: "/usr/bin/lipo",
+  plistBuddy: "/usr/libexec/PlistBuddy",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

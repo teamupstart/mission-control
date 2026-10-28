@@ -213,6 +213,7 @@ test("the Kind picker keeps plan after ship and scout, before chat", async ({ da
     ["plan", "plan"],
     ["chat", "chat"],
     ["bugfix", "bugfix"],
+    ["document", "document"],
   ]);
   await expect(kind).toHaveValue("ship");
 });
@@ -230,7 +231,7 @@ test("the guided pass offers plan as a listed option, with its blurb", async ({ 
 
   const picker = dialog.getByRole("listbox", { name: "What kind of run is this?" });
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("option")).toHaveCount(5);
+  await expect(picker.getByRole("option")).toHaveCount(6);
   const planOption = picker.getByRole("option", { name: /^plan/ });
   await expect(planOption).toBeVisible();
   // The blurb, not just the word - this is the copy `TASK_KIND_INFO` exists to carry, and

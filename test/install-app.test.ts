@@ -35,6 +35,8 @@ import {
   REQUIRED_REMOTE_HOST,
   canonicalRemoteUrl,
   existingCloneCommands,
+  GH_PROBE_TIMEOUT_MS,
+  ghCredentialProblem,
   firstUnwritableCloneDirectory,
   newestStableRelease,
   remoteProblem,
@@ -571,7 +573,7 @@ test(
   // The bundle the app actually verified still installs, so the guard is not simply refusing.
   const installed = run(pinned!);
   assert.equal(installed.code, 0, installed.output);
-  assert.equal(existsSync(join(appsDir, "Mission Control.app")), true);
+  assert.equal(existsSync(join(appsDir, "Agent Mission Control.app")), true);
   assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
   },
 );
@@ -989,6 +991,19 @@ test("a plain attempt that left the app dismantled is not retried with authoriza
   assert.deepEqual(prompts, [], "no authorization was requested for an unsafe retry");
 });
 
+test("an invalid copied bundle is refused without an administrator retry or destination mutation", () => {
+  const fs = bundleFs([SWAP.appPath]);
+  const result = replaceAppBundle({sourceBundle: SWAP.packagedApp, appPath: SWAP.appPath,
+    appsDir: SWAP.appsDir, pid: 4242, platform: "darwin", appsDirWritable: true,
+    sweep: () => [], ops: fs.ops,
+    verifyStaged: () => { throw new Error("copied bytes changed"); },
+    runElevated: () => assert.fail("verification failures cannot be repaired by elevation"),
+  });
+  assert.match(result.problem!, /copied bytes changed/);
+  assert.equal(result.elevated, false);
+  assert.deepEqual([...fs.paths], [SWAP.appPath]);
+});
+
 test("an escalated failure reports why the plain attempt failed as well", () => {
   // "User canceled" on its own reads as the whole story. It is not: an ordinary install was
   // tried first, and why THAT could not finish is what tells anyone reading the log what to fix.
@@ -1296,7 +1311,7 @@ test("administrator authorization cannot target an arbitrary install directory",
     keepPrevious: false,
   });
   assert.equal(plan.command, null);
-  assert.match(String(plan.problem), /restricted to \/Applications\/Mission Control\.app/);
+  assert.match(String(plan.problem), /restricted to \/Applications\/Agent Mission Control\.app/);
 });
 
 test(
@@ -1502,4 +1517,53 @@ test("the real writability check does not demand a rewritable outgoing bundle", 
     "new\n",
     "the new bundle is live",
   );
+});
+
+// A fake gh keyed on argv, so no binary, network or credential is touched. `gh auth status`
+// is deliberately made to fail here: it is what a stale stored account turns into.
+function fakeGh(
+  probe: { status: number; stdout?: string; stderr?: string; timedOut?: boolean },
+  installed = true,
+) {
+  const seen: string[][] = [];
+  const timeouts: Array<number | undefined> = [];
+  const run = (_cmd: string, args: string[], opts?: { timeout?: number }) => {
+    seen.push(args);
+    timeouts.push(opts?.timeout);
+    if (args[0] === "--version") return { status: installed ? 0 : 127, stdout: "", stderr: "" };
+    if (args[0] === "auth") return { status: 1, stdout: "", stderr: "stale account" };
+    return { status: probe.status, stdout: probe.stdout ?? "", stderr: probe.stderr ?? "", timedOut: probe.timedOut ?? false };
+  };
+  return { run, seen, timeouts };
+}
+
+test("a valid active credential passes even though a stored account is stale", () => {
+  const gh = fakeGh({ status: 0, stdout: "octocat\n" });
+  assert.equal(ghCredentialProblem({ run: gh.run }), null);
+  assert.ok(gh.seen.every((args) => args[0] !== "auth"), "must not call gh auth status");
+  assert.deepEqual(gh.seen[1]?.slice(0, 2), ["api", "user"]);
+});
+
+test("an invalid or missing credential fails with gh's own output", () => {
+  const gh = fakeGh({ status: 4, stderr: "gh: Bad credentials (HTTP 401)\n" });
+  const problem = String(ghCredentialProblem({ run: gh.run }));
+  assert.match(problem, /^gh is not authenticated - run `gh auth login`/);
+  assert.match(problem, /Bad credentials \(HTTP 401\)/);
+
+  const none = fakeGh({ status: 4, stderr: "To get started with GitHub CLI, please run:  gh auth login" });
+  assert.match(String(ghCredentialProblem({ run: none.run })), /To get started with GitHub CLI/);
+});
+
+test("a missing gh binary keeps the install wording and never probes", () => {
+  const gh = fakeGh({ status: 0 }, false);
+  assert.match(String(ghCredentialProblem({ run: gh.run })), /gh CLI is not installed/);
+  assert.equal(gh.seen.length, 1);
+});
+
+test("a probe that times out says gh did not respond, and is bounded to 15 seconds", () => {
+  // Decided from the spawn error flag, so the stderr text here is deliberately misleading.
+  const gh = fakeGh({ status: 127, stderr: "spawnSync gh ETIMEDOUT HTTP 401", timedOut: true });
+  assert.equal(GH_PROBE_TIMEOUT_MS, 15_000);
+  assert.equal(ghCredentialProblem({ run: gh.run }), "gh did not respond within 15 seconds (network?)");
+  assert.equal(gh.timeouts[1], 15_000);
 });

@@ -1,3 +1,4 @@
+import { resolveOwnedRuntime } from "../shared/owned-runtime.mjs";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -58,7 +59,12 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
  * reads the server's own `registerTool` calls and fails if the two drift.
  */
 export const MISSION_MCP_TOOLS = [
+  "list_workflow_runs",
+  "get_workflow_run",
+  "trigger_workflow_action",
   "share_plan",
+  "read_sessions",
+  "control_session",
   PLAN_DECISIONS_TOOL,
   "request_review",
   PLAN_SCHEDULING_TOOL,
@@ -69,6 +75,7 @@ export const MISSION_MCP_TOOLS = [
   PLAN_SAVE_TOOL,
   PLAN_READ_TOOL,
   "publish_plan",
+  "get_pull_request_policy",
   "request_input",
   "report_product_feedback",
   "report_product_issue",
@@ -124,6 +131,7 @@ export interface MissionMcpRequirement {
  * it is the reason every existing dispatch's argv is unchanged.
  */
 const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
+  document: [],
   ship: [],
   bugfix: [],
   scout: [SUBMIT_SCOUT_ARTIFACTS_TOOL],
@@ -193,8 +201,7 @@ interface MissionMcpRuntime {
  * that session failed with "ReferenceError: crypto is not defined".
  */
 export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  if (/^node(\.exe)?$/.test(basename(execPath))) return { command: execPath, env: {} };
-  return { command: execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+  return resolveOwnedRuntime({executable: execPath, kind: /^node(\.exe)?$/.test(basename(execPath)) ? "node" : "electron"});
 }
 
 /**

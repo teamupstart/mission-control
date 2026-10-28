@@ -11,6 +11,7 @@ import type {
 } from "../src/shared/workflow.ts";
 import {
   emptyWorkflowCommandView,
+  WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_UNKNOWN,
 } from "../src/shared/workflow.ts";
 import { LibraryPage, foremanProfileCard } from "../src/web/library/LibraryPage.tsx";
@@ -303,7 +304,7 @@ test("Commands follows Workflows, with one card per built-in slot and no New car
     ["missions", "workflows", "commands", "personas", "actions", "ensembles"],
   );
   const cards = commandCards([], true);
-  assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
+  assert.deepEqual(cards.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation"]);
   // Every one is built-in and none of them is creatable, which is the difference between
   // this shelf and the three above it.
   assert.ok(cards.every((card) => card.tags.some((tag) => tag.label === "built-in")));
@@ -342,7 +343,7 @@ test("a Command card states durable configuration, and nothing about a run", () 
   // than vanishing - "unconfigured" and "not loaded" must not be the same missing tile.
   assert.deepEqual(
     commandCards([], true).map((card) => card.fact),
-    ["Not configured", "Not configured", "Not configured", "Not configured"],
+    WORKFLOW_CHECK_SLOTS.map(() => "Not configured"),
   );
   // Rendered through the page, so the fact reaches the DOM rather than only the model.
   assert.match(
@@ -355,15 +356,15 @@ test("a Command card states durable configuration, and nothing about a run", () 
 // to have arrived. Drawn early it is worse than blank: an operator reading it on a slot that
 // does have a global default is being invited to type over configuration that merely has not
 // loaded. The editor's rail already drew this distinction; the shelf did not.
-test("an unloaded catalog is said out loud, not drawn as four unconfigured slots", () => {
+test("an unloaded catalog is said out loud, not drawn as unconfigured slots", () => {
   const unloaded = commandCards([], false);
   assert.deepEqual(
     unloaded.map((card) => card.fact),
-    Array.from({ length: 4 }, () => WORKFLOW_COMMAND_UNKNOWN),
+    WORKFLOW_CHECK_SLOTS.map(() => WORKFLOW_COMMAND_UNKNOWN),
   );
-  // The cards themselves stay: the four slots ship with the build, so their existence is
+  // The cards themselves stay: the slots ship with the build, so their existence is
   // knowable without the daemon even though what they run is not.
-  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build"]);
+  assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation"]);
 
   // A view that HAS arrived is trusted whatever the flag says - the flag describes an
   // absence, and a slot the stream already delivered is not absent.

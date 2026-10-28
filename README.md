@@ -1,15 +1,29 @@
 # Mission Control
 
+## Installation
+
 Install the macOS app (Apple Silicon), without keeping a repository checkout:
 
 ```bash
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mission-control/main/scripts/install.sh | bash -s -- "$@"' --
 ```
 
-Requires Node.js 24+ with npm, Git, an authenticated GitHub CLI (`gh auth login`), and
-Xcode command line tools (`xcode-select --install`). Run as your own account, without `sudo`.
-The Bash installer builds the newest stable release and installs it in `~/Applications` on a
-new installation. See [installation details and options](docs/overview.md#desktop-app-macos).
+Requires macOS 12+ on Apple Silicon and the native GitHub CLI (`gh auth login`). Run as
+your own account, without `sudo`. The binary installer downloads a complete signed release;
+it does not use host Node, npm, npx, Git or Xcode. Fresh installs use `~/Applications`;
+reruns preserve the recorded destination and state home. Quit the existing app before replacing it.
+Use `--scope system` for a fresh shared installation, `--apps-dir DIR` for an existing writable
+custom directory, or `--ref vX.Y.Z` / `--ref FULL_SHA` to pin stable / alpha bytes.
+
+New binaries install **Agent Mission Control.app**. Existing managed installations migrate in
+the same folder, preserving their state and receipt scope. Older saved installers must be
+replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
+
+**Release qualification is still pending.** Until a signed ready manifest is published, this
+command refuses installation. It never falls back to compilation. The explicit developer route
+remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
+See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
 
 **Give yourself superpowers without the compromises.**
 
@@ -195,6 +209,13 @@ source session. Retrying a report path returns its existing archive; publish rev
 new slug. Select a report card to preview its source in **Files**, or **Open archive** to read
 the immutable published copy. Read more in [Archives](docs/archives.md).
 
+To share a report outside Mission Control, open it in a Claude session's **Files** tab and
+click **Publish**, beside **Open in ▾**. Claude publishes that exact file, unchanged, as a
+private claude.ai artifact, and its link - or the reason it could not publish - appears in
+that session's conversation. Codex and Pi sessions show the button disabled with the reason.
+See [Publish a file as a shareable page](docs/ui.md#publish-a-file-as-a-shareable-page) for
+requirements and limits.
+
 SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
 internal launch secret, not a setting to configure. Public session IDs cannot select report
 credentials. See [Configuration](docs/configuration.md) for the launch boundary.
@@ -258,6 +279,13 @@ against.
 
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
+
+Agents can operate the same workflow run controls through Mission Control's MCP:
+`list_workflow_runs` finds runs, `get_workflow_run` inspects their state and recovery options,
+and `trigger_workflow_action` grants rounds, cancels, retries, restarts, and performs the other
+dashboard recovery actions. Sessions can control their own workflows by default. Access to another
+session's workflows requires the operator's **Control other sessions** opt-in on the caller.
+Signed session identity, existing server checks, and explicit acknowledgements still apply.
 
 ![Mission Control workflow run](docs/images/workflows.png)
 
@@ -344,14 +372,20 @@ and control surface stay coherent.
 
 ## Get started
 
+Release maintainers: [signed binary production and verification](docs/release-verification.md)
+documents stable and exact-commit alpha assets. Distribution remains gated on approved Apple
+credentials and real signed qualification. The binary installer is implemented ahead of that
+qualification; automatic binary updates remain a later phase.
+
 The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
 install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
 the optional ones, and keep the app current. The short version is two paths through this
 repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and receives updates. Updates check Node.js and npm before building and
-  offer remediation with **Check again** when the runtime is incompatible. See the
+  the window closed, and supports manual binary replacement. Binary receipts disable the source
+  updater and link to the signed installer. Existing source installations retain their Node/npm
+  update preflight. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   A local **Starting Mission Control** screen stays visible during startup. After 60 seconds
   it offers **Retry now** and keeps checking readiness, so a slow restart recovers automatically.

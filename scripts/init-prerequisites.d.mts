@@ -10,6 +10,7 @@ export function gitPrerequisiteMessage(installed: boolean): string | null;
 export function ghPrerequisiteMessage(state: {
   installed: boolean;
   authenticated: boolean;
+  detail?: string;
 }): string | null;
 export function xcodeToolsPrerequisiteMessage(state: {
   platform: string;

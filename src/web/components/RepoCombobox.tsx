@@ -171,8 +171,48 @@ function ancestor(segments: string[], up: number): string | null {
 const LIST_GAP = 4;
 /** Tallest the dropdown ever gets, when the viewport has room for it. */
 const LIST_MAX_HEIGHT = 220;
-/** Breathing room kept between the dropdown and the viewport's bottom edge. */
+/** Breathing room kept between the dropdown and the viewport's edge. */
 const VIEWPORT_MARGIN = 8;
+
+/** Where the fixed dropdown sits: anchored by `top` below the input, or by `bottom` above it. */
+export type ListPlacement = { left: number; width: number; maxHeight: number } & (
+  | { top: number; bottom?: undefined }
+  | { bottom: number; top?: undefined }
+);
+
+/**
+ * Below the input when the list fits there, above it when it does not and above has more room.
+ *
+ * Fixed means the list cannot be scrolled into view, so it is capped to the room on the side it
+ * opens toward. Below-only was what this used to do, and a field near the viewport's bottom - the
+ * Trust page's add row under a long matrix - opened a list a few pixels tall with no readable
+ * row in it. Opening upward is anchored by `bottom`, so a short match list still hugs the input
+ * instead of floating at the top of a tall reserved box.
+ *
+ * Exported and pure, like `filterRepos`, so a test can hold the geometry still.
+ */
+export function placeList(
+  input: { top: number; bottom: number; left: number; width: number },
+  viewportHeight: number,
+): ListPlacement {
+  const below = viewportHeight - input.bottom - LIST_GAP - VIEWPORT_MARGIN;
+  const above = input.top - LIST_GAP - VIEWPORT_MARGIN;
+  const { left, width } = input;
+  if (below >= LIST_MAX_HEIGHT || below >= above) {
+    return {
+      top: input.bottom + LIST_GAP,
+      left,
+      width,
+      maxHeight: Math.min(LIST_MAX_HEIGHT, below),
+    };
+  }
+  return {
+    bottom: viewportHeight - input.top + LIST_GAP,
+    left,
+    width,
+    maxHeight: Math.min(LIST_MAX_HEIGHT, above),
+  };
+}
 
 export function RepoCombobox({
   repos,
@@ -226,12 +266,7 @@ export function RepoCombobox({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [pos, setPos] = useState<{
-    top: number;
-    left: number;
-    width: number;
-    maxHeight: number;
-  } | null>(null);
+  const [pos, setPos] = useState<ListPlacement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const ownInputRef = useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef ?? ownInputRef;
@@ -254,12 +289,7 @@ export function RepoCombobox({
     if (!showList) return;
     function place(): void {
       const r = inputRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const top = r.bottom + LIST_GAP;
-      // Fixed means the list can't be scrolled into view, so cap it to the room
-      // below the input rather than letting it hang off the viewport's edge.
-      const room = window.innerHeight - top - VIEWPORT_MARGIN;
-      setPos({ top, left: r.left, width: r.width, maxHeight: Math.min(LIST_MAX_HEIGHT, room) });
+      if (r) setPos(placeList(r, window.innerHeight));
     }
     place();
     window.addEventListener("scroll", place, true);
@@ -374,7 +404,7 @@ export function RepoCombobox({
             className="combobox-list"
             role="listbox"
             ref={listRef}
-            style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
+            style={pos}
           >
             {options.map(({ repo, name, hint }, i) => (
               <Tooltip key={repo} label={repo}>

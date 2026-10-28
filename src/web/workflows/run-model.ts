@@ -48,7 +48,7 @@ import {
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
-import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -873,9 +873,9 @@ export function segmentProvenance(round: RoundView): SegmentProvenance | null {
       clause: "verified shipping, no further review",
     };
   }
-  if (round.refinementReason === "evidence_preflight") {
+  if (["evidence_preflight", "evidence_recovery", "evidence_capture_repair"].includes(round.refinementReason ?? "")) {
     return {
-      sentence: `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preflight gaps. This refinement does not spend a Persona repair round.`,
+      sentence: `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preparation. This refinement does not spend a Persona repair round.`,
       clause: "no repair round spent",
     };
   }
@@ -1530,6 +1530,7 @@ const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   session_action: "Session action",
   parked_repair_reminder: "Reminder",
   evidence_readiness: "Evidence preflight",
+  evidence_capture_repair: "Evidence capture repair",
 };
 
 export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
@@ -2554,9 +2555,16 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
       return yoursPosture(parked
         ?? "This review is standing still. The path forward is yours to pick.");
     }
-    case "blocked":
+    case "blocked": {
+      const preparation = preparationRecoverySentence(detail);
+      if (preparation) {
+        const recovery = workflowPreparationRecovery({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null });
+        return recovery?.state === "pending" && detail.binding.state === "active" && detail.binding.deliveryMode === "live"
+          ? autoPosture(preparation) : yoursPosture(preparation);
+      }
       return yoursPosture("This review is stopped and will not restart on its own."
         + " The path forward is yours to pick.");
+    }
     default:
       // A status this build does not recognise cannot promise the operator is not needed.
       return yoursPosture("This review is waiting on something this page cannot classify."
@@ -2607,6 +2615,21 @@ function captureFailureItem(failure: WorkflowCaptureFailure): string | null {
  * The cause is the daemon's own message, not a clause composed from `failure.code`: a dozen
  * codes reach these phases, so a code map would need the silent fallback being repaired here.
  */
+function preparationRecoverySentence(detail: WorkflowRunDetail): string | null {
+  const recovery = workflowPreparationRecovery({
+    status: detail.run.status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null,
+  });
+  if (!recovery) return null;
+  if (recovery.state === "stalled") return "Automatic evidence repair stopped: the session is idle and no new evidence was registered within 15 minutes of the repair request. Inspect the delivery and repair the evidence before retrying manually.";
+  if (recovery.state === "exhausted") return `Automatic evidence ${recovery.kind === "capture" ? "repair" : "mapping recovery"} stopped after ${recovery.limit} attempts. The integrity check remains enforced. Inspect the failure before retrying manually.`;
+  if (detail.binding.state !== "active" || detail.binding.deliveryMode !== "live") {
+    return "Automatic evidence recovery is paused until this binding is active with live delivery.";
+  }
+  return recovery.kind === "capture"
+    ? `Automatic evidence repair ${recovery.attempts + 1} of ${recovery.limit} asks the session to register corrected proof. Review will begin in this same round after delivery is confirmed, evidence changes and the session settles.`
+    : `Criterion mapping will retry automatically using the frozen evidence (retry ${recovery.attempts + 1} of ${recovery.limit}, after ${new Date(recovery.retryAt!).toLocaleTimeString()}). No agent edit is needed for this system failure.`;
+}
+
 function captureRefusedSentence(detail: WorkflowRunDetail): string | null {
   const failure = workflowCaptureFailure({
     status: detail.run.status,
@@ -2621,15 +2644,15 @@ function captureRefusedSentence(detail: WorkflowRunDetail): string | null {
    * so under `image_evidence_capture` resuming re-checks the very bytes that were refused.
    * Under the other three the reservation is not what failed, and saying so would be untrue.
    */
-  const remedy = detail.run.currentPhase === "image_evidence_capture"
+  const remedy = preparationRecoverySentence(detail) ?? (detail.run.currentPhase === "image_evidence_capture"
     ? " A re-registered item is picked up by the next round and not by a resume: resuming"
       + " replays the same frozen reservation, so it re-checks the very bytes that were just"
       + " refused."
-    : " Starting the next round re-reads the session and captures its evidence again.";
+    : " Starting the next round re-reads the session and captures its evidence again.");
   return "Evidence capture refused this round, so nothing was reviewed and no repair round was"
     + " spent."
     + (item ? ` It stopped on ${item}: ${reason}.` : ` ${reason}.`)
-    + remedy;
+    + " " + remedy;
 }
 
 /**

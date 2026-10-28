@@ -8,7 +8,7 @@ import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 
 // What is at stake: the Command catalog is SSE state, not a second polling subsystem. A
-// reconnect snapshot and the incremental stream must converge on the same four slots, and
+// reconnect snapshot and the incremental stream must converge on the same built-in slots, and
 // every slot must be present in both whether or not anybody configured it - a collection that
 // only carried the written slots would make "no command here" and "not loaded yet" the same
 // observation for the surface that has to draw four cards.

@@ -1,5 +1,67 @@
 # Workflows and Personas
 
+## Workflow controls through MCP
+
+Mission Control's MCP exposes the same workflow runtime controls as the dashboard. A session
+can read and control its own workflow without delegation. Reading or controlling another
+session's workflows requires the operator to enable **Control other sessions** on the calling
+session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
+All three tools require a current signed Registry session credential alongside the machine token.
+Caller identity comes from that credential, never from a supplied session id or working directory.
+Bindings must match both the current session and its conversation identity. Reattachment checks
+both the source binding and destination; delivery actions also check the packet's original destination.
+An orphaned or historical binding that cannot establish current ownership requires delegation.
+
+`list_workflow_runs` accepts optional `status`, `workflowId`, `session`, `limit`
+(1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
+`get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
+submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+
+`trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
+and `parameters` using the dashboard's existing request body schema:
+
+```json
+{
+  "request": {
+    "action": "grant-rounds",
+    "runId": "the-run-id",
+    "parameters": { "requestId": "grant-intent-1", "rounds": 2 }
+  }
+}
+```
+
+| Actions | Target | Additional parameters |
+| --- | --- | --- |
+| `grant-rounds` | `runId` | `rounds` |
+| `cancel`, `prepare-pr`, `recheck-inspector` | `runId` | None |
+| `retry` | `runId` | Optional `nodeAttemptId` |
+| `resubmit` | `runId` | Optional `resubmitUnchanged` and `evidence` |
+| `restart-full` | `runId` | `confirmation` when required by the server |
+| `set-nodes-disabled` | `runId` | `nodeIds`, `disabled` |
+| `set-persona-directive` | `runId` | `nodeId`, `feedback` |
+| `remove-persona-directive` | `runId` | `nodeId` |
+| `recover-evidence`, `retry-evidence-readiness` | `runId`, `submissionId` | None |
+| `override-evidence-readiness` | `runId`, `submissionId` | `reason`, `acknowledgedRisk: true` |
+| `retry-delivery` | `deliveryId` | `expectedSessionId`, `expectedNoteKey` |
+| `resolve-delivery` | `deliveryId` | `resolution`: `mark_delivered` or `discard_and_new_round`; the latter also needs `expectedSessionId`, `expectedNoteKey`, and any required `confirmation` |
+| `submit` | `bindingId` | Optional `evidence`; also implements **Run again** |
+| `reattach` | `bindingId` | `sessionId` |
+| `start-review` | `sessionId` | Optional `evidence` |
+
+All parameter objects require a `requestId` except `reattach`. Keep the same request ID when
+retrying the same intent after a lost response; give a new intent a new ID. Full restarts use
+the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery uses
+`DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
+review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
+
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
+use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
+They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
+retains ownership of state transitions, round limits, idempotency, evidence policy, confirmation
+checks, and delivery/session matching. Failed calls return the daemon's error without an automatic
+retry or fallback. Workflow definition and Persona authoring remain in the Library.
+
 The **Follow the review** guided tour is the fastest orientation to the run side of
 everything below: it walks one real No-Mistakes Review run stage by stage, from the Settings
 rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#guided-tours).
@@ -34,7 +96,7 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 20 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Current version 21 uses `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -105,7 +167,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Twelve ready-made review roles ship with the application. Nothing has to be
+Fourteen ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -120,6 +182,8 @@ one immediately.
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Documentation Consistency Judge | Agreement across changed documents and their relevant current references |
+| Conciseness & Reference Judge | Useful prose, necessary context, and precise references instead of repeated explanations |
 | Slop Filter | Low-signal code, tests, comments, and prose that add no trustworthy behavior or useful explanation |
 | Code Quality Judge | Final local judgment of correctness, security, resource lifetime, error handling, compatibility, and regression evidence before pull request creation |
 | Code Design Reviewer | The design of the change: appropriate abstractions, SOLID without Liskov, DRY, composition over inheritance, encapsulation, unrepresentable illegal states, and explicit dependencies. Scoped to the submitted change, and never style or types |
@@ -167,7 +231,7 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-Four ready-made workflows ship already published in the Library:
+These ready-made workflows ship already published in the Library:
 
 | Workflow | Judges, in stage order | Finishes with |
 | --- | --- | --- |
@@ -175,6 +239,8 @@ Four ready-made workflows ship already published in the Library:
 | **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
 | **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
+| **Local Plan Validation** | The same plan review roles over an exact local revision | Local plan publication |
+| **Documentation Review** | Intent Conformance; then Documentation Steward, Documentation Consistency, and Conciseness & Reference | Verified Pull Request action |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -196,13 +262,47 @@ material is reported as a gap. Plan tasks with Persona review receive instructio
 frozen text artifact containing the root plan, phase files, relevant unchanged references, and
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
+#### Documentation Review
+
+The default for [document tasks](dispatch-and-backlog.md) starts with the
+`documentation` Command. Configure that slot for the repository's link, anchor, formatting,
+generated-reference, or docs-build checks. It uses the normal Command trust and execution
+rules; an unconfigured slot reports **Skipped** and passes. There is no hard-coded test suite
+or automatic execution of commands found in documentation.
+
+Intent Conformance runs next. Documentation Steward owns accuracy, authoritative placement,
+consolidation traceability, and dated verification claims. Documentation Consistency checks
+names, deliverables, and dependency contracts across current documents. Conciseness & Reference
+checks useful definitions, caller outcomes, decision rationale, and concise references while
+preserving local context. The three specialists run together and
+must all pass before the Pull Request action. Their guidance lives in the
+[Persona sources](../personas/README.md), rather than being repeated here.
+
+Document tasks with Persona review ask the author to register current changed document text,
+complete relevant sections of unchanged references, an inventory, source hashes or revisions,
+and focused check results. Consolidation evidence includes relevant searches, history, and the
+destination text for removed details. Paths or changed hunks alone cannot establish consistency. Review
+scope excludes unrelated historical debt, and missing context is disclosed as an evidence gap.
+This preset sets **Evidence preflight** to **Off**.
+
+Every judge in this preset has **Recheck after repairs** enabled. In a workflow copy, a Persona's
+Routing panel in Pipeline view, or its properties in Graph view, can change that setting. It
+forces a fresh review after repairs even when the machine skips previously passing judges.
+The choice is frozen on each published node; old graphs without it retain the machine policy.
+
+Documentation Review v2 and No-Mistakes Review v21 use the expanded documentation guidelines.
+Earlier published versions retain their original Persona instructions; existing bindings need
+the newer version to adopt the updated policy.
+
+#### Implementation workflow versions
+
 General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
 Their next versions update only the pinned model to `gpt-6-sol`.
 Their earlier versions remain available with their original review graphs and completion policies.
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks this workflow - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -338,7 +438,8 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 20 because it is current. Adopting the newer version on an
+take version 21 because it is current, with the [expanded documentation guidance](#documentation-review).
+Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -400,7 +501,7 @@ so a draft moves between them freely and existing workflows need no migration.
 
 There are two add controls, because they answer two different questions. **＋ Stage**, on the
 seam between cards, creates a stage and offers all three things a stage can be: your Personas,
-the four check slots, and your addable session actions, grouped. The picker inside an
+the check slots, and your addable session actions, grouped. The picker inside an
 evaluation stage adds another *member* to it, so it offers Personas and checks only. A session
 action stage has neither - it holds exactly one action by construction - so its own control
 chooses **which** action it sends. Checks are offered even before you have authored a Persona,
@@ -548,6 +649,13 @@ only after Mission Control has durable proof that a pull request was opened. Dup
 that completion and that skill, so you can rewrite the instruction without losing the adoption
 proof.
 
+PR phases share **Settings → Skills → Always create draft PRs** with the Pull Request skill.
+When enabled, new PRs are drafts and only the human promotes them to ready for review. A draft
+still counts as an open PR for this phase. The runtime instruction also reaches actions frozen
+in older versions and the **Prepare PR in session** handoff; it asks the agent to read the live
+setting immediately before creation. CI follow-through never authorizes promotion. See the
+[shared setting](skills-and-settings.md#skills-every-session-mixed-reload-behavior).
+
 What the daemon has to see before the stages below it run, and before End:
 
 1. the packet was confirmed sent, something newer than the send anchor proved the session read
@@ -604,10 +712,20 @@ differ:
 | **PR on another repo** | Historical state from older daemon versions; a repository mismatch now completes with a warning. |
 | **PR on another branch** | Historical state from older daemon versions; a branch mismatch now completes with a warning. |
 
-Mission Control attributes an adoption to this action only when the pull request belongs to the
-bound session and was adopted after the instruction was delivered. Once that durable fact exists,
+Mission Control attributes an adoption opened during this action to it only when the pull request
+belongs to the bound session and was adopted after the instruction was delivered. A pull request
+adopted earlier is covered by the separate rule below. Once that durable fact exists,
 a closed or merged state, a moved checkout, a changed pushed ref, or missing provider metadata is
 reported on the completed action. None sends a repair packet or spends a repair round.
+
+A pull request the bound session adopted **before** the instruction was delivered also completes
+the action, so a session that finds its existing pull request and opens no duplicate is not left
+waiting. It must belong to the same session, still be open, resolve to this checkout's
+repository, and have no observed branch or state that contradicts it. When the ledger recorded
+the checkout it was opened from, that must match this one too; when it recorded none, the looser
+rule applies and the completion warning says so. The branch and state are normally unobserved
+here, because only the GitHub Inspector's poller records them and it does not run while the
+Inspector is disabled.
 
 ### Command nodes
 
@@ -635,8 +753,7 @@ reason.
 which is the same already-shipped path an unconfigured slot takes - see [Running a check
 command](worktrees-and-checks.md#running-a-check-command) for why the platform floor exists.
 
-**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck` and
-`build`. What each one runs is configured in
+**A Command names a slot, never an argv.** The slots are `test`, `lint`, `typecheck`, `build`, and `documentation`. What each one runs is configured in
 [Library › Commands](library-and-line.md#commands) (`#/library/commands/<slot>`), keeping the
 exportable published version machine-neutral and free of argv. The execution contract accepts
 an **argv**, not a shell string, so `&&`, `|` and `$HOME` are ordinary arguments. The editor
@@ -784,8 +901,10 @@ The checkbox appears above the consent controls. **Allowed repositories**, inclu
 link, sits below the **Workflow Commands** toggle.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
-new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are
+or Live delivery, and a repair-round limit. Foreman complete plus Live is the default for
+new workflows, matching the built-in workflows. Live still needs the **Live delivery** switch
+(on by default) and a Trust grant for the session's repository; a binding without both is
+refused with that reason, and choosing Preview on the binding is always available. The optional GitHub Inspector final gate and its missing-PR and findings policies are
 immutable parts of each published version, and so is the
 [repair-resumption policy](#repair-resumption) below.
 
@@ -837,7 +956,11 @@ repository root, and pins the immutable version id. Publishing or editing a newe
 cannot change an existing binding or run. Reaching for the chip on a session that is still bound
 to an active binding opens the dialog **on that binding** rather than on whichever workflow
 happens to sort first: choosing the bound version offers **Submit bound version**, and choosing
-a different one explains the conflict, naming both workflows in words rather than by id.
+a different one offers **Switch workflow** or **Switch and submit**. Either action makes the
+selected workflow active and archives the previous binding automatically. **Switch and submit**
+also starts a review of the selected workflow. Switching cancels any active run on the previous
+binding; its run history remains readable. The replacement and conflict rules are documented in
+[Switching a session workflow](workflow-system.md#switching-a-session-workflow).
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
@@ -1017,14 +1140,25 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 `image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
 submission and therefore the same reserved bytes.
 
-The refusal names the registered item it is about - its display name and the client id a
-re-registration replaces - and the run page states the whole refusal without a disclosure: what
-capture found, which item, that no reviewer ran and no repair round was spent, and that the
-recovery is to register the item again and start the next round. Resuming is not that recovery:
-it revives the same submission and therefore the same immutable reservation, so it re-checks
-the bytes that were just refused and cannot see a re-registered item. A blocked run that has
-been claimed complete again says so beside the refusal; the claim opens no round, and the
-evidence that turn registered is picked up by the next round.
+The refusal names the registered item's display name and client id. The run page shows what
+capture found, which item failed, that no reviewer ran and no repair round was spent, and the
+recovery path that applies.
+
+For new agent-file failures in full-workflow submissions, an active, live binding with automatic
+resumption and a compatible bound session receives an `evidence_capture_repair` packet. The agent
+registers valid replacement proof and updates its coverage links. After confirmed delivery and a
+settled session, changed evidence or an explicitly restaged valid parent item triggers a child
+segment in the same round. Changed reserved content needs a new item id; the failed submission
+and its reservations stay intact. No manual resubmission or new Persona repair round is needed.
+The limits and exclusions are described in [Automatic recovery before review](#automatic-recovery-before-review).
+
+Ordinary session runs using manual resumption or preview, and historical blocked runs without an
+automatic recovery record, require the agent to register the final proof and the operator to use
+the fresh-round action in Runs. External-artifact submissions and SessionAction continuations keep
+their own explicit recovery paths. Resuming a refused capture revives the same submission and
+immutable reservation, so it re-checks the refused bytes and cannot see replacement registrations.
+A later completion claim alone does not create a new capture; the applicable automatic or
+explicit recovery path still owns that transition.
 
 An image whose digest is already frozen and retained references that existing body instead of
 copying it again, so registering the same screenshot in five rounds stores it once. That is a
@@ -1038,10 +1172,11 @@ queue rather than deleted.
 
 Registering byte-identical evidence under an id a previous submission already reserved returns
 it to the mutable tray for the next submission instead of doing nothing. That is not new
-evidence about the work, so it does not move the staged generation and does not resume a
-waiting run. It also does not detach anything from the submission that reserved it: that
-submission's frozen bytes are immutable. Registering genuinely different content under a
-reserved id is still refused.
+evidence about the work, so it does not move the staged generation or by itself resume an ordinary
+readiness wait. A pending automatic capture repair can use an explicitly restaged parent item to
+trigger its same-round child after confirmed delivery and a settled session. Restaging does not
+detach anything from the submission that reserved it: that submission's frozen bytes are
+immutable. Registering genuinely different content under a reserved id is still refused.
 
 A repair round's first submission and an `evidence_preflight` refinement child both start from
 what they staged themselves and then carry forward what the previous submission of the run
@@ -1170,9 +1305,15 @@ verdicts stay intact, pending repair deliveries are retired, and in-flight or un
 prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
 Each explicit recovery request may reserve a fresh segment; there is no lifetime recovery cap
 that withdraws the action after repeated failures. Reservation remains atomic and replaying a
-request is idempotent. Each mapping operation keeps its two-execution cap, and background polling
-never creates recovery requests. Recovery is separate from author refinements, and no historical
-runs are resumed in bulk.
+request is idempotent. Each mapping operation keeps its two-execution cap; background polling
+does not create another explicit request or reset that operation's checkpoint. Separately, for
+new mapping failures recorded as pending automatic recovery on eligible active, live bindings
+with automatic resumption, the resumption sweep may reserve at most two automatic
+`evidence_recovery` segments per round, after delays of 30 and 120 seconds. These use frozen
+evidence, retain the per-operation cap, and require a settled compatible session. See
+[Automatic recovery before review](#automatic-recovery-before-review) for the eligibility
+boundaries. Both recovery paths are separate from author refinements; historical blocked runs
+without automatic recovery records are not resumed in bulk.
 
 Links resolve only against evidence frozen for that submission. Historical snapshots with embedded
 matches normalize into the separate mapping representation when read.
@@ -1230,6 +1371,47 @@ historical `preflight_refinement_exhausted` phase. It needs no newly staged evid
 preflight packet is cancelled before review starts; a sending or uncertain delivery must settle
 first. The handoff is durable, so a restart between continuation and judge activation resumes the
 same submission without creating another refinement or recording an operator decision.
+
+### Automatic recovery before review
+
+Capture integrity compares each file with its registered byte count and SHA-256 before copying
+it into immutable evidence storage. A new registration id does not replace an earlier id at the
+same path. If the file changed, capture must refuse the stale registration even when another id
+correctly describes the current bytes. This checks evidence identity, not whether the proof is
+sufficient or the implementation is correct.
+
+New agent-file capture failures on active, live bindings with automatic resumption now send an
+`evidence_capture_repair` packet to the bound session. It names the failure and reserved sources,
+explains how to register replacements and update coverage, and asks the agent to finish its turn
+without manually resubmitting. Changed reserved content needs a new item id; unchanged valid
+content can be restaged under its existing id. Uncaptured items must be registered again. Already
+frozen proof carries forward, and the failed submission and its reservations remain in history.
+
+After confirmed delivery, a new registration for the failed source or an explicitly restaged
+parent item and a settled compatible session permit an atomic `evidence_capture_repair` child in
+the same round. Unrelated evidence and coverage registrations do not spend repair attempts.
+When a replacement uses a new path, also restage a valid parent item unchanged to identify the
+registration as a repair. If no valid parent item remains, regenerate the failed source at its
+original path and register its final bytes under a new item id.
+There are at most three automatic capture-repair children per round. The 15-minute idle allowance
+starts at the first eligible sweep after confirmed delivery, persists across restart, and resets
+when the session works or awaits permission. Without relevant evidence progress during that idle
+allowance, the repair is marked visibly stalled. Exhaustion or a stalled repair requires operator
+intervention; neither waives the integrity check.
+
+For the same eligible runs, new criterion-mapping failures receive at most two automatic
+`evidence_recovery` operations per round, after delays of 30 and 120 seconds. These reuse frozen
+evidence and keep the existing per-operation model-call budget. No agent edit is requested for a
+system mapping failure. The normal readiness loop above still owns author coverage gaps and its
+six/three-attempt policy.
+
+Failure disposition, reservations, counters and delivery receipts survive restart. Prepared
+packets may be delivered; confirmed packets are not resent; sending or uncertain deliveries
+must be resolved before another capture. An interrupted reserved child resumes the same segment.
+No automatic recovery is inferred for historical blocked rows. Preview, manual resumption,
+external-artifact submissions and SessionAction continuations retain their existing explicit
+recovery paths. The latter have a different graph activation route and are not restarted from
+Session by this pre-review recovery.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another

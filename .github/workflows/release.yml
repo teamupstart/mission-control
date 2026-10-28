@@ -26,13 +26,10 @@ name: Release
 # token from opening pull requests. The App is installed only on this repository with contents,
 # issues, and pull-request write access.
 #
-# Two things this deliberately does NOT do:
-#
-#   * It does not publish to npm. The package is private and the artifact is a macOS app built
-#     on the user's own machine.
-#   * It does not attach a dmg to the GitHub Release. Because the release tag is pushed with the
-#     installation token above, it starts `ci.yml` and that workflow's `package` job builds
-#     the dmg as a separate release check. The dmg remains a 90-day Actions artifact.
+# This does not publish to npm or own binary publication. The App-created tag starts
+# ci.yml. After successful push CI, distribution.yml can publish a signed/notarized
+# ZIP and DMG and expose its manifest last. The existing CI dmg is a developer
+# artifact, never the binary readiness signal. See docs/release-verification.md.
 #
 # `CHANGELOG.md` is generated. Never hand-edit it.
 

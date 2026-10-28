@@ -32,9 +32,9 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
     return (
       <section className={`app-banner ${pending ? "app-banner-error" : "app-banner-success"}`} role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
-          <strong>{pending ? "Personal installation committed; integrations need repair" : "Personal installation complete"}</strong>
-          <p>{migrationCompleteDetail(migration.target)}</p>
-          {pending && <p>{migration.repairs.map((item) => item.message).join(" ") || "Reopen the personal app to finish startup and integration repair."}</p>}
+          <strong>{migration.kind === "rename" ? (pending ? "App renamed; integrations need repair" : "App rename complete") : (pending ? "Personal installation committed; integrations need repair" : "Personal installation complete")}</strong>
+          <p>{migrationCompleteDetail(migration.target, migration.kind)}</p>
+          {pending && <p>{migration.repairs.map((item) => item.message).join(" ") || "Reopen the installed app to finish startup and integration repair."}</p>}
         </div>
         <div className="app-banner-actions">
           {pending && <Tooltip label="Retry only the integrations that still need repair">
@@ -60,7 +60,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   }
 
   if (snapshot.phase === "preparing") {
-    const { label, percent, step, steps } = updatePrepareProgress(snapshot.stage);
+    const { percent, detail, indeterminate } = updatePrepareProgress(snapshot.stage, snapshot.transfer);
     return (
       <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
@@ -77,13 +77,13 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
             aria-label={`Preparing Mission Control ${snapshot.newVersion}`}
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={percent}
-            aria-valuetext={`${label}, step ${step} of ${steps}`}
+            aria-valuenow={indeterminate ? undefined : percent}
+            aria-valuetext={detail}
           >
-            <span className="app-banner-progress-fill" style={{ width: `${percent}%` }} />
+            <span className="app-banner-progress-fill" style={{ width: indeterminate ? "100%" : `${percent}%`, opacity: indeterminate ? 0.3 : 1 }} />
           </div>
           <p>
-            {label} · step {step} of {steps}. {UPDATE_COPY.preparing.detail}
+            {detail}. {UPDATE_COPY.preparing.detail}
           </p>
         </div>
         <div className="app-banner-actions">
@@ -100,13 +100,13 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
       <section className="app-banner app-banner-success" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>{UPDATE_COPY.ready.title(snapshot.newVersion)}</strong>
-          <p>{snapshot.migration ? migrationReadyDetail(snapshot.migration.source, snapshot.migration.target) : UPDATE_COPY.ready.detail}</p>
+          <p>{snapshot.migration ? migrationReadyDetail(snapshot.migration.source, snapshot.migration.target, snapshot.migration.kind) : UPDATE_COPY.ready.detail}</p>
         </div>
         <div className="app-banner-actions">
           <Tooltip label={`Restart into Mission Control ${snapshot.newVersion}`}>
             <button type="button" className="btn btn-primary" onClick={props.onInstall}>{snapshot.migration ? "Install and restart" : "Restart and Install"}</button>
           </Tooltip>
-          {snapshot.migration && <Tooltip label="Keep installing updates in the shared system folder">
+          {snapshot.migration && snapshot.migration.kind !== "rename" && <Tooltip label="Keep installing updates in the shared system folder">
             <button type="button" className="btn btn-ghost" onClick={props.onKeepSystem}>Keep system installation</button>
           </Tooltip>}
           <Tooltip label="Keep the prepared update and install it later">
@@ -132,7 +132,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
     return (
       <section className="app-banner app-banner-error" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
-          <strong>The update check failed.</strong>
+          <strong>The update could not finish.</strong>
           <p>{snapshot.message}</p>
         </div>
         <div className="app-banner-actions">
@@ -164,11 +164,11 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           <p>{snapshot.blocker ?? releaseSummary(snapshot.releaseNotes)}</p>
         </div>
         <div className="app-banner-actions">
-          <Tooltip label={`Build Mission Control ${snapshot.newVersion} now, then restart when it is ready`}>
+          <Tooltip label={`Download Mission Control ${snapshot.newVersion} now, then restart when it is ready`}>
             <button type="button" className="btn btn-primary" onClick={props.onApply} disabled={!!snapshot.blocker}>Update Now</button>
           </Tooltip>
           {snapshot.blocker && (
-            <Tooltip label="Check Node.js compatibility and the update again">
+            <Tooltip label="Check binary availability again">
               <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
             </Tooltip>
           )}

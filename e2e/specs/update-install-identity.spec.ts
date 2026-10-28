@@ -52,6 +52,7 @@ test("a copy that is not the installed app says so, and update copy names no fix
   expect(identity.state).toBe("redirect");
 
   const controller = new UpdateController({
+    launchPreflight: async () => {},
     packaged: true,
     arch: "arm64",
     currentVersion: () => "1.2.3",
@@ -67,7 +68,7 @@ test("a copy that is not the installed app says so, and update copy names no fix
       message: "main",
       committedAt: "2026-09-14T00:00:00Z",
     }),
-    runtime: async () => ({ ok: true, node: process.execPath }),
+    binaryForCommit: async () => null,
     stage: async () => ({ ok: false, reason: "failed", message: "not reachable" }),
     stagedBundleIdentity: () => ({ version: null, revision: null }),
     handoff: async () => {},

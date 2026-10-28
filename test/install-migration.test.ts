@@ -8,11 +8,11 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
 import { removeMigrationSourceLogin } from '../src/main/migration-integration-ports.ts';
-import { CANONICAL_REPO } from '../src/shared/install-receipt-schema.mjs';
+import { CANONICAL_REPO, FORMER_CANONICAL_REPO } from '../src/shared/install-receipt-schema.mjs';
 import { migrationStartupGate, migrationRuntimePorts, boundedMigrationWait } from '../scripts/migration-runtime.mjs';
 import { readUpdateOutcome } from '../src/main/update-outcome.ts';
 import {
-  prepareMigration, migrationBundleIdentity, atomicMigrationJson, runMigration,
+  prepareMigration, validateMigrationPlan, updateMigrationReceipt, migrationBundleIdentity, atomicMigrationJson, runMigration,
   readMigrationJournal, migrationReceipt, recoverMigration, repairMigration,
   MIGRATION_JOURNAL, type MigrationPorts,
 } from '../scripts/install-migration.mjs';
@@ -349,4 +349,64 @@ test('corrupt or unsupported journals fail closed and a competing helper writes 
   assert.equal(existsSync(join(f.stateDirectory, 'update-outcome.json')), false);
   assert.equal(existsSync(join(f.stateDirectory, MIGRATION_JOURNAL)), false);
   assert.equal(existsSync(join(directory, claimEntryName(foreign))), true);
+});
+
+test('a serialized schema-1 relocation plan without the new descriptor still applies and opens', async (t) => {
+  const f = fixture(t);
+  delete f.plan.descriptor;
+  const oldPlan = JSON.parse(JSON.stringify(f.plan));
+  assert.equal((await runMigration(oldPlan, f.ports, {policy: f.policy})).committed, true);
+  const saved = readMigrationJournal(f.stateDirectory, f.policy)!;
+  assert.equal(saved.plan.protocol, 1);
+  assert.equal(saved.plan.oldReceipt.schema, 1);
+  assert.equal(saved.plan.descriptor, undefined);
+  assert.equal(saved.stage, 'receipt-committed');
+});
+
+for (const descriptor of [true, false]) test(`planned receipt updates survive serialization ${descriptor ? 'with' : 'without'} a descriptor`, async (t) => {
+  const f = fixture(t);
+  if (!descriptor) delete f.plan.descriptor;
+  const plan = JSON.parse(JSON.stringify(f.plan));
+  const oldReceipt = JSON.stringify(plan.oldReceipt);
+  updateMigrationReceipt(plan, {releaseTag: null, installedAt: '2026-10-14T00:00:00.000Z'});
+  const serialized = JSON.parse(JSON.stringify(plan));
+  assert.equal(validateMigrationPlan(serialized, f.policy), serialized);
+  assert.equal(serialized.intendedReceipt.releaseTag, null);
+  assert.equal(serialized.intendedReceipt.installedAt, '2026-10-14T00:00:00.000Z');
+  if (descriptor) assert.deepEqual(serialized.descriptor.receipt, serialized.intendedReceipt);
+  else assert.equal(serialized.descriptor, undefined);
+  assert.equal(JSON.stringify(serialized.oldReceipt), oldReceipt);
+  assert.equal((await runMigration(serialized, f.ports, {policy: f.policy})).committed, true);
+  assert.deepEqual(migrationReceipt(f.stateDirectory), serialized.intendedReceipt);
+});
+
+test('protocol-1 relocation rejects an in-place or unknown kind before journal execution', async (t) => {
+  const f = fixture(t);
+  const originalReceipt = readFileSync(join(f.stateDirectory, 'install-receipt.json'));
+  for (const kind of ['in-place', 'unknown']) {
+    const mismatched = {...f.plan, kind};
+    assert.throws(() => validateMigrationPlan(mismatched, f.policy), /Unsupported or invalid migration protocol/);
+    atomicMigrationJson(join(f.stateDirectory, MIGRATION_JOURNAL), {plan: mismatched});
+    assert.throws(() => readMigrationJournal(f.stateDirectory, f.policy), /Unsupported or invalid migration protocol/);
+    rmSync(join(f.stateDirectory, MIGRATION_JOURNAL));
+    await assert.rejects(runMigration(mismatched as typeof f.plan, f.ports, {policy: f.policy}), /Unsupported or invalid migration protocol/);
+    assert.deepEqual(f.events, []);
+    assert.equal(existsSync(f.plan.target), false);
+    assert.equal(existsSync(join(f.stateDirectory, MIGRATION_JOURNAL)), false);
+    assert.deepEqual(readFileSync(join(f.stateDirectory, 'install-receipt.json')), originalReceipt);
+  }
+  assert.equal(validateMigrationPlan(f.plan, f.policy), f.plan, 'legacy plans with no kind remain valid');
+});
+
+test('relocation accepts the former canonical identity and normalization to the canonical repository', async (t) => {
+  const f = fixture(t);
+  f.receipt.repo = FORMER_CANONICAL_REPO;
+  atomicMigrationJson(join(f.stateDirectory, 'install-receipt.json'), f.receipt);
+  const plan = prepareMigration(f.args)!;
+  assert.equal(validateMigrationPlan(plan, f.policy), plan);
+  plan.intendedReceipt.repo = 'untrusted/repo';
+  assert.throws(() => validateMigrationPlan(plan, f.policy), /intended receipt/);
+  updateMigrationReceipt(plan, {repo: CANONICAL_REPO});
+  assert.equal((await runMigration(plan, f.ports, {policy: f.policy})).committed, true);
+  assert.equal(migrationReceipt(f.stateDirectory).repo, CANONICAL_REPO);
 });

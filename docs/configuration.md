@@ -209,14 +209,18 @@ for the operator to fix.
 **Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
-Both modes require an explicit **Update Now**, followed by **Restart and Install**.
+Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
+complete signed release assets; alpha pins the exact observed main SHA and reports pending or
+unavailable when its binary is missing. Neither channel requires host Node/npm or compiles locally.
+A channel change clears an unaccepted offer; an accepted download keeps its immutable identity.
+Cancel waits for owned work to stop before another attempt can start.
 
 The desktop shell owns `update-preferences.json` in `MISSION_HOME`, containing
 `{"alpha":false}` by default. The preference survives updates and restarts and is separate
 from daemon settings snapshots, so repair updates do not depend on a healthy daemon.
 Missing or invalid preferences select stable mode. Change this setting through the desktop
 UI; browser-only dashboards do not offer application updates. See
-[alpha updates](desktop-and-packaging.md#alpha-updates) for source identity and channel changes.
+[alpha updates](desktop-and-packaging.md#alpha-updates) for binary identity and channel changes.
 
 ## Automatic settings snapshots
 
@@ -354,3 +358,8 @@ contributor execution mechanics; they are deliberately not restated here.
 for a pre-fix revision beside it, so a change to what the GitHub Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the
 working tree, so it is safe to run on dirty state.
+
+## Binary desktop installation
+
+See [Binary installation and manual recovery](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+for installer options, recovery behavior, and qualification limits.

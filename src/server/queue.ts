@@ -183,9 +183,13 @@ export class QueueManager {
    * here because the UI cannot be the enforcement: this is the boundary the write
    * actually crosses.
    */
-  approve(itemId: string, now = Date.now()): { ok: boolean; error?: string } {
+  approve(itemId: string, now = Date.now(), revision?: number): { ok: boolean; error?: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    // Compare at the synchronous owner write, after any route parsing or delegation.
+    if (revision !== undefined && item.revision !== revision) {
+      return { ok: false, error: "this item changed since you loaded it" };
+    }
     if (item.state !== "proposed") {
       return { ok: false, error: `only a proposed item can be approved (this is ${item.state})` };
     }
@@ -222,9 +226,13 @@ export class QueueManager {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
     const state = patch.state ?? item.state;
+    const draftChanged = patch.proposedPayload !== undefined && patch.proposedPayload !== item.proposedPayload;
     const next: WorkItem = {
       ...item,
       state,
+      // New draft text needs fresh consent and invalidates a controller's earlier read.
+      revision: item.revision + (draftChanged ? 1 : 0),
+      approvedAt: draftChanged ? null : item.approvedAt,
       round: patch.round ?? item.round,
       baseSha: patch.baseSha !== undefined ? patch.baseSha : item.baseSha,
       transcriptAnchor:

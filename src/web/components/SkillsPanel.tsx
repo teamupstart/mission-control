@@ -1,4 +1,5 @@
-import { ENFORCEMENT_LABEL, enforcementHint } from "@shared/skills.ts";
+import { Fragment } from "react";
+import { ENFORCEMENT_LABEL, enforcementHint, PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import { agentList } from "@shared/agent.ts";
 import { capabilitiesFor, skillLoadingAgents, skillsAgents } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
@@ -8,9 +9,9 @@ import { Tooltip } from "./Tooltip.tsx";
 
 // The skills catalog, as a settings section. Rows are the `.kb-row` shape the
 // keyboard editor already uses - label, description, control - because that is what
-// this is. The master toggle plus a `fieldset disabled` cascade is ForemanBar's
-// pattern, for the same reason: a row you can still click while the master switch is
-// off is a row that lies about what it does.
+// this is. Each skill row uses a `fieldset disabled` cascade from the master toggle.
+// Shared preferences beside the rows remain editable because workflows use them
+// independently of skill installation.
 
 /**
  * Who this switch actually reaches, and who it leaves alone - read off the `skills`
@@ -79,7 +80,7 @@ function SkillRowView({
   onToggle: (on: boolean) => void;
 }): React.JSX.Element {
   return (
-    <div className="kb-row skill-row" data-anchor={`skills/${row.id}`}>
+    <fieldset className="kb-row skill-row" data-anchor={`skills/${row.id}`} disabled={disabled}>
       <div className="kb-row-text">
         <span className="kb-row-label">
           /{row.name}
@@ -118,12 +119,26 @@ function SkillRowView({
           </label>
         </Tooltip>
       </div>
-    </div>
+    </fieldset>
   );
 }
 
 export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Element {
   const { view, update, error } = state;
+  const draftPreference = (
+    <div className="kb-row" data-anchor="skills/always-draft-pr">
+      <div className="kb-row-text">
+        <label className="kb-row-label" htmlFor="always-draft-pr">Always create draft PRs</label>
+        <span className="kb-row-desc">Applies to the Pull Request skill and workflow PR phases in every repository. Only a human promotes drafts to ready for review. Existing PRs keep their status.</span>
+      </div>
+      <div className="kb-row-controls">
+        <Tooltip label="Create new skill and workflow PRs as drafts for human promotion">
+          <input id="always-draft-pr" type="checkbox" checked={view?.alwaysDraftPr ?? false} disabled={!view}
+            onChange={(event) => void update({ alwaysDraftPr: event.target.checked })} />
+        </Tooltip>
+      </div>
+    </div>
+  );
 
   return (
     <section className="settings-section">
@@ -194,20 +209,25 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         </Tooltip>
       </div>
 
-      {/* Cascade from the master switch, ForemanBar's pattern: off means nothing is
-          symlinked whatever the rows say, so the rows must not look clickable. The
+      {/* Only skill rows inherit the master switch; shared preferences stay editable.
+          Off means no skills are symlinked, whatever the rows say. The
           `skills/catalog` anchor is the settings-search jump target for the catalog as a
           whole - the per-skill rows are dynamic and are not indexed individually. */}
-      <fieldset className="skills-list" data-anchor="skills/catalog" disabled={!view?.enabled}>
+      <div className="skills-list" data-anchor="skills/catalog">
         {view?.skills.map((row) => (
-          <SkillRowView
-            key={row.id}
-            row={row}
-            disabled={!view.enabled}
-            onToggle={(on) => void update({ skills: { [row.id]: on } })}
-          />
+          <Fragment key={row.id}>
+            <SkillRowView
+              row={row}
+              disabled={!view.enabled}
+              onToggle={(on) => void update({ skills: { [row.id]: on } })}
+            />
+            {row.id === PULL_REQUEST_SKILL && (
+              draftPreference
+            )}
+          </Fragment>
         ))}
-      </fieldset>
+        {!view?.skills.some((row) => row.id === PULL_REQUEST_SKILL) && draftPreference}
+      </div>
 
       {view && view.skills.length === 0 && (
         <p className="settings-hint">

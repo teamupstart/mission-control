@@ -10,6 +10,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getForemanConfig, setForemanConfig } = await import("../src/server/foreman/config.ts");
+const { foremanMayActLive } = await import("../src/server/foreman/verdict.ts");
 const { getInspectorConfig, inspectorModel, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
@@ -28,18 +29,27 @@ beforeEach(() => openDb().exec("DELETE FROM app_config"));
  * is consulted only when the key is ABSENT, so it reaches the operator who never opened the
  * panel and not the one who answered.
  *
- * What is deliberately NOT flipped is asserted alongside, because "Foreman is on by default"
- * reads far more alarming than it is: `mode` still ships `dry-run` and the allowlist still ships
- * empty, so Foreman on a fresh install drafts and types nothing anywhere.
+ * What keeps that safe is asserted alongside, because "Foreman is on and Live by default" reads
+ * far more alarming than it is: the repository allowlist still ships empty, and Live acts only
+ * in an allowlisted repository, so Foreman on a fresh install drafts and types nothing anywhere
+ * until a human grants one in Trust.
  */
-test("Foreman ships enabled with both wrap-up triggers, and still authorises nothing", () => {
+test("Foreman ships enabled and Live with both wrap-up triggers, and still authorises nothing", () => {
   const fresh = getForemanConfig();
   assert.equal(fresh.enabled, true);
   assert.deepEqual(fresh.wrapupTriggers, ["drain", "prompted"]);
   assert.equal(fresh.skipScoutWrapup, true);
   assert.equal(fresh.skipReviewArtifactWrapup, true);
-  assert.equal(fresh.mode, "dry-run", "enabled must not imply may-act");
-  assert.deepEqual(fresh.repoAllowlist, [], "enabled must not imply an authorised repository");
+  assert.equal(fresh.mode, "live");
+  // Live is only half the gate. The allowlist is the consent and ships empty, so a fresh
+  // install may act in no repository until a human grants one.
+  assert.deepEqual(fresh.repoAllowlist, [], "Live must not imply an authorised repository");
+  assert.equal(foremanMayActLive(fresh, "/work/repo", "/work/repo"), false);
+  assert.equal(
+    foremanMayActLive({ ...fresh, repoAllowlist: ["/work/repo"] }, "/work/repo", "/work/repo"),
+    true,
+    "a Trust grant alone is what makes a fresh install act",
+  );
   assert.equal(fresh.wrapup, "ask", "a wrap-up moment must still ask rather than type");
   assert.equal(fresh.trackReviewFeedback, true);
   assert.equal(fresh.trackCiFailures, true);
@@ -63,11 +73,15 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   // the case the flip is FOR.
   setAppConfig(APP_CONFIG_ENTRIES.foreman, { mode: "dry-run" });
   const upgraded = getForemanConfig();
+  // A persisted mode is an answer, so the Live default never reaches it.
+  assert.equal(upgraded.mode, "dry-run");
   assert.equal(upgraded.enabled, true);
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
   assert.equal(upgraded.skipScoutWrapup, true);
   assert.equal(upgraded.skipReviewArtifactWrapup, true);
   assert.equal(upgraded.keepShipTasksMoving, true);
+  assert.equal(upgraded.trackReviewFeedback, true);
+  assert.equal(upgraded.trackCiFailures, true);
   assert.equal(upgraded.shipRecoveryMinutes, 20);
 });
 
@@ -101,6 +115,23 @@ test("Foreman persists review-comment and CI follow-through independently", () =
   const bothOff = setForemanConfig({ trackReviewFeedback: false });
   assert.equal(bothOff.trackReviewFeedback, false);
   assert.equal(bothOff.trackCiFailures, false);
+});
+
+test("Foreman preserves every combination of the three PR preferences on unrelated updates", () => {
+  for (const keepShipTasksMoving of [false, true]) {
+    for (const trackReviewFeedback of [false, true]) {
+      for (const trackCiFailures of [false, true]) {
+        const saved = { keepShipTasksMoving, trackReviewFeedback, trackCiFailures };
+        setAppConfig(APP_CONFIG_ENTRIES.foreman, saved);
+        // Updating a different setting must not replace an explicit opt-out with a default.
+        setForemanConfig({ shipRecoveryMinutes: 37 });
+        const reread = getForemanConfig();
+        for (const key of Object.keys(saved) as (keyof typeof saved)[]) {
+          assert.equal(reread[key], saved[key], `${key}: ${JSON.stringify(saved)}`);
+        }
+      }
+    }
+  }
 });
 
 test("Foreman preserves the old combined PR follow-through answer when adding CI", () => {

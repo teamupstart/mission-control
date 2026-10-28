@@ -140,6 +140,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
     "mission:update-dialog",
     "mission:update-dialog-ready",
     "mission:update-dialog-choice",
+    "mission:update-dialog-received",
   ];
 
   assert.deepEqual(
@@ -156,7 +157,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         /mission:update-apply[\s\S]{0,160}updateController\.apply\(\)/.test(updateHandlers) &&
         /mission:update-install[\s\S]{0,160}updateController\.install\(\)/.test(updateHandlers) &&
         /mission:update-keep-system[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.keepSystem\(\)/.test(updateHandlers) &&
-        /mission:update-repair-migration[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.retryMigrationRepair\(\)/.test(updateHandlers) &&
+        /mission:update-repair-migration[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.retryMigrationRepair\(true\)/.test(updateHandlers) &&
         /mission:update-cancel[\s\S]{0,160}updateController\.cancel\(\)/.test(updateHandlers) &&
         /mission:update-defer[\s\S]{0,160}updateController\.defer\(\)/.test(updateHandlers) &&
         !updateHandlers.includes("updateController?."),
@@ -167,8 +168,8 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       // hold of the channel name - must not be able to answer a question on the operator's
       // behalf, and "install the update now" is one of the answers.
       mainGatesDialogChannelsOnTheDashboard:
-        (main.match(/ipcMain\.on\(["']mission:update-dialog-[^"']+["']/g) ?? []).length === 2 &&
-        ["mission:update-dialog-ready", "mission:update-dialog-choice"].every((channel) =>
+        (main.match(/ipcMain\.on\(["']mission:update-dialog-[^"']+["']/g) ?? []).length === 3 &&
+        ["mission:update-dialog-ready", "mission:update-dialog-choice", "mission:update-dialog-received"].every((channel) =>
           new RegExp(
             `ipcMain\\.on\\("${channel}"[\\s\\S]{0,220}?event\\.sender !== getMainWindow\\(\\)\\?\\.webContents\\) return;`,
           ).test(updateHandlers),
@@ -189,7 +190,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
-          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,onState,onDialog,answerDialog" &&
+          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,onState,onDialog,receivedDialog,answerDialog" &&
         [
           ["getState", "mission:update-get-state"],
           ["check", "mission:update-check"],
@@ -272,7 +273,7 @@ test("every update surface takes its words from one owner", () => {
     {
       dialogContentReadsTheSharedCopy:
         /import \{[^}]*\bUPDATE_COPY\b[^}]*\} from "\.\/update-copy\.ts"/.test(dialogs) &&
-        dialogs.includes("migrationReadyDetail(migration.source, migration.target)") &&
+        dialogs.includes("migrationReadyDetail(migration.source, migration.target, migration.kind)") &&
         ["preparing", "ready", "applying"].every(
           (phase) =>
             dialogs.includes(`UPDATE_COPY.${phase}.title(version)`) &&
@@ -280,8 +281,8 @@ test("every update surface takes its words from one owner", () => {
         ),
       bannerReadsTheSharedCopy:
         /import \{[^}]*\bUPDATE_COPY\b[^}]*\} from "@shared\/update-copy\.ts"/.test(banner) &&
-        banner.includes("migrationReadyDetail(snapshot.migration.source, snapshot.migration.target)") &&
-        banner.includes("migrationCompleteDetail(migration.target)") &&
+        banner.includes("migrationReadyDetail(snapshot.migration.source, snapshot.migration.target, snapshot.migration.kind)") &&
+        banner.includes("migrationCompleteDetail(migration.target, migration.kind)") &&
         ["preparing", "ready", "applying"].every(
           (phase) =>
             banner.includes(`UPDATE_COPY.${phase}.title(snapshot.newVersion)`) &&

@@ -467,6 +467,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("skills"),
   },
   {
+    id: "skills-always-draft-pr",
+    label: "Always create draft PRs",
+    description: "Create draft pull requests through the skill and workflows; a human promotes them to ready for review.",
+    category: "skills",
+    anchor: "skills/always-draft-pr",
+    keywords: ["pull request", "PR", "draft", "review", "workflow", "human"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
     id: "standing-instructions-default",
     label: "Standing instructions for every repository",
     description: "The machine-wide text a session gets when its checkout has no rule of its own.",
@@ -703,7 +713,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // is the same machine-wide switch it always was. Only the words on it moved.
     anchor: "workflows/checks",
     keywords: [
-      "check", "command", "test", "lint", "typecheck", "build", "gate", "exit code", "allow",
+      "check", "command", "test", "lint", "typecheck", "build", "documentation", "gate", "exit code", "allow",
       "pause",
     ],
     kind: "toggle",
@@ -718,11 +728,11 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     // exactly who this row exists for, and dropping it would answer them with nothing.
     id: "workflow-check-commands",
     label: "What each Command runs",
-    description: "The test, lint, typecheck and build argvs - authored in Library › Commands.",
+    description: "The configured workflow command argvs - authored in Library › Commands.",
     category: "workflows",
     anchor: "workflows/command-catalog",
     keywords: [
-      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "repo",
+      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "documentation", "repo",
       "override", "default", "library",
     ],
     kind: "jump",

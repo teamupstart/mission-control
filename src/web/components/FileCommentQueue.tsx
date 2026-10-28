@@ -26,6 +26,7 @@ import {
   threadStateLabel,
   unsentMessage,
 } from "../lib/fileComments.ts";
+import type { FileCommentReviewState } from "../lib/fileCommentReview.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 function lineRange(startLine: number, endLine: number): string {
@@ -297,5 +298,43 @@ export function FileCommentQueue({
           </ol>
         )}
     </section>
+  );
+}
+
+/**
+ * The queue wired to a surface's review state - the one way the Files tab and the Diff tab
+ * mount it, so a Pause, a reorder or a drop does the same thing from either.
+ *
+ * `onOpen` is the surface's own, because only it knows how to bring a comment's line on screen.
+ * `onDropped` lets it close a thread it had open on a comment the daemon just removed.
+ */
+export function FileCommentReviewPanel({
+  review,
+  onOpen,
+  onDropped,
+}: {
+  review: FileCommentReviewState;
+  onOpen: (thread: FileCommentThread) => void;
+  onDropped?: (threadId: string) => void;
+}): React.JSX.Element {
+  return (
+    <FileCommentQueue
+      queue={review.queue}
+      review={review.review}
+      busy={review.busy}
+      error={review.error}
+      onResume={() => { void review.control("start"); }}
+      onPause={() => { void review.control("pause"); }}
+      onMove={(threadId, direction) => { void review.move(threadId, direction); }}
+      onEdit={review.edit}
+      onDrop={(threadId) => {
+        void review.drop(threadId).then((ok) => {
+          if (ok) onDropped?.(threadId);
+        });
+      }}
+      onOpen={onOpen}
+      onDismissPause={() => { void review.control("dismiss"); }}
+      onDismissError={() => review.setError(null)}
+    />
   );
 }

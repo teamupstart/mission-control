@@ -1,4 +1,6 @@
 export interface ApplyUpdateArgs {
+  recovery?: string;
+  attemptDirectory?: string;
   sourceClone: string;
   targetTag: string;
   appPath: string;
@@ -15,6 +17,8 @@ export interface ApplyUpdateArgs {
    * reader before the swap can refuse a bundle that changed in between.
    */
   stagedRevision?: string | null;
+  /** Accepted content digest for staged targets that predate transaction journals. */
+  stagedDigest?: string | null;
   sourceApp?: string;
   targetApp?: string;
   migrationPlan?: string;
@@ -48,6 +52,11 @@ export interface HelperLockOps {
 }
 
 export interface ApplyOperations {
+  preflight(bundle: string): Promise<void>;
+  waitForBundle(bundle: string): Promise<void>;
+  prepareLaunch(bundle: string): Promise<void>;
+  verifyLaunch(bundle: string, nonce: string): Promise<void>;
+  stopLaunch(bundle: string, nonce: string): Promise<void>;
   exists(path: string): boolean;
   remove(path: string): void;
   move(from: string, to: string): void;
@@ -61,18 +70,18 @@ export interface ApplyOperations {
     appsDir: string,
     stagedBundle?: string | null,
     stagedRevision?: string | null,
+    stagedDigest?: string | null,
   ): void;
   restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   bundleVersion(path: string): string | null;
   bundleCommit?(path: string): string | null;
   lock: HelperLockOps;
-  launch(appPath: string): void;
+  launch(appPath: string, nonce?: string): void | Promise<void>;
   log(line: string): void;
 }
 
 export const UPDATE_OUTCOME_SCHEMA: number;
 export const INSTALL_TIMEOUT_MS: number;
-export const STAGED_INSTALL_TIMEOUT_MS: number;
 export const RETAINED_FAILURE_DIR_NAME: string;
 export const HELPER_LOCK_DIR_NAME: string;
 export function processIsAlive(pid: number, kill?: (pid: number) => void): boolean;
@@ -119,10 +128,18 @@ export function parseArgs(argv: string[]): {
 export function sanitizeDiagnostic(value: unknown): string;
 export function installFailureSummary(output: unknown): string;
 export function writeOutcome(path: string, outcome: Record<string, unknown>): void;
+export function openAppForRelaunch(
+  appPath: string,
+  nonce: string | null | undefined,
+  spawn?: (
+    command: string,
+    args: string[],
+    options: { encoding: "utf8"; timeout: number; env: NodeJS.ProcessEnv },
+  ) => { error?: Error; status: number | null },
+): void;
 export function realApplyOperations(
   logPath: string,
   installTimeoutMs?: number,
-  stagedInstallTimeoutMs?: number,
 ): ApplyOperations;
 export function runApplyUpdate(
   args: ApplyUpdateArgs,

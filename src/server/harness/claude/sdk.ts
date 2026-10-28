@@ -1238,6 +1238,20 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
  */
 const CLAUDE_ANSWERS_REQUESTS = true;
 
+/**
+ * Opt the embedded session in to Claude Code's `Artifact` tool, which the Files tab's
+ * Publish control asks it to call.
+ *
+ * The CLI withholds that tool from every `sdk-ts` entrypoint unless `CLAUDE_CODE_ARTIFACT`
+ * is truthy (its own withheld reason is `sdk_default_off`), while an interactive pane has
+ * it on by default. Without this, Publish sends an embedded session a request it cannot
+ * carry out. This removes only that SDK default: an operator's own `CLAUDE_CODE_ARTIFACT`
+ * is left as they set it, and `enableArtifact: false`, plan and admin policy still decide.
+ */
+function withArtifactTool(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
+}
+
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
@@ -1250,7 +1264,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
-        env: deps.env(opts.cwd, opts.stateHome),
+        env: withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),

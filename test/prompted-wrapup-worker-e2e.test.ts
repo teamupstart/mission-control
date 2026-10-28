@@ -695,10 +695,84 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
   );
 });
 
-test("an empty diff consumes its generation without calling the verifier", async () => {
+// Local bundles have no Git patch. Exercise the real worker through verification and
+// the claim boundary; the daemon's exact approval/publication gates have their own tests.
+for (const triggerMode of ["foreman_complete", "manual"] as const) test(`a local plan with an empty diff reaches its ${triggerMode} workflow`, async () => {
+  const repo = tmp("pw-local-plan-");
+  const fake = mkFixedVerdictClaude({ complete: true, summary: "The approved local bundle is ready for validation", gaps: [] });
+  const session = mkSession(repo, {
+    task: mkTaskSummary({ kind: "plan", workflowId: "local-plan-validation",
+      planPolicy: { version: 2, storage: "local", commitPlanHtml: false } }),
+  });
+  const publication = { owner: "workflow", bindingId: "local-binding", workflowVersionId: "local-version", triggerMode };
+  const objective = "Prepare and approve the local implementation plan";
+  let queue = mkQueue(repo);
+  let settledAt = 0;
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/pipelines/foreman") return { status: 200, json: { enabled: false, items: [] } };
+    if (p === "/api/foreman/config") return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    if (p === "/api/reviews" || p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") return { status: 200, json: { ...goalRecord, objective, prompt: objective, focus: objective } };
+    if (p === "/api/sessions/s1/plan-publication") return { status: 200, json: publication };
+    if (p === "/api/sessions/s1/diff") return { status: 200, json: { ok: true, patch: "", truncated: false, headSha: "abc" } };
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") return { status: 200, json: {
+      messages: [{ role: "assistant", text: "Saved and approved the exact local plan revision; registered its complete Markdown evidence.", tools: [] }], truncated: false,
+    } };
+    if (p === "/api/sessions/s1/workflow-evidence") return { status: 200, json: { ...registeredCommandEvidence(), registrationEligible: true } };
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      if (triggerMode === "manual") return { status: 200, json: { claimed: false, reason: "manual_trigger" } };
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
+      queue = { ...queue, promptedConsumedGeneration: body.expectedWorkCycle.generation };
+      settledAt = Date.now();
+      return { status: 200, json: { claimed: true, runId: "local-validation", submissionId: "local-submission", state: "started" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation };
+      settledAt = Date.now();
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+  let out: string;
+  try {
+    out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 20_000,
+      until: () => settledAt > 0 && Date.now() - settledAt >= IDLE_SETTLE_MS });
+  } finally {
+    await stub.close();
+  }
+  const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(claims.length, 1, `the empty checkout must not suppress local plan validation\n${out}`);
+  assert.deepEqual((claims[0]!.body as { expectedPlanPublication: unknown }).expectedPlanPublication, publication);
+  assert.equal(claudeCalls(fake.log).length, 1, out);
+  assert.match(readFileSync(fake.prompt, "utf8"), /the local plan publication handoff/);
+  assert.equal(queue.promptedConsumedGeneration, 1, out);
+  const consumes = stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted");
+  if (triggerMode === "manual") {
+    assert.equal(consumes.length, 1, out);
+    assert.equal((consumes[0]!.body as { decision: { outcome: string } }).decision.outcome, "asked");
+  } else {
+    assert.equal(consumes.length, 0, "only the workflow claim may consume automatic completion");
+  }
+  assert.equal(stub.to("GET", "/api/sessions/s1/diff").length, 1, "later ticks cannot claim the same generation again");
+  assert.equal(stub.to("POST", "/api/sessions/s1/inject").length, 0, "local plans never receive a direct PR handoff");
+});
+
+for (const mode of ["personal", "repository plan", "unbound local plan"] as const) test(`an empty diff consumes its generation without calling the verifier (${mode})`, async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
-  const session = mkSession(repo);
+  const session = mkSession(repo, {
+    task: mode === "personal" ? null : mkTaskSummary({ kind: "plan",
+      workflowId: mode === "repository plan" ? "plan-validation" : null,
+      planPolicy: mode === "repository plan" ? { storage: "repository", commitPlanHtml: false }
+        : { version: 2, storage: "local", commitPlanHtml: false } }),
+  });
   let queue = mkQueue(repo);
   let consumedAt = 0;
 
@@ -713,6 +787,12 @@ test("an empty diff consumes its generation without calling the verifier", async
     if (p === "/api/queues") return { status: 200, json: [] };
     if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
     if (p === "/api/sessions/s1/goal") return { status: 200, json: goalRecord };
+    if (p === "/api/sessions/s1/plan-publication") return { status: 200, json: mode === "repository plan"
+      ? { owner: "workflow", bindingId: "repository-binding", workflowVersionId: "repository-version", triggerMode: "foreman_complete" }
+      : { owner: "skill" } };
+    if (p === "/api/sessions/s1/workflow-evidence") return { status: 200, json: {
+      generation: 0, images: [], artifacts: [], registrationEligible: mode === "repository plan",
+    } };
     if (p === "/api/sessions/s1/diff") {
       return { status: 200, json: { ok: true, patch: "", truncated: false, headSha: "abc" } };
     }

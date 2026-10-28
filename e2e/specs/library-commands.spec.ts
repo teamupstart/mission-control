@@ -82,7 +82,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(150);
 }
 
-const SLOTS = ["test", "lint", "typecheck", "build"] as const;
+const SLOTS = ["test", "lint", "typecheck", "build", "documentation"] as const;
 
 const card = (page: Page, slot: string) =>
   page.getByRole("region", { name: "What does each standard gate run?" })
@@ -109,7 +109,7 @@ const ruleRows = (page: Page) =>
 
 const hash = (page: Page) => page.evaluate(() => location.hash);
 
-test("the Commands shelf is the sixth question, with four built-in cards and no New", async ({
+test("the Commands shelf is the sixth question, with five built-in cards and no New", async ({
   dashboard,
   daemon,
 }) => {
@@ -130,7 +130,7 @@ test("the Commands shelf is the sixth question, with four built-in cards and no 
     await expect(card(dashboard, slot)).toContainText("built-in");
   }
   // Every authoring shelf carries a ＋ New card. This one cannot: the slots ship with the
-  // product and there is no fifth to author.
+  // product and operators configure the fixed slots rather than authoring more.
   await expect(shelf.getByRole("button", { name: /New/ })).toHaveCount(0);
   // And no cross-link, because a Command has no runs of its own to count.
   await expect(shelf.getByRole("button", { name: /→$/ })).toHaveCount(0);

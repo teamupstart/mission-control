@@ -86,12 +86,12 @@ function mkVerifyInput(overrides: Partial<VerifyInput> = {}): VerifyInput {
   };
 }
 
-test("every task kind declares a completion boundary, and ship and bugfix defer work", () => {
+test("every task kind declares a completion boundary, and shipping kinds defer work", () => {
   // The registry is exhaustive at the type level; this asserts the VALUES, so a kind added
   // with a copy-pasted contract it does not want is visible here rather than in a verdict.
   for (const kind of TASK_KINDS) {
     const contract = taskCompletionContract(kind);
-    if (kind === "ship" || kind === "bugfix") {
+    if (kind === "ship" || kind === "bugfix" || kind === "document") {
       assert.ok(contract, "a ship task has a deferred post-completion boundary");
       assert.equal(contract.kind, kind);
       assert.ok(contract.complete.length > 0);
@@ -176,7 +176,7 @@ test("a caller that supplies no contract gets the prompt it always got", () => {
 });
 
 test("no other task kind's delivery gains a completion boundary it did not ask for", () => {
-  for (const kind of TASK_KINDS.filter((k): k is TaskKind => k !== "ship" && k !== "bugfix")) {
+  for (const kind of TASK_KINDS.filter((k): k is TaskKind => k !== "ship" && k !== "bugfix" && k !== "document")) {
     const contract = taskCompletionContract(kind);
     assert.equal(contract, null);
     const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));

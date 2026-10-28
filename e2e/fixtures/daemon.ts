@@ -145,6 +145,8 @@ export interface DaemonHandle {
    * organization no longer manages.
    */
   restart(envChanges?: Record<string, string | undefined>): Promise<void>;
+  /** After crash(), let a desktop fixture own this same isolated daemon via utilityProcess. */
+  desktopLaunchConfig(): { entry: string; env: Record<string, string> };
   stop(): Promise<void>;
 }
 
@@ -413,7 +415,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
-    MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
+    // A later Vite build clears dist/web. Existing pages must keep the assets named
+    // by the index they already received, even if another command rebuilds the checkout.
+    MISSION_WEB_DIR: process.env.MC_E2E_WEB_SNAPSHOT ?? join(REPO_ROOT, "dist/web"),
     // Installer specs opt into a controllable bare `node --version`, matching upstream
     // bin/install without placing a process wrapper in front of every unrelated fixture.
     PATH:
@@ -816,6 +820,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     startForeman,
     crash,
     restart,
+    desktopLaunchConfig: () => {
+      if (!exited) throw new Error("Crash the fixture daemon before transferring its home to Electron");
+      return { entry: daemonBundle, env: Object.fromEntries(Object.entries(isolatedEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)) };
+    },
     stop,
   };
 }

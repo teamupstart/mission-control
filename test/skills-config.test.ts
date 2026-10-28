@@ -60,6 +60,24 @@ beforeEach(() => {
 
 const links = (): string[] => readdirSync(claudeSkills).sort();
 
+test("draft PR preference defaults off, persists both values, and never changes skill links or reload generation", () => {
+  assert.equal(getSkillsConfig().alwaysDraftPr, false, "legacy settings keep normal creation");
+  openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
+  assert.equal(getSkillsConfig().alwaysDraftPr, false, "new installations also default off");
+  reconcileSkills(NOW);
+  const before = getSkillsConfig();
+  const beforeLinks = links();
+  // A broken catalog must not prevent saving an independent preference.
+  rmSync(catalogDir, { recursive: true, force: true });
+  for (const alwaysDraftPr of [true, false]) {
+    const result = applySkillsConfig({ alwaysDraftPr }, NOW + 1);
+    assert.deepEqual(result.refused, []);
+    assert.equal(result.changed, false);
+    assert.deepEqual(getSkillsConfig(), { ...before, alwaysDraftPr });
+    assert.deepEqual(links(), beforeLinks);
+  }
+});
+
 test("new and upgraded settings exclude HTML; changing the preference never reconciles skill links", () => {
   openDb().exec("DELETE FROM app_config WHERE key = 'skills'");
   assert.equal(getSkillsConfig().commitPlanHtml, false);
@@ -69,7 +87,7 @@ test("new and upgraded settings exclude HTML; changing the preference never reco
   assert.equal(Object.hasOwn(JSON.parse(stored.value), "commitPlanHtml"), false, "the saved legacy record lacks the new preference");
   const before = getSkillsConfig();
   assert.equal(skillsConfigProblem(), null);
-  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, commitPlanHtml: false, planStorage: "repository" }, "parsing defaults the new preference and preserves legacy values");
+  assert.deepEqual(before, { ...legacy, defaultSkillEnabled: false, alwaysDraftPr: false, commitPlanHtml: false, planStorage: "repository" }, "parsing defaults the new preference and preserves legacy values");
   const changed = applySkillsConfig({ commitPlanHtml: true }, NOW);
   assert.equal(changed.config.commitPlanHtml, true);
   assert.equal(changed.changed, false);

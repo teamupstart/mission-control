@@ -40,7 +40,7 @@ function drawer(task: Task): string {
     now: 1,
     autoBacklog: true,
     autopilot: null,
-    autopilotLaunches: true,
+    autopilotGate: "launches",
     backlogTrust: view,
     onManageTrust: noop,
     onClose: noop,

@@ -1,7 +1,20 @@
 // Paths relative to the app root. Preserve this layout in the detached directory:
 // the helper's static imports must survive both source-clone and app replacement.
 export const UPDATE_HELPER_FILES = [
+  "dist/native/state-lock.node",
   "scripts/apply-update.mjs",
+  "scripts/update-helper-runtime.mjs",
+  "scripts/update-helper-files.mjs",
+  "scripts/install-binary.mjs",
+  "scripts/binary-install-policy.mjs",
+  "scripts/install-staged-app.mjs",
+  "src/shared/binary-publisher-policy.mjs",
+  "src/shared/app-naming.mjs",
+  "src/shared/binary-distribution.mjs",
+  "src/shared/owned-runtime.mjs",
+  "src/shared/install-receipt.mjs",
+  "src/shared/harness-runtime.mjs",
+  "scripts/mac-app-lifecycle.mjs",
   "scripts/app-bundle-swap.mjs",
   "scripts/update-lock.mjs",
   "scripts/install-migration.mjs",

@@ -147,7 +147,7 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await expect(page.locator(".pulse .pulse-seg")).toHaveCount(4);
   await expect(
     page
-      .getByRole("button", { name: "Foreman - the auto-responder (dry-run)" })
+      .getByRole("button", { name: "Foreman - the auto-responder (live)" })
       .locator(".ghost-badge"),
   ).toHaveText("1");
 

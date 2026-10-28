@@ -19,9 +19,10 @@
  * it runs in when `--repo` is omitted - so a second, drifting copy is a trust hole rather
  * than a duplication smell. Not user-configurable.
  */
+import { BINARY_REPO, validateBinaryProvenance } from "./binary-distribution.mjs";
 import { isCommitSha } from "./update-source.mjs";
 
-export const CANONICAL_REPO = "teamupstart/mission-control";
+export const CANONICAL_REPO = BINARY_REPO;
 export const FORMER_CANONICAL_REPO = "mancej-cyc/ai-harness";
 
 /** Whether a receipt came from the current canonical repository or its exact former slug. */
@@ -33,7 +34,7 @@ export function isTrustedInstallRepo(repo) {
  * Current receipt schema. Append-only: add optional fields under the same number, or
  * increment and keep accepting every earlier number.
  */
-export const INSTALL_RECEIPT_SCHEMA = 1;
+export const INSTALL_RECEIPT_SCHEMA = 2;
 
 /**
  * Where a managed install was deliberately put, when anyone deliberately chose.
@@ -103,7 +104,16 @@ export function validateReceipt(value) {
   ) {
     return `receipt installScope is not one of ${INSTALL_SCOPES.join(", ")}`;
   }
-  if (!isAbsolutePosixPath(receipt.sourceClone)) {
+  if (schema === 1 && receipt.kind !== undefined && receipt.kind !== 'source') return 'schema 1 is a legacy source receipt';
+  if (schema === 2 && !['source', 'binary'].includes(receipt.kind)) return "receipt kind must be source or binary";
+  if (receipt.schema === 2 && receipt.kind === 'binary') {
+    if (receipt.sourceClone !== undefined) return "binary receipt must not invent a sourceClone";
+    const problem = validateBinaryProvenance(receipt.provenance);
+    if (problem) return problem;
+    const manifest = receipt.provenance.manifest;
+    if (receipt.repo !== manifest.repo || receipt.releaseTag !== manifest.releaseTag ||
+      receipt.installedCommit !== manifest.commit || receipt.installedVersion !== manifest.version) return "binary receipt identity disagrees with provenance";
+  } else if (!isAbsolutePosixPath(receipt.sourceClone)) {
     return "receipt sourceClone is not an absolute path";
   }
   if (!isAbsolutePosixPath(receipt.appPath)) return "receipt appPath is not an absolute path";

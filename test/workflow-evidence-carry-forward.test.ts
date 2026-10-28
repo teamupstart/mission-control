@@ -2832,6 +2832,25 @@ test("v8 coverage staging migration preserves registrations and permits retained
       PRAGMA user_version = 8;`);
     const old = db.prepare("SELECT * FROM workflow_evidence_coverage_staging").all();
     const frozen = store.listSubmissionCoverage(`${runId}-parent`);
+    const exec = db.exec.bind(db);
+    let interrupted = false;
+    db.exec = (sql: string) => {
+      const rename = sql.indexOf("ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME");
+      if (rename !== -1) {
+        exec(sql.slice(0, rename));
+        interrupted = true;
+        throw new Error("interrupted coverage staging rebuild");
+      }
+      return exec(sql);
+    };
+    try {
+      assert.throws(() => upgradeDatabaseToCurrentSchema(db), /interrupted coverage staging rebuild/);
+    } finally { db.exec = exec; }
+    assert.equal(interrupted, true, "the failure occurs after dropping the old table and before renaming its replacement");
+    assert.deepEqual(db.prepare("SELECT * FROM workflow_evidence_coverage_staging").all(), old,
+      "interruption rolls back the drop and preserves every staged registration");
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'workflow_evidence_coverage_staging_versioned'").get(), undefined);
+    assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 8);
     upgradeDatabaseToCurrentSchema(db);
     assert.deepEqual(db.prepare("SELECT * FROM workflow_evidence_coverage_staging").all().map(row => ({ ...row })),
       old.map(row => ({ ...row, is_current: 1 })));

@@ -3354,23 +3354,30 @@ function migrate(d: DatabaseSync): void {
   // Replace the table's inline uniqueness constraint with a current-registration index.
   if (!(d.prepare("PRAGMA table_info(workflow_evidence_coverage_staging)").all() as Array<{ name: string }>)
     .some(column => column.name === "is_current")) {
-    d.exec(`
-      CREATE TABLE workflow_evidence_coverage_staging_versioned (
-        id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_criterion_id TEXT NOT NULL,
-        criterion TEXT NOT NULL, criterion_id TEXT, proof_class TEXT NOT NULL,
-        repository_scope TEXT NOT NULL, source_root TEXT NOT NULL, links_json TEXT NOT NULL,
-        episode_key TEXT, generation INTEGER NOT NULL, state TEXT NOT NULL,
-        reserved_group_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        is_current INTEGER NOT NULL DEFAULT 1
-      );
-      INSERT INTO workflow_evidence_coverage_staging_versioned
-        SELECT id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
-          repository_scope, source_root, links_json, episode_key, generation, state,
-          reserved_group_key, created_at, updated_at, 1
-        FROM workflow_evidence_coverage_staging;
-      DROP TABLE workflow_evidence_coverage_staging;
-      ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME TO workflow_evidence_coverage_staging;
-    `);
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE workflow_evidence_coverage_staging_versioned (
+          id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_criterion_id TEXT NOT NULL,
+          criterion TEXT NOT NULL, criterion_id TEXT, proof_class TEXT NOT NULL,
+          repository_scope TEXT NOT NULL, source_root TEXT NOT NULL, links_json TEXT NOT NULL,
+          episode_key TEXT, generation INTEGER NOT NULL, state TEXT NOT NULL,
+          reserved_group_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          is_current INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO workflow_evidence_coverage_staging_versioned
+          SELECT id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+            repository_scope, source_root, links_json, episode_key, generation, state,
+            reserved_group_key, created_at, updated_at, 1
+          FROM workflow_evidence_coverage_staging;
+        DROP TABLE workflow_evidence_coverage_staging;
+        ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME TO workflow_evidence_coverage_staging;
+      `);
+      d.exec("COMMIT;");
+    } catch (error) {
+      d.exec("ROLLBACK;");
+      throw error;
+    }
   }
   d.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_coverage_current

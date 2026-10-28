@@ -32,6 +32,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "iterm",
   "herdr",
   "node-runtime",
+  "pi-otel",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -225,6 +226,13 @@ export interface SetupDependencyInfo {
   remedy: SetupRemedy;
 }
 
+/** The supported optional Pi telemetry package, owned and published by pi-buildout. */
+export const PI_OTEL_PACKAGE = {
+  name: "@upstart/pi-router-otel",
+  version: "0.1.1-alpha.4",
+  entry: "dist/extensions/otel/src/index.ts",
+} as const;
+
 /** Every dependency's pure metadata, exhaustively keyed by its append-only id. */
 export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInfo> = {
   "claude-cli": {
@@ -401,6 +409,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       kind: "command",
       argv: ["brew", "install", "node"],
       note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
+    },
+  },
+  "pi-otel": {
+    id: "pi-otel",
+    label: "Pi OpenTelemetry extension",
+    family: "agents",
+    requirement: "optional",
+    enables: `Optional add-on for Pi: pi install npm:${PI_OTEL_PACKAGE.name}@${PI_OTEL_PACKAGE.version}. Requires Upstart CodeArtifact access and also loads the Pi router. Its default sends full prompt and tool content to the corporate staging gateway. Mission Control never installs it automatically; Pi works without it.`,
+    remedy: {
+      kind: "link",
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/pi-telemetry.md",
+      label: "Install Pi telemetry (CodeArtifact)",
     },
   },
 };

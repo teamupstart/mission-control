@@ -92,7 +92,9 @@ Why Pi is not plumbed: Pi's SDK runs inside the daemon process. Its OTel extensi
 `~/.pi/agent/settings.json`, the project's `.pi/settings.json` and the daemon's `process.env`,
 and keeps one OTel runtime per process. There is no per-session input. Mutating the daemon
 environment or the operator's settings file would change every Pi session at once, so Pi keeps
-whatever its installed extension is configured to do.
+whatever its installed extension is configured to do. The optional
+[Pi telemetry Setup item](pi-telemetry.md) provides installation guidance and a read-only check;
+it neither installs the package automatically nor changes per-session routing.
 
 ## When a managed policy wins
 

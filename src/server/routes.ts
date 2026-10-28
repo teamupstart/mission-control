@@ -391,6 +391,7 @@ import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
+import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import {
   DEFAULT_SETUP_INSTALL_CATALOG,
@@ -7833,6 +7834,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // only retires acknowledgements for rows the fresh result proved repaired or removed.
   app.get("/api/setup/checks", async (c) =>
     c.json(setupSnapshots.issue(await setupChecksView(setupDeps ?? defaultSetupDeps()))));
+
+  // Pi's independently launched CLI asks the serving daemon which runtime owns our bridge.
+  app.get("/api/integrations/runtime", (c) => c.json(currentOwnedRuntime()));
   // The same resource path as the read, so dismissal adds no second setup read or endpoint.
   // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
   // probes, and any install behavior remain completely outside this write.

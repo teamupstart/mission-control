@@ -808,6 +808,22 @@ await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+// The optional wrapper ships under dist/**/*, alongside the other satellites.
+if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");
+else {
+  const env = {...process.env, MISSION_HOME: await mkdtemp(join(tmpdir(), "mission-statusline-smoke-")), MISSION_HEADLESS:"1"};
+  delete env.MISSION_STATUSLINE_INNER;
+  try {
+    const child = spawn(process.execPath, [resolve("dist/satellites/harness-statusline.mjs")], {env, stdio:["pipe","pipe","pipe"]});
+    child.stdin.on("error", () => {});
+    child.stdin.end("{}");
+    const timer = setTimeout(() => child.kill("SIGKILL"), BOOT_TIMEOUT_MS);
+    const code = await new Promise((done) => {child.once("error",()=>done(1)); child.once("exit",done);});
+    clearTimeout(timer);
+    if (code !== 0) fail("the shipped statusline wrapper did not start");
+    else console.log("[smoke] shipped statusline wrapper executes without an implicit third-party command");
+  } finally { await rm(env.MISSION_HOME, {recursive:true,force:true}); }
+}
 await smokePiSdkBundle();
 await smokeMermaidRenderer();
 if (process.exitCode) process.exit(process.exitCode);

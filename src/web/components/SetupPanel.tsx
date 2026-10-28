@@ -58,6 +58,22 @@ function CopyCommand({ argv, note }: { argv: readonly string[]; note: string }):
   );
 }
 
+function OwnedIntegrationRepair(): React.JSX.Element | null {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ok: boolean; message: string} | null>(null);
+  if (typeof window === "undefined" || !window.missionDesktop?.installIntegrations) return null;
+  return <div className="setup-row" aria-label="Mission-owned integrations">
+    <p className="setup-impact">Install or repair Mission hooks and MCP with the app runtime. Existing Mission statusline wrappers keep their saved command; independent tools keep their own prerequisites.</p>
+    <button type="button" className="btn" disabled={busy} onClick={async () => {
+      setBusy(true);
+      try { setResult(await window.missionDesktop!.installIntegrations()); }
+      catch { setResult({ok:false, message:"Integration repair could not finish. Check the app log and retry."}); }
+      finally { setBusy(false); }
+    }}>{busy ? "Repairing..." : "Install Claude integrations"}</button>
+    {result && <p role="status" className={result.ok ? "setup-impact" : "settings-error"}>{result.message}</p>}
+  </div>;
+}
+
 interface TerminalChoice {
   targets: TerminalTargetView[] | null;
   failed: boolean;
@@ -607,6 +623,7 @@ function SetupRow({
           {status.state !== "missing" && status.evidence && (
             <Evidence evidence={status.evidence} home={home} />
           )}
+          {status.state !== "missing" && status.source && <p className="setup-source">Source: {status.source}</p>}
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
@@ -952,12 +969,29 @@ export function SetupPanel({
             <h3 id={`setup-family-${active}-title`}>{info.label}</h3>
             <p>{info.description}</p>
           </header>
+          {active === "runtime" && (
+            <div className="setup-row" aria-label="Serving runtime">
+              <div className="setup-row-main">
+                <strong>{state.view?.runtime?.origin === "bundled" ? "App-owned Electron runtime"
+                  : state.view?.runtime?.origin === "standalone" ? "Standalone Node.js"
+                    : state.view?.runtime?.origin === "electron-development" ? "Development Electron runtime"
+                      : "Serving runtime unknown"}</strong>
+                <p>{state.view?.runtime
+                  ? `Node.js ${state.view.runtime.node}${state.view.runtime.electron ? ` · Electron ${state.view.runtime.electron}` : ""}`
+                  : "This daemon does not report its runtime. Reconnect after upgrading to inspect it."}</p>
+                {state.view?.runtime && <Evidence evidence={state.view.runtime.executable} home={home} />}
+                <p>{state.view?.runtime?.origin === "bundled"
+                  ? "Electron includes Node. Desktop installation, binary updates and Mission-owned tools do not need a system Node installation."
+                  : "Source development requires Node.js 24+. A standalone daemon keeps its own runtime even when adopted by the desktop app."}</p>
+              </div>
+            </div>
+          )}
           {active === "extensions" && (
-            <PiExtensionInstall
+            <><OwnedIntegrationRepair /><PiExtensionInstall
               available={state.view?.piExtensionInstallAvailable ?? false}
               warning={rows.some(row => row.rowId.source === "environment-check" && row.rowId.id === "pi-extension")}
               onInstalled={onRepaired}
-            />
+            /></>
           )}
           {/* One sentence for the whole family: the choosers share one hook, so a refusal
               printed per row would repeat itself on every multiplexer. */}

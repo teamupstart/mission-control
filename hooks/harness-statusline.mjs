@@ -5,7 +5,7 @@
 // JSON payload on stdin (model, context window, reasoning effort, thinking). This
 // wrapper lifts the fields we care about, POSTs them to the daemon (which is the
 // authoritative, live source for the card's model / thinking / context %), and
-// then DELEGATES to the user's real status line (ccstatusline by default) so what
+// then DELEGATES to the user's saved status line so what
 // the terminal shows is byte-for-byte unchanged.
 //
 // Contract: print ONLY the inner command's stdout (Claude renders it verbatim),
@@ -19,9 +19,6 @@ import { BASE_URL, readClientToken, stateDir } from "../src/shared/harness-runti
 // The payload -> wire-shape normalization, in its own module so it can be tested without
 // importing this script (which renders and exits at import time). See statusline-body.mjs.
 import { toBody } from "./statusline-body.mjs";
-
-/** Default inner status line when the user hasn't recorded their own. */
-const DEFAULT_INNER = "npx -y ccstatusline@latest";
 
 /** Collect all of stdin as a string (the raw payload we also re-feed the inner cmd). */
 function readStdin() {
@@ -39,7 +36,7 @@ function readStdin() {
 /**
  * The inner status line command to delegate to: an explicit override, else the
  * command the installer recorded when it wrapped the user's existing one, else
- * ccstatusline. Read fresh each render so uninstalling/re-pointing takes effect.
+ * no inner command. Read fresh each render so uninstalling/re-pointing takes effect.
  */
 function innerCommand() {
   const override = process.env.MISSION_STATUSLINE_INNER;
@@ -50,7 +47,7 @@ function innerCommand() {
   } catch {
     // none recorded - fall through to the default
   }
-  return DEFAULT_INNER;
+  return null;
 }
 
 /** Fire-and-forget POST of the reading to the daemon; never throws, self-limits. */
@@ -73,12 +70,16 @@ async function post(body) {
 
 /** Run the inner status line with the same stdin, streaming its stdout to ours. */
 function runInner(raw) {
+  const command = innerCommand();
+  if (!command) return Promise.resolve();
   return new Promise((resolve) => {
     let child;
     try {
       // shell:true so an arbitrary recorded command (with args/pipes) runs exactly
       // as Claude would have run it. stdout/stderr inherit -> straight to Claude.
-      child = spawn(innerCommand(), { shell: true, stdio: ["pipe", "inherit", "inherit"] });
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      child = spawn(command, { shell: true, env, stdio: ["pipe", "inherit", "inherit"] });
     } catch {
       return resolve();
     }

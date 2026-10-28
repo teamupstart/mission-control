@@ -46,7 +46,7 @@
     "demo": "node scripts/demo/launch.mjs",
     "docs:screenshots": "node scripts/docs-screenshots.mjs",
     "docs:embed": "node scripts/embed-guide-images.mjs",
-    "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
+    "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs && esbuild hooks/harness-statusline.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/harness-statusline.mjs",
     "build:codex-hook": "esbuild hooks/codex-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/codex-hook.mjs",
     "package": "npm run build && electron-builder --mac --publish never",
     "package:distribution": "node scripts/package-distribution.mjs",

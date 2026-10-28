@@ -41,6 +41,7 @@ import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
+import { servingRuntime } from "../owned-runtime.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -141,6 +142,7 @@ async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
   const version = result.stdout.trim();
   if (result.outcomeUnknown || result.overflowed || result.code !== 0 || !/^\d+\.\d+\.\d+$/.test(version)) {
     return {
+      ...status,
       state: "unknown",
       why: `Mission Control could not verify the selected Node.js version. ${guidance}`,
       evidence: status.evidence,
@@ -148,8 +150,9 @@ async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
   }
   if (nodePrerequisiteMessage(version)) {
     return {
+      ...status,
       state: "needs-setup",
-      why: `Node.js ${version} is too old; Mission Control requires Node.js ${MIN_NODE_MAJOR} or newer. ${guidance}`,
+      why: `Node.js ${version} is too old for source development, which requires Node.js ${MIN_NODE_MAJOR} or newer. Independent tools have their own version requirements. ${guidance}`,
       evidence: status.evidence,
     };
   }
@@ -353,6 +356,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     executableDiagnostic: async (id) => {
@@ -437,6 +441,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    ...(deps.runtime ? { runtime: deps.runtime() } : {}),
     piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
     piExtensionInstallAvailable: (deps.canInstallPiExtension?.() ?? false) && environment.find((check) => check.id === "pi-extension")?.ready !== true,
     piExtensionReady:

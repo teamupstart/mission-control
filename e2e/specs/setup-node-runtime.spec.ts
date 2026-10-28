@@ -65,3 +65,47 @@ test("Setup detects old, missing and invalid Node and runs the repair through th
   await expect(row.getByRole("button", { name: "Run in a terminal" })).toHaveCount(0);
   await capture("ready.png");
 });
+
+test("external Node is feature-scoped while Setup reports the serving daemon", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "runtime");
+  const row = setupRow(page, "dependency-node-runtime");
+  await expect(row).toContainText("optional");
+  await expect(row).toContainText("source development");
+  await expect(page.getByLabel("Serving runtime")).toContainText("Standalone Node.js");
+  const checks = await (await page.request.get(`${daemon.baseURL}/api/setup/checks`)).json();
+  expect(checks.banner.attentionRowIds).not.toContainEqual({ source: "dependency", id: "node-runtime" });
+});
+
+for (const origin of ["bundled", "standalone", "unknown"] as const) {
+  test(`desktop window reports ${origin} daemon truth with old or missing host Node`, async ({ page, daemon, selectedNode }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "missionDesktop", {value:{isDesktop:true,onOpenSettings:()=>()=>{}}});
+    });
+    await page.route("**/api/setup/checks", async route => {
+      const response = await route.fetch();
+      const view = await response.json();
+      if (origin === "bundled") view.runtime = {origin, node:"24.21.0",electron:"43.7.7",executable:"/Applications/Agent Mission Control.app/Contents/MacOS/Mission Control"};
+      if (origin === "unknown") delete view.runtime;
+      await route.fulfill({response,json:view});
+    });
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "runtime");
+    const label = origin === "bundled" ? "App-owned Electron runtime" : origin === "standalone" ? "Standalone Node.js" : "Serving runtime unknown";
+    await expect(page.getByLabel("Serving runtime")).toContainText(label);
+    const row = setupRow(page,"dependency-node-runtime");
+    await expect(row).toContainText("optional");
+    await rm(selectedNode.path);
+    await page.getByRole("button",{name:"Re-check"}).click();
+    await expect(row).toContainText("Node.js could not be found");
+    await expect(page.getByLabel("Serving runtime")).toContainText(label);
+    if (origin === "bundled" && process.env.MC_E2E_EVIDENCE === "1") {
+      await mkdir("e2e/.artifacts/setup-node-runtime",{recursive:true});
+      for (const colorScheme of ["light","dark"] as const) {
+        await page.emulateMedia({colorScheme});
+        await page.mouse.move(1,1);
+        await page.screenshot({path:`e2e/.artifacts/setup-node-runtime/bundled-${colorScheme}.png`,fullPage:true});
+      }
+    }
+  });
+}

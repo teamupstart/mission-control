@@ -840,3 +840,10 @@ fixture and browser results do not establish the remaining operating-system beha
 New ZIP and DMG packages contain Agent Mission Control.app. The executable, bundle identifier
 and state home retain their existing identities. See [app-name migration](app-name-migration.md)
 for the source-update bridge, legacy/bootstrap compatibility, same-folder transaction and recovery.
+
+## Owned integration runtimes
+
+Electron's embedded Node runs shipped Mission hooks, MCP, statusline wrappers, Pi installation
+checks and resume guards. **Settings > Setup > Runtime** reports the serving daemon rather than
+inferring ownership from the connected window. External Node is an optional source/tool check.
+See the [consumer inventory, repair behavior and R2 checklist](owned-runtimes.md).

@@ -8,7 +8,7 @@ import { publishIntegrationText, verifyIntegrationBackups } from "./migration-in
 export interface Registration { command: string; args: string[]; env?: Record<string, string> }
 export interface HookEntry { path: (string | number)[]; command: string }
 export interface HookSnapshot { entries: HookEntry[]; revision: string }
-export interface McpSnapshot { registration: Registration | null; revision: string }
+export interface McpSnapshot { registration: Registration | null; revision: string; present?: boolean }
 export interface MigrationConfigPort {
   readHooks(nonce?: string): HookSnapshot;
   writeHooks(nonce: string, before: HookSnapshot, edits: {path: (string | number)[]; value: string}[]): HookSnapshot;
@@ -57,6 +57,16 @@ function editJsonc(path: string, nonce: string, original: string, edits: {path: 
   publishIntegrationText(path, nonce, original, text);
 }
 
+/** Shared surgical writer for installation and relocation, including first creation. */
+export function editIntegrationSettings(home: string, nonce: string, transform: (original: string) => string): void {
+  const path = integrationFile(home, ".claude/settings.json");
+  verifyIntegrationBackups(path, nonce);
+  const config = jsonc(path);
+  const original = config.revision === "missing" ? "" : config.text;
+  const text = transform(original);
+  if (text !== original) publishIntegrationText(path, nonce, original, text);
+}
+
 function registration(value: unknown): Registration | null {
   if (!value || typeof value !== "object") return null;
   const r = value as Record<string, unknown>;
@@ -74,7 +84,7 @@ function readMcp(spec: McpSpec, ports: ConfigEnvironment): McpSnapshot {
     revision = config.revision;
     const servers = config.value[spec.migration.key] as Record<string, unknown> | undefined;
     raw = servers?.[spec.serverName];
-    if (raw && typeof raw === "object" && "enabled" in raw && raw.enabled === false) return {registration: null, revision};
+    if (raw && typeof raw === "object" && "enabled" in raw && raw.enabled === false) return {registration: null, revision, present: true};
   } else {
     const configuredHome = ports.environment?.[spec.migration.homeVariable];
     if (configuredHome && resolve(configuredHome) !== dirname(join(ports.home, spec.migration.homeFile))) throw new Error("MCP uses a custom configuration home. Retarget that registration manually before migrating; its files were preserved.");
@@ -89,10 +99,10 @@ function readMcp(spec: McpSpec, ports: ConfigEnvironment): McpSnapshot {
     const entry = matches[0];
     // The file identity binds the CLI snapshot without hashing credential values.
     if (fileRevision(path) !== revision) throw new Error("MCP configuration changed while its CLI was reading it. Retry repair.");
-    if (entry?.enabled === false) return {registration: null, revision};
-    return {registration: registration(entry?.transport), revision};
+    if (entry?.enabled === false) return {registration: null, revision, present: true};
+    return {registration: registration(entry?.transport), revision, ...(entry ? {present: true} : {})};
   }
-  return {registration: registration(raw), revision};
+  return {registration: registration(raw), revision, ...(raw !== undefined ? {present: true} : {})};
 }
 
 /** The supported CLI writes ordinary TOML tables. Edit just its named table and env
@@ -108,6 +118,7 @@ function retargetMcpToml(path: string, nonce: string, name: string, before: Regi
     ...Object.entries(before.env ?? {}).map(([key, value]): [string, {before: unknown; after: unknown}] => [`env:${key}`, {before: value, after: desired.env![key]}]),
   ];
   const changes = new Map(candidates.filter(([, change]) => JSON.stringify(change.before) !== JSON.stringify(change.after)));
+  const addedEnv = Object.entries(desired.env ?? {}).filter(([key]) => before.env?.[key] === undefined);
   const changed = new Set<string>();
   const lines = original.split(/(?<=\n)/).map((line) => {
     const table = /^\s*\[([^\]\n]+)\]\s*(?:#.*)?(?:\r?\n)?$/.exec(line);
@@ -118,6 +129,9 @@ function retargetMcpToml(path: string, nonce: string, name: string, before: Regi
       return line;
     }
     if (!tableKind) return line;
+    if (tableKind === "main" && addedEnv.length && /^\s*(?:env|"env"|'env')\s*=/.test(line)) {
+      throw new Error("This MCP registration uses custom inline TOML environment syntax. Retarget it manually; its settings were preserved.");
+    }
     // Accept the CLI's ordinary one-line strings/arrays. Unsupported TOML is left
     // untouched instead of replacing path-shaped text in comments or custom options.
     const entry = /^(\s*([\w-]+|"[^"\n]+"|'[^'\n]+')\s*=\s*)("(?:[^"\\]|\\.)*"|'[^'\n]*'|\[(?:[^\]"\n]|"(?:[^"\\]|\\.)*")*\])(\s*(?:#.*)?(?:\r?\n)?)$/.exec(line);
@@ -133,6 +147,19 @@ function retargetMcpToml(path: string, nonce: string, name: string, before: Regi
     changed.add(key);
     return `${entry[1]}${JSON.stringify(change.after)}${entry[4]}`;
   });
+  if (addedEnv.length) {
+    const envHeaders = lines.flatMap((line, index) => [...names].some(n =>
+      new RegExp(`^\\s*\\[mcp_servers\\.${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.env\\]\\s*(?:#.*)?(?:\\r?\\n)?$`).test(line)) ? [index] : []);
+    if (envHeaders.length > 1) throw new Error("Duplicate MCP environment tables require manual reconciliation.");
+    const eol = original.includes("\r\n") ? "\r\n" : "\n";
+    const added = addedEnv.map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}${eol}`).join("");
+    if (envHeaders.length) {
+      const header = envHeaders[0]!;
+      if (!lines[header]!.endsWith("\n")) lines[header] += eol;
+      lines.splice(header + 1, 0, added);
+    }
+    else lines.push(`${eol}[mcp_servers.${JSON.stringify(name)}.env]${eol}${added}`);
+  }
   const text = lines.join("");
   if (changed.size !== changes.size || text === original) throw new Error("This MCP registration uses custom TOML syntax. Retarget its Mission Control paths manually; its settings were preserved.");
   publishIntegrationText(path, nonce, original, text);
@@ -180,7 +207,11 @@ export function createMigrationConfigPort(ports: ConfigEnvironment): MigrationCo
         const config = jsonc(path);
         if (config.revision !== before.revision) throw new Error("The MCP registration changed during repair. Your edit was preserved.");
         const base = [spec.migration.key, spec.serverName];
-        editJsonc(path, nonce, config.text, Object.entries(desired).map(([key, value]) => ({path: [...base, key], value})));
+        editJsonc(path, nonce, config.text, [
+          {path: [...base, "command"], value: desired.command},
+          {path: [...base, "args"], value: desired.args},
+          ...Object.entries(desired.env ?? {}).map(([key, value]) => ({path: [...base, "env", key], value})),
+        ]);
       } else {
         retargetMcpToml(path, nonce, spec.serverName, before.registration, desired, before.revision);
       }

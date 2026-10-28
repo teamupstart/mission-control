@@ -166,6 +166,8 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await expect(delegatedTurn).toBeVisible();
       await expect(delegatedTurn).toContainText("Delegated session");
       await expect(delegatedTurn).toContainText("from Controller");
+      // Hovering the sender reveals which session sent it, in both renderings.
+      await expect(delegatedTurn.getByText("from Controller", { exact: true })).toHaveAccessibleDescription(`Sent by session ${controller.id}`);
       await expect(delegatedTurn.getByText("Delegated session", { exact: true })).toHaveCSS("color", "rgb(219, 97, 162)");
       // The operator's own launch request is in the same log; the two bubbles must differ.
       const bubbleColor = (turn: typeof delegatedTurn, text: string | RegExp) =>
@@ -183,7 +185,11 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await dashboard.reload();
       await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
       const delegatedEntry = dashboard.getByRole("article", { name: "Delegated session from Controller", exact: true }).first();
-      await expect(delegatedEntry.getByText("Controller@session", { exact: true })).toHaveCSS("color", "rgb(219, 97, 162)");
+      const terminalHost = delegatedEntry.getByText("Controller@session", { exact: true });
+      await expect(terminalHost).toHaveCSS("color", "rgb(219, 97, 162)");
+      await expect(terminalHost).toHaveAccessibleDescription(`Sent by session ${controller.id}`);
+      await terminalHost.hover();
+      await expect(dashboard.locator(".tooltip")).toHaveText(`Sent by session ${controller.id}`);
       if (process.env.MC_E2E_EVIDENCE === "1") {
         await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-message-terminal.png") });
       }

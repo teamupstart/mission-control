@@ -2024,7 +2024,14 @@ function TerminalTurn({
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
-          <span className="pty-host">{host}</span>
+          {/* A delegated host names the sending session; hover it for that session's id. */}
+          {delegated && m.originSession ? (
+            <Tooltip label={`Sent by session ${m.originSession.id}`}>
+              <span className="pty-host">{host}</span>
+            </Tooltip>
+          ) : (
+            <span className="pty-host">{host}</span>
+          )}
           {/* `~/leaf` is the shell's own shorthand and the shape the mockup drew, which
               means it is short by leaving something out. The whole path is one hover
               away, so the abbreviation never has to be taken at face value. Rendered

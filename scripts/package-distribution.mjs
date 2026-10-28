@@ -9,6 +9,8 @@ import { readVersions } from './assert-release-version.mjs';
 import { inspectBundle } from './install-staged-app.mjs';
 import { verifyDistributionApp, verifyDistributionDmg, verifyDistributionArchives } from './verify-distribution.mjs';
 import { qualifySignedRuntime } from './qualify-signed-runtime.mjs';
+import { distributionStages, distributionFailure, preserveFailureExit } from './distribution-diagnostics.mjs';
+import { notarizeDistribution } from './notarize-distribution.mjs';
 
 export function distributionCredentials(env, policy) {
   if (!env.CSC_NAME || !env.CSC_NAME.endsWith(`(${policy.teamId})`) || !env.CSC_NAME.startsWith('Developer ID Application: ')) {
@@ -27,11 +29,13 @@ export function distributionBuilderConfig(metadata, identity, output) {
     extraMetadata: {missionCommit: metadata.commit, missionBinary: metadata},
     electronFuses: {runAsNode: true, enableNodeOptionsEnvironmentVariable: false,
       enableNodeCliInspectArguments: false, onlyLoadAppFromAsar: false},
-    mac: {identity: identity.replace(/^Developer ID Application: /, ''), hardenedRuntime: true, notarize: true, minimumSystemVersion: metadata.minimumSystemVersion},
+    // Notarization has its own mandatory stages below, with observable tool status.
+    mac: {identity: identity.replace(/^Developer ID Application: /, ''), hardenedRuntime: true, notarize: false, minimumSystemVersion: metadata.minimumSystemVersion},
     dmg: {sign: true, writeUpdateInfo: false, artifactName: distributionNames(metadata).dmg}};
 }
 
 export async function packageDistribution({repoRoot = process.cwd(), env = process.env} = {}) {
+  const stages = distributionStages();
   const policy = binaryPublisherPolicy();
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Distribution requires a macOS arm64 builder');
   const credentials = distributionCredentials(env, policy);
@@ -46,45 +50,64 @@ export async function packageDistribution({repoRoot = process.cwd(), env = proce
   // Retrying publication uses the retained bytes. Rebuilding signed/timestamped
   // archives is not a reproducible-byte retry and must never silently replace them.
   if (existsSync(output)) throw new Error('Distribution output already exists; publish its original bytes or use a fresh checkout');
-  execFileSync('npm', ['run', 'build'], {cwd: repoRoot, stdio: 'inherit', env});
-  const {build, Platform, Arch} = await import('electron-builder');
+  // Compilation needs no signing credentials and its inherited output is public.
+  const buildEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(CSC_|APPLE_|GH_|GITHUB_TOKEN)/.test(key)));
+  await stages.run('build', () => execFileSync('npm', ['run', 'build'], {cwd: repoRoot, stdio: 'inherit', env: buildEnv}));
+  const {build, Platform, Arch} = await stages.run('build', () => import('electron-builder'));
+  const {log} = await import('builder-util');
+  // Builder can log credential-bearing error objects during retries before it
+  // rejects. Its raw logger is not a diagnostic boundary. Emit our stage markers
+  // and project the final rejection instead; DEBUG is disabled at the CLI entry.
+  const buildQuietly = async (options) => {
+    const stream = log.stream;
+    log.stream = {write: () => true};
+    try { return await build(options); } finally { log.stream = stream; }
+  };
   const config = distributionBuilderConfig(metadata, env.CSC_NAME, output);
-  await build({targets: Platform.MAC.createTarget(['dir'], Arch.arm64), config, publish: 'never'});
+  await stages.run('build', () => buildQuietly({targets: Platform.MAC.createTarget(['dir'], Arch.arm64),
+    config: {...config, afterPack: () => stages.enter('sign')}, publish: 'never'}));
   const app = join(output, 'mac-arm64', binaryBundleName(metadata));
-  await verifyDistributionApp(app, metadata, policy);
-  await qualifySignedRuntime(app, metadata, policy);
-  const before = inspectBundle(app);
+  await stages.run('notarize (app)', () => notarizeDistribution(app, credentials, {env}));
+  await stages.run('verifyDistributionApp', () => verifyDistributionApp(app, metadata, policy));
+  await stages.run('qualifySignedRuntime', () => qualifySignedRuntime(app, metadata, policy));
+  const before = await stages.run('archive verification', () => inspectBundle(app));
   // --prepackaged does not package/sign the app again. Both archives use these bytes.
-  await build({targets: Platform.MAC.createTarget(['dmg'], Arch.arm64), prepackaged: app, config, publish: 'never'});
+  await stages.run('dmg build', () => buildQuietly({targets: Platform.MAC.createTarget(['dmg'], Arch.arm64), prepackaged: app, config, publish: 'never'}));
   const names = distributionNames(metadata);
   const dmg = join(output, names.dmg);
-  const {notarize} = await import('@electron/notarize');
-  await notarize({appPath: dmg, ...credentials});
-  verifyDistributionDmg(dmg, policy);
-  if (inspectBundle(app).digest !== before.digest) throw new Error('The signed app changed during archive generation');
-  execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, join(output, names['app-zip'])], {timeout: 10 * 60_000});
-  await verifyDistributionApp(app, metadata, policy);
+  await stages.run('notarize (dmg)', () => notarizeDistribution(dmg, credentials, {env}));
+  await stages.run('archive verification', () => {
+    verifyDistributionDmg(dmg, policy);
+    if (inspectBundle(app).digest !== before.digest) throw new Error('The signed app changed during archive generation');
+  });
+  await stages.run('ditto', () => execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, join(output, names['app-zip'])],
+    {timeout: 10 * 60_000, stdio: ['ignore', 'pipe', 'pipe']}));
+  await stages.run('verifyDistributionApp', () => verifyDistributionApp(app, metadata, policy));
   const files = Object.fromEntries(Object.entries(names).map(([kind, name]) => [kind, join(output, name)]));
-  await verifyDistributionArchives({app, files, metadata, policy});
-  const assets = await localDistributionAssets(metadata, files);
-  writeFileSync(join(output, 'build-metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
-  writeFileSync(join(output, 'qualification.json'), `${JSON.stringify({metadata, assets,
-    appDigest: before.digest, teamId: policy.teamId, notarized: true, copiedRuntime: true,
-    recovery: 'forward-only-after-receipt-commit'}, null, 2)}\n`);
+  await stages.run('archive verification', () => verifyDistributionArchives({app, files, metadata, policy}));
+  await stages.run('metadata', async () => {
+    const assets = await localDistributionAssets(metadata, files);
+    writeFileSync(join(output, 'build-metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
+    writeFileSync(join(output, 'qualification.json'), `${JSON.stringify({metadata, assets,
+      appDigest: before.digest, teamId: policy.teamId, notarized: true, copiedRuntime: true,
+      recovery: 'forward-only-after-receipt-commit'}, null, 2)}\n`);
+  });
   console.log(`Qualified ${metadata.channel} ${metadata.commit}: signed/notarized app ZIP and DMG, copied runtime and MCP handshake`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  // Builder/notarization errors can include credential arguments. Preserve only
-  // explicit preflight diagnostics; third-party failures get a bounded stage message.
+export async function runDistributionCli(produce = packageDistribution) {
   try {
     delete process.env.DEBUG;
     delete process.env.GH_DEBUG;
+    // A static dependency may already have initialized debug before env deletion.
+    const {default: debug} = await import('debug');
+    debug.disable();
     binaryPublisherPolicy();
-    await packageDistribution();
+    await produce();
   } catch (error) {
-    const approvedMessage = /^(Distribution|CSC_|APPLE_|Ambiguous|Notarization key|Workflow source)/.test(error.message);
-    console.error(approvedMessage ? error.message : 'Distribution packaging or qualification failed; no ready manifest was produced');
-    process.exitCode = 1;
+    console.error(distributionFailure(error));
+    preserveFailureExit();
   }
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await runDistributionCli();

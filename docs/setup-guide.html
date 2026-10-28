@@ -343,7 +343,7 @@
         <tbody>
           <tr>
             <td>Node.js 24 or newer</td>
-            <td>Required for source development and source updates. Signed binary installation uses the app runtime.</td>
+            <td>Required for source development and source builds. Desktop installation, binary updates and Mission-owned integrations use Electron's bundled Node. Independent tools keep their own requirements.</td>
             <td class="cmd"><code>node --version</code></td>
           </tr>
           <tr>
@@ -542,7 +542,7 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
       <p class="eyebrow">Step 5</p>
       <h2>What is necessary, and what is not</h2>
       <p class="section-note">
-        Every row says its own level. Only four things actually block work.
+        Every row says its own level. Required gaps name the work they block; external Node is optional for desktop use.
       </p>
 
       <figure>
@@ -563,7 +563,6 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
           <tr><td>GitHub CLI</td><td>No pull requests, reviews, or repository reads.</td></tr>
           <tr><td>GitHub authentication</td><td>Everything GitHub fails even with the CLI installed. Fix with <code>gh auth login</code>.</td></tr>
           <tr><td>A terminal Mission&nbsp;Control can open</td><td>Agents that run in a terminal cannot start. Any supported terminal satisfies this.</td></tr>
-          <tr><td>Node.js</td><td>App updates cannot be installed.</td></tr>
         </tbody>
       </table>
       <p>
@@ -571,6 +570,10 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         <strong>Pi extension</strong>, and the <strong>Claude Code hooks</strong>. A machine that
         never installed them never sees them.
       </p>
+
+      <h3>Runtime: bundled and external</h3>
+      <p>Electron includes Node. The installed desktop app, binary updates and Mission-owned tools do not require system Node, npm or npx. Setup identifies the serving daemon; an adopted standalone daemon retains its own runtime. External Node remains available for source development and independent tools.</p>
+      <p>In Agent extensions, <strong>Install Claude integrations</strong> installs or repairs owned hooks and MCP. Existing statusline wrappers keep their saved inner command. Custom commands retain their own prerequisites. See the <a href="owned-runtimes.md">runtime inventory and repair limits</a>.</p>
 
       <h3>Recommended: at least one agent</h3>
       <p>

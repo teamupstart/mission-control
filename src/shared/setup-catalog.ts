@@ -83,7 +83,7 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
   runtime: {
     id: "runtime",
     label: "Runtime",
-    description: "The system Node.js runtime used by app updates and Node-based tools.",
+    description: "The serving daemon and external runtimes for source development and independent tools.",
   },
 };
 
@@ -236,7 +236,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedy: {
       kind: "command",
       argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
-      note: "Install the official Claude Code npm package without sudo.",
+      note: "Install the official Claude Code npm package without sudo. This installer requires external Node and npm; native CLI installations keep their own prerequisites.",
     },
   },
   "codex-cli": {
@@ -260,7 +260,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     remedy: {
       kind: "command",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
-      note: "Install the Pi coding agent package globally.",
+      note: "Install the Pi coding agent package globally. This installer requires external Node and npm supported by Pi.",
     },
   },
   tmux: {
@@ -364,7 +364,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     label: "ai-conductor",
     family: "pipelines",
     requirement: "optional",
-    enables: "Without it, Mission Control cannot commission or observe gated ai-conductor runs.",
+    enables: "Without it, Mission Control cannot commission or observe gated ai-conductor runs. Its CLI and installer retain their own external runtime requirements.",
     remedy: { kind: "provider-installer", provider: "ai-conductor" },
   },
   iterm: {
@@ -395,8 +395,8 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     id: "node-runtime",
     label: "Node.js",
     family: "runtime",
-    requirement: "required",
-    enables: "A supported system Node.js installation is required to prepare app updates and run Node-based tools.",
+    requirement: "optional",
+    enables: "External Node.js is for source development and third-party Node tools. The installed desktop app, binary updates and Mission-owned helpers use bundled Node.",
     remedy: {
       kind: "command",
       argv: ["brew", "install", "node"],
@@ -405,11 +405,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
   },
 };
 
+export interface SetupRuntimeView {
+  origin: "bundled" | "electron-development" | "standalone";
+  executable: string;
+  node: string;
+  electron?: string;
+}
+
 export type SetupStatus =
   | { state: "satisfied"; evidence: string; source?: string }
   | { state: "missing" }
-  | { state: "needs-setup"; why: string; evidence: string | null }
-  | { state: "unknown"; why: string; evidence: string | null };
+  | { state: "needs-setup"; why: string; evidence: string | null; source?: string }
+  | { state: "unknown"; why: string; evidence: string | null; source?: string };
 
 export type SetupDerivedRowId = "terminal-pair";
 
@@ -450,6 +457,8 @@ export interface SetupRowView {
 }
 
 export interface SetupChecksView {
+  /** Absent on older daemons. Never infer a bundled runtime from the connected UI. */
+  runtime?: SetupRuntimeView;
   /** Positive readiness from Setup's Pi CLI probe; consumers do not reconstruct it from rows. */
   piCliReady?: boolean;
   /** First installation only, never a repair of an existing or enabled integration. */

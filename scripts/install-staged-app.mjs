@@ -76,7 +76,10 @@ export function verifyBinaryPublisher(bundle, publisher) {
   const assessment = spawnSync('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle],
     {encoding: 'utf8', env: {...process.env, LC_ALL: 'C'}, timeout: 30_000});
   if (assessment.error || assessment.status !== 0 || !/^source=Notarized Developer ID$/m.test(assessment.stderr)) {
-    throw new Error('The binary app did not satisfy the notarized Developer ID policy');
+    throw Object.assign(new Error('The binary app did not satisfy the notarized Developer ID policy'), {
+      command: 'spctl', status: assessment.status, signal: assessment.signal,
+      code: assessment.error?.code, stderr: assessment.stderr,
+    });
   }
 }
 

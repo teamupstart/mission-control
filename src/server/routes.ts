@@ -1,4 +1,5 @@
 import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
@@ -391,6 +392,7 @@ import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import { RepoIndexConfigPatchSchema } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
+import { currentOwnedRuntime } from "./owned-runtime.ts";
 import type { SetupDeps } from "./setup/types.ts";
 import {
   DEFAULT_SETUP_INSTALL_CATALOG,
@@ -4179,6 +4181,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           page.messages,
           resolveLaunchMarker(registry, session.id),
           (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+          { key: noteKeyFor(session), transcript: t },
         ),
       });
     }
@@ -5416,6 +5419,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (result.ok && result.pendingTurn) retainTurnOperation(result.pendingTurn.id, promptActor(origin, c.req.raw.headers));
       return c.json(result, result.ok ? 200 : 409);
     }
+    // These words may race a delegated send of the same ones; say so before they are written.
+    // An unsubmitted draft counts too: the operator's Enter turns it into a message outside
+    // Mission Control, so it stays in flight until the race window closes.
+    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, parsed.data.text);
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -5427,6 +5434,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         undefined,
         origin,
       );
+      // A driver refusal is positive evidence nothing landed, so it races nothing after all.
+      if (otherSend && sent.pasted === false) withdrawOtherSend(otherSend);
       // AFTER the delivery, because "delivered" is the only fact worth recording and it is
       // not known before. No text, no length and no draft content travels with it: the
       // question this answers is how often conversation operations land, not what they said.
@@ -5634,7 +5643,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
-    const origin = sessionControlActor(c.req.raw) ? "session" : parsed.data.origin;
+    const controller = sessionControlActor(c.req.raw)?.slice("session:".length);
+    const origin = controller ? "session" : parsed.data.origin;
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
@@ -5673,6 +5683,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
     if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
+    // The durable sender, reserved on the same terms. Named as the controller is now, so the
+    // target's log still says who sent it after that session ends or the daemon restarts.
+    // Any other sender of these words is reported first, so a race leaves both unattributed.
+    const delegatedKey = noteKeyFor(session);
+    const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
+    const otherSend = controller ? null : noteOtherSend(conversation, parsed.data.text);
+    const delegatedTurn = controller
+      ? reserveDelegatedTurn(conversation, parsed.data.text, {
+          id: controller,
+          name: registry.getSession(controller)?.name ?? controller,
+        })
+      : null;
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
@@ -5693,6 +5715,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // reopened this race on the path Foreman's recovery packets travel.
       else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
     }
+    if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
+    if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
     // The dashboard composer's real route, and the one the fleet's automation shares. Recorded
     // here rather than at the button for the reason this whole route exists: `ok` is the only
     // place delivery is actually known, and on the pane arm it is genuinely different from
@@ -7834,6 +7858,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // only retires acknowledgements for rows the fresh result proved repaired or removed.
   app.get("/api/setup/checks", async (c) =>
     c.json(setupSnapshots.issue(await setupChecksView(setupDeps ?? defaultSetupDeps()))));
+
+  // Pi's independently launched CLI asks the serving daemon which runtime owns our bridge.
+  app.get("/api/integrations/runtime", (c) => c.json(currentOwnedRuntime()));
   // The same resource path as the read, so dismissal adds no second setup read or endpoint.
   // The browser sends the required broken row ids from the snapshot it is dismissing; argv,
   // probes, and any install behavior remain completely outside this write.

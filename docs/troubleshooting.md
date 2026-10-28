@@ -67,6 +67,37 @@ installer refuses one outright for that reason. Packaged-app users press **Insta
 integrations** instead; either installer now replaces the other's entries rather than
 stacking a second bridge beside them.
 
+## An MCP server I added is missing from a dispatched Claude session
+
+A user-added MCP server with HTTP transport, usually one that needs a browser login, can be
+absent from a Claude session that Mission Control dispatched. It does not show up at all,
+not even as "needs authentication", and it can be missing from your own new sessions too.
+
+Mission Control is not what removes it. A dispatch passes Mission Control's own MCP server and
+filters none of yours, in both the terminal and the Agent SDK runtimes, and an SDK dispatch
+loads your user, project and local settings. See [It already composes](upstart.md#it-already-composes).
+
+The cause is in the `claude` binary, and this part comes from an earlier investigation
+rather than from this repository's code. A server recorded in
+`~/.claude/mcp-needs-auth-cache.json` can be skipped without a connection attempt; the
+binary logs `Skipping connection (cached needs-auth)`. That file is shared by every Claude
+session on the machine, so an entry written by one session can hide the server from all of
+them. What writes an entry, and how long it lasts, is not known.
+
+To check, open `~/.claude/mcp-needs-auth-cache.json` and look only at the server names and
+their timestamps, to see whether your server is listed. Do not paste the file's contents into
+a chat, ticket or pull request.
+
+To fix it, run `/mcp` in a terminal and log in to the server again. A successful login should
+clear its entry. If the server is still missing after a successful login, the entry may not
+have cleared, so check the file again (names and timestamps only). Then dispatch again.
+
+One related limit: a local-scoped server (the default for `claude mcp add`, stored under the
+repository's path in `~/.claude.json`) is keyed by that path, so a dispatched session in a
+worktree at a different path may not see it. A project-scoped server in the repository's
+`.mcp.json` reaches a worktree only when that file is committed or otherwise present in the
+checkout. A user-scope server has no such limit, so add it there if every worktree needs it.
+
 ## Playwright cannot find Chromium
 
 If the end-to-end run reports `browserType.launch: Executable doesn't exist`, install

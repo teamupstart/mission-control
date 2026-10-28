@@ -290,6 +290,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
+import { pruneDelegatedTurns } from "./delegated-turns.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -7805,6 +7806,15 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
     return this.launchTurns.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Delegated-turn senders: live keys are never touched. Before the first sweep liveness is
+   * unknown and nothing is pruned; after it, an empty session map is a known "none live", so
+   * old rows of finished conversations still go.
+   */
+  pruneDelegatedTurns(olderThan: number): number {
+    return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
   }
 
   /**

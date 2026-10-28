@@ -43,6 +43,99 @@ secret values cannot be read back; only a real signing/notarization run can esta
 the exported certificate, password and API key work together. Environment configuration is
 complete; real signed-release qualification and controlled publication remain outstanding.
 
+## Packaging failure diagnostics (2026-10-28 UTC)
+
+[Run 39854793560](https://github.com/teamupstart/mission-control/actions/runs/39854793560/job/120090269790)
+for stable v1.27.1 (`c0a78a371`) reached Developer ID signing after a successful build.
+It then printed the old generic failure message. GitHub recorded the packaging step as
+successful, ran Bundle smoke, and failed artifact retention because no archives or JSON
+existed. This was not a successful signed qualification. The discarded exception cannot
+be reconstructed from the log, so the elapsed signing time does not establish whether
+codesign, notarization or a later verifier failed.
+
+A complete run inventory also found
+[alpha run 38918357329](https://github.com/teamupstart/mission-control/actions/runs/38918357329/job/117031718971):
+it logged signing at 11:58:21 UTC on October 28 and the same generic failure at 12:00:27,
+again with a successful packaging step and failed artifact retention. Thus the supplied
+"only one executed run" observation was incomplete: at least these two reached signing.
+Neither log contains the discarded underlying exception.
+
+Two code defects are verified independently:
+
+- The locked `temp-file@3.4.0` installs `async-exit-hook@2.0.1`, whose
+  `add.hookEvent('beforeExit', 0)` calls `process.exit(0)` after cleanup. That overwrites
+  the producer's `process.exitCode = 1`. A child-process reproduction exits zero without
+  the fix. The producer now pins failure again in an `exit` listener, matching
+  electron-builder's own `out/cli/cli-util.js` workaround for
+  [upstream #2940](https://github.com/electron-userland/electron-builder/issues/2940).
+  Asynchronous temporary-file/keychain cleanup still gets to finish.
+- `app-builder-lib@26.15.3`, used by that run, creates a random temporary-keychain
+  password but passes the certificate import password to `security set-key-partition-list
+  -k`. Those are different credentials. The dependency is now pinned to
+  `electron-builder@26.16.1`, which contains the
+  [v26 keychain fix](https://github.com/electron-userland/electron-builder/pull/10172).
+  A focused test intercepts every security call and checks that create, unlock and
+  partition-list use the same generated password while import uses the fake `.p12`
+  password. It fails on 26.15.3 and passes on 26.16.1 without accessing a keychain.
+  This removes a real signing defect; it does not prove which error the historical run hid.
+
+`package:distribution` reports the failing stage: preflight, build, sign (including
+identity/keychain preparation after packaging), notarize (app), verifyDistributionApp,
+qualifySignedRuntime, dmg build (including DMG signing), notarize (dmg), ditto, archive
+verification or metadata. Error records retain the class/code, child status/signal and
+bounded redacted details. Explicit `notarytool submit` and `wait` calls report submission
+IDs and statuses; failed submissions also retrieve Apple's issue list when available.
+Accepted submissions are stapled before verification. A wait timeout retains the ID so
+the release operator can inspect that submission before deciding whether to retry.
+
+The original builder app notarization and explicit DMG notarization were **different
+artifacts**, not duplicate submissions. The producer now owns both explicit notarization
+stages and disables builder's implicit notarization. Each artifact is submitted once.
+Builder still owns certificate import, identity selection and signing; hardened runtime,
+entitlements, fuses, publisher policy, immutable bytes and approval gates stay enforced.
+
+Raw builder retry logs are suppressed because they can contain credential arguments.
+Build children receive no Apple/signing credentials; debug logging is disabled. Only the
+bounded diagnostic projection emits third-party failures. It redacts provisioned values,
+PEM private keys, private-key paths and credential-bearing command lines, including
+generated keychain passwords. Do not enable `DEBUG`, shell tracing, dump environments,
+upload raw error objects or attach a private key to investigate a failure.
+The workflow retains `distribution-diagnostics-<commit>` for 14 days even on failure.
+Its explicit Bash shell preserves the producer's failure through `tee`; smoke, qualified
+asset retention and publication remain success-only, while private-key removal always runs.
+
+Local fixture verification includes:
+
+```sh
+node --import ./test/setup-state.mjs --import tsx test/helpers/distribution-failure-runs.ts
+```
+
+This executes the actual `npm run package:distribution` entry point in disposable fixtures,
+forces every stage to fail, and checks exit 1 plus the redacted stage/status record. It
+does not access real credentials, Apple services or the operator's keychain, and it is
+not evidence of real signed qualification.
+
+**Release follow-up and PR handoff:** the operator must obtain `developer-platform`
+approval for the next eligible Signed distribution run on a commit containing this fix.
+Do not claim that run passed until its real signature, notarization, archive and runtime
+checks pass. The pending stable runs
+[39439350935](https://github.com/teamupstart/mission-control/actions/runs/39439350935) and
+[40014670460](https://github.com/teamupstart/mission-control/actions/runs/40014670460), and
+alpha [40679134880](https://github.com/teamupstart/mission-control/actions/runs/40679134880),
+were still waiting for `desktop-distribution` approval at this check; their commits do not
+contain this fix. No deployment was approved, rejected or rerun, and no release was published.
+PR #1214 is closed and superseded by #1216; it is not a repair target.
+
+If the next diagnostic points to credentials or Apple account state, the release operator
+must privately check that the exported `.p12` includes the matching private key, its password
+matches `CSC_KEY_PASSWORD`, and its Developer ID Application certificate for `S2FPCQK39Z`
+is valid, unexpired and unrevoked. For notarization authentication failures, check that the
+team API key is active, its Key ID and Issuer ID match the provisioned `.p8`, and its App
+Manager permission, team membership and required Apple agreements remain valid. For an
+Invalid submission, use the reported submission ID and issue list to identify the exact
+binary/signature failure. None of these secret/account facts was inspected or established
+by this repair; do not rotate credentials merely because the old log masked an error.
+
 ## App-name transition observation (2026-10-27 UTC)
 
 The rename task rechecked PR #1214: it remains OPEN, draft, and DO NOT MERGE at
@@ -401,3 +494,17 @@ verification covers both dark and light OS preferences without introducing anoth
 [^producer-20261026]: `phase4-oct26-producer-command-output.txt`, artifact
     `txt_955a514cc0334ceb8f871b629cf8cf11`: latest-five distribution workflow query, exit 0,
     five completed runs with `conclusion: skipped`.
+
+## Phase 5 owned-runtime handoff to R2
+
+The [owned-runtime inventory and combined NC-1 through NC-6 checklist](owned-runtimes.md)
+are the Phase 5 inputs to R2. In the implementation checks recorded on **2026-10-28 UTC**,
+local Electron executed shipped integration helpers with host runtimes absent and with
+invocation traps; focused config tests and browser fixtures passed for repair and Setup.
+The [dated execution record](owned-runtimes.md#observed-implementation-checks-2026-10-28-utc)
+identifies the workflow runs, immutable submissions, exact supporting artifacts and fixture
+limits. These are observations of those executions, not guarantees for later commits. They do
+not qualify a signed install, stable/alpha update or recovery.
+R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
+include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
+protection policy are unchanged.

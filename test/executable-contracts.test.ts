@@ -52,7 +52,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
   ],
   "src/pi/mcp-client.ts": [
-    { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
+    { operation: "spawn", command: "runtime.command", contract: "current-runtime", reason: "Pi runs Mission's bridge with the daemon-owned runtime descriptor; explicit custom bridge overrides retain Pi's runtime" },
   ],
   "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
@@ -276,7 +276,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "bootstrap-login-shell":
       return boundary.command === "shell";
     case "current-runtime":
-      return ["descriptor.command", "request.node", "process.execPath"].includes(boundary.command)
+      return ["descriptor.command", "runtime.command", "request.node", "process.execPath"].includes(boundary.command)
         || (boundary.operation === "fork" && boundary.command === "options.worker");
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
     // into a variable, so a literal never reaches the call and the declaration above names the

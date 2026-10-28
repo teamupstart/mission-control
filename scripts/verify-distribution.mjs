@@ -8,10 +8,11 @@ import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
+import { distributionToolError } from './distribution-diagnostics.mjs';
 
 function macTool(command, args) {
   const result = spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
-  if (result.error || result.status !== 0) throw new Error(`Distribution verification failed: ${command}`);
+  if (result.error || result.status !== 0) throw distributionToolError(command, result);
   return {stdout: result.stdout.trim(), stderr: result.stderr};
 }
 

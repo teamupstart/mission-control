@@ -28,6 +28,9 @@ yourself. An **[Agent SDK](sessions.md#session-runtimes-terminal-or-the-agent-sd
 embedded driver too. That is the whole integration: your agents get the org's skills, its MCP
 servers, and - the part that matters for an unattended fleet - its fail-closed guard hooks.
 
+If a server you added is missing from a dispatched session anyway, see
+[an MCP server missing from a dispatched Claude session](troubleshooting.md#an-mcp-server-i-added-is-missing-from-a-dispatched-claude-session).
+
 ### Set it up once, interactively
 
 Run the complete first-time path in an interactive Claude Code session:

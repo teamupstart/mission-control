@@ -200,8 +200,8 @@ interface MissionMcpRuntime {
  * bundle on Node 18, which has no `crypto` global, and every Mission Control tool call in
  * that session failed with "ReferenceError: crypto is not defined".
  */
-export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  return resolveOwnedRuntime({executable: execPath, kind: /^node(\.exe)?$/.test(basename(execPath)) ? "node" : "electron"});
+export function resolveMissionMcpRuntime(execPath: string = process.execPath, kind: "node" | "electron" = process.versions.electron ? "electron" : "node"): MissionMcpRuntime {
+  return resolveOwnedRuntime({executable: execPath, kind});
 }
 
 /**

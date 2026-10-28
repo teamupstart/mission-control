@@ -29,6 +29,8 @@ async function main(): Promise<number> {
     "MISSION_AGENT_SESSION_ID", "MISSION_API_TOKEN", "MISSION_SCOUT_SUBMISSION_CREDENTIAL"])
     delete env[key];
   Object.assign(env, input.env);
+  // Node mode belongs to this guard, never the independent agent it launches.
+  delete env.ELECTRON_RUN_AS_NODE;
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
   const before = await processInventory();
   // The terminal signals the foreground group, including both guard and agent. Stay alive

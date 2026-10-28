@@ -291,3 +291,24 @@ test("remembered sends expire after the race window, across every message", () =
   noteOtherSend(t.conversation(k), "a new message", start + LAG + 61_000);
   assert.equal(rememberedOtherSendKeys(), 1);
 });
+
+test("a delivery reserved before its target's transcript was located is never bound", () => {
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  const older = t.append("older", "located late", now - 60_000);
+  // No transcript could be located when the controller sent.
+  reserveDelegatedTurn({ key: k, transcript: null }, "located late", first, now);
+  const controller = t.append("controller", "located late", now + 1);
+  // Once it is, an older operator turn with the same words is never taken for the delivery.
+  assert.deepEqual(senders(t.conversation(k), [older, controller]), [null, null]);
+});
+
+test("pruning another conversation keeps this conversation's in-flight sends", () => {
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  noteOtherSend(t.conversation(k), "still racing", now);
+  reserveDelegatedTurn(fakeTranscript().conversation("stale-conversation"), "old", first, now - 10 * LAG);
+  assert.equal(pruneDelegatedTurns([k], now - LAG), 1);
+  // The operator's send is still in flight, so a controller sending the same words is contested.
+  reserveDelegatedTurn(t.conversation(k), "still racing", first, now + 1);
+  const page = [t.append("human", "still racing", now + 2), t.append("controller", "still racing", now + 3)];
+  assert.deepEqual(senders(t.conversation(k), page), [null, null]);
+});

@@ -255,7 +255,7 @@ words race such a send, in either order, is marked `contested`, persisted, and n
 in-flight check never credits a landed turn to another send while a contested or boundary-less
 delivery of the same words is unbound. A send with positive evidence that nothing landed
 (`pasted: false`) is withdrawn with `withdrawOtherSend`, which clears the contest once no
-other send of those words remains. A transcript size that cannot be read stores a NULL offset,
+other send of those words remains. A transcript that is not located yet, or whose size cannot be read, stores a NULL offset,
 and that row is never bound. A reservation whose words match a different controller's unbound,
 unexpired delivery contests both, after first binding what has already landed; the same
 controller twice cannot swap names and stays bindable. Withdrawing a send and releasing a

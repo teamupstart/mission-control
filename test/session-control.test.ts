@@ -189,6 +189,8 @@ test("authenticated revokes still refuse a session that stops during authorizati
 
 test("control is off for every session, cannot be self-granted, and revocation is immediate", async () => {
   const f = fixture();
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
   assert.equal((await f.act({ action: "message", text: "must not send" })).status, 403);
   assert.equal((await f.request(`/api/sessions/${f.caller.id}/session-control`, { enabled: true }, f.agentHeaders, "PUT")).status, 403);
@@ -238,6 +240,8 @@ test("direct message routes cannot claim delegated origin, even with an enabled 
 
 test("verified delegation labels messages without attributing concurrent direct input to the controller", async () => {
   const f = fixture(); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   const responses = await Promise.all([
     f.act({ action: "message", text: "Delegated message" }),
     f.request(`/api/sessions/${f.target.id}/inject`, { text: "Direct message", buffer: false }, {
@@ -314,6 +318,8 @@ test("a delegated delivery that provably did not land labels no later turn", asy
 
 test("a human send that provably did not land does not cost the controller its label", async () => {
   const f = fixture(); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   const text = "Rebuild the index";
   assert.equal((await f.act({ action: "message", text })).status, 200);
   const send = f.sdk.send;
@@ -332,6 +338,8 @@ test("a human send that provably did not land does not cost the controller its l
 
 test("a queued human turn the driver did not accept does not cost the controller its label", async (t) => {
   const f = fixture(undefined, 0); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   const key = f.target.agentSessionId!;
   const text = "Run the migration again";
   assert.equal((await f.act({ action: "message", text })).status, 200);

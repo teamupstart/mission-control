@@ -87,12 +87,13 @@ interface OtherSend {
 }
 
 /**
- * The transcript's size now: 0 when there is no transcript yet, null when there is one but
- * its size could not be read. Null is an unknown send boundary, never byte zero - binding
- * from zero would let an older operator turn with the same words be taken for this one.
+ * The transcript's size now, or null when the boundary is unavailable: no transcript located
+ * yet, or one whose size could not be read. Null is an unknown send boundary, never byte zero
+ * - a transcript can be located only after the send, and binding from zero would let an older
+ * operator turn with the same words be taken for this one.
  */
 function sizeOf(transcript: SessionMessages | null): number | null {
-  if (!transcript) return 0;
+  if (!transcript) return null;
   try {
     return transcript.read.size(transcript.path) ?? 0;
   } catch {
@@ -439,16 +440,21 @@ export function delegatedTurnSources(
 /** Drop rows of conversations no live session holds, on the goal table's prune tick. */
 export function pruneDelegatedTurns(liveKeys: Iterable<string>, olderThan: number): number {
   const removed = pruneRows(liveKeys, olderThan);
-  if (removed) forgetDelegatedTurnCache();
+  // Only the row caches: live conversations' in-flight sends must survive another's prune.
+  if (removed) forgetRowCaches();
   return removed;
 }
 
-/** For tests, and after a prune: forget the cache so the next read comes from the table. */
-export function forgetDelegatedTurnCache(): void {
+function forgetRowCaches(): void {
   cache.clear();
   scanned.clear();
   expired.clear();
   twins.clear();
+}
+
+/** For tests: a full reset, as a daemon restart would leave it, so the next read comes from the table. */
+export function forgetDelegatedTurnCache(): void {
+  forgetRowCaches();
   otherSends.clear();
   lastSweep = 0;
 }

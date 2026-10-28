@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
 import { forgetInjections, recordInjection } from "../src/server/injections.ts";
+import { forgetDelegatedTurnCache, noteOtherSend, reserveDelegatedTurn } from "../src/server/delegated-turns.ts";
+import { sessionMessages } from "../src/server/harness/index.ts";
+import { noteKeyFor } from "../src/server/registry.ts";
 import {
   createRetroCorrectionScanner,
   retroSummary,
@@ -143,6 +146,27 @@ test("a turn the daemon typed is not a human correction", () => {
     assert.equal(scanner.advance(scanned(path)), false);
   } finally {
     forgetInjections("retro-session");
+    cleanup();
+  }
+});
+
+test("a turn that may be an unattributed delegated message is not a human correction", () => {
+  const { path, cleanup } = transcriptFixture();
+  const session = scanned(path, { id: "retro-delegated", agentSessionId: "retro-delegated-native" });
+  const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
+  try {
+    turn(path, "user", "Fix the flaky pane test", "u1");
+    turn(path, "assistant", "On it.", "a1");
+    // A controller sends these words while the operator sends the same ones: the turn cannot be
+    // credited to either, so it reads unlabelled - and must not be counted as the operator's.
+    const words = "Stop and rebase onto main first";
+    reserveDelegatedTurn(conversation, words, { id: "sdk:controller", name: "Controller" });
+    noteOtherSend(conversation, words);
+    turn(path, "user", words, "u2", Date.now());
+    const scanner = createRetroCorrectionScanner();
+    assert.equal(scanner.advance(session), false);
+  } finally {
+    forgetDelegatedTurnCache();
     cleanup();
   }
 });

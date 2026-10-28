@@ -360,3 +360,22 @@ test("a delivery whose located transcript file was missing at send is never boun
   const controller = t.append("controller", "vanished file", now + 1);
   assert.deepEqual(senders(t.conversation(k), [older, controller]), [null, null]);
 });
+
+test("one controller renamed between two in-flight identical sends credits neither name", () => {
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  reserveDelegatedTurn(t.conversation(k), "renamed", { id: first.id, name: "Old name" }, now);
+  reserveDelegatedTurn(t.conversation(k), "renamed", { id: first.id, name: "New name" }, now + 1);
+  // The second send reaches the transcript first.
+  const page = [t.append("second", "renamed", now + 2), t.append("first", "renamed", now + 3)];
+  assert.deepEqual(senders(t.conversation(k), page), [null, null]);
+});
+
+test("an unresolved turn is marked so readers of the operator's words can skip it", () => {
+  forgetInjections();
+  const t = fakeTranscript(); const k = key(); const now = Date.now();
+  reserveDelegatedTurn(t.conversation(k), "raced words", first, now);
+  noteOtherSend(t.conversation(k), "raced words", now + 1);
+  const page = [t.append("raced", "raced words", now + 2), t.append("plain", "unrelated", now + 3)];
+  const read = attributeTranscript("target-session-3", page, null, undefined, t.conversation(k));
+  assert.deepEqual(read.map((m) => [m.origin, m.originUnresolved]), [[undefined, true], [undefined, undefined]]);
+});

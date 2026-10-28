@@ -3367,6 +3367,12 @@ export interface TranscriptMessage {
    */
   originSession?: TurnOriginSession;
   /**
+   * True when this user turn may be a delegated message whose sender could not be established
+   * (its words raced another send, or the send boundary was unknown). It carries no `origin`,
+   * so it reads unlabelled; readers that count the operator's own words must skip it.
+   */
+  originUnresolved?: true;
+  /**
    * How the DASHBOARD should present this turn, when that differs from how the transcript
    * records it. Absent on every turn the log renders literally, which is nearly all of
    * them, and absent on the wire for any client or fixture that never asked.

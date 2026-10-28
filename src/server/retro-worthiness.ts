@@ -188,7 +188,8 @@ export function createRetroCorrectionScanner(): RetroCorrectionScanner {
     // human they would make the offer self-fulfilling: deliver a retro, and the session it
     // was delivered to becomes retro-worthy.
     for (const message of attributeTranscript(session.id, messages, null, undefined, { key: noteKeyFor(session), transcript: located })) {
-      if (message.role !== "user" || message.origin !== undefined || !message.text.trim()) continue;
+      // A turn that may be an unattributed delegated message is not the operator's correction.
+      if (message.role !== "user" || message.origin !== undefined || message.originUnresolved || !message.text.trim()) continue;
       const print = turnPrint(message);
       if (scan.opening === null) {
         scan.opening = print;

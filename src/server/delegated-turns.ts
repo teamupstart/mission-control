@@ -80,6 +80,15 @@ function sourceOf(row: DelegatedTurnRow): TurnOriginSession {
   return { id: row.controllerId, name: row.controllerName };
 }
 
+/** The label a row would show: two rows with the same one cannot be credited to the wrong sender. */
+function senderKey(source: TurnOriginSession): string {
+  return `${source.id}\0${source.name}`;
+}
+
+function senderOf(row: DelegatedTurnRow): string {
+  return senderKey(sourceOf(row));
+}
+
 /** One non-delegated send; `offset` is null when the transcript size could not be read. */
 interface OtherSend {
   at: number;
@@ -200,10 +209,11 @@ export function reserveDelegatedTurn(
   };
   // Another controller's identical delivery still unwritten races this one: either turn could
   // land first and nothing in the file says which delivery wrote it, so neither is credited.
-  // The same controller sending twice cannot swap names, so that stays bindable.
+  // The same controller under the same name sending twice cannot swap names, so that stays
+  // bindable; one renamed between the two sends could, so it counts as a rival.
   if (conversation.transcript) bindPending(rows, conversation.transcript, now);
   const rivals = rows.filter((other) => other.fingerprint === fingerprint && other.messageId === null
-    && other.controllerId !== source.id && !expired.has(other.id) && now - other.deliveredAt <= DELIVERY_LAG_MS);
+    && senderOf(other) !== senderKey(source) && !expired.has(other.id) && now - other.deliveredAt <= DELIVERY_LAG_MS);
   if (rivals.length) {
     row.contested = true;
     for (const other of rivals) if (!other.contested) contest(other);
@@ -259,13 +269,13 @@ export function withdrawOtherSend(handle: OtherSendHandle): void {
 
 /**
  * Clear the contest on these words' unbound deliveries once nothing races them any more: no
- * other send remembered, and every unbound delivery left is one controller's, so no two turns
+ * other send remembered, and every unbound delivery left shows the same sender, so no two turns
  * could be credited to the wrong name.
  */
 function reconsider(noteKey: string, fingerprint: string): void {
   if (otherSends.has(sendKey(noteKey, fingerprint))) return;
   const open = rowsFor(noteKey).filter((row) => row.fingerprint === fingerprint && row.messageId === null);
-  if (new Set(open.map((row) => row.controllerId)).size > 1) return;
+  if (new Set(open.map(senderOf)).size > 1) return;
   for (const row of open) if (row.contested) contest(row, false);
 }
 

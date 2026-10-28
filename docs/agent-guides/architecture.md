@@ -254,7 +254,9 @@ pending-turn delivery seams - calls `noteOtherSend` before it writes; `/send` do
 unsubmitted draft too, since the operator's Enter submits it outside Mission Control. While a
 delivery of some words is contested or boundary-less, `delegatedTurnSources` reports matching
 unbound turns as `ambiguous`, and `attributeTranscript` drops every live label on them,
-Foreman's included. A delegated row whose
+Foreman's included, and marks them `originUnresolved` so a reader of the operator's own words
+(the retro correction scanner) skips them. Rivalry and `reconsider` compare the stored sender as
+id plus name, so one controller renamed between two in-flight identical sends counts as two. A delegated row whose
 words race such a send, in either order, is marked `contested`, persisted, and never bound. An
 in-flight check never credits a landed turn to another send while a contested or boundary-less
 delivery of the same words is unbound. A send with positive evidence that nothing landed

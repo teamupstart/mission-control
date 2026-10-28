@@ -66,11 +66,13 @@ export function attributeTranscript(
       // from the fingerprint. Best-effort by contract: see `bindLaunchTurnMessage`.
       onLaunchTurnIdentified?.(message.id);
     }
-    if (!origin && !presentation) return message;
+    const unresolved = !origin && delegated.ambiguous.has(message.id);
+    if (!origin && !presentation && !unresolved) return message;
     return {
       ...message,
       ...(origin ? { origin } : {}),
       ...(originSession ? { originSession } : {}),
+      ...(unresolved ? { originUnresolved: true as const } : {}),
       ...(presentation ? { presentation } : {}),
     };
   });

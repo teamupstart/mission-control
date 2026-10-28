@@ -103,7 +103,7 @@ function editHooks(uninstall: boolean, runtime: Runtime, hook: string, statuslin
   }
   editIntegrationSettings(homedir(), INTEGRATION_REPAIR_NONCE, (original) => {
     const errors: unknown[] = [];
-    const settings = parse(original || "{}", errors as never[], { allowTrailingComma: true }) as {
+    const settings = parse(original.trim() ? original : "{}", errors as never[], { allowTrailingComma: true }) as {
       hooks?: Record<string, unknown>;
       statusLine?: { command?: string };
     };

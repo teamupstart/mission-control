@@ -8,6 +8,45 @@ import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { buildOwnedIntegrationInstaller } from "./helpers/owned-integration-installer.ts";
 
+test("desktop installer initializes blank settings and preserves malformed settings", async t => {
+  for (const [label, original, valid] of [
+    ["empty", "", true],
+    ["whitespace only", " \t\r\n ", true],
+    ["malformed JSON", '{"permissions":', false],
+    ["non-object JSON", "[]", false],
+  ] as const) {
+    await t.test(label, async t => {
+      const home = mkdtempSync(join(tmpdir(), "owned-blank-settings-"));
+      t.after(() => rmSync(home, {recursive: true, force: true}));
+      mkdirSync(join(home, ".claude"));
+      mkdirSync(join(home, "dist/satellites"), {recursive: true});
+      writeFileSync(join(home, "dist/satellites/hook.mjs"), "");
+      const settingsPath = join(home, ".claude/settings.json");
+      writeFileSync(settingsPath, original);
+      const installer = await buildOwnedIntegrationInstaller(home);
+      const env = {...process.env, HOME: home, MISSION_HOME: join(home, "state"),
+        CLAUDE_SETTINGS_PATH: settingsPath, CLAUDE_CONFIG_DIR: join(home, ".claude"),
+        MISSION_TEST_APP_ROOT: home, MISSION_CLAUDE_BIN: "/usr/bin/false", MISSION_CODEX_BIN: "/usr/bin/false"};
+      const run = () => JSON.parse(execFileSync(process.execPath, [installer], {env, encoding: "utf8"}));
+      const result = run();
+      assert.equal(result.ok, valid, result.message);
+      const text = readFileSync(settingsPath, "utf8");
+      if (!valid) {
+        assert.match(result.message, /invalid JSON\/JSONC/);
+        assert.equal(text, original, "invalid settings remain byte-for-byte unchanged");
+        return;
+      }
+      const settings = parse(text);
+      assert.equal(settings.hooks.Stop.length, 1);
+      assert.equal(settings.hooks.Stop[0].hooks.length, 1);
+      assert.equal(settings.hooks.Stop[0].hooks[0].command,
+        `ELECTRON_RUN_AS_NODE="1" "${process.execPath}" "${join(home, "dist/satellites/hook.mjs")}" "Stop"`);
+      assert.equal(run().ok, true);
+      assert.equal(readFileSync(settingsPath, "utf8"), text, "repair remains byte-stable");
+    });
+  }
+});
+
 test("packaged installer repairs source hooks, statusline and MCP in place and reverses its wrapper", async t => {
   const home = mkdtempSync(join(tmpdir(), "owned-installer-"));
   t.after(() => rmSync(home, {recursive:true, force:true}));

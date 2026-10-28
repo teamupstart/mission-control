@@ -40,6 +40,13 @@ test("desktop repair action runs the real installer and reports preserved custom
     expect(config.hooks.Stop[0].hooks[0].command).toContain('ELECTRON_RUN_AS_NODE="1"');
     expect(config.hooks.Stop[0].hooks[0].timeout).toBe(42);
     expect(config.permissions).toEqual({allow:["keep"]});
+    for (const blank of ["", " \t\r\n "]) {
+      writeFileSync(settings, blank);
+      await panel.getByRole("button",{name:"Install Claude integrations"}).click();
+      await expect.poll(() => parse(readFileSync(settings,"utf8"))?.hooks?.Stop?.[0]?.hooks?.[0]?.command ?? "")
+        .toContain('ELECTRON_RUN_AS_NODE="1"');
+      await expect(panel.getByRole("status")).toContainText("installed via this app's bundled Node");
+    }
     writeFileSync(settings,JSON.stringify({hooks:{Stop:[{hooks:[{command:"echo custom; node /source/hooks/harness-hook.mjs Stop"}]}]}}));
     const custom=readFileSync(settings,"utf8");
     await panel.getByRole("button",{name:"Install Claude integrations"}).click();

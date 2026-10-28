@@ -39,12 +39,12 @@ function integrationFile(home: string, relative: string): string {
   return path;
 }
 
-function jsonc(path: string): { text: string; value: Record<string, unknown>; revision: string } {
+function jsonc(path: string, allowBlank = false): { text: string; value: Record<string, unknown>; revision: string } {
   const revision = fileRevision(path);
   const text = existsSync(path) ? readFileSync(path, "utf8") : "{}";
   if (fileRevision(path) !== revision) throw new Error("The integration configuration changed while reading it. Retry repair.");
   const errors: unknown[] = [];
-  const value: unknown = parse(text, errors as never[], {allowTrailingComma: true});
+  const value: unknown = parse(allowBlank && !text.trim() ? "{}" : text, errors as never[], {allowTrailingComma: true});
   if (errors.length || !value || typeof value !== "object" || Array.isArray(value)) throw new Error("An integration configuration is invalid JSON/JSONC. Fix it before retrying.");
   return {text, value: value as Record<string, unknown>, revision};
 }
@@ -61,7 +61,8 @@ function editJsonc(path: string, nonce: string, original: string, edits: {path: 
 export function editIntegrationSettings(home: string, nonce: string, transform: (original: string) => string): void {
   const path = integrationFile(home, ".claude/settings.json");
   verifyIntegrationBackups(path, nonce);
-  const config = jsonc(path);
+  // Installation may initialize an empty file. Retain its original bytes for publication checks.
+  const config = jsonc(path, true);
   const original = config.revision === "missing" ? "" : config.text;
   const text = transform(original);
   if (text !== original) publishIntegrationText(path, nonce, original, text);

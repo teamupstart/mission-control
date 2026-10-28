@@ -335,8 +335,20 @@ export async function stageAgentWorkflowEvidence(input: {
       const run = input.store.activeRunForBinding(binding.id);
       let criteria = run?.criteria?.canonicalCriteria;
       if (run && !criteria) {
-        const context = WorkflowContextSnapshotSchema.safeParse(input.store.latestSubmission(run.id)?.context);
-        criteria = context.success ? context.data.canonicalCriteria : [];
+        let source = input.store.latestSubmission(run.id);
+        const visited = new Set<string>();
+        // Legacy runs keep criteria in capture packets. Failed image capture leaves no
+        // context, so follow the same bounded ancestry as evidence carry-forward.
+        while (source && !visited.has(source.id)) {
+          visited.add(source.id);
+          const context = WorkflowContextSnapshotSchema.safeParse(source.context);
+          if (context.success && context.data.canonicalCriteria.length > 0) {
+            criteria = context.data.canonicalCriteria;
+            break;
+          }
+          if (source.status !== "failed" || source.repositoryFingerprint) break;
+          source = input.store.evidenceInheritanceSource(source)?.source ?? null;
+        }
       }
       return {
         checkoutRoot: binding.repoRoot || binding.sessionCwd || "",

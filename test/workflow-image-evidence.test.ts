@@ -947,6 +947,50 @@ test("canonical citations must belong to every run receiving the claim's reposit
   }
 });
 
+test("legacy canonical citations survive failed image captures with empty contexts", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-citation-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "legacy-citation-note";
+    const binding = store.insertBinding({ id: "legacy-citation-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey, sessionId: "legacy-citation-session", sessionAgent: "codex", sessionName: "legacy citations",
+      sessionCwd: root, sessionRepoRoot: root, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+    const canonicalCriteria = [{ id: "canonical-legacy", text: "The result works", material: true, suggestedProofClass: null }];
+    const snapshot = { ...context(), canonicalCriteria };
+    const first = store.createInitialSubmission(
+      { id: "legacy-citation-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "legacy-first", now: 2 },
+      { id: "legacy-first", triggerSource: "manual", triggerKey: "legacy-first", context: workflowJson(snapshot), evidence: {}, now: 2 });
+    store.updateSubmissionCapture(first.submission.id, { context: workflowJson(snapshot), evidence: {},
+      fingerprint: "legacy-captured", repositoryFingerprint: "tree-1", status: "running" }, 2);
+    assert.equal(store.getRun(first.run.id)?.criteria, null, "legacy criteria exist only in the captured context");
+    for (const round of [2, 3]) {
+      const failed = store.createRepairSubmission({ id: `legacy-failed-${round}`, runId: first.run.id, round,
+        triggerSource: "manual", triggerKey: `legacy-failed-${round}`, context: {}, evidence: {}, now: round + 1 });
+      store.failEvidencePreparation({ submissionId: failed.submission.id, kind: "capture", automatic: false,
+        detail: { code: "image_changed", error: "Evidence image changed after it was staged" }, now: round + 1 });
+    }
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [],
+      commandOutputs: [{ kind: "command" as const, clientItemId: "legacy-proof", command: "check result", exitCode: 0,
+        output: "passed", caption: "The result works", repositoryScope: "repo-01" as const }] };
+    const claim = { clientCriterionId: "legacy-claim", criterionId: "canonical-legacy", criterion: "The result works",
+      proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const,
+      links: [{ clientItemId: "legacy-proof", role: "execution" as const }] };
+    const before = store.listWorkflowEvidence(noteKey);
+    await assert.rejects(stageAgentWorkflowEvidence({ ...input, coverage: [{ ...claim, criterionId: "unknown" }] }),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "unknown_criterion_id");
+    assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    await stageAgentWorkflowEvidence({ ...input, coverage: [claim] });
+    const retry = store.createRepairSubmission({ id: "legacy-retry", runId: first.run.id, round: 4,
+      triggerSource: "manual", triggerKey: "legacy-retry", context: {}, evidence: {}, now: 5 });
+    await captureSubmissionTextArtifacts(store, retry.submission.id, 5);
+    const coverage = store.listSubmissionCoverage(retry.submission.id);
+    assert.equal(coverage[0]?.criterionId, "canonical-legacy");
+    assert.equal(evaluateWorkflowEvidenceReadiness({ canonicalCriteria, coverage,
+      criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage),
+      evidence: store.submissionFrozenEvidenceIdentities(retry.submission.id) }).status, "ready");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("reservation freezes immutable bytes, supports all-scope fan-out, and prunes through the cleanup ledger", async () => {
   const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-primary-")));
   const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-secondary-")));

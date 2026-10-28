@@ -1274,7 +1274,9 @@ Inherited claims follow the same citation rules. New registrations with an unkno
 validates citations against the runs that receive their repository scope: a scoped claim
 cannot borrow an id from a sibling repository's run, and an `all` claim's id must exist in every
 receiving run. Legacy frozen unknown citations remain visible as readiness gaps until withdrawn
-or corrected. The tool checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
+or corrected. For legacy runs without frozen criteria, registration follows failed capture
+ancestry to the last captured criteria instead of treating an empty failed context as authoritative.
+The tool checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
 withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
 when the tool reports an incompatible daemon.
 

@@ -14,6 +14,16 @@ export function binaryPublisherPolicy() {
   return {repo: BINARY_REPO, bundleId: BINARY_BUNDLE_ID, teamId: APPROVED_DEVELOPER_TEAM_ID, notarized: true};
 }
 
+// codesign reads a bare -R argument as the path of a requirement file and fails with
+// "No such file or directory"; only an argument starting with "=" is requirement text.
+export function appPublisherRequirement(teamId) {
+  return `=anchor apple generic and identifier "${BINARY_BUNDLE_ID}" and certificate leaf[subject.OU] = "${teamId}"`;
+}
+
+export function imagePublisherRequirement(teamId) {
+  return `=anchor apple generic and certificate leaf[subject.OU] = "${teamId}"`;
+}
+
 // C1 intentionally keeps releaseTag null for alpha. Its publication namespace is C4.
 export function binaryReleaseTag(identity) {
   return identity.channel === 'stable' ? identity.releaseTag : `alpha-${identity.commit}`;

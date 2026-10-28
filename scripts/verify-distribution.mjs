@@ -9,6 +9,7 @@ import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
 import { distributionToolError } from './distribution-diagnostics.mjs';
+import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
 
 function macTool(command, args) {
   const result = spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
@@ -43,8 +44,7 @@ export async function verifyDistributionApp(app, metadata, policy) {
 }
 
 export function verifyDistributionDmg(dmg, policy) {
-  macTool('/usr/bin/codesign', ['--verify', '--strict', '-R',
-    `anchor apple generic and certificate leaf[subject.OU] = "${policy.teamId}"`, dmg]);
+  macTool('/usr/bin/codesign', ['--verify', '--strict', '-R', imagePublisherRequirement(policy.teamId), dmg]);
   macTool('/usr/bin/xcrun', ['stapler', 'validate', dmg]);
   const assessment = macTool('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg]);
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);

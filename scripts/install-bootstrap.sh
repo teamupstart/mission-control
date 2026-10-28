@@ -52,7 +52,7 @@ verify_app() {
   [[ $(field "$app/Contents/Info.plist" CFBundleIdentifier) == '@BUNDLE_ID@' ]] || fail "Unexpected app identity."
   [[ $(field "$app/Contents/Info.plist" CFBundleExecutable) == 'Mission Control' ]] || fail "Unexpected app executable."
   [[ $(/usr/bin/od -An -tx1 -N8 "$app/Contents/MacOS/Mission Control" | /usr/bin/tr -d ' \n') == cffaedfe0c000001 ]] || fail "The app is not an arm64 executable."
-  /usr/bin/codesign --verify --deep --strict --all-architectures -R 'anchor apple generic and identifier "@BUNDLE_ID@" and certificate leaf[subject.OU] = "@TEAM@"' "$app" 2>"$mission_tmp/signature.log" || fail "App publisher verification failed."
+  /usr/bin/codesign --verify --deep --strict --all-architectures -R '@APP_REQUIREMENT@' "$app" 2>"$mission_tmp/signature.log" || fail "App publisher verification failed."
   /usr/sbin/spctl --assess --type execute --verbose=4 "$app" 2>"$mission_tmp/assessment.log" || fail "macOS refused the app."
   /usr/bin/grep -qx 'source=Notarized Developer ID' "$mission_tmp/assessment.log" || fail "The app is not notarized."
   local metadata="$app/Contents/Resources/app/package.json" signed_name
@@ -156,7 +156,7 @@ main() {
   echo "Installing $tag ($commit) from @REPO@"
   download "repos/@REPO@/releases/assets/$dmg_id" "$mission_tmp/installer.dmg" "$dmg_bytes" application/octet-stream
   [[ $(/usr/bin/stat -f %z "$mission_tmp/installer.dmg") == "$dmg_bytes" && $(digest "$mission_tmp/installer.dmg") == "$dmg_hash" ]] || fail 'DMG size or SHA-256 mismatch.'
-  /usr/bin/codesign --verify --strict -R 'anchor apple generic and certificate leaf[subject.OU] = "@TEAM@"' "$mission_tmp/installer.dmg" 2>"$mission_tmp/signature.log" || fail 'DMG publisher verification failed.'
+  /usr/bin/codesign --verify --strict -R '@IMAGE_REQUIREMENT@' "$mission_tmp/installer.dmg" 2>"$mission_tmp/signature.log" || fail 'DMG publisher verification failed.'
   /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=4 "$mission_tmp/installer.dmg" 2>"$mission_tmp/assessment.log" || fail 'macOS refused the DMG.'
   /usr/bin/grep -qx 'source=Notarized Developer ID' "$mission_tmp/assessment.log" || fail 'The DMG is not notarized.'
   /bin/mkdir "$mission_tmp/image"

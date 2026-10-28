@@ -2,7 +2,7 @@
 // current file: move the original into private recovery storage, validate what
 // was actually moved, then publish with link(2)'s atomic no-replace semantics.
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -57,7 +57,10 @@ export function publishIntegrationText(path: string, nonce: string, original: st
   const before = join(attempt, "original");
   const replacement = join(attempt, "replacement");
   writeFileSync(join(attempt, "digest"), digest(original), {mode: 0o600, flag: "wx"});
-  writeFileSync(replacement, text, {mode: existsSync(path) ? lstatSync(path).mode & 0o777 : 0o600, flag: "wx"});
+  const mode = existsSync(path) ? lstatSync(path).mode & 0o777 : 0o600;
+  writeFileSync(replacement, text, {mode: 0o600, flag: "wx"});
+  // Creation modes are filtered by umask; restore the original before publication.
+  chmodSync(replacement, mode);
   if (original === "" && !existsSync(path)) {
     operations.link(replacement, path);
     if (fileText(path) !== text) throw new Error("The integration changed after publication. Its current file was preserved.");

@@ -8,6 +8,41 @@ import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { buildOwnedIntegrationInstaller } from "./helpers/owned-integration-installer.ts";
 
+test("desktop installer reports partial MCP registration, repair and removal failures", async t => {
+  for (const scenario of ["claude CLI", "codex CLI", "invalid configuration", "removal"] as const) {
+    await t.test(scenario, async t => {
+      const home = mkdtempSync(join(tmpdir(), "owned-mcp-failure-"));
+      t.after(() => rmSync(home, {recursive: true, force: true}));
+      mkdirSync(join(home, ".claude"));
+      mkdirSync(join(home, "dist/satellites"), {recursive: true});
+      writeFileSync(join(home, "dist/satellites/hook.mjs"), "");
+      const settingsPath = join(home, ".claude/settings.json");
+      writeFileSync(settingsPath, "{}");
+      const mcpPath = join(home, ".claude.json");
+      if (scenario === "invalid configuration") writeFileSync(mcpPath, '{"mcpServers":');
+      if (scenario === "removal") writeFileSync(mcpPath, JSON.stringify({mcpServers: {
+        "mission-control": {command: "/mise/shims/node", args: ["/source/dist/mcp/server.mjs"]},
+      }}));
+      const originalMcp = scenario === "invalid configuration" || scenario === "removal" ? readFileSync(mcpPath, "utf8") : null;
+      const installer = await buildOwnedIntegrationInstaller(home);
+      const result = JSON.parse(execFileSync(process.execPath, [installer, ...(scenario === "removal" ? ["--remove"] : [])], {
+        env: {...process.env, HOME: home, MISSION_HOME: join(home, "state"), MISSION_TEST_APP_ROOT: home,
+          CLAUDE_SETTINGS_PATH: settingsPath, CLAUDE_CONFIG_DIR: join(home, ".claude"),
+          MISSION_CLAUDE_BIN: scenario === "codex CLI" ? "/usr/bin/true" : "/usr/bin/false",
+          MISSION_CODEX_BIN: scenario === "codex CLI" ? "/usr/bin/false" : "/usr/bin/true"},
+        encoding: "utf8",
+      }));
+      assert.equal(result.ok, false, result.message);
+      assert.match(result.message, scenario === "removal" ? /MCP removal needs attention/ : /MCP installation needs attention/);
+      assert.doesNotMatch(result.message, /Claude integrations (installed|removed)/);
+      if (scenario === "codex CLI") assert.match(result.message, /Claude Code: MCP review server registered\./);
+      if (scenario === "claude CLI") assert.match(result.message, /Codex: MCP review server registered\./);
+      if (originalMcp !== null) assert.equal(readFileSync(mcpPath, "utf8"), originalMcp);
+      if (scenario !== "removal") assert.equal(parse(readFileSync(settingsPath, "utf8")).hooks.Stop.length, 1);
+    });
+  }
+});
+
 test("desktop installer initializes blank settings and preserves malformed settings", async t => {
   for (const [label, original, valid] of [
     ["empty", "", true],
@@ -26,7 +61,7 @@ test("desktop installer initializes blank settings and preserves malformed setti
       const installer = await buildOwnedIntegrationInstaller(home);
       const env = {...process.env, HOME: home, MISSION_HOME: join(home, "state"),
         CLAUDE_SETTINGS_PATH: settingsPath, CLAUDE_CONFIG_DIR: join(home, ".claude"),
-        MISSION_TEST_APP_ROOT: home, MISSION_CLAUDE_BIN: "/usr/bin/false", MISSION_CODEX_BIN: "/usr/bin/false"};
+        MISSION_TEST_APP_ROOT: home, MISSION_CLAUDE_BIN: "/usr/bin/true", MISSION_CODEX_BIN: "/usr/bin/true"};
       const run = () => JSON.parse(execFileSync(process.execPath, [installer], {env, encoding: "utf8"}));
       const result = run();
       assert.equal(result.ok, valid, result.message);
@@ -60,7 +95,7 @@ test("packaged installer repairs source hooks, statusline and MCP in place and r
   writeFileSync(join(home, "state/statusline-inner"), "printf 'my custom line'\n");
   writeFileSync(join(home, ".claude.json"), '{"mcpServers":{"mission-control":{"command":"/mise/shims/node","args":["/source/dist/mcp/server.mjs"],"env":{"CUSTOM":"stay"},"timeout":12}}}');
   const installer = await buildOwnedIntegrationInstaller(home);
-  const env = {...process.env, HOME:home, CLAUDE_SETTINGS_PATH:path, MISSION_HOME:join(home,"state"), MISSION_TEST_APP_ROOT:home, MISSION_CLAUDE_BIN:"/usr/bin/false", MISSION_CODEX_BIN:"/usr/bin/false", MISSION_NODE_BIN:"/nonexistent/node"};
+  const env = {...process.env, HOME:home, CLAUDE_SETTINGS_PATH:path, MISSION_HOME:join(home,"state"), MISSION_TEST_APP_ROOT:home, MISSION_CLAUDE_BIN:"/usr/bin/true", MISSION_CODEX_BIN:"/usr/bin/true", MISSION_NODE_BIN:"/nonexistent/node"};
   const run = (args:string[] = []) => JSON.parse(execFileSync(process.execPath, [installer,...args], {env, encoding:"utf8"}));
   assert.equal(run().ok, true);
   const text = readFileSync(path,"utf8");
@@ -182,7 +217,7 @@ test("desktop repair collapses owned duplicates within and across hook groups", 
   const installer = await buildOwnedIntegrationInstaller(home);
   const env = {...process.env, HOME: home, MISSION_HOME: join(home, "state"), CLAUDE_SETTINGS_PATH: path,
     CLAUDE_CONFIG_DIR: join(home, ".claude"), MISSION_TEST_APP_ROOT: home,
-    MISSION_CLAUDE_BIN: "/usr/bin/false", MISSION_CODEX_BIN: "/usr/bin/false"};
+    MISSION_CLAUDE_BIN: "/usr/bin/true", MISSION_CODEX_BIN: "/usr/bin/true"};
   const run = () => JSON.parse(execFileSync(process.execPath, [installer], {env, encoding: "utf8"}));
   assert.equal(run().ok, true);
   const once = readFileSync(path, "utf8");
@@ -231,7 +266,7 @@ if (command === "claude") {
         MISSION_CLAUDE_BIN: cli, MISSION_CODEX_BIN: "/usr/bin/false", MISSION_TEST_MCP_REPLACEMENT: replacement},
       encoding: "utf8",
     }));
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
     assert.equal(readFileSync(callsPath, "utf8"), "", "changed file identity must prevent CLI removal, even with identical content");
     assert.equal(readFileSync(mcpPath, "utf8"), replacement);
     assert.match(result.message, /MCP registration changed before removal/);

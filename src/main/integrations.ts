@@ -190,36 +190,36 @@ function editHooks(uninstall: boolean, runtime: Runtime, hook: string, statuslin
  * with no `mcp` client of its own must not reach here at all. The caller checks the
  * capability; this function is only ever handed one that exists.
  */
-function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): string {
+function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): IntegrationResult {
   try {
     const config = createMigrationConfigPort(migrationIntegrationPorts());
     const before = config.readMcp(spec, INTEGRATION_REPAIR_NONCE);
     if (!add) {
-      if (!before.registration || !repairOwnedMcp(before.registration, runtime, mcp)) return "Disabled, absent or custom MCP registration preserved.";
+      if (!before.registration || !repairOwnedMcp(before.registration, runtime, mcp)) return { ok: true, message: "Disabled, absent or custom MCP registration preserved." };
       const executable = locateCommandSync(spec.cli);
       if (!executable) throw new Error(`${spec.cli} was not found`);
       // The named entry may have been replaced while resolving the vendor CLI.
       // Require both the same file identity and the same owned registration.
       const current = config.readMcp(spec, INTEGRATION_REPAIR_NONCE);
       if (current.revision !== before.revision || !sameRegistration(current.registration, before.registration)) {
-        return "MCP registration changed before removal. It was preserved; re-check it before retrying.";
+        return { ok: false, message: "MCP registration changed before removal. It was preserved; re-check it before retrying." };
       }
       execFileSync(executable.path, ["mcp", "remove", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName], {
         stdio: "ignore",
         timeout: 15000,
         env: executable.env,
       });
-      return "MCP server removed.";
+      return { ok: true, message: "MCP server removed." };
     }
     if (before.present || before.registration) {
-      if (!before.registration) return "Existing disabled or custom MCP registration preserved.";
+      if (!before.registration) return { ok: true, message: "Existing disabled or custom MCP registration preserved." };
       const desired = repairOwnedMcp(before.registration, runtime, mcp);
-      if (!desired) return "Custom MCP registration preserved. Retarget its Mission runtime manually.";
+      if (!desired) return { ok: true, message: "Custom MCP registration preserved. Retarget its Mission runtime manually." };
       if (!sameRegistration(before.registration, desired)) {
         const after = config.writeMcp(spec, INTEGRATION_REPAIR_NONCE, before, desired);
         if (!sameRegistration(after.registration, desired)) throw new Error("MCP repair could not be verified; reconcile its preserved configuration manually.");
       }
-      return "Existing MCP registration repaired with the app runtime.";
+      return { ok: true, message: "Existing MCP registration repaired with the app runtime." };
     }
     const executable = locateCommandSync(spec.cli);
     if (!executable) throw new Error(`${spec.cli} was not found`);
@@ -230,11 +230,11 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
       ["mcp", "add", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName, ...envFlags, "--", ...argv],
       { stdio: "ignore", timeout: 15000, env: executable.env },
     );
-    return "MCP review server registered.";
+    return { ok: true, message: "MCP review server registered." };
   } catch (error) {
-    return add
+    return { ok: false, message: add
       ? `MCP installation needs attention: ${error instanceof Error ? error.message : "Inspect the CLI configuration and retry."}`
-      : `MCP removal needs attention: ${error instanceof Error ? error.message : "Inspect the CLI configuration and retry."}`;
+      : `MCP removal needs attention: ${error instanceof Error ? error.message : "Inspect the CLI configuration and retry."}` };
   }
 }
 
@@ -244,13 +244,15 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
  * `null` is a real answer and gets said out loud: an installer that silently skipped a
  * harness with no MCP client would report a clean install that did half the work.
  */
-function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
-  return AGENT_TYPES.map((agent) => {
+function applyMcp(add: boolean, runtime: Runtime, mcp: string): IntegrationResult {
+  const results = AGENT_TYPES.map((agent) => {
     const spec = capabilitiesFor(agent).mcp;
     const label = AGENT_IDENTITY[agent].label;
-    if (!spec) return `${label}: no MCP client to register with.`;
-    return `${label}: ${registerMcp(spec, add, runtime, mcp)}`;
-  }).join(" ");
+    if (!spec) return { ok: true, message: `${label}: no MCP client to register with.` };
+    const result = registerMcp(spec, add, runtime, mcp);
+    return { ...result, message: `${label}: ${result.message}` };
+  });
+  return { ok: results.every(result => result.ok), message: results.map(result => result.message).join(" ") };
 }
 
 /** Wire hooks + MCP for Claude Code. */
@@ -262,10 +264,10 @@ export function installIntegrations(): IntegrationResult {
     }
     const runtime = resolveRuntime();
     editHooks(false, runtime, hook, statusline);
-    const mcpMsg = applyMcp(true, runtime, mcp);
+    const mcpResult = applyMcp(true, runtime, mcp);
     return {
-      ok: true,
-      message: `Claude integrations installed via ${runtime.label}. ${mcpMsg}\n\nStart a NEW Claude Code session for hooks to take effect.`,
+      ok: mcpResult.ok,
+      message: `${mcpResult.ok ? "Claude integrations" : "Claude hooks"} installed via ${runtime.label}. ${mcpResult.message}\n\nStart a NEW Claude Code session for hooks to take effect.`,
     };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
@@ -285,9 +287,9 @@ export function removeIntegrations(): IntegrationResult {
     // is unconditional, because an env block left pointing at a daemon that is no longer
     // installed makes every session on the machine retry an export forever.
     const telemetry = writeOtelEnv(null);
-    const mcpMsg = applyMcp(false, runtime, mcp);
+    const mcpResult = applyMcp(false, runtime, mcp);
     const telemetryMsg = telemetry === "removed" ? " Cost telemetry env block removed." : "";
-    return { ok: true, message: `Claude integrations removed. ${mcpMsg}${telemetryMsg}` };
+    return { ok: mcpResult.ok, message: `${mcpResult.ok ? "Claude integrations" : "Claude hooks"} removed. ${mcpResult.message}${telemetryMsg}` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

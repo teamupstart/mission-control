@@ -17,9 +17,10 @@ test("desktop repair action runs the real installer and reports preserved custom
     const oldHook = {type:"command",command:'"/mise/shims/node" "/source/hooks/harness-hook.mjs" Stop',timeout:42};
     writeFileSync(settings,JSON.stringify({hooks:{Stop:[{hooks:[oldHook]},{hooks:[oldHook]}]},permissions:{allow:["keep"]}}));
     const installer=await buildOwnedIntegrationInstaller(home);
+    let claudeCli = "/usr/bin/true";
     await page.exposeFunction("repairOwnedFixture", () => JSON.parse(execFileSync(process.execPath,[installer],{
       encoding:"utf8",env:{...process.env,HOME:home,CLAUDE_SETTINGS_PATH:settings,MISSION_HOME:join(home,"state"),MISSION_TEST_APP_ROOT:home,
-        MISSION_NODE_BIN:"/missing/node",MISSION_CLAUDE_BIN:"/usr/bin/false",MISSION_CODEX_BIN:"/usr/bin/false"},
+        MISSION_NODE_BIN:"/missing/node",MISSION_CLAUDE_BIN:claudeCli,MISSION_CODEX_BIN:"/usr/bin/true"},
     })));
     await page.addInitScript(() => Object.defineProperty(window,"missionDesktop",{value:{isDesktop:true,onOpenSettings:()=>()=>{},
       installIntegrations:()=> (window as unknown as {repairOwnedFixture():Promise<unknown>}).repairOwnedFixture()}}));
@@ -47,6 +48,20 @@ test("desktop repair action runs the real installer and reports preserved custom
         .toContain('ELECTRON_RUN_AS_NODE="1"');
       await expect(panel.getByRole("status")).toContainText("installed via this app's bundled Node");
     }
+    claudeCli = "/usr/bin/false";
+    await panel.getByRole("button", {name: "Install Claude integrations"}).click();
+    await expect(panel.getByRole("status")).toContainText("MCP installation needs attention");
+    await expect(panel.getByRole("status")).not.toContainText("Claude integrations installed");
+    await expect(panel.getByRole("status")).toHaveClass("settings-error");
+    await expect(panel.getByRole("button", {name: "Install Claude integrations"})).toBeEnabled();
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      mkdirSync("e2e/.artifacts/setup-node-runtime", {recursive: true});
+      await page.screenshot({path: "e2e/.artifacts/setup-node-runtime/mcp-repair-failure.png", fullPage: true});
+    }
+    claudeCli = "/usr/bin/true";
+    await panel.getByRole("button", {name: "Install Claude integrations"}).click();
+    await expect(panel.getByRole("status")).toContainText("installed via this app's bundled Node");
+    await expect(panel.getByRole("status")).toHaveClass("setup-impact");
     writeFileSync(settings,JSON.stringify({hooks:{Stop:[{hooks:[{command:"echo custom; node /source/hooks/harness-hook.mjs Stop"}]}]}}));
     const custom=readFileSync(settings,"utf8");
     await panel.getByRole("button",{name:"Install Claude integrations"}).click();

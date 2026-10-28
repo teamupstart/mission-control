@@ -71,3 +71,22 @@ test('first installation uses no-replace publication and repair retains permissi
   }), /EEXIST/);
   assert.equal(readFileSync(raced, 'utf8'), 'editor created this');
 });
+
+test('repair preserves the original mode before publication under a restrictive umask', t => {
+  const f = fixture(t);
+  chmodSync(f.path, 0o640);
+  const previousUmask = process.umask(0o077);
+  try {
+    publishIntegrationText(f.path, f.nonce, 'original', 'repaired', {
+      rename: renameSync,
+      link: (from, to) => {
+        assert.equal(statSync(from).mode & 0o777, 0o640, 'staged replacement retains group read access');
+        linkSync(from, to);
+      },
+    });
+    assert.equal(readFileSync(f.path, 'utf8'), 'repaired');
+    assert.equal(statSync(f.path).mode & 0o777, 0o640);
+  } finally {
+    process.umask(previousUmask);
+  }
+});

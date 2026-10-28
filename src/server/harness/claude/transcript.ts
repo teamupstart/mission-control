@@ -179,7 +179,7 @@ function queuedPrompt(rec: Record<string, unknown>): TranscriptMessage | null {
     }
   }
   text = conversationText(text.trim());
-  return text ? withIdentity(rec, "user", text, []) : null;
+  return text ? { ...withIdentity(rec, "user", text, []), takenMidTurn: true } : null;
 }
 
 // ---- the current TodoWrite narration -------------------------------------

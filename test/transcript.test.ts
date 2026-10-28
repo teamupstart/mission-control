@@ -206,6 +206,7 @@ test("a steered message is the operator's turn, though Claude records it as an a
     text: "skip e2e for now",
     tools: [],
     ts: Date.parse("2026-07-11T02:00:05.000Z"),
+    takenMidTurn: true,
   });
   // The block form a turn with an image takes keeps only its prose.
   assert.equal(

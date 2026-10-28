@@ -112,6 +112,9 @@ const REVIEW_HELD_TURN_MS = 15_000;
 // rather than after a timer a slow run could outlast.
 const DEFERRED_STEER = "read this steer at your next step";
 const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
+// A deferred steer that, once read, is ALSO written as a plain `user` record before the
+// agent says anything: one message recorded both ways, which the log must draw once.
+const STEER_RECORDED_TWICE = "and record it twice";
 // A turn that stays open until the spec writes this file into the record dir. Matched by
 // INCLUSION, unlike `HELD_TURN`, because the prompt that carries it is a workflow session
 // action's packet: the daemon wraps the authored Markdown in its own envelope, so no exact
@@ -1354,6 +1357,7 @@ rl.on("line", (line) => {
         if (!existsSync(READ_STEERS_SIGNAL)) return;
         clearInterval(waiting);
         appendQueuedCommand(prompt);
+        if (prompt.includes(STEER_RECORDED_TWICE)) appendTurn("user", prompt);
       }, 100);
       waiting.unref();
       return;

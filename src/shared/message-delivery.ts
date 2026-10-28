@@ -145,6 +145,39 @@ export function assignSteerReceipts(
   return paired;
 }
 
+/**
+ * The log with each steer drawn once, when the agent recorded it twice.
+ *
+ * A message taken mid-turn is written as its own kind of record (`takenMidTurn`). Should
+ * the agent also write the same words as a plain user record before it has said anything,
+ * both are the one message the operator sent, and drawing two would show it sent twice.
+ *
+ * The plain record is dropped only while nothing separates the two: an assistant turn in
+ * between means the agent answered, so the same words afterwards are the operator saying
+ * them again, and both stay. So does a record with a different author. The record kept is
+ * the mid-turn one, the record a steer receipt names. Unchanged input comes back by
+ * reference.
+ */
+export function collapseSteerEchoes(messages: TranscriptMessage[]): TranscriptMessage[] {
+  let taken: TranscriptMessage | null = null;
+  let dropped: Set<TranscriptMessage> | null = null;
+  for (const message of messages) {
+    if (message.role !== "user") {
+      taken = null;
+      continue;
+    }
+    if (message.takenMidTurn) {
+      taken = message;
+      continue;
+    }
+    if (taken && taken.origin === message.origin && comparableText(taken.text) === comparableText(message.text)) {
+      (dropped ??= new Set()).add(message);
+    }
+    taken = null;
+  }
+  return dropped ? messages.filter((message) => !dropped.has(message)) : messages;
+}
+
 /** The receipt of one steer on its own, or null while no turn shows it was read. */
 export function steeredTurnReceipt(
   turn: SteeredTurn,

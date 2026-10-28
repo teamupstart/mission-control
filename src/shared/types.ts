@@ -3373,6 +3373,13 @@ export interface TranscriptMessage {
    */
   originUnresolved?: true;
   /**
+   * True when the agent recorded this user turn as a message it took into a turn already
+   * running (Claude Code's `queued_command` attachment), rather than as a turn of its own.
+   * Lets the dashboard draw it once if the same words are also written as a plain record
+   * before the agent says anything (see `collapseSteerEchoes`).
+   */
+  takenMidTurn?: true;
+  /**
    * How the DASHBOARD should present this turn, when that differs from how the transcript
    * records it. Absent on every turn the log renders literally, which is nearly all of
    * them, and absent on the wire for any client or fixture that never asked.

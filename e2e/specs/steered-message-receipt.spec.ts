@@ -22,7 +22,7 @@ type DaemonHandle = import("../fixtures/daemon.ts").DaemonHandle;
  * A dispatched Claude session with enough history to scroll, held in a running turn, with
  * STEER steered into it and waiting to be read.
  */
-async function steerIntoHeldTurn(dashboard: Page, daemon: DaemonHandle, intent: string) {
+async function steerIntoHeldTurn(dashboard: Page, daemon: DaemonHandle, intent: string, steer = STEER) {
   await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
   const modal = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await modal.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -51,9 +51,9 @@ async function steerIntoHeldTurn(dashboard: Page, daemon: DaemonHandle, intent: 
   await expect(delivered("hold the current turn open")).toBeVisible();
   await expect(rail.locator(".rail-state")).toHaveText("working");
 
-  await composer.fill(STEER);
+  await composer.fill(steer);
   await composer.press("Enter");
-  const queued = card.locator(".pending-turn").filter({ hasText: STEER });
+  const queued = card.locator(".pending-turn").filter({ hasText: steer });
   await queued.getByRole("button", { name: "Steer now", exact: true }).click();
   return { card, log, rail, delivered };
 }
@@ -208,4 +208,29 @@ test("the pill follows the steer's row when the conversation redraws it", async 
   // And it still works on the new element: scrolled away, the pill appears.
   await log.evaluate((el) => { el.scrollTop = 0; });
   await expect(pill).toBeVisible();
+});
+
+test("a steer the agent records twice is delivered once", async ({ dashboard, daemon }) => {
+  test.setTimeout(120000);
+  // The fake writes this one as a queued command AND as a plain user record, nothing between.
+  const twice = `${STEER} and record it twice`;
+  const { card, rail, delivered } = await steerIntoHeldTurn(dashboard, daemon, "deliver a twice-recorded steer once", twice);
+  await expect(card.locator(".pending-turn").filter({ hasText: twice }).getByRole("status"))
+    .toHaveText("steered · waiting for claude to read it");
+  readSteers(daemon);
+  await expect(delivered(twice)).toBeVisible({ timeout: 30000 });
+  await expect(card.locator(".pending-turn").filter({ hasText: twice })).toHaveCount(0);
+  await expect(card.getByRole("article", { name: "you" }).filter({ hasText: twice }).getByRole("status"))
+    .toHaveText("✓ received by claude");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("steered-message-receipt");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await card.screenshot({ path: `${dir}recorded-twice-delivered-once.png` });
+  }
+  // Both records are in the transcript by now; a one-off count, so a second turn arriving
+  // late cannot be waited out by a retrying assertion.
+  await dashboard.waitForTimeout(1000);
+  expect(await delivered(twice).count(), "one delivered operator turn").toBe(1);
+  await expect(rail.locator(".rail-state")).toHaveText("working");
 });

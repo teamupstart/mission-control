@@ -25,6 +25,7 @@ const {
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+const { collapseSteerEchoes } = await import("../src/shared/message-delivery.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
@@ -1842,9 +1843,9 @@ test("a Claude steer leaves when Claude records it as a queued command, mid-turn
 });
 
 test("a Claude steer recorded both as a queued command and as a user record is read once", async () => {
-  // One real transcript holds the steer's attachment and, later, a `user` record with the
-  // same words. The attachment is the receipt; the user record is a turn of its own and must
-  // never answer the same steer a second time.
+  // The attachment and a `user` record with the same words, nothing from the agent between
+  // them: one message recorded twice. The attachment is the receipt, the user record must
+  // never answer the steer a second time, and the conversation shows the message once.
   const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-both-"));
   const path = join(dir, "transcript.jsonl");
   const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
@@ -1878,12 +1879,10 @@ test("a Claude steer recorded both as a queued command and as a user record is r
     [[row.id, "q1"]],
     "one receipt, on the attachment - the user record answers no second steer",
   );
-  // Both records reach the log as the operator's, under their own ids, so neither is lost
-  // and neither is mistaken for the other.
-  const users = claudeTranscript.messages!.appended(path, 0).messages.filter((m) => m.role === "user");
-  assert.deepEqual(users.map((m) => [m.id, m.text]), [
+  // The conversation draws one delivered operator turn: the mid-turn record the receipt names.
+  const visible = collapseSteerEchoes(claudeTranscript.messages!.appended(path, 0).messages);
+  assert.deepEqual(visible.filter((m) => m.role === "user").map((m) => [m.id, m.text]), [
     ["q1", "use the staging database"],
-    ["u1", "use the staging database"],
   ]);
   f.manager.stop();
   rmSync(dir, { recursive: true, force: true });

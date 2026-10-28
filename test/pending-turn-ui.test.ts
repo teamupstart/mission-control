@@ -17,7 +17,7 @@ import {
   shouldRecallPendingTurn,
   receiptsToLabel,
 } from "../src/web/lib/pending-turns.ts";
-import { assignSteerReceipts, steeredTurnReceipt } from "../src/shared/message-delivery.ts";
+import { assignSteerReceipts, collapseSteerEchoes, steeredTurnReceipt } from "../src/shared/message-delivery.ts";
 
 function turn(over: Partial<PendingTurn> = {}): PendingTurn {
   return {
@@ -465,4 +465,23 @@ test("a steer's receipt must carry exactly what the operator wrote, tags include
   assert.equal(steeredTurnReceipt(tagged, [said("use here", 101_000)]), null);
   assert.equal(steeredTurnReceipt(steer({ id: "plain", text: "use here" }), [said("use <Suspense> here", 101_000)]), null);
   assert.equal(steeredTurnReceipt(steer({ id: "yes", text: "yes" }), [said("<b>yes</b>", 101_000)]), null);
+});
+
+test("a steer the agent recorded twice is drawn once, and only while nothing came between", () => {
+  const turn = (id: string, role: "user" | "assistant", text: string, extra: Partial<TranscriptMessage> = {}) =>
+    ({ id, role, text, tools: [], ts: 0, ...extra }) as TranscriptMessage;
+  const taken = turn("q1", "user", "use the staging database", { takenMidTurn: true });
+  const echo = turn("u1", "user", "use  the staging\ndatabase");
+  // Recorded twice with nothing between: one message, kept as the record a receipt names.
+  assert.deepEqual(collapseSteerEchoes([turn("a0", "assistant", "on it"), taken, echo]).map((m) => m.id), ["a0", "q1"]);
+  // The agent answered first: the same words afterwards are the operator saying them again.
+  const answered = [taken, turn("a1", "assistant", "switching"), echo];
+  assert.equal(collapseSteerEchoes(answered), answered, "unchanged, by reference");
+  // Different words, a different author, or two plain records are separate turns.
+  for (const kept of [
+    [taken, turn("u2", "user", "use the prod database")],
+    [taken, { ...echo, origin: "foreman" as const }],
+    [turn("u0", "user", "use the staging database"), echo],
+    [taken, turn("u3", "user", "and one more thing"), echo],
+  ]) assert.equal(collapseSteerEchoes(kept), kept);
 });

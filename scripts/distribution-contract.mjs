@@ -1,3 +1,4 @@
+import { APP_BUNDLE_NAME, binaryBundleName } from '../src/shared/app-naming.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream, lstatSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -11,7 +12,7 @@ export function distributionMetadata({channel, tag, commit, versions}) {
   if (problem) throw new Error(problem);
   const metadata = {protocol: BINARY_MANIFEST_PROTOCOL, repo: BINARY_REPO, channel,
     releaseTag: channel === 'stable' ? tag : null, version: versions.packageVersion, commit,
-    platform: 'darwin', arch: 'arm64', bundleId: BINARY_BUNDLE_ID,
+    platform: 'darwin', arch: 'arm64', bundleId: BINARY_BUNDLE_ID, appBundleName: APP_BUNDLE_NAME,
     minimumSystemVersion: MINIMUM_DISTRIBUTION_MACOS,
     helperProtocol: {min: INSTALL_HELPER_PROTOCOL, max: INSTALL_HELPER_PROTOCOL}, receiptSchema: BINARY_RECEIPT_SCHEMA};
   assertBuildMetadata(metadata);
@@ -26,7 +27,7 @@ export function assertBuildMetadata(metadata) {
 export function distributionNames(metadata) {
   assertBuildMetadata(metadata);
   const identity = metadata.channel === 'stable' ? metadata.releaseTag : `alpha-${metadata.commit}`;
-  const stem = `Mission-Control-${identity}-darwin-arm64`;
+  const stem = `${binaryBundleName(metadata) === APP_BUNDLE_NAME ? "Agent-Mission-Control" : "Mission-Control"}-${identity}-darwin-arm64`;
   return {'app-zip': `${stem}.zip`, dmg: `${stem}.dmg`};
 }
 

@@ -124,7 +124,7 @@ function pinnedCheckout(): { dir: string; checkout: string; shimDir: string } {
 
 test("an Electron daemon launches the MCP server on its own binary in node mode", () => {
   const electronApp = "/Applications/Mission Control.app/Contents/MacOS/Mission Control";
-  assert.deepEqual(resolveMissionMcpRuntime(electronApp), {
+  assert.deepEqual(resolveMissionMcpRuntime(electronApp, "electron"), {
     command: electronApp,
     env: { ELECTRON_RUN_AS_NODE: "1" },
   });

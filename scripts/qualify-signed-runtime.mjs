@@ -59,7 +59,7 @@ export async function qualifySignedRuntime(app, metadata, policy) {
   let helper;
   let parent;
   try {
-    const original = join(root, 'Mission Control.app');
+    const original = join(root, 'Agent Mission Control.app');
     execFileSync('/bin/cp', ['-R', app, original]);
     // Preserve download quarantine through both copies and assess it. A separate
     // clean-account GUI test is still required for first-install Gatekeeper UX.
@@ -136,7 +136,7 @@ export async function qualifySignedRuntime(app, metadata, policy) {
 
 if (process.argv[2] === '--parent') {
   const root = process.argv[3];
-  const original = join(root, 'Mission Control.app');
+  const original = join(root, 'Agent Mission Control.app');
   const appRoot = join(original, 'Contents/Resources/app');
   const {spawnBundledUpdateHelper} = await import(pathToFileURL(join(appRoot, 'scripts/update-helper-runtime.mjs')).href);
   const state = join(root, 'state');

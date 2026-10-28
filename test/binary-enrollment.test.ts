@@ -18,10 +18,10 @@ function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: num
   const homeMock = t.mock.method(os, 'homedir', () => home);
   t.after(() => {homeMock.mock.restore(); syncBuiltinESMExports();});
   const temporary = location === 'translocated' || location === 'mounted-image';
-  const bundle = join(root, location === 'translocated' ? 'AppTranslocation/fixture/d/Mission Control.app'
-    : location === 'mounted-image' ? 'MC-image/Mission Control.app'
-    : location === 'personal' ? 'home/Applications/Mission Control.app'
-    : location === 'personal-alias' ? 'Personal Apps/Mission Control.app' : 'Copied Apps/Mission Control.app');
+  const bundle = join(root, location === 'translocated' ? 'AppTranslocation/fixture/d/Agent Mission Control.app'
+    : location === 'mounted-image' ? 'MC-image/Agent Mission Control.app'
+    : location === 'personal' ? 'home/Applications/Agent Mission Control.app'
+    : location === 'personal-alias' ? 'Personal Apps/Agent Mission Control.app' : 'Copied Apps/Agent Mission Control.app');
   const appRoot = join(bundle, 'Contents/Resources/app');
   mkdirSync(join(appRoot, 'scripts'), {recursive: true});
   const metadata = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',

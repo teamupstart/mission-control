@@ -202,7 +202,7 @@ test("desktop update banner exposes the complete update flow while the browser s
   // processes are still writing into the shared clone until they are gone.
   await dashboard.getByRole("button", { name: "Cancel" }).click();
   await expect(status).toContainText("Cancelling the Mission Control 0.2.0 update");
-  await expect(status).toContainText("Waiting for the build to stop");
+  await expect(status).toContainText("Waiting for the download and verification to stop");
   await expect(dashboard.getByRole("progressbar")).toHaveCount(0);
   await expect(dashboard.getByRole("button", { name: "Cancel" })).toHaveCount(0);
   await screenshot("cancelling");
@@ -246,7 +246,7 @@ test("desktop update banner exposes the complete update flow while the browser s
     retryable: true,
     lastOutcome: null,
   } satisfies UpdateSnapshot);
-  await expect(status).toContainText("update check failed");
+  await expect(status).toContainText("update could not finish");
   await screenshot("manual-error");
   await dashboard.getByRole("button", { name: "Retry" }).click();
   await expect(status).toContainText("0.2.0");
@@ -264,7 +264,7 @@ test("desktop update banner exposes the complete update flow while the browser s
     retryable: true,
     lastOutcome: null,
   } satisfies UpdateSnapshot);
-  await expect(status).toContainText("update check failed");
+  await expect(status).toContainText("update could not finish");
   await expect(status).toContainText("gh auth login");
   await screenshot("background-auth-error");
   await expect(dashboard.getByRole("button", { name: "Retry" })).toBeVisible();

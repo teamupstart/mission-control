@@ -38,7 +38,7 @@
     "build:web": "vite build",
     "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/index.mjs",
     "build:foreman": "esbuild src/server/foreman/worker.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/foreman-worker.mjs",
-    "build:main": "esbuild src/main/index.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
+    "build:main": "esbuild src/main/index.ts src/main/update-binary-worker.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
     "smoke": "node scripts/smoke-bundles.mjs",
     "verify:keep-awake-native": "node scripts/probe-keep-awake-native.mjs",
@@ -46,7 +46,7 @@
     "demo": "node scripts/demo/launch.mjs",
     "docs:screenshots": "node scripts/docs-screenshots.mjs",
     "docs:embed": "node scripts/embed-guide-images.mjs",
-    "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
+    "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs && esbuild hooks/harness-statusline.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/harness-statusline.mjs",
     "build:codex-hook": "esbuild hooks/codex-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/codex-hook.mjs",
     "package": "npm run build && electron-builder --mac --publish never",
     "package:distribution": "node scripts/package-distribution.mjs",
@@ -121,7 +121,8 @@
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "zod": "^3.24.1",
-    "zod-to-json-schema": "3.25.2"
+    "zod-to-json-schema": "3.25.2",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@electron/fuses": "1.8.0",
@@ -139,7 +140,8 @@
     "oxlint": "^1.76.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^6.4.4"
+    "vite": "^6.4.4",
+    "@types/yauzl": "3.4.0"
   },
   "overrides": {
     "@anthropic-ai/claude-agent-sdk": {

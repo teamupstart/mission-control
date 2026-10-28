@@ -407,3 +407,23 @@ test("the required terminal pair follows usable composition, not backend presenc
   assert.equal(pair?.status.state, "missing");
   assert.equal(pair?.requirement, "required");
 });
+
+test("external Node gaps remain feature-scoped, preserve acknowledgements, and cannot hide required gaps", async () => {
+  const acknowledgement = {source:"dependency" as const,id:"node-runtime" as const};
+  let writes = 0;
+  const view = await setupChecksView(deps({
+    runtime: () => ({origin:"bundled",node:"24.1.0",electron:"43.0.0",executable:"/app/engine"}),
+    executableDiagnostic: async id => id === "node" ? null : {path:`/tools/${id}`,source:"configured"},
+    terminalTargets: () => [],
+    readBannerDismissal: () => ({firstLaunchAcknowledged:true,acknowledged:[acknowledgement]}),
+    writeBannerDismissal: () => writes++,
+  }));
+  assert.equal(view.runtime?.origin,"bundled");
+  assert.equal(view.rows.find(row => row.rowId.id === "node-runtime")?.status.state,"needs-setup");
+  assert.ok(!view.banner.attentionRowIds.some(row=>row.id==="node-runtime"));
+  assert.ok(view.banner.attentionRowIds.some(row=>row.id==="terminal-pair"));
+  assert.equal(view.banner.visible,true);
+  assert.equal(writes,0,"existing node dismissal remains readable without resetting other records");
+  const first = await setupChecksView(deps({resolveBinPath:async bin=>bin === "node" ? null : bin}));
+  assert.equal(first.banner.visible,true,"first-launch guidance remains present");
+});

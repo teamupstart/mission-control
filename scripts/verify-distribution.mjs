@@ -1,3 +1,4 @@
+import { APP_EXECUTABLE_NAME, binaryBundleName } from "../src/shared/app-naming.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -19,11 +20,12 @@ export async function verifyDistributionApp(app, metadata, policy) {
   verifyBinaryPublisher(app, policy);
   macTool('/usr/bin/xcrun', ['stapler', 'validate', app]);
   const plist = join(app, 'Contents/Info.plist');
-  for (const [key, value] of Object.entries({CFBundleIdentifier: policy.bundleId,
+  for (const [key, value] of Object.entries({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: APP_EXECUTABLE_NAME,
+    CFBundleName: binaryBundleName(metadata).slice(0, -4),
     CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion})) {
     assert.equal(macTool('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist]).stdout, value, key);
   }
-  const executable = join(app, 'Contents/MacOS/Mission Control');
+  const executable = join(app, 'Contents/MacOS', APP_EXECUTABLE_NAME);
   assert.equal(macTool('/usr/bin/lipo', ['-archs', executable]).stdout, 'arm64');
   const signature = macTool('/usr/bin/codesign', ['-d', '--verbose=4', app]).stderr;
   assert.match(signature, /flags=.*\bruntime\b/);
@@ -56,14 +58,14 @@ export async function verifyDistributionArchives({app, appDigest, files, metadat
     assert.match(digest ?? '', /^[a-f0-9]{64}$/);
     macTool('/usr/bin/hdiutil', ['attach', files.dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
     mounted = true;
-    const dmgApp = join(mount, 'Mission Control.app');
+    const dmgApp = join(mount, binaryBundleName(metadata));
     assert.equal(inspectBundle(dmgApp).digest, digest, 'DMG must contain the exact signed app');
     await verifyDistributionApp(dmgApp, metadata, policy);
     const extracted = join(root, 'zip'); mkdirSync(extracted);
     // Locally produced or retained producer artifacts, not the later client
     // untrusted-download extractor or an installer entry point.
     macTool('/usr/bin/ditto', ['-x', '-k', files['app-zip'], extracted]);
-    const zipApp = join(extracted, 'Mission Control.app');
+    const zipApp = join(extracted, binaryBundleName(metadata));
     assert.equal(inspectBundle(zipApp).digest, digest, 'ZIP must contain the exact signed app');
     await verifyDistributionApp(zipApp, metadata, policy);
     if (requalifyRuntime) {

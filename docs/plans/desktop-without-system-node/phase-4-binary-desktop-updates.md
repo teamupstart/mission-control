@@ -1,12 +1,18 @@
 # Phase 4: Binary desktop updates with visible progress and recovery
 
+Ordering correction: the rename and compatible binary consumer must land together before any binary installation or upgrade. PR #1214 stays draft and DO NOT MERGE independently. The sole R1/R2 qualification and dependency contract is [forward-rollout.md](forward-rollout.md).
+
 Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the earlier phase contracts first. This is the proposed implementation route; use judgment when current code differs and explain deviations in the PR. Repository: mission-control only.
+
+## Approved forward rollout, 2026-10-26
+
+Phase 4 may merge after its applicable implementation checks; [R2 in the forward-rollout contract](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns signed update and recovery qualification.
 
 ## Outcome and entry criteria
 
 A packaged Mission Control app on a supported Mac can accept stable or exact-SHA alpha updates without system Node, npm, a source clone or local compilation. It remains usable while downloading and verifying, reports unavailable binaries accurately, and preserves the shared transaction's recovery guarantees.
 
-Direct phase prerequisite: Phase 3 merged. The planning publication edge must also be satisfied. Inherited prerequisites include the C1-C4 signed artifact, receipt and helper contracts. Verify that the published binary installer can repair an old install with no Node before switching updater consumers. Read the current updater state machine, preload contract, both UI surfaces and existing update E2E fixtures.
+Direct phase prerequisite: Phase 3 merged. The planning publication edge must also be satisfied. Inherited prerequisites include the C1-C4 signed artifact, receipt and helper contracts. Verify the merged binary installer contract and legacy replacement regression coverage. R1 verifies actual no-Node migration into the first signed release; that release need not exist before this implementation completes or merges. Read the current updater state machine, preload contract, both UI surfaces and existing update E2E fixtures.
 
 ## Scope and non-goals
 
@@ -52,23 +58,23 @@ Test stable selection across incomplete/newer releases; exact-SHA alpha pending/
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add/update and run `e2e/specs/alpha-updates.spec.ts`, `update-banner.spec.ts`, `update-preload.spec.ts`, `update-node-preflight.spec.ts`, `update-install-identity.spec.ts`, `user-install-migration.spec.ts` and `update-dialog-theme.spec.ts` as applicable, plus a dedicated binary download/cancel flow. Verify visible states and actions, not just request payloads; measure inset for new modals. Keep agents faked and capture inspected screenshots in both themes.
 
-Mandatory packaged proof: signed old/new apps from Phase 2 in isolated state with no host runtime, plus traps in a second run. Exercise stable and exact-SHA alpha, user/system/custom destinations, legacy relocation, cancel before shutdown, wrong/corrupt asset, target readiness failure and interrupted recovery. Verify exact installed identity/receipt and unchanged state ownership. This establishes NC-2, update failure portions of NC-3/NC-4 and progress portions of NC-6. Browser fixtures cannot substitute for detached signature/Gatekeeper behavior.
+Implementation evidence covers discovery, transport, trust, handoff, progress and recovery boundaries above. Hand off those results to [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery), which owns the signed update/recovery matrix, release inputs and completion criteria.
 
-## Merge and exit criteria
+## Implementation completion and merge criteria
 
-- A real supported packaged app updates to the pinned signed stable/alpha target with no host runtime invocation or source build.
+- The binary desktop consumer prepares and hands off the pinned stable/alpha descriptor without host runtime probes or source compilation; focused controller, transport, trust, receipt and detached-runtime regressions prove the implemented boundaries. Actual signed update/recovery execution belongs to R2.
 - Both UI surfaces show accurate download/verify progress, cancellation, availability, restart and recovery outcomes.
 - Every failure before commitment preserves the current installation; recovery after commitment respects database compatibility and existing journal ownership.
 - Explicit developer/source commands remain usable; binary consumers have no silent compilation fallback.
-- Focused, build, browser and packaged checks pass with durable evidence.
+- Applicable focused, typecheck, lint, build, smoke, browser and detached Electron regression checks pass with durable evidence. Missing newly produced signed assets do not block this implementation handoff. Register R1/R2 as outstanding rollout verification, never as passed execution.
 
 ## Downstream handoff
 
-Phase 5 can classify packaged updates as independent of host Node. It must not alter C6 transport/trust or transaction rules while changing Setup and integration runtimes. It receives an actual no-Node updater for the final combined sentinel journey, not a mock capability flag.
+Phase 5 can classify packaged updates as independent of host Node. It must not alter C6 transport/trust or transaction rules while changing Setup and integration runtimes. It receives the implemented no-Node updater and existing regression evidence. Phase 5 depends on this phase merging, not on R1/R2 release availability; the combined signed sentinel journey is tracked in R2.
 
 ## Cross-phase audit record
 
 - Re-read root/index and Phases 1-3: kept accepted descriptor identity, signature policy and receipt transaction with their existing owners.
-- Kept Phase 3 first-install recovery ahead of updater transition; no source-build fallback is used to compensate for incomplete binary publication.
+- Phase 3 supplies first-install/recovery code before the updater; R1 qualifies its first signed release. The approved forward rollout removes the historical-assets implementation gate while retaining refusal of incomplete publication and source-build fallback.
 - UI, IPC and transport are one merge unit; Phase 5 changes only the remaining integration/prerequisite meaning.
 - Final audit: source receipt compatibility does not imply source compilation. Old canonical installations can move directly to binary distribution using the shared transaction.

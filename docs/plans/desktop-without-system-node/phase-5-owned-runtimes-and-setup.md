@@ -2,11 +2,15 @@
 
 Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and the completed phase handoffs first. Treat this as the proposed implementation route; preserve the outcome, use judgment where code differs, and document deviations in the PR. Repository: mission-control only.
 
+## Approved forward rollout, 2026-10-26
+
+Phase 5 depends on the combined rename and compatible Phase 4 consumer merge. [R2 in the forward-rollout contract](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns the combined signed update and owned-runtime qualification.
+
 ## Outcome and entry criteria
 
 Installed Mission Control and its owned integrations work without host Node, while Setup describes the actual running runtime and keeps external prerequisites scoped to the feature that requires them. Users with old or missing system Node no longer receive a universal app-runtime warning.
 
-Direct phase prerequisite: Phase 4 merged, plus the planning publication dependency. Verify the no-Node bootstrap and actual binary update journey exist, with their signed and recovery evidence. Do not remove the warning on the strength of a proposed future updater. Read Setup's catalog/probes/banner dismissal behavior and all owned satellite launch sites before editing.
+Direct phase prerequisite: the combined rename and compatible Phase 4 consumer merged, plus the planning publication dependency. Verify the merged no-Node bootstrap/updater code and applicable regression evidence. The actual signed combined journey is R2 rollout qualification after new releases exist; it is not a prerequisite for starting or merging this phase. Runtime-origin and prerequisite labels must describe implemented capabilities honestly, without claiming unexecuted release qualification. Read Setup's catalog/probes/banner dismissal behavior and all owned satellite launch sites before editing.
 
 ## Scope and non-goals
 
@@ -44,7 +48,7 @@ Actual runtime origin -> Owned runtime resolver -> Owned registrations -> Shippe
 6. Project the actual daemon runtime/origin and relevant installed update capability through existing Setup owners. Use an additive browser-safe field/row shape only where needed; update server schemas, settings comparison, snapshot/SSE handling and client types together. Avoid a second runtime discovery service. Do not claim an adopted standalone daemon is bundled just because an Electron window is connected.
 7. Make system Node informational or feature-scoped for the completed packaged lifecycle. Preserve selected path/version/source and useful remedies for genuine source/third-party use. Keep the append-only `node-runtime` id and older dismissal records readable; the shared attention predicate should still work for every genuinely required row. A missing external runtime must not hide another required Setup problem or suppress first-launch guidance. Unknown probe results must remain unknown rather than falsely ready.
 8. Update Setup panel/banner copy, tour content source, update guidance and user documentation to explain that Electron still contains Node, while operators do not need their own Node for app installation/updates/owned tools. Source development, user projects and optional external tools retain their prerequisites. Regenerate generated tour/guide assets through their owners, never edit generated output. Include the correct source and retained HTML policy for any docs artifacts.
-9. Run the complete signed no-Node journey in an isolated account/VM: first install, launch, owned hook/MCP/statusline/Pi-helper/resume execution, stable update, exact-SHA alpha update, failure/rollback or forward recovery, relocation and registration repair. Use both absent commands and invocation-recording traps. Confirm no owned app path invokes host Node/npm/npx and independently exercise the preserved source path with supported Node.
+9. Supply this phase's integration inventory and focused bundled-runtime, registration-repair and source-path results to [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery). Keep the combined signed qualification matrix and release inputs in that contract.
 
 ## Data, API and compatibility
 
@@ -60,15 +64,15 @@ Run the isolated test invocation from AGENTS.md for `test/mission-mcp-runtime-el
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`. Add/update and run `e2e/specs/setup-node-runtime.spec.ts`, `setup-banner-and-tour.spec.ts`, `setup-panel.spec.ts`, `pi-extension-setup.spec.ts`, `user-install-migration.spec.ts` and the changed integration repair flows. Assert readable runtime labels, no false universal banner, persistent unrelated required gaps, correct feature warnings and real action feedback. Measure border insets on any new modal, keep agents faked and capture inspected light/dark screenshots.
 
-Final proof covers NC-1 through NC-6 using the actual signed bundles and independent helper, not only fixture responses. Register exact command outputs, synthetic receipt/identity comparisons and relevant screenshots. Do not put test credentials, personal config, live state or evidence files into Git. Document any third-party invocation separately so the no-host-Node claim is limited to the app and its owned code.
+Implementation acceptance uses the applicable focused, build, browser and real bundled-runtime regressions above. Register their command output and relevant screenshots as gitignored evidence, and document third-party invocations separately from app-owned execution. [R2](forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery) owns the combined signed qualification requirements and evidence boundary.
 
-## Merge and exit criteria
+## Implementation completion and merge criteria
 
 - All inventoried Mission-owned packaged helpers use a suitable app runtime, including repaired old registrations; source and custom commands retain their intended behavior.
 - Old/missing system Node does not create a universal packaged Setup gap, and runtime origin is accurate for packaged, standalone and adopted daemons.
 - Third-party and source requirements remain visible where relevant; no global PATH/version-manager configuration is changed.
-- The complete signed first-install/update/recovery/integration journey has passing proof, and user-facing docs describe the delivered limits accurately.
-- The app now meets the plan's host-Node-free outcome; no undocumented final cleanup phase is required.
+- Applicable focused, typecheck, lint, build, smoke, browser and bundled-runtime checks pass, and user-facing docs describe delivered capabilities and outstanding release qualification accurately.
+- Implementation of the host-Node-free lifecycle is complete. R1/R2 remain explicit release qualification follow-ups rather than an undocumented cleanup phase or an implementation dependency cycle.
 
 ## Downstream handoff
 
@@ -76,7 +80,7 @@ This is the final implementation phase. Maintain the runtime inventory, manifest
 
 ## Cross-phase audit record
 
-- Re-read source/index and Phases 1-4: Setup removal follows the actual binary lifecycle and does not attempt to waive unresolved updater prerequisites.
+- Re-read source/index and Phases 1-4: Setup follows the merged binary runtime implementation; the operator-approved forward rollout tracks real signed qualification in R1/R2 without waiving trust or recovery checks.
 - Retained Phase 1 pure runtime ownership and Phase 3 config path migration. Added repair of previously persisted commands rather than relying on future installations alone.
 - Explicitly distinguished source-only statusline installation from packaged wrapper support and third-party inner commands; the inventory must prove its scope.
-- Final audit: NC-5 and Setup's NC-6 have one implementation owner here, while the combined end-to-end proof exercises inherited NC-1 through NC-4 without redefining their contracts.
+- Final audit: NC-5 and Setup's NC-6 retain their implementation owner; R2 records the combined signed proof without redefining those contracts.

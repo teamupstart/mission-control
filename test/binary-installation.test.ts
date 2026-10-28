@@ -13,18 +13,18 @@ import { binaryEnrollmentChoice } from '../src/shared/binary-enrollment.ts';
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 import { validateNativeStateLockBinding } from '../src/server/state-ownership-native.ts';
-import { claimInstallReceiptWriter } from '../scripts/install-migration.mjs';
+import { claimInstallReceiptWriter, readMigrationJournal } from '../scripts/install-migration.mjs';
 import { binaryInstallationPage } from '../src/main/startup-page.ts';
 
 test('the local installation page treats paths and diagnostics as text, not markup', () => {
-  const page = binaryInstallationPage({action: 'install', destination: '/Users/<operator & tools>/Applications/Mission Control.app', message: '<script>untrusted()</script>'});
+  const page = binaryInstallationPage({action: 'install', destination: '/Users/<operator & tools>/Applications/Agent Mission Control.app', message: '<script>untrusted()</script>'});
   assert.match(page, /&lt;operator &amp; tools&gt;/);
   assert.match(page, /&lt;script&gt;untrusted\(\)&lt;\/script&gt;/);
   assert.doesNotMatch(page, /<script>/);
 });
 
 const nativeAddon = ensureNativeStateLockAddon();
-const identity = {protocol: 1, repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app', channel: 'stable', releaseTag: 'v1.2.3', version: '1.2.3', commit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}};
+const identity = {protocol: 1, appBundleName: 'Agent Mission Control.app', repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app', channel: 'stable', releaseTag: 'v1.2.3', version: '1.2.3', commit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}};
 const manifest = {...identity, assets: [
   {kind: 'dmg', id: '1', name: 'app.dmg', bytes: 100, sha256: 'a'.repeat(64)},
   {kind: 'app-zip', id: '2', name: 'app.zip', bytes: 100, sha256: 'b'.repeat(64)},
@@ -48,7 +48,7 @@ function fixture(t: test.TestContext) {
   mkdirSync(join(bundle, 'Contents/Resources/app'), {recursive: true});
   writeFileSync(join(bundle, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.2.3</string>');
   writeFileSync(join(bundle, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...identity, receiptSchema: 2}, missionCommit: identity.commit, version: identity.version,
-    missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, receiptSchemas: [1, 2]}}));
+    missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, appNaming: 1, receiptSchemas: [1, 2]}}));
   const manifestPath = join(root, 'manifest.json'); writeFileSync(manifestPath, JSON.stringify(manifest));
   const exec = childProcess.execFileSync;
   const native = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[], options: childProcess.ExecFileSyncOptions) => {
@@ -71,7 +71,7 @@ function fixture(t: test.TestContext) {
     install: (descriptor: Parameters<typeof installStagedApp>[0], options: Parameters<typeof installStagedApp>[1]) => installStagedApp(descriptor, {...options, verifyPublisher}),
     acquireState: () => () => {}, launch: async (path: string) => {installed.push(path);}};
   const args = {bundle, manifest: manifestPath, scope: null, appsDir: null, dryRun: false, enroll: false};
-  return {root, home, stateDirectory, bundle, ports, args, installed, appPath: join(home, 'Applications/Mission Control.app')};
+  return {root, home, stateDirectory, bundle, ports, args, installed, appPath: join(home, 'Applications/Agent Mission Control.app')};
 }
 
 function nextRelease(f: ReturnType<typeof fixture>) {
@@ -198,10 +198,11 @@ for (const scope of ['user', 'custom'] as const) test(`binary rerun replaces the
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
 });
 
-for (const source of ['app-src', 'installers/installer-owned']) test(`binary installer replaces a schema-1 ${source} installation while preserving its destination, absent scope and state`, async t => {
+for (const source of ['app-src', 'installers/installer-owned']) test(`binary installer replaces a schema-1 old-name ${source} installation while preserving its directory, absent scope and state`, async t => {
   const f = fixture(t);
   const appsDir = join(f.root, 'legacy-apps'); mkdirSync(appsDir);
-  const legacyApp = join(appsDir, 'Mission Control.app'); cpSync(f.bundle, legacyApp, {recursive: true});
+  const legacyApp = join(appsDir, 'Mission Control.app');
+  const renamedApp = join(appsDir, 'Agent Mission Control.app'); cpSync(f.bundle, legacyApp, {recursive: true});
   // This old app advertises neither binary provenance nor either new handshake.
   writeFileSync(join(legacyApp, 'Contents/Resources/app/package.json'), JSON.stringify({version: identity.version, missionCommit: identity.commit}));
   const previous = inspectBundle(legacyApp);
@@ -222,18 +223,20 @@ for (const source of ['app-src', 'installers/installer-owned']) test(`binary ins
   let ready = false;
   ports.runtime.waitForReady = async () => {
     ready = true;
-    assert.deepEqual(inspectBundle(legacyApp), expected);
+    assert.deepEqual(inspectBundle(legacyApp), previous, 'old app remains until receipt commitment');
+    assert.equal(inspectBundle(renamedApp).digest, expected.digest);
     assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt, 'keep the legacy receipt until the new app is ready');
   };
-  assert.deepEqual(await installBinary(f.args, ports), {appPath: legacyApp, dryRun: false});
+  assert.deepEqual(await installBinary(f.args, ports), {appPath: renamedApp, dryRun: false});
   assert.equal(ready, true);
   assert.deepEqual(ports.events, ['launch']);
-  assert.deepEqual(inspectBundle(legacyApp), expected);
+  assert.equal(existsSync(legacyApp), false);
+  assert.equal(inspectBundle(renamedApp).digest, expected.digest);
   const receipt = readBinaryReceipt(f.stateDirectory)!;
   assert.equal(validateReceipt(receipt), null);
   assert.equal(receipt.schema, 2);
   assert.equal(receipt.kind, 'binary');
-  assert.equal(receipt.appPath, legacyApp);
+  assert.equal(receipt.appPath, renamedApp);
   assert.equal(Object.hasOwn(receipt, 'installScope'), false);
   assert.equal(Object.hasOwn(receipt, 'sourceClone'), false);
   assert.equal(receipt.installedVersion, next.version);
@@ -289,7 +292,7 @@ test('enrollment refuses a different managed destination without changing either
   const f = fixture(t);
   await installBinary(f.args, f.ports);
   const appsDir = join(f.root, 'copied-apps'); mkdirSync(appsDir);
-  const copiedApp = join(appsDir, 'Mission Control.app'); cpSync(f.bundle, copiedApp, {recursive: true});
+  const copiedApp = join(appsDir, 'Agent Mission Control.app'); cpSync(f.bundle, copiedApp, {recursive: true});
   const managed = inspectBundle(f.appPath);
   const copied = inspectBundle(copiedApp);
   const receiptPath = join(f.stateDirectory, 'install-receipt.json');
@@ -316,8 +319,8 @@ test('occupied and missing custom destinations fail without altering state', asy
   const f = fixture(t);
   await assert.rejects(installBinary({...f.args, appsDir: join(f.root, 'missing')}, f.ports), /does not exist/);
   assert.equal(existsSync(join(f.stateDirectory, 'install-receipt.json')), false);
-  assert.throws(() => assertPersistentDestination('/Volumes/Installer/Mission Control.app', () => true), /mounted image/);
-  assert.doesNotThrow(() => assertPersistentDestination('/Volumes/External/Apps/Mission Control.app', () => false));
+  assert.throws(() => assertPersistentDestination('/Volumes/Installer/Agent Mission Control.app', () => true), /mounted image/);
+  assert.doesNotThrow(() => assertPersistentDestination('/Volumes/External/Apps/Agent Mission Control.app', () => false));
 });
 
 test('unknown state owner prevents first install before the bundle or receipt is written', async t => {
@@ -333,19 +336,34 @@ test('dry runs verify the candidate but create no application or receipt', async
 
 test('schema-1 clone and retained-compiled-installer receipts preserve destination and absent scope', () => {
   for (const sourceClone of ['/state/app-src', '/state/installers/installer-owned']) {
-    const previous = {schema: 1 as const, sourceClone, repo: identity.repo, releaseTag: 'v1.0.0', installedVersion: '1.0.0', installedAt: '2026-10-14T00:00:00.000Z', appPath: '/Applications/Mission Control.app'};
+    const previous = {schema: 1 as const, sourceClone, repo: identity.repo, releaseTag: 'v1.0.0', installedVersion: '1.0.0', installedAt: '2026-10-14T00:00:00.000Z', appPath: '/Applications/Agent Mission Control.app'};
     const receipt = binaryInstallReceipt(JSON.stringify(manifest), resolveInstallDestination({receipt: previous}), previous);
     assert.equal(receipt.appPath, previous.appPath); assert.equal(receipt.installScope, undefined); assert.equal(receipt.sourceClone, undefined);
   }
 });
 
+test('desktop ZIP receipts share installer policy and bind the downloaded asset and original manifest bytes', () => {
+  const previous = {schema: 1 as const, sourceClone: '/state/app-src', repo: identity.repo, releaseTag: 'v1.0.0',
+    installedVersion: '1.0.0', installedAt: '2026-10-14T00:00:00.000Z', appPath: '/custom/Agent Mission Control.app', installScope: 'custom' as const};
+  const text = JSON.stringify(manifest, null, 2);
+  const destination = resolveInstallDestination({receipt: previous});
+  const disk = binaryInstallReceipt(text, destination, previous);
+  const zip = binaryInstallReceipt(text, destination, previous, disk.installedAt, 'app-zip');
+  assert.deepEqual(zip, {...disk, provenance: {...disk.provenance, assetId: '2'}});
+  assert.equal(zip.appPath, previous.appPath);
+  assert.equal(zip.installScope, 'custom');
+  assert.equal(zip.sourceClone, undefined);
+  assert.equal(validateReceipt(zip), null);
+  assert.notEqual(zip.provenance.manifestSha256, binaryInstallReceipt(JSON.stringify(manifest), destination, previous).provenance.manifestSha256);
+});
+
 test('enrollment choices preserve managed conflicts and never enroll mounted or translocated apps', () => {
-  for (const bundle of ['/Volumes/MC/Mission Control.app', '/private/var/folders/test/AppTranslocation/id/d/Mission Control.app']) {
+  for (const bundle of ['/Volumes/MC/Agent Mission Control.app', '/private/var/folders/test/AppTranslocation/id/d/Agent Mission Control.app']) {
     const state = binaryEnrollmentChoice({bundle, home: '/Users/test', managedPath: null, temporary: true});
-    assert.equal(state.action, 'install'); assert.equal(state.destination, '/Users/test/Applications/Mission Control.app');
+    assert.equal(state.action, 'install'); assert.equal(state.destination, '/Users/test/Applications/Agent Mission Control.app');
   }
-  assert.equal(binaryEnrollmentChoice({bundle: '/custom/Mission Control.app', home: '/Users/test', managedPath: null}).action, 'enroll');
-  assert.equal(binaryEnrollmentChoice({bundle: '/custom/Mission Control.app', home: '/Users/test', managedPath: '/other/Mission Control.app'}).action, null);
+  assert.equal(binaryEnrollmentChoice({bundle: '/custom/Agent Mission Control.app', home: '/Users/test', managedPath: null}).action, 'enroll');
+  assert.equal(binaryEnrollmentChoice({bundle: '/custom/Agent Mission Control.app', home: '/Users/test', managedPath: '/other/Agent Mission Control.app'}).action, null);
   assert.throws(() => parseBinaryInstallArgs(['--bundle','/x','--manifest','/m','--bundle','/other']), /Repeated/);
 });
 
@@ -437,4 +455,35 @@ for (const initialLock of ['missing', 'released'] as const) test(`first install 
   assert.equal(readBinaryReceipt(f.stateDirectory)?.appPath, f.appPath);
   assert.deepEqual(inspectBundle(f.appPath), inspectBundle(f.bundle));
   assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+test('an old-name schema-2 binary receipt migrates in the same personal folder and retains its original provenance in recovery', async t => {
+  const f = fixture(t);
+  await installBinary(f.args, f.ports);
+  const legacyApp = join(f.home, 'Applications/Mission Control.app');
+  const receipt = readBinaryReceipt(f.stateDirectory)!;
+  cpSync(f.appPath, legacyApp, {recursive: true}); rmSync(f.appPath, {recursive: true});
+  const previous = inspectBundle(legacyApp);
+  assert.equal(receipt.kind, 'binary');
+  if (receipt.kind !== 'binary') throw new Error('Expected binary receipt');
+  const legacyManifest = structuredClone(receipt.provenance.manifest);
+  delete legacyManifest.appBundleName;
+  const old = {...receipt, appPath: legacyApp, provenance: {...receipt.provenance, manifest: legacyManifest}};
+  const exact = `\n${JSON.stringify(old, null, 4)}\n`;
+  writeFileSync(join(f.stateDirectory, 'install-receipt.json'), exact);
+  nextRelease(f);
+  const ports = replacementPorts(t, f);
+  assert.deepEqual(await installBinary(f.args, ports), {appPath: f.appPath, dryRun: false});
+  const journal = readMigrationJournal(f.stateDirectory)!;
+  assert.equal(journal.plan.oldReceiptText, exact);
+  assert.deepEqual(inspectBundle(journal.plan.backup!), previous);
+  assert.equal(existsSync(legacyApp), false);
+  assert.equal(readBinaryReceipt(f.stateDirectory)!.appPath, f.appPath);
+  assert.equal(readFileSync(join(f.stateDirectory, 'keep-state'), 'utf8'), 'untouched operator fixture');
+});
+
+test('a layout without the rename capability cannot downgrade a renamed installation', t => {
+  const f = fixture(t);
+  const original = {...manifest}; delete (original as {appBundleName?: string}).appBundleName;
+  assert.throws(() => binaryInstallReceipt(JSON.stringify(original), resolveInstallDestination({home: f.home}), null), /older binary cannot maintain the renamed installation/);
 });

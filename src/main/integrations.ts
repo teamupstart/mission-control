@@ -5,7 +5,7 @@
 // server, but pointed at the satellites shipped inside the app bundle rather than
 // a repo checkout. Claude Code launches these satellites itself, so they must be
 // plain files runnable by an external process - we resolve a concrete runtime
-// (a real `node` if we can find one, else this app in Node mode) and write an
+// (this app in Node mode) and write an
 // absolute command.
 //
 // The settings.json edit is surgical (jsonc-parser), touching only the hook
@@ -22,9 +22,9 @@
 
 import { app } from "electron";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
 import { writeOtelEnv } from "@shared/claude-settings.ts";
 import { locateCommandSync } from "../server/executables/locator.ts";
@@ -39,7 +39,9 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
-import { findSystemNode } from "./system-node.ts";
+import { stateDir } from "@shared/harness-runtime.mjs";
+import { integrationRuntime, ownedHook, ownedStatusline, repairOwnedMcp, sameRegistration, INTEGRATION_REPAIR_NONCE } from "./integration-runtime.ts";
+import { createMigrationConfigPort, editIntegrationSettings } from "./migration-integration-config.ts";
 import { createMigrationIntegrationPorts } from "./migration-integration-ports.ts";
 import { type MigrationIntegrationPorts } from "./migration-integrations.ts";
 
@@ -65,54 +67,27 @@ export interface IntegrationResult {
   message: string;
 }
 
-/** A runtime that can execute a satellite .mjs, plus any env it needs. */
-interface Runtime {
-  /** How the runtime + script + args read as a settings.json command string. */
-  hookCommand: (script: string, event: string) => string;
-  /** argv for `claude mcp add` (command first, then the -e env flags). */
-  mcpArgs: (script: string) => { env: string[]; argv: string[] };
-  label: string;
-}
+type Runtime = ReturnType<typeof integrationRuntime>;
 
 /**
  * Absolute paths to the shipped satellites. We package with `asar: false`, so the
  * bundle lays the build outputs out as plain files under the app's Resources -
- * which is required anyway, because Claude Code launches these with an EXTERNAL
- * `node` that can't see inside an asar archive. Dev and packaged paths are thus
+ * required because other processes launch these scripts through the app runtime. Dev and packaged paths are thus
  * identical (both relative to the app root).
  */
-function satellitePaths(): { hook: string; mcp: string } {
+function satellitePaths(): { hook: string; mcp: string; statusline: string } {
   const root = app.getAppPath();
   return {
     hook: join(root, "dist", "satellites", "hook.mjs"),
     mcp: join(root, "dist", "mcp", "server.mjs"),
+    statusline: join(root, "dist", "satellites", "harness-statusline.mjs"),
   };
 }
 
-/** Try to locate a real `node` via the login shell; empty string if none. */
-/**
- * Prefer a real `node` (lowest per-event overhead - the hook fires on every tool
- * use). Fall back to this app in Node mode (ELECTRON_RUN_AS_NODE) so integrations
- * still work with no system `node` installed.
- */
+/** Electron main knows its runtime; never ask the external executable locator. */
 function resolveRuntime(): Runtime {
-  const node = findSystemNode();
-  if (node) {
-    return {
-      label: `node (${node})`,
-      hookCommand: (script, event) => `"${node}" "${script}" ${event}`,
-      mcpArgs: (script) => ({ env: [], argv: [node, script] }),
-    };
-  }
-  const exe = process.execPath; // the Electron app binary
-  return {
-    label: "this app (ELECTRON_RUN_AS_NODE)",
-    hookCommand: (script, event) => `ELECTRON_RUN_AS_NODE=1 "${exe}" "${script}" ${event}`,
-    mcpArgs: (script) => ({ env: ["ELECTRON_RUN_AS_NODE=1"], argv: [exe, script] }),
-  };
+  return integrationRuntime(process.execPath, "electron");
 }
-
-const settingsPath = (): string => join(homedir(), ".claude", "settings.json");
 
 /** Our hook group for an event (matcher-first so re-runs are byte-stable). */
 function ourGroup(command: string, event: string): unknown {
@@ -120,78 +95,91 @@ function ourGroup(command: string, event: string): unknown {
   return MATCHER_EVENTS.has(event) ? { matcher: "*", ...group } : group;
 }
 
-/**
- * Strip any prior hook groups that reference a satellite of ours.
- *
- * `isMissionHookCommand` rather than a marker of this file's own. The marker here was
- * `"harness-hook"`, which is the name of the script the REPO installer writes and appears
- * nowhere in `dist/satellites/hook.mjs` - the script this one writes. So this stripped
- * nothing before appending: every press of "Install Claude integrations" added another
- * group, each event fired once per press, and "Remove" removed none of them. The shared
- * predicate knows both installers' scripts, so either one now replaces the other's work
- * instead of stacking on top of it.
- */
-function stripOurs(groups: unknown): unknown[] {
-  if (!Array.isArray(groups)) return [];
-  return groups
-    .map((g) => {
-      const grp = g as { hooks?: unknown };
-      if (!grp || !Array.isArray(grp.hooks)) return g;
-      const hooks = grp.hooks.filter(
-        (h) => !(h && typeof (h as { command?: unknown }).command === "string" && isMissionHookCommand((h as { command: string }).command)),
-      );
-      return { ...grp, hooks };
-    })
-    .filter((g) => {
-      const grp = g as { hooks?: unknown };
-      return grp && Array.isArray(grp.hooks) && grp.hooks.length > 0;
-    });
-}
-
 /** Rewrite settings.json's hook arrays for our events (install or uninstall). */
-function editHooks(uninstall: boolean, hookCommand: (script: string, event: string) => string, hook: string): void {
-  const path = settingsPath();
-  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const errors: unknown[] = [];
-  const settings = parse(original || "{}", errors as never[], { allowTrailingComma: true }) as {
-    hooks?: Record<string, unknown>;
-  };
-  if (original.trim() && errors.length > 0) {
-    throw new Error(`~/.claude/settings.json is not valid JSON/JSONC - fix it and retry.`);
+function editHooks(uninstall: boolean, runtime: Runtime, hook: string, statusline: string): void {
+  if ((process.env.CLAUDE_SETTINGS_PATH && resolve(process.env.CLAUDE_SETTINGS_PATH) !== join(homedir(), ".claude/settings.json"))
+    || (process.env.CLAUDE_CONFIG_DIR && resolve(process.env.CLAUDE_CONFIG_DIR) !== join(homedir(), ".claude"))) {
+    throw new Error("Claude uses a custom settings path. Retarget its Mission commands manually; its settings were preserved.");
   }
-
-  const formatting = {
-    insertSpaces: !/^\t/m.test(original),
-    tabSize: (original.match(/\n( +)\S/) ?? [, "  "])[1]?.length ?? 2,
-    eol: (original.includes("\r\n") ? "\r\n" : "\n") as "\n" | "\r\n",
-  };
-  const apply = (text: string, jsonPath: (string | number)[], value: unknown): string =>
-    applyEdits(text, modify(text, jsonPath, value, { formattingOptions: formatting }));
-
-  let text = original.trim() ? original : "{}";
-  const current = settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks) ? settings.hooks : {};
-
-  for (const event of EVENTS) {
-    const existing = current[event];
-    const desired = uninstall
-      ? stripOurs(existing)
-      : [...stripOurs(existing), ourGroup(hookCommand(hook, event), event)];
-    if (desired.length > 0) {
-      if (JSON.stringify(existing) !== JSON.stringify(desired)) text = apply(text, ["hooks", event], desired);
-    } else if (existing !== undefined) {
-      text = apply(text, ["hooks", event], undefined);
+  editIntegrationSettings(homedir(), INTEGRATION_REPAIR_NONCE, (original) => {
+    const errors: unknown[] = [];
+    const settings = parse(original.trim() ? original : "{}", errors as never[], { allowTrailingComma: true }) as {
+      hooks?: Record<string, unknown>;
+      statusLine?: { command?: string };
+    };
+    if (original.trim() && errors.length > 0) {
+      throw new Error(`~/.claude/settings.json is not valid JSON/JSONC - fix it and retry.`);
     }
-  }
-  // Drop an emptied hooks object after an uninstall.
-  const after = parse(text, [], { allowTrailingComma: true }) as { hooks?: Record<string, unknown> };
-  if (after?.hooks && typeof after.hooks === "object" && Object.keys(after.hooks).length === 0) {
-    text = apply(text, ["hooks"], undefined);
-  }
 
-  if (text !== original) {
-    mkdirSync(join(homedir(), ".claude"), { recursive: true });
-    writeFileSync(path, text);
-  }
+    const formatting = {
+      insertSpaces: !/^\t/m.test(original),
+      tabSize: (original.match(/\n( +)\S/) ?? [, "  "])[1]?.length ?? 2,
+      eol: (original.includes("\r\n") ? "\r\n" : "\n") as "\n" | "\r\n",
+    };
+    const apply = (text: string, jsonPath: (string | number)[], value: unknown): string =>
+      applyEdits(text, modify(text, jsonPath, value, { formattingOptions: formatting }));
+
+    let text = original.trim() ? original : "{}";
+    const current = settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks) ? settings.hooks : {};
+
+    for (const event of EVENTS) {
+      const groups = current[event];
+      let found = false;
+      if (Array.isArray(groups)) {
+        const ownedGroups: {index: number; hooks: number[]; total: number}[] = [];
+        for (let i = 0; i < groups.length; i++) {
+          const hooks = groups[i]?.hooks;
+          if (!Array.isArray(hooks)) continue;
+          const owned: number[] = [];
+          for (let j = 0; j < hooks.length; j++) {
+            const command = hooks[j]?.command;
+            if (typeof command !== "string") continue;
+            if (ownedHook(command)) owned.push(j);
+            else if (isMissionHookCommand(command)) throw new Error("A Mission hook uses a custom command. Retarget it manually; its settings were preserved.");
+          }
+          if (owned.length) ownedGroups.push({index: i, hooks: owned, total: hooks.length});
+        }
+        found = ownedGroups.length > 0;
+        // Earlier installers appended duplicates. Keep the first owned hook's
+        // matcher, timeout and disabled flags; remove only later owned entries.
+        const keeper = uninstall ? undefined : ownedGroups[0];
+        // Reverse deletion order keeps JSON paths stable and preserves unrelated entries.
+        for (const group of ownedGroups.reverse()) {
+          const keep = group === keeper ? group.hooks[0] : undefined;
+          if (keep === undefined && group.hooks.length === group.total) {
+            text = apply(text, ["hooks", event, group.index], undefined);
+          } else for (const j of group.hooks.reverse()) {
+            text = j === keep
+              ? apply(text, ["hooks", event, group.index, "hooks", j, "command"], runtime.hookCommand(hook, event))
+              : apply(text, ["hooks", event, group.index, "hooks", j], undefined);
+          }
+        }
+      }
+      if (!uninstall && !found) {
+        text = Array.isArray(groups) ? apply(text, ["hooks", event, -1], ourGroup(runtime.hookCommand(hook, event), event))
+          : apply(text, ["hooks", event], [ourGroup(runtime.hookCommand(hook, event), event)]);
+      }
+    }
+    // Drop an emptied hooks object after an uninstall.
+    const after = parse(text, [], { allowTrailingComma: true }) as { hooks?: Record<string, unknown> };
+    if (after?.hooks && typeof after.hooks === "object" && Object.keys(after.hooks).length === 0) {
+      text = apply(text, ["hooks"], undefined);
+    }
+
+    const sl = settings.statusLine;
+    if (typeof sl?.command === "string" && ownedStatusline(sl.command)) {
+      if (uninstall) {
+        let inner = "";
+        try { inner = readFileSync(join(stateDir(), "statusline-inner"), "utf8").trim(); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("The saved statusline command could not be read. Settings were preserved."); }
+        text = apply(text, ["statusLine"], inner ? { ...sl, command: inner } : undefined);
+      } else {
+        if (!existsSync(statusline)) throw new Error("The shipped statusline wrapper is missing. Reinstall the app, then retry.");
+        text = apply(text, ["statusLine", "command"], runtime.hookCommand(statusline));
+      }
+    }
+    return text;
+  });
 }
 
 /**
@@ -202,18 +190,39 @@ function editHooks(uninstall: boolean, hookCommand: (script: string, event: stri
  * with no `mcp` client of its own must not reach here at all. The caller checks the
  * capability; this function is only ever handed one that exists.
  */
-function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): string {
+function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): IntegrationResult {
   try {
-    const executable = locateCommandSync(spec.cli);
-    if (!executable) throw new Error(`${spec.cli} was not found`);
+    const config = createMigrationConfigPort(migrationIntegrationPorts());
+    const before = config.readMcp(spec, INTEGRATION_REPAIR_NONCE);
     if (!add) {
+      if (!before.registration || !repairOwnedMcp(before.registration, runtime, mcp)) return { ok: true, message: "Disabled, absent or custom MCP registration preserved." };
+      const executable = locateCommandSync(spec.cli);
+      if (!executable) throw new Error(`${spec.cli} was not found`);
+      // The named entry may have been replaced while resolving the vendor CLI.
+      // Require both the same file identity and the same owned registration.
+      const current = config.readMcp(spec, INTEGRATION_REPAIR_NONCE);
+      if (current.revision !== before.revision || !sameRegistration(current.registration, before.registration)) {
+        return { ok: false, message: "MCP registration changed before removal. It was preserved; re-check it before retrying." };
+      }
       execFileSync(executable.path, ["mcp", "remove", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName], {
         stdio: "ignore",
         timeout: 15000,
         env: executable.env,
       });
-      return "MCP server removed.";
+      return { ok: true, message: "MCP server removed." };
     }
+    if (before.present || before.registration) {
+      if (!before.registration) return { ok: true, message: "Existing disabled or custom MCP registration preserved." };
+      const desired = repairOwnedMcp(before.registration, runtime, mcp);
+      if (!desired) return { ok: true, message: "Custom MCP registration preserved. Retarget its Mission runtime manually." };
+      if (!sameRegistration(before.registration, desired)) {
+        const after = config.writeMcp(spec, INTEGRATION_REPAIR_NONCE, before, desired);
+        if (!sameRegistration(after.registration, desired)) throw new Error("MCP repair could not be verified; reconcile its preserved configuration manually.");
+      }
+      return { ok: true, message: "Existing MCP registration repaired with the app runtime." };
+    }
+    const executable = locateCommandSync(spec.cli);
+    if (!executable) throw new Error(`${spec.cli} was not found`);
     const { env, argv } = runtime.mcpArgs(mcp);
     const envFlags = env.flatMap((e) => [spec.envFlag, e]);
     execFileSync(
@@ -221,11 +230,11 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
       ["mcp", "add", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName, ...envFlags, "--", ...argv],
       { stdio: "ignore", timeout: 15000, env: executable.env },
     );
-    return "MCP review server registered.";
-  } catch {
-    return add
-      ? `Hooks installed; the \`${spec.cli}\` CLI wasn't found on PATH, so the MCP review server wasn't registered (run \`${spec.cli} mcp add\` manually).`
-      : `Hooks removed; couldn't reach the \`${spec.cli}\` CLI to remove the MCP server.`;
+    return { ok: true, message: "MCP review server registered." };
+  } catch (error) {
+    return { ok: false, message: add
+      ? `MCP installation needs attention: ${error instanceof Error ? error.message : "Inspect the CLI configuration and retry."}`
+      : `MCP removal needs attention: ${error instanceof Error ? error.message : "Inspect the CLI configuration and retry."}` };
   }
 }
 
@@ -235,28 +244,30 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
  * `null` is a real answer and gets said out loud: an installer that silently skipped a
  * harness with no MCP client would report a clean install that did half the work.
  */
-function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
-  return AGENT_TYPES.map((agent) => {
+function applyMcp(add: boolean, runtime: Runtime, mcp: string): IntegrationResult {
+  const results = AGENT_TYPES.map((agent) => {
     const spec = capabilitiesFor(agent).mcp;
     const label = AGENT_IDENTITY[agent].label;
-    if (!spec) return `${label}: no MCP client to register with.`;
-    return `${label}: ${registerMcp(spec, add, runtime, mcp)}`;
-  }).join(" ");
+    if (!spec) return { ok: true, message: `${label}: no MCP client to register with.` };
+    const result = registerMcp(spec, add, runtime, mcp);
+    return { ...result, message: `${label}: ${result.message}` };
+  });
+  return { ok: results.every(result => result.ok), message: results.map(result => result.message).join(" ") };
 }
 
 /** Wire hooks + MCP for Claude Code. */
 export function installIntegrations(): IntegrationResult {
   try {
-    const { hook, mcp } = satellitePaths();
+    const { hook, mcp, statusline } = satellitePaths();
     if (!existsSync(hook)) {
-      return { ok: false, message: `Satellite not found at ${hook}. Build first (npm run build).` };
+      return { ok: false, message: `Satellite not found at ${hook}. Reinstall the app, or run npm run build in a source checkout.` };
     }
     const runtime = resolveRuntime();
-    editHooks(false, runtime.hookCommand, hook);
-    const mcpMsg = applyMcp(true, runtime, mcp);
+    editHooks(false, runtime, hook, statusline);
+    const mcpResult = applyMcp(true, runtime, mcp);
     return {
-      ok: true,
-      message: `Claude integrations installed via ${runtime.label}. ${mcpMsg}\n\nStart a NEW Claude Code session for hooks to take effect.`,
+      ok: mcpResult.ok,
+      message: `${mcpResult.ok ? "Claude integrations" : "Claude hooks"} installed via ${runtime.label}. ${mcpResult.message}\n\nStart a NEW Claude Code session for hooks to take effect.`,
     };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
@@ -266,9 +277,9 @@ export function installIntegrations(): IntegrationResult {
 /** Remove our hooks + MCP registration, leaving the user's other settings intact. */
 export function removeIntegrations(): IntegrationResult {
   try {
-    const { hook, mcp } = satellitePaths();
+    const { hook, mcp, statusline } = satellitePaths();
     const runtime = resolveRuntime();
-    editHooks(true, runtime.hookCommand, hook);
+    editHooks(true, runtime, hook, statusline);
     // TEARDOWN, and asymmetric with install on purpose - the same shape as the skill
     // symlinks. Installing telemetry is the Cost settings panel's job, because it edits
     // an `env` block that makes EVERY Claude session on the machine export to us and
@@ -276,9 +287,9 @@ export function removeIntegrations(): IntegrationResult {
     // is unconditional, because an env block left pointing at a daemon that is no longer
     // installed makes every session on the machine retry an export forever.
     const telemetry = writeOtelEnv(null);
-    const mcpMsg = applyMcp(false, runtime, mcp);
+    const mcpResult = applyMcp(false, runtime, mcp);
     const telemetryMsg = telemetry === "removed" ? " Cost telemetry env block removed." : "";
-    return { ok: true, message: `Claude integrations removed. ${mcpMsg}${telemetryMsg}` };
+    return { ok: mcpResult.ok, message: `${mcpResult.ok ? "Claude integrations" : "Claude hooks"} removed. ${mcpResult.message}${telemetryMsg}` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

@@ -59,7 +59,9 @@ test("the real installer rejects the wrong same-version commit and records the e
   assert.equal(receipt.releaseTag, null);
   assert.equal(receipt.installedVersion, "1.2.3");
   assert.equal(validateReceipt(receipt), null);
-  assert.equal(packagedSourceCommit(join(apps, "Mission Control.app")), sha);
+  assert.equal(receipt.appPath, join(apps, "Agent Mission Control.app"));
+  assert.deepEqual(readdirSync(apps), ["Agent Mission Control.app"]);
+  assert.equal(packagedSourceCommit(receipt.appPath), sha);
   assert.match(validateReceipt({ ...receipt, installedCommit: "main" })!, /full commit SHA/);
   delete receipt.installedCommit;
   assert.equal(validateReceipt(receipt), null, "old receipts remain readable");

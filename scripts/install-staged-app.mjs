@@ -1,11 +1,12 @@
 // The prepared-bundle boundary shared by the source installer and detached transaction.
 // This module never resolves an interpreter or executes code from a source clone.
+import { isManagedBundleName, binaryBundleName } from '../src/shared/app-naming.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, statfsSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { APP_BUNDLE_NAME, bundleShortVersion, replaceAppBundle, RESTORE_AUTHORIZATION_PROMPT } from './app-bundle-swap.mjs';
+import { bundleShortVersion, replaceAppBundle, RESTORE_AUTHORIZATION_PROMPT } from './app-bundle-swap.mjs';
 import { inspectInstallDirectory, installDirectoryProblem, mayCreateAppsDir } from './install-destination.mjs';
 import { stagedBundleRevision, stagedRevisionProblem } from '../src/shared/staged-bundle.mjs';
 import { validateReceipt } from '../src/shared/install-receipt-schema.mjs';
@@ -84,6 +85,7 @@ export function verifyBinaryBuild(bundle, receipt, publisher, verifyPublisher = 
   const problem = validateBinaryBuildMetadata(metadata);
   if (problem) throw new Error(problem);
   const {assets: _assets, ...identity} = receipt.provenance.manifest;
+  if (binaryBundleName(metadata) !== binaryBundleName(identity)) throw new Error("Signed binary app name disagrees with the accepted manifest");
   for (const key of Object.keys(identity)) {
     if (JSON.stringify(metadata[key]) !== JSON.stringify(identity[key])) throw new Error('Signed binary metadata disagrees with the accepted manifest');
   }
@@ -93,10 +95,10 @@ export function verifyBinaryBuild(bundle, receipt, publisher, verifyPublisher = 
 export function prepareStagedInstall({bundle, revision = null, receipt, publisher}, {verifyPublisher = verifyBinaryPublisher} = {}) {
   const problem = validateReceipt(receipt);
   if (problem) throw new Error(problem);
-  if (resolve(bundle) !== bundle || receipt.appPath !== join(dirname(receipt.appPath), APP_BUNDLE_NAME) || resolve(receipt.appPath) !== receipt.appPath) throw new Error('Invalid staged installation paths');
+  if (resolve(bundle) !== bundle || !isManagedBundleName(basename(receipt.appPath)) || resolve(receipt.appPath) !== receipt.appPath) throw new Error('Invalid staged installation paths');
   if (bundle === receipt.appPath || bundle.startsWith(`${receipt.appPath}/`) || receipt.appPath.startsWith(`${bundle}/`)) throw new Error('Candidate and destination must be separate');
   const realBundle = realpathSync(bundle);
-  const realDestination = existsSync(receipt.appPath) ? realpathSync(receipt.appPath) : (existsSync(dirname(receipt.appPath)) ? join(realpathSync(dirname(receipt.appPath)), APP_BUNDLE_NAME) : resolve(receipt.appPath));
+  const realDestination = existsSync(receipt.appPath) ? realpathSync(receipt.appPath) : (existsSync(dirname(receipt.appPath)) ? join(realpathSync(dirname(receipt.appPath)), basename(receipt.appPath)) : resolve(receipt.appPath));
   if (realBundle === realDestination || realBundle.startsWith(`${realDestination}/`) || realDestination.startsWith(`${realBundle}/`)) throw new Error('Candidate and destination must resolve to separate paths');
   const found = stagedBundleRevision(lstatSync(bundle));
   const pin = stagedRevisionProblem({expected: revision, found});

@@ -1009,6 +1009,12 @@ test("citation validation recognises symlinked binding roots and pending canonic
       compactedFromSubmissionId: created.submission.id, compactedAt: 3 });
     const registered = await stageAgentWorkflowEvidence(input);
     assert.equal(registered.coverage?.[0]?.criterionId, claim.criterionId);
+    assert.equal(store.workflowEvidenceGeneration(noteKey, alias), registered.generation);
+    const captured = store.createRepairSubmission({ id: "citation-alias-retry", runId: created.run.id, round: 2,
+      triggerSource: "manual", triggerKey: "citation-alias-retry", context: {}, evidence: {}, now: 4 });
+    assert.equal(captured.submission.stagedImageGeneration, registered.generation);
+    assert.equal(store.listSubmissionCoverage(captured.submission.id)[0]?.criterionId, claim.criterionId,
+      "the accepted scoped citation also freezes for the symlinked receiving binding");
   } finally { rmSync(alias, { force: true }); rmSync(root, { recursive: true, force: true }); }
 });
 

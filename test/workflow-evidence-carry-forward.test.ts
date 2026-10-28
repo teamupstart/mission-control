@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -2951,12 +2951,14 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) fo
   });
 }
 
-for (const replacementScope of ["repo-01", "all"] as const) {
-  test(`same-id ${replacementScope} update cannot inherit its old proof when its new link cannot freeze`, async () => {
+for (const replacementScope of ["repo-01", "all"] as const) for (const aliasBinding of [false, true]) {
+  test(`same-id ${replacementScope} update cannot inherit its old proof when its new link cannot freeze (${aliasBinding ? "symlinked" : "physical"} binding)`, async () => {
     const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-same-id-update-")));
     const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-same-id-sibling-")));
+    const bindingRoot = aliasBinding ? `${checkout}-alias` : checkout;
+    if (aliasBinding) symlinkSync(checkout, bindingRoot, "dir");
     try {
-      const { store, noteKey, binding, runId } = fixture(checkout);
+      const { store, noteKey, binding, runId } = fixture(bindingRoot);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-sibling-session`, sessionAgent: "codex", sessionName: "sibling",
         sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
@@ -3038,7 +3040,10 @@ for (const replacementScope of ["repo-01", "all"] as const) {
       await inheritSubmissionEvidence(new WorkflowStore(), afterWithdrawal.submission, 14);
       assert.equal(readinessFor(afterWithdrawal.submission.id).status, "gaps",
         "retiring the previous version does not make withdrawal of the current version a no-op");
-    } finally { rmSync(checkout, { recursive: true, force: true }); rmSync(siblingRoot, { recursive: true, force: true }); }
+    } finally {
+      if (aliasBinding) rmSync(bindingRoot, { force: true });
+      rmSync(checkout, { recursive: true, force: true }); rmSync(siblingRoot, { recursive: true, force: true });
+    }
   });
 }
 

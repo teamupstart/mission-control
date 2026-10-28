@@ -6,6 +6,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -5844,13 +5845,15 @@ export class WorkflowStore {
 
   /** Latest material staged-set change that applies to this one repository checkout. */
   workflowEvidenceGeneration(noteKey: string, sourceRoot: string): number {
+    // Keep legacy literal roots comparable while new registrations use the physical path.
     const row = this.db.prepare(
-      `SELECT MAX(o.all_generation, COALESCE(g.generation, 0)) AS generation
+      `SELECT MAX(o.all_generation, COALESCE((
+           SELECT MAX(g.generation) FROM workflow_evidence_scope_generations g
+           WHERE g.note_key = o.note_key AND g.source_root IN (?, ?)
+         ), 0)) AS generation
          FROM workflow_evidence_owners o
-         LEFT JOIN workflow_evidence_scope_generations g
-           ON g.note_key = o.note_key AND g.source_root = ?
         WHERE o.note_key = ?`,
-    ).get(sourceRoot, noteKey) as { generation: number } | undefined;
+    ).get(sourceRoot, sourceRoot ? canonicalWorktreePath(sourceRoot) : "", noteKey) as { generation: number } | undefined;
     return Number(row?.generation ?? 0);
   }
 
@@ -5925,17 +5928,20 @@ export class WorkflowStore {
   /** Retirement is bounded by both the target reservation and its receiving repository. */
   private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
     if (stagingIds.length === 0) return new Set();
+    const target = this.db.prepare(`SELECT CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+      FROM workflow_submissions s JOIN workflow_runs r ON r.id = s.run_id
+      JOIN workflow_bindings b ON b.id = r.binding_id WHERE s.id = ?`).get(targetId) as { source_root: string | null } | undefined;
+    if (!target) return new Set();
+    const sourceRoot = target.source_root ? canonicalWorktreePath(target.source_root) : "";
     const rows = this.db.prepare(`SELECT DISTINCT version.value AS staging_id
       FROM workflow_evidence_coverage_retirements r
       JOIN json_each(r.staging_ids_json) version
       JOIN json_each(?) candidate ON candidate.value = version.value
       JOIN workflow_submissions target ON target.id = ? AND r.sequence <= target.coverage_retirement_sequence
-      JOIN workflow_runs run ON run.id = target.run_id
-      JOIN workflow_bindings binding ON binding.id = run.binding_id
       WHERE r.source_roots_json IS NULL OR EXISTS (
         SELECT 1 FROM json_each(r.source_roots_json) root
-        WHERE root.value = CASE WHEN binding.repo_root <> '' THEN binding.repo_root ELSE binding.session_cwd END
-      )`).all(JSON.stringify(stagingIds), targetId) as Array<{ staging_id: string }>;
+        WHERE root.value IN (?, ?)
+      )`).all(JSON.stringify(stagingIds), targetId, target.source_root ?? "", sourceRoot) as Array<{ staging_id: string }>;
     return new Set(rows.map(row => row.staging_id));
   }
 
@@ -5952,8 +5958,8 @@ export class WorkflowStore {
   private applicableCoverageRows(noteKey: string, groupKey: string, sourceRoot: string, submissionId: string): WorkflowEvidenceCoverageStagingRow[] {
     const rows = (this.db.prepare(`SELECT * FROM workflow_evidence_coverage_staging
       WHERE note_key = ? AND (is_current = 0 OR state = 'staged' OR reserved_group_key = ?)
-        AND (repository_scope = 'all' OR source_root = ?)
-      ORDER BY generation DESC, id ASC`).all(noteKey, groupKey, sourceRoot) as unknown[])
+        AND (repository_scope = 'all' OR source_root IN (?, ?))
+      ORDER BY generation DESC, id ASC`).all(noteKey, groupKey, sourceRoot, sourceRoot ? canonicalWorktreePath(sourceRoot) : "") as unknown[])
       .map(parseWorkflowEvidenceCoverageStagingRow);
     const retired = this.retiredCoverageVersions(rows.map(row => row.id), submissionId);
     const seen = new Set<string>();
@@ -11101,25 +11107,20 @@ export class WorkflowStore {
   ): void {
     const owner = this.db.prepare(
       `SELECT b.note_key,
-              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root,
-              MAX(COALESCE(o.all_generation, 0), COALESCE(g.generation, 0)) AS generation
+              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
          FROM workflow_submissions s
          JOIN workflow_runs r ON r.id = s.run_id
          JOIN workflow_bindings b ON b.id = r.binding_id
-         LEFT JOIN workflow_evidence_owners o ON o.note_key = b.note_key
-         LEFT JOIN workflow_evidence_scope_generations g
-           ON g.note_key = b.note_key
-          AND g.source_root = CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END
         WHERE s.id = ?`,
     ).get(submissionId) as {
       note_key: string;
       checkout_root: string | null;
-      generation: number;
     } | undefined;
     if (!owner) throw new Error(`Workflow submission ${submissionId} has no evidence owner`);
+    const checkoutRoot = owner.checkout_root ? canonicalWorktreePath(owner.checkout_root) : "";
     this.db.prepare(
       `UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?`,
-    ).run(owner.generation, submissionId);
+    ).run(this.workflowEvidenceGeneration(owner.note_key, owner.checkout_root ?? ""), submissionId);
     const coverageRows = this.applicableCoverageRows(owner.note_key, groupKey, owner.checkout_root ?? "", submissionId);
     // A current replacement can share the retained sibling version's proof. Reuse only
     // that shared proof here; ordinary ancestor evidence still goes through inheritance.
@@ -11134,9 +11135,9 @@ export class WorkflowStore {
       `SELECT * FROM workflow_evidence_staging
         WHERE note_key = ?
           AND (state = 'staged' OR reserved_group_key = ? OR client_item_id IN (SELECT value FROM json_each(?)))
-          AND (repository_scope = 'all' OR source_root = ?)
+          AND (repository_scope = 'all' OR source_root IN (?, ?))
         ORDER BY created_at ASC, id ASC`,
-    ).all(owner.note_key, groupKey, JSON.stringify([...linkedItemIds]), owner.checkout_root ?? "") as unknown[])
+    ).all(owner.note_key, groupKey, JSON.stringify([...linkedItemIds]), owner.checkout_root ?? "", checkoutRoot) as unknown[])
       .map(parseWorkflowEvidenceStagingRow);
     const imageRows = rows.filter((row) => row.evidence_kind === "image");
     const textRows = rows.filter((row) => row.evidence_kind === "text");

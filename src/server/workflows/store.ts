@@ -5283,7 +5283,7 @@ export class WorkflowStore {
         existingCoverageRows.map((row) => [row.client_criterion_id, row]),
       );
       const retireIds = new Set(withdrawClientCriterionIds);
-      const priorMappings = this.activeBindingsForNote(noteKey).flatMap((binding) => {
+      const priorMappings = !coverage.some((claim) => claim.criterionId) ? [] : this.activeBindingsForNote(noteKey).flatMap((binding) => {
         const run = this.activeRunForBinding(binding.id);
         let source = run ? this.latestSubmission(run.id) : null;
         const visited = new Set<string>();

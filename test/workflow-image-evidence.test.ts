@@ -44,6 +44,7 @@ const {
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  evaluateWorkflowEvidenceReadiness,
   workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
 const {
@@ -59,6 +60,7 @@ const {
 } = await import("../src/server/workflows/images.ts");
 const { withEvidenceItem } = await import("../src/server/workflows/evidence-error.ts");
 const { parsePersonaVerdict } = await import("../src/server/workflows/verdict.ts");
+const { reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
 
 openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -869,6 +871,79 @@ test("secure agent staging accepts only contained gitignored raster files", asyn
     await assert.rejects(refused("not-ignored.png"), /gitignored/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("canonical citations must belong to every run receiving the claim's repository scope", async () => {
+  const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-primary-")));
+  const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-secondary-")));
+  const unbound = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-unbound-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "citation-scope-note";
+    const runs = [primary, secondary].map((root, index) => {
+      const binding = store.insertBinding({
+        id: `citation-binding-${index}`, workflowVersionId: IMAGE_WORKFLOW_VERSION_ID, noteKey,
+        sessionId: "citation-session", sessionAgent: "codex", sessionName: "citations",
+        sessionCwd: primary, sessionRepoRoot: primary, ...(index === 1 ? { repoRoot: root } : {}),
+        triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1,
+      });
+      const canonicalCriteria = [
+        { id: `criterion-repo-${index + 1}`, text: `Repository ${index + 1} works`, material: true, suggestedProofClass: null },
+        { id: "criterion-shared", text: "Both repositories work", material: true, suggestedProofClass: null },
+      ];
+      const snapshot = { ...context(), canonicalCriteria };
+      const created = store.createInitialSubmission(
+        { id: `citation-run-${index}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `citation-source-${index}`, now: 2 },
+        { id: `citation-source-${index}`, triggerSource: "manual", triggerKey: `citation-source-${index}`,
+          context: workflowJson(snapshot), evidence: {}, now: 2 });
+      if (index === 0) store.freezeRunCriteria(created.run.id, {
+        intentFingerprint: created.run.intent!.fingerprint, constraints: [], acceptanceCriteria: [], canonicalCriteria,
+        compaction: { status: "model", runner: "codex", model: "fake", error: null },
+        compactedFromSubmissionId: created.submission.id, compactedAt: 2,
+      });
+      // The sibling uses the legacy latest-context fallback, while the primary has frozen criteria.
+      return { ...created, canonicalCriteria };
+    });
+    const input = { store, noteKey, task: taskAt(primary, [secondary, unbound]), fallbackRoot: primary, images: [] };
+    const proof = { kind: "command" as const, clientItemId: "scope-proof", command: "check both repositories",
+      exitCode: 0, output: "passed", caption: "Shared execution proof", repositoryScope: "all" as const };
+    const claim = { clientCriterionId: "wrong-run", criterion: "A criterion owned by another run",
+      proofClass: "focused_execution" as const, links: [{ clientItemId: proof.clientItemId, role: "execution" as const }] };
+    const before = store.listWorkflowEvidence(noteKey);
+    for (const [repositoryScope, criterionId] of [
+      ["repo-01", "criterion-repo-2"],
+      ["repo-02", "criterion-repo-1"],
+      ["repo-03", "criterion-repo-1"],
+      ["all", "criterion-repo-1"],
+    ] as const) {
+      await assert.rejects(stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof],
+        coverage: [{ ...claim, repositoryScope, criterionId }] }),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "unknown_criterion_id",
+      `${repositoryScope} cannot borrow ${criterionId} from a different receiving run`);
+      assert.deepEqual(store.listWorkflowEvidence(noteKey), before, "refusal stages neither proof nor claims and does not advance the generation");
+    }
+    await stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof], coverage: [
+      { ...claim, clientCriterionId: "primary", repositoryScope: "repo-01", criterionId: "criterion-repo-1" },
+      { ...claim, clientCriterionId: "secondary", repositoryScope: "repo-02", criterionId: "criterion-repo-2" },
+      { ...claim, clientCriterionId: "shared", repositoryScope: "all", criterionId: "criterion-shared" },
+    ] });
+    for (const [index, source] of runs.entries()) {
+      const child = store.createRepairSubmission({ id: `citation-repair-${index}`, runId: source.run.id, round: 2,
+        triggerSource: "manual", triggerKey: `citation-repair-${index}`, evidenceGroupKey: "citation-shared-capture",
+        context: {}, evidence: {}, now: 3 });
+      await captureSubmissionTextArtifacts(store, child.submission.id, 3);
+      const coverage = store.listSubmissionCoverage(child.submission.id);
+      assert.deepEqual(coverage.map(c => c.clientCriterionId).sort(), [index === 0 ? "primary" : "secondary", "shared"]);
+      const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria: source.canonicalCriteria, coverage,
+        criterionMappings: reconcileWorkflowCriterionMappings(source.canonicalCriteria, coverage),
+        evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
+      assert.equal(readiness.status, "ready", "each receiving run freezes only citations valid for its own criteria");
+    }
+  } finally {
+    rmSync(primary, { recursive: true, force: true });
+    rmSync(secondary, { recursive: true, force: true });
+    rmSync(unbound, { recursive: true, force: true });
   }
 });
 

@@ -328,20 +328,31 @@ export async function stageAgentWorkflowEvidence(input: {
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
-  const canonicalIds = new Set(input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
-    const run = input.store.activeRunForBinding(binding.id);
-    if (!run) return [];
-    if (run.criteria) return run.criteria.canonicalCriteria.map((criterion) => criterion.id);
-    const context = WorkflowContextSnapshotSchema.safeParse(input.store.latestSubmission(run.id)?.context);
-    return context.success ? context.data.canonicalCriteria.map((criterion) => criterion.id) : [];
-  }));
-  for (const claim of input.coverage ?? []) {
-    if (claim.criterionId && !canonicalIds.has(claim.criterionId)) {
-      throw new WorkflowImageEvidenceError("unknown_criterion_id",
-        `Coverage claim ${claim.clientCriterionId} cites unknown criterionId ${claim.criterionId}. Use an exact id from this run, or omit criterionId. To retire a claim use withdrawClientCriterionIds.`);
+  const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
+  const citedClaims = (input.coverage ?? []).filter((claim) => claim.criterionId);
+  if (citedClaims.length > 0) {
+    const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).map((binding) => {
+      const run = input.store.activeRunForBinding(binding.id);
+      let criteria = run?.criteria?.canonicalCriteria;
+      if (run && !criteria) {
+        const context = WorkflowContextSnapshotSchema.safeParse(input.store.latestSubmission(run.id)?.context);
+        criteria = context.success ? context.data.canonicalCriteria : [];
+      }
+      return {
+        checkoutRoot: binding.repoRoot || binding.sessionCwd || "",
+        ids: new Set((criteria ?? []).map((criterion) => criterion.id)),
+      };
+    });
+    for (const claim of citedClaims) {
+      const selected = rootForScope(roots, claim.repositoryScope);
+      // Match the checkout routing used when the store reserves scoped or all-scope claims.
+      const recipients = criteriaByRun.filter((run) => claim.repositoryScope === "all" || run.checkoutRoot === selected.realRoot);
+      if (recipients.length === 0 || recipients.some((run) => !run.ids.has(claim.criterionId!))) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `Coverage claim ${claim.clientCriterionId} cites unknown criterionId ${claim.criterionId} for repository scope ${claim.repositoryScope}. Use an exact id from every receiving run, or select the repository scope that owns it. To retire a claim use withdrawClientCriterionIds.`);
+      }
     }
   }
-  const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
   const writes: WorkflowStagedEvidenceWrite[] = [];
   const coverageWrites: WorkflowStagedEvidenceCoverageWrite[] = [];
   let aggregate = 0;

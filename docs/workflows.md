@@ -1270,9 +1270,11 @@ including its own text, readiness records the citation under `rejectedCitations`
 the criteria that went uncovered because of it.
 
 Inherited claims follow the same citation rules. New registrations with an unknown id return
-`unknown_criterion_id` immediately and atomically, before staging any evidence. Legacy frozen
-unknown citations remain visible as readiness gaps until withdrawn or corrected. The tool
-checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
+`unknown_criterion_id` immediately and atomically, before staging any evidence. Registration
+validates citations against the runs that receive their repository scope: a scoped claim
+cannot borrow an id from a sibling repository's run, and an `all` claim's id must exist in every
+receiving run. Legacy frozen unknown citations remain visible as readiness gaps until withdrawn
+or corrected. The tool checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
 withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
 when the tool reports an incompatible daemon.
 

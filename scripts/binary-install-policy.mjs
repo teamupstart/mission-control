@@ -1,4 +1,5 @@
 // Shared binary installation policy; no CLI execution or Electron startup imports.
+import { APP_BUNDLE_NAME, binaryBundleName } from '../src/shared/app-naming.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
@@ -34,21 +35,22 @@ export function readBinaryReceipt(directory) {
   return receipt;
 }
 
-export function binaryInstallReceipt(manifestText, destination, previous, installedAt = new Date().toISOString()) {
+export function binaryInstallReceipt(manifestText, destination, previous, installedAt = new Date().toISOString(), assetKind = 'dmg') {
   if (Buffer.byteLength(manifestText) > MAX_BINARY_MANIFEST_BYTES) throw new Error('Manifest exceeds its size limit');
   const manifest = JSON.parse(manifestText);
   const problem = validateBinaryManifest(manifest);
   if (problem) throw new Error(problem);
-  const asset = manifest.assets.find((entry) => entry.kind === 'dmg');
+  if (binaryBundleName(manifest) !== APP_BUNDLE_NAME) throw new Error("This older binary cannot maintain the renamed installation. Select a current Agent Mission Control release; existing app and receipt are unchanged.");
+  const asset = manifest.assets.find((entry) => entry.kind === assetKind);
   if (!asset || manifest.assets.length !== 2) throw new Error('A complete ZIP and DMG publication is required');
   if (destination.problem) throw new Error(destination.problem);
   // A legacy scope stays absent. Never infer system consent from /Applications.
   const receipt = {schema: 2, kind: 'binary', repo: manifest.repo, releaseTag: manifest.releaseTag,
     installedVersion: manifest.version, installedCommit: manifest.commit, installedAt,
-    appPath: join(destination.appsDir, 'Mission Control.app'),
+    appPath: join(destination.appsDir, APP_BUNDLE_NAME),
     ...(destination.installScope ? {installScope: destination.installScope} : {}),
     provenance: {manifest, assetId: asset.id, manifestSha256: createHash('sha256').update(manifestText).digest('hex')}};
-  if (previous && previous.appPath === receipt.appPath && previous.installScope !== receipt.installScope) {
+  if (previous && dirname(previous.appPath) === destination.appsDir && previous.installScope !== receipt.installScope) {
     throw new Error('Changing the recorded scope in place requires the existing installation policy flow. Rerun without destination options.');
   }
   return receipt;

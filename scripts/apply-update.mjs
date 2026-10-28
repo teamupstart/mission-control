@@ -272,7 +272,7 @@ export function realApplyOperations(
         if (!previous) throw new Error("A staged update requires its existing managed receipt");
         const descriptor = prepareSourceUpdate({receipt: previous, bundle: stagedBundle, revision: stagedRevision, targetTag: tag});
         if (stagedDigest !== null && descriptor.digest !== stagedDigest) throw new Error("The accepted staged app bytes changed");
-        if (descriptor.receipt.appPath !== join(appsDir, "Mission Control.app")) throw new Error("The installation destination changed");
+        if (dirname(descriptor.receipt.appPath) !== appsDir) throw new Error("The installation destination changed");
         installStagedApp(descriptor, {stateDirectory: dirname(logPath)});
         return;
       }
@@ -331,7 +331,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     if (plan.source !== args.sourceApp || plan.target !== args.targetApp || plan.stateDirectory !== realpathSync(args.stateDirectory) || plan.stagedBundle !== args.stagedBundle || plan.stagedRevision !== args.stagedRevision || plan.oldReceipt.sourceClone !== args.sourceClone || handoff.parent?.pid !== args.parentPid || typeof handoff.parent.identity !== "string" || !Number.isInteger(handoff.port) || handoff.port < 1 || handoff.port > 65535) throw new Error("The migration handoff changed.");
     const targetTag = /^[0-9a-f]{40}$/.test(args.targetTag) ? null : args.targetTag;
     if ((targetTag === null && plan.targetIdentity.commit !== args.targetTag) || (targetTag !== null && plan.targetIdentity.version !== targetTag.replace(/^v/, ""))) throw new Error("The migration target does not match the accepted update.");
-    if (plan.kind !== "in-place") updateMigrationReceipt(plan, {releaseTag: targetTag});
+    if (!plan.kind) updateMigrationReceipt(plan, {releaseTag: targetTag});
     // The journal takes ownership of this private inventory. Do not leave credentials
     // from MCP env settings in a second, unbounded temp handoff after it is consumed.
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");

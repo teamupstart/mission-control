@@ -6,7 +6,10 @@ export type UpdatePrepareStage =
   | "checkout"
   | "dependencies"
   | "build"
-  | "verify";
+  | "verify"
+  | "download"
+  | "extract"
+  | "signature";
 
 export interface UpdatePrepareStageEntry {
   id: UpdatePrepareStage;
@@ -21,6 +24,8 @@ export interface UpdatePrepareProgress {
   step: number;
   steps: number;
   percent: number;
+  indeterminate?: boolean;
+  detail: string;
 }
 
 export type UpdateProgressLine =
@@ -31,5 +36,5 @@ export const UPDATE_PREPARE_STAGES: readonly UpdatePrepareStageEntry[];
 export const UPDATE_PROGRESS_MARKER: string;
 export const UPDATE_STAGED_MARKER: string;
 export function isUpdatePrepareStage(value: unknown): value is UpdatePrepareStage;
-export function updatePrepareProgress(stage: string): UpdatePrepareProgress;
+export function updatePrepareProgress(stage: string, transfer?: {received: number; total: number}): UpdatePrepareProgress;
 export function parseUpdateProgressLine(line: string): UpdateProgressLine | null;

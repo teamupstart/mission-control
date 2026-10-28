@@ -2,11 +2,15 @@
 
 Read [plan.md](plan.md), [phased-plan.md](phased-plan.md) and [Phase 1](phase-1-bundled-install-transaction.md) first. Follow this proposed route where the repository agrees; record justified deviations in the PR. Repository: mission-control only.
 
+## Approved forward rollout, 2026-10-26
+
+Phase 2 retains its signed artifact and publication contracts. R1 qualifies the first newly produced release under the [forward-rollout contract](forward-rollout.md).
+
 ## Outcome and entry criteria
 
 Publish complete, trusted prebuilt app assets that installation and update clients can select without compiling. Stable versions and alpha main commits retain distinct immutable identities.
 
-Direct phase prerequisite: Phase 1 merged. The planning publication dependency must also be satisfied. Confirm C1-C3 against the merged implementation. Before distribution signing or publication, obtain the approved Developer ID team identity and use the repository's secure credential mechanism; their existence was not established by planning. Do not request secret values in task comments, logs or evidence. If credentials, permissions or signed-runtime behavior cannot be established, stop publication and report the specific blocker; downstream tasks stay blocked.
+Direct phase prerequisite: Phase 1 merged. The planning publication dependency must also be satisfied. Confirm C1-C3 against the merged implementation. Before distribution signing or publication, obtain the approved Developer ID team identity and use the repository's secure credential mechanism; their existence was not established by planning. Do not request secret values in task comments, logs or evidence. If credentials, permissions or signed-runtime behavior cannot be established, stop publication and report the specific release blocker. Downstream implementation can proceed against the merged contracts; unavailable binaries must remain unavailable to runtime consumers.
 
 ## Scope and non-goals
 
@@ -47,16 +51,16 @@ State compatibility is an explicit release qualification. Unknown database backw
 
 Extend `test/assert-release-version.test.ts` and source/packaging contract tests; add focused tests for the publisher and manifest producer. Exercise stable/alpha filtering, mismatched version/commit/architecture, partial upload, interruption before and after ready publication, immutable retry collision, access denial, size/digest mismatch and secret-redacted logs. Validate workflow syntax using the repository's available tooling and fixture assertions; do not claim a fixture validates actual GitHub permissions.
 
-Run the applicable single-file commands from AGENTS.md, `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`, and a macOS distribution-mode package with approved credentials. Run the actual signature/notarization validation and copied-runtime experiment against the final signed bytes. The clean account/VM should preserve quarantine so Gatekeeper behavior is exercised. Do not disable Gatekeeper, strip quarantine as an install recipe, or run replacement against the operator's live app.
+Run the applicable single-file commands from AGENTS.md, `npm run typecheck`, `npm run lint`, `npm run build` and `npm run smoke` for implementation acceptance. R1 runs a macOS distribution-mode package through the approved protected release procedure once the first new release is eligible. Run the actual signature/notarization validation and copied-runtime experiment against the final signed bytes. The clean account/VM should preserve quarantine so Gatekeeper behavior is exercised. Do not disable Gatekeeper, strip quarantine as an install recipe, or run replacement against the operator's live app.
 
-Use a controlled canonical publication only within the phase's authorized release procedure. If that cannot be performed, identify the missing external permission/credential as an exit blocker rather than reporting the publisher ready. Preserve exact command output and artifact identities in gitignored workflow evidence and the PR.
+Use a controlled canonical publication only within the phase's authorized release procedure. If that cannot be performed, identify the missing external permission/credential as an R1 release qualification blocker rather than reporting publication ready. Preserve exact command output and artifact identities in gitignored workflow evidence and the PR.
 
-## Merge and exit criteria
+## Implementation merge and release qualification
 
 - Existing Release Please/version ownership remains intact; PR checks cannot access publishing secrets.
 - Complete signed/notarized stable and exact-SHA alpha asset sets can be produced and retrieved using C1. Partial/mismatched sets are never advertised ready.
-- Final signed helper runtime passes real detached lifetime and host-runtime-trap tests; signer identity is grounded, not invented.
-- Publication retry, retention and failure states are documented and tested; downstream clients have real, immutable test inputs.
+- R1 release qualification: the final signed helper runtime must pass real detached lifetime and host-runtime-trap tests; signer identity is grounded, not invented.
+- Publication retry, retention and failure states are documented and tested. R1 supplies the first real immutable input; R2 uses it as the baseline for later targets. Artifact production and signed runtime checks remain release qualification gates, not requirements to backfill history before implementation merges.
 
 ## Downstream handoff
 
@@ -66,7 +70,7 @@ Phase 3 receives the signed DMG and canonical retrieval/trust policy for first a
 
 - Re-read root, index and Phase 1: signing qualification now consumes, rather than precedes, the implemented helper contract. No schema or receipt writer is duplicated here.
 - Native DMG bootstrap is available to Phase 3; app ZIP staging belongs to Phase 4. Both are derived from the same signed app, preventing two build identities.
-- Final audit: credentials and hardened-runtime behavior are execution gates, not presumed available. Phase 3 cannot start before a successful producer and its exact manifest exist.
+- Final audit: credentials and hardened-runtime behavior are execution gates, not presumed available. Phase 3 implementation can consume the merged producer contract; its real first-install qualification runs in R1 once the first complete manifest exists.
 
 ## Primary references
 

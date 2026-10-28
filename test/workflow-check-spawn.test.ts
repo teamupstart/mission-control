@@ -73,6 +73,15 @@ test("a command that exits 0 reports its output", async () => {
   assert.equal(emptiness, "empty");
 });
 
+test("the owned supervisor removes Electron Node mode before running the user's command", async () => {
+  const {result, emptiness} = await run(["/bin/sh", "-c", 'printf "%s" "${ELECTRON_RUN_AS_NODE-unset}"'], {
+    env: {PATH: process.env.PATH ?? "", ELECTRON_RUN_AS_NODE: "1"},
+  });
+  assert.equal(result.kind, "exited");
+  assert.equal(result.output, "unset");
+  assert.equal(emptiness, "empty");
+});
+
 test("a non-zero exit is `exited`, not a failure of the runtime", async () => {
   const { result } = await run(["sh", "-c", "echo nope 1>&2; exit 7"]);
   assert.deepEqual(result, { kind: "exited", exitCode: 7, output: "nope\n", truncatedBytes: 0 });

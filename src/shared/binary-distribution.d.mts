@@ -1,6 +1,7 @@
 export interface BinaryIdentity {
   protocol: 1; repo: string; channel: 'stable' | 'alpha'; releaseTag: string | null;
   version: string; commit: string; platform: 'darwin'; arch: 'arm64'; bundleId: string;
+  appBundleName?: "Agent Mission Control.app";
   minimumSystemVersion: string; helperProtocol: {min: number; max: number};
 }
 export interface BinaryAsset {kind: 'app-zip' | 'dmg'; id: string; name: string; bytes: number; sha256: string}

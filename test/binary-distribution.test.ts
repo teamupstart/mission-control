@@ -40,3 +40,14 @@ test('legacy/source receipts remain readable and binary receipts require real im
     assert.ok(validateReceipt({...binary, ...change}), JSON.stringify(change));
   }
 });
+
+test('app naming is an explicit bounded extension; original manifests remain readable for provenance', () => {
+  assert.equal(validateBinaryManifest(manifest()), null);
+  const renamed = {...manifest(), appBundleName: 'Agent Mission Control.app'};
+  assert.equal(validateBinaryManifest(renamed), null);
+  for (const appBundleName of ['Mission Control.app', 'Other.app', '../Agent Mission Control.app', null]) {
+    assert.match(validateBinaryManifest({...renamed, appBundleName})!, /Unsupported binary app name/);
+  }
+  const {assets: _assets, ...build} = renamed;
+  assert.equal(validateBinaryBuildMetadata({...build, receiptSchema: 2}), null);
+});

@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
+import type { OwnedRuntimeContext } from "@shared/owned-runtime.ts";
 
 export interface McpTool {
   name: string;
@@ -26,10 +28,14 @@ export class McpClient {
   private readonly maxFrame: number;
   private readonly killGrace: number;
 
-  constructor(path: string, options: { cwd?: string; env?: NodeJS.ProcessEnv; maxFrame?: number; killGrace?: number } = {}) {
+  constructor(path: string, options: { cwd?: string; env?: NodeJS.ProcessEnv; runtime?: OwnedRuntimeContext; maxFrame?: number; killGrace?: number } = {}) {
     this.maxFrame = options.maxFrame ?? 1_048_576;
     this.killGrace = options.killGrace ?? 2_000;
-    this.child = spawn(process.execPath, [path], { cwd: options.cwd, env: options.env, stdio: "pipe" });
+    const runtime = resolveOwnedRuntime(options.runtime ?? { executable: process.execPath, kind: process.versions.electron ? "electron" : "node" });
+    const env = { ...(options.env ?? process.env) };
+    delete env.ELECTRON_RUN_AS_NODE;
+    Object.assign(env, runtime.env);
+    this.child = spawn(runtime.command, [path], { cwd: options.cwd, env, stdio: "pipe" });
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk: string) => this.receive(chunk));
     this.child.stderr.resume(); // Drain without putting protocol diagnostics into Pi's TUI.

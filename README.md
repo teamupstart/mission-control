@@ -15,6 +15,10 @@ reruns preserve the recorded destination and state home. Quit the existing app b
 Use `--scope system` for a fresh shared installation, `--apps-dir DIR` for an existing writable
 custom directory, or `--ref vX.Y.Z` / `--ref FULL_SHA` to pin stable / alpha bytes.
 
+New binaries install **Agent Mission Control.app**. Existing managed installations migrate in
+the same folder, preserving their state and receipt scope. Older saved installers must be
+replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
+
 **Release qualification is still pending.** Until a signed ready manifest is published, this
 command refuses installation. It never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
@@ -370,8 +374,7 @@ and control surface stay coherent.
 
 Release maintainers: [signed binary production and verification](docs/release-verification.md)
 documents stable and exact-commit alpha assets. Distribution remains gated on approved Apple
-credentials and real signed qualification. The binary installer is implemented ahead of that
-qualification; automatic binary updates remain a later phase.
+credentials and real signed qualification. Binary installation, automatic updates and owned integrations are implemented; the complete signed journey remains release qualification.
 
 The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
 install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
@@ -379,15 +382,17 @@ the optional ones, and keep the app current. The short version is two paths thro
 repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and supports manual binary replacement. Binary receipts disable the source
-  updater and link to the signed installer. Existing source installations retain their Node/npm
-  update preflight. See the
+  the window closed, and installs verified stable or exact-SHA alpha binaries. Desktop installation,
+  updates and Mission-owned integrations use Electron's bundled Node, without host Node/npm/npx.
+  Independent agents, project commands and source development keep their own prerequisites. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   A local **Starting Mission Control** screen stays visible during startup. After 60 seconds
   it offers **Retry now** and keeps checking readiness, so a slow restart recovers automatically.
-  **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
-  command in a visible terminal, with **Re-check** to confirm the repair.
-  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  **Settings → Setup → Runtime** identifies the serving daemon and shows external Node as an
+  optional source/tool prerequisite. An adopted standalone daemon retains its own runtime.
+  **Agent extensions → Install Claude integrations** repairs owned hooks, statusline wrappers and
+  MCP registrations while preserving custom commands. See the [runtime inventory](docs/owned-runtimes.md).
+  To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when

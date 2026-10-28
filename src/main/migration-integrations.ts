@@ -11,7 +11,7 @@ interface BundlePath { path: (string | number)[]; suffix: string }
 const MCP_BUNDLE_SUFFIXES = ["/Contents/MacOS/Mission Control", "/Contents/Resources/app/dist/mcp/server.mjs"];
 interface McpInventory { id: string; revision: string; paths: BundlePath[] }
 export interface MigrationIntegrationInventory {
-  schema: 3; hooks: HookEntry[]; mcp: McpInventory[]; login: boolean;
+  schema: 3; hooks: HookEntry[]; mcp: McpInventory[]; login: boolean | null;
 }
 export interface MigrationIntegrationPorts {
   home: string;
@@ -113,9 +113,12 @@ function validBundlePath(item: BundlePath): boolean {
   return (item.path.length === 1 && item.path[0] === "command") || (item.path.length === 2 && ((item.path[0] === "args" && Number.isInteger(item.path[1]) && Number(item.path[1]) >= 0) || (item.path[0] === "env" && typeof item.path[1] === "string")));
 }
 
-export async function repairMigrationIntegrations(journal: MigrationJournal, ports: MigrationIntegrationPorts): Promise<MigrationRepair[]> {
+export async function repairMigrationIntegrations(journal: MigrationJournal, ports: MigrationIntegrationPorts, {confirmLogin = false}: {confirmLogin?: boolean} = {}): Promise<MigrationRepair[]> {
+  if (journal.plan.kind === "rename" && !journal.inventory) {
+    journal.inventory = {...inspectMigrationIntegrations(journal.plan, ports), login: null};
+  }
   const inventory = journal.inventory as MigrationIntegrationInventory;
-  if (inventory?.schema !== 3 || !Array.isArray(inventory.hooks) || inventory.hooks.length > 512 || !Array.isArray(inventory.mcp) || inventory.mcp.length > AGENT_TYPES.length || typeof inventory.login !== "boolean" ||
+  if (inventory?.schema !== 3 || !Array.isArray(inventory.hooks) || inventory.hooks.length > 512 || !Array.isArray(inventory.mcp) || inventory.mcp.length > AGENT_TYPES.length || (typeof inventory.login !== "boolean" && !(journal.plan.kind === "rename" && inventory.login === null)) ||
     inventory.hooks.some((item) => !item || typeof item.command !== "string" || !Array.isArray(item.path) || item.path.length !== 6 || item.path[0] !== "hooks" || typeof item.path[1] !== "string" || !Number.isInteger(item.path[2]) || Number(item.path[2]) < 0 || item.path[3] !== "hooks" || !Number.isInteger(item.path[4]) || Number(item.path[4]) < 0 || item.path[5] !== "command" || movedHook(item.command, journal.plan) === item.command) ||
     inventory.mcp.some((item) => !item || typeof item.id !== "string" || typeof item.revision !== "string" || !/^\d+(?::\d+){4}$/.test(item.revision) || !Array.isArray(item.paths) || item.paths.length === 0 || item.paths.length > 1024 || item.paths.some((path) => !validBundlePath(path)) || !item.paths.some((path) => path.path[0] === "args" && path.suffix === "/Contents/Resources/app/dist/mcp/server.mjs"))) throw new Error("The integration inventory is invalid or unsupported. Recover the personal installation manually.");
   const config = ports.config ?? createMigrationConfigPort(ports);
@@ -133,6 +136,8 @@ export async function repairMigrationIntegrations(journal: MigrationJournal, por
     const problems = await ports.skills();
     if (problems.length) throw new Error("Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.");
   }, "Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.");
-  await run("login", () => ports.retargetLogin(journal.plan, inventory.login), "Login startup could not be verified. Check the personal app's Open at Login setting, then retry.");
+  if (inventory.login === null && confirmLogin) inventory.login = ports.login().openAtLogin;
+  if (inventory.login === null) results.push({id: "login-confirmation", status: "pending", message: "The old login preference was unavailable. Set Start at login in the renamed app to your preference, then Retry integration repair to confirm it."});
+  else await run("login", () => ports.retargetLogin(journal.plan, inventory.login!), "Login startup could not be verified. Check the personal app's Open at Login setting, then retry.");
   return results;
 }

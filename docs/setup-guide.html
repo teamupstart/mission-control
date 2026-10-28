@@ -343,7 +343,7 @@
         <tbody>
           <tr>
             <td>Node.js 24 or newer</td>
-            <td>Required for source development and source updates. Signed binary installation uses the app runtime.</td>
+            <td>Required for source development and source builds. Desktop installation, binary updates and Mission-owned integrations use Electron's bundled Node. Independent tools keep their own requirements.</td>
             <td class="cmd"><code>node --version</code></td>
           </tr>
           <tr>
@@ -412,11 +412,18 @@
 cd mission-control
 make install</code></pre>
       <p>
-        That is the whole install. Run it as yourself, never with <code>sudo</code>. It checks the
-        prerequisites first, builds the app, and puts <strong>Mission Control.app</strong> in
+        Run it as yourself, never with <code>sudo</code>. It checks the prerequisites first and
+        builds the app. A fresh install puts <strong>Agent Mission Control.app</strong> in
         <strong>your own Applications folder</strong>, the one inside your home folder, which it
-        creates if you have never had one. No administrator password is needed for any of it.
-        Re-running it is safe.
+        creates if you have never had one. No administrator password is needed for this personal
+        installation.
+      </p>
+      <p>
+        Re-running <code>make install</code> updates an existing managed installation at its
+        recorded path and app name, so an existing <strong>Mission Control.app</strong> keeps
+        that name. To rename it, follow the
+        <a href="app-name-migration.md#existing-installations">supported binary migration route</a>
+        after a qualified renamed release is available.
       </p>
       <p>
         Already have Mission Control in the shared <code>/Applications</code> folder? It stays
@@ -535,7 +542,7 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
       <p class="eyebrow">Step 5</p>
       <h2>What is necessary, and what is not</h2>
       <p class="section-note">
-        Every row says its own level. Only four things actually block work.
+        Every row says its own level. Required gaps name the work they block; external Node is optional for desktop use.
       </p>
 
       <figure>
@@ -556,7 +563,6 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
           <tr><td>GitHub CLI</td><td>No pull requests, reviews, or repository reads.</td></tr>
           <tr><td>GitHub authentication</td><td>Everything GitHub fails even with the CLI installed. Fix with <code>gh auth login</code>.</td></tr>
           <tr><td>A terminal Mission&nbsp;Control can open</td><td>Agents that run in a terminal cannot start. Any supported terminal satisfies this.</td></tr>
-          <tr><td>Node.js</td><td>App updates cannot be installed.</td></tr>
         </tbody>
       </table>
       <p>
@@ -564,6 +570,10 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         <strong>Pi extension</strong>, and the <strong>Claude Code hooks</strong>. A machine that
         never installed them never sees them.
       </p>
+
+      <h3>Runtime: bundled and external</h3>
+      <p>Electron includes Node. The installed desktop app, binary updates and Mission-owned tools do not require system Node, npm or npx. Setup identifies the serving daemon; an adopted standalone daemon retains its own runtime. External Node remains available for source development and independent tools.</p>
+      <p>In Agent extensions, <strong>Install Claude integrations</strong> installs or repairs owned hooks and MCP. Existing statusline wrappers keep their saved inner command. Custom commands retain their own prerequisites. See the <a href="owned-runtimes.md">runtime inventory and repair limits</a>.</p>
 
       <h3>Recommended: at least one agent</h3>
       <p>
@@ -783,19 +793,22 @@ make dev           <span class="comment"># then open http://127.0.0.1:5173</span
         </li>
         <li>
           <strong>Update Now closes nothing.</strong> Mission Control stays open and usable while
-          the new version is prepared, showing progress and a <strong>Cancel</strong>.
+          the signed binary downloads and is verified. The download bar measures received bytes;
+          verification names its current stage. <strong>Cancel</strong> waits for owned work to stop.
         </li>
         <li>
           <strong>Restart and Install</strong> appears when it is ready. That part takes seconds,
-          and is the only point where the app has to close. A failed update leaves the version you
-          already had.
+          and is the only point where the app has to close. Failures before receipt commitment restore
+          the prior installation; later failures retain recovery material and provide repair guidance.
         </li>
       </ol>
 
       <p>
-        Source updates need Node.js 24 or newer. If yours is older or missing, the banner explains why
-        <strong>Update Now</strong> is unavailable and offers <strong>Check again</strong> once you
-        have fixed it.
+        Managed desktop updates use trusted prebuilt stable or exact-commit alpha binaries without
+        host Node, npm or local compilation. An incomplete or expired publication leaves
+        <strong>Update Now</strong> unavailable; <strong>Check again</strong> refreshes the offer.
+        The signed installer is the manual recovery route. Signed packaged qualification remains
+        a release gate. Source development and third-party tools still have their own prerequisites.
       </p>
 
       <h3>If you run it in the browser</h3>

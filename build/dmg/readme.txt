@@ -3,7 +3,7 @@ Mission Control
 
 Install for yourself
 --------------------
-Copy Mission Control.app into the Applications folder inside your home folder,
+Copy Agent Mission Control.app into the Applications folder inside your home folder,
 then open that copy. Create the folder in Finder if necessary. This personal
 location needs no administrator password. To share the app across accounts,
 copy it into /Applications instead; Finder may request administrator permission.
@@ -28,8 +28,10 @@ https://github.com/teamupstart/mission-control#installation
 
 Quit the existing app first. A rerun keeps its recorded destination and state,
 including older source installations, without invoking their source installer.
-No host Node, npm, npx, Git or compilation is required. Automatic binary updates
-arrive in a later build; this version links to the same manual recovery route.
+No host Node, npm, npx, Git or compilation is required. Automatic updates use complete signed stable or exact-SHA alpha binaries.
+Old Mission Control.app receipts migrate to Agent Mission Control.app in the same
+folder. An occupied new-name destination is refused. Use the current installer;
+older saved bootstraps cannot consume the renamed release layout.
 Unavailable signed assets are a refusal, never a local build fallback.
 
 Developer builds

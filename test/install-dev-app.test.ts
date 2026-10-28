@@ -52,11 +52,11 @@ function run(over: Parameters<typeof installDevApp>[0] extends infer T ? Partial
 test("the developer install goes to this account's own Applications folder", () => {
   const { result, swaps } = run();
   assert.equal(result.problem, null);
-  assert.equal(result.appPath, "/Users/someone/Applications/Mission Control.app");
+  assert.equal(result.appPath, "/Users/someone/Applications/Agent Mission Control.app");
   assert.deepEqual(swaps, [
     {
       sourceBundle: BUNDLE,
-      appPath: "/Users/someone/Applications/Mission Control.app",
+      appPath: "/Users/someone/Applications/Agent Mission Control.app",
       appsDir: "/Users/someone/Applications",
       pid: 4242,
     },
@@ -91,7 +91,7 @@ test("the developer install never removes a working app before a replacement is 
   // Mission Control at all. Routing through the real sibling-staging swap is what removes that
   // window, and the evidence is the ORDER: the new bundle is copied to a hidden sibling first,
   // and the installed app is only ever renamed aside, never deleted, and only after that copy.
-  const appPath = "/Users/someone/Applications/Mission Control.app";
+  const appPath = "/Users/someone/Applications/Agent Mission Control.app";
   const present = new Set([BUNDLE, appPath, "/Users/someone/Applications"]);
   const operations: string[] = [];
   const { result } = run({

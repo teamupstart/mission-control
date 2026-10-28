@@ -573,7 +573,7 @@ test(
   // The bundle the app actually verified still installs, so the guard is not simply refusing.
   const installed = run(pinned!);
   assert.equal(installed.code, 0, installed.output);
-  assert.equal(existsSync(join(appsDir, "Mission Control.app")), true);
+  assert.equal(existsSync(join(appsDir, "Agent Mission Control.app")), true);
   assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
   },
 );
@@ -1311,7 +1311,7 @@ test("administrator authorization cannot target an arbitrary install directory",
     keepPrevious: false,
   });
   assert.equal(plan.command, null);
-  assert.match(String(plan.problem), /restricted to \/Applications\/Mission Control\.app/);
+  assert.match(String(plan.problem), /restricted to \/Applications\/Agent Mission Control\.app/);
 });
 
 test(

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync, renameSync, linkSync, openSync, writeSync, closeSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, renameSync, linkSync, openSync, writeSync, closeSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { publishIntegrationText, verifyIntegrationBackups } from '../src/main/migration-integration-file.ts';
@@ -53,4 +53,40 @@ test('retry restores an original displaced before publication', (t) => {
   assert.equal(readFileSync(f.path, 'utf8'), 'original');
   publishIntegrationText(f.path, f.nonce, 'original', 'migrated');
   assert.equal(readFileSync(f.path, 'utf8'), 'migrated');
+});
+
+test('first installation uses no-replace publication and repair retains permissions', t => {
+  const f = fixture(t);
+  chmodSync(f.path, 0o640);
+  publishIntegrationText(f.path, f.nonce, 'original', 'repaired');
+  assert.equal(statSync(f.path).mode & 0o777, 0o640);
+  const created = join(f.path + '-new-parent', 'settings.json');
+  publishIntegrationText(created, f.nonce, '', 'installed');
+  assert.equal(readFileSync(created, 'utf8'), 'installed');
+  assert.equal(statSync(created).mode & 0o777, 0o600);
+  const raced = f.path + '-raced';
+  assert.throws(() => publishIntegrationText(raced, f.nonce, '', 'installed', {
+    rename: renameSync,
+    link: (from, to) => { writeFileSync(to, 'editor created this'); linkSync(from, to); },
+  }), /EEXIST/);
+  assert.equal(readFileSync(raced, 'utf8'), 'editor created this');
+});
+
+test('repair preserves the original mode before publication under a restrictive umask', t => {
+  const f = fixture(t);
+  chmodSync(f.path, 0o640);
+  const previousUmask = process.umask(0o077);
+  try {
+    publishIntegrationText(f.path, f.nonce, 'original', 'repaired', {
+      rename: renameSync,
+      link: (from, to) => {
+        assert.equal(statSync(from).mode & 0o777, 0o640, 'staged replacement retains group read access');
+        linkSync(from, to);
+      },
+    });
+    assert.equal(readFileSync(f.path, 'utf8'), 'repaired');
+    assert.equal(statSync(f.path).mode & 0o777, 0o640);
+  } finally {
+    process.umask(previousUmask);
+  }
 });

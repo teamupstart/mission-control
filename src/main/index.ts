@@ -249,7 +249,7 @@ function registerIpc(updateController: UpdateController): void {
     if (event.sender !== getMainWindow()?.webContents || !runningBundle) throw new Error("Enrollment requires the packaged application window");
     return startBinaryEnrollment(runningBundle, stateDir());
   });
-  ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair() : undefined);
+  ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair(true) : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
@@ -403,7 +403,7 @@ app.whenReady().then(async () => {
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),
       dialogs: updateDialogs,
       migrationInventory: (plan) => inspectMigrationIntegrations(plan, migrationIntegrationPorts()),
-      repairMigration: async () => { await repairMigration(stateDir(), (journal) => repairMigrationIntegrations(journal, migrationIntegrationPorts())); },
+      repairMigration: async (confirmLogin) => { await repairMigration(stateDir(), (journal) => repairMigrationIntegrations(journal, migrationIntegrationPorts(), {confirmLogin})); },
     }),
   );
   registerIpc(updater);

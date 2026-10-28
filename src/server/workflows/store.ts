@@ -5283,6 +5283,17 @@ export class WorkflowStore {
         existingCoverageRows.map((row) => [row.client_criterion_id, row]),
       );
       const retireIds = new Set(withdrawClientCriterionIds);
+      const scopedRetirements = new Map<string, Set<string>>();
+      const retireReplacedClaim = (id: string, claim: WorkflowStagedEvidenceCoverageWrite) => {
+        const prior = existingCoverage.get(id);
+        if (claim.repositoryScope === "all" || (prior && prior.repository_scope !== "all" && prior.source_root === claim.sourceRoot)) {
+          retireIds.add(id);
+        } else if (!prior || prior.repository_scope === "all") {
+          const roots = scopedRetirements.get(id) ?? new Set<string>();
+          roots.add(claim.sourceRoot);
+          scopedRetirements.set(id, roots);
+        }
+      };
       const priorMappings = !coverage.some((claim) => claim.criterionId) ? [] : this.activeBindingsForNote(noteKey).flatMap((binding) => {
         const run = this.activeRunForBinding(binding.id);
         let source = run ? this.latestSubmission(run.id) : null;
@@ -5301,12 +5312,9 @@ export class WorkflowStore {
       for (const claim of coverage) {
         for (const id of claim.supersedes ?? []) retireIds.add(id);
         if (!claim.criterionId) continue;
-        const sameScope = (row: WorkflowEvidenceCoverageStagingRow) =>
-          row.repository_scope === claim.repositoryScope
-          && (claim.repositoryScope === "all" || row.source_root === claim.sourceRoot);
         for (const row of existingCoverageRows) {
-          if (row.client_criterion_id !== claim.clientCriterionId && row.criterion_id === claim.criterionId && sameScope(row)) {
-            retireIds.add(row.client_criterion_id);
+          if (row.client_criterion_id !== claim.clientCriterionId && row.criterion_id === claim.criterionId) {
+            retireReplacedClaim(row.client_criterion_id, claim);
           }
         }
         for (const mapping of priorMappings) {
@@ -5317,25 +5325,39 @@ export class WorkflowStore {
             // without retiring that shared proof; explicit supersedes retires the whole id.
             const coversAnotherCriterion = !prior?.criterion_id && priorMappings.some((other) =>
               other.criterionId !== claim.criterionId && other.matchedClientCriterionIds.includes(id));
-            if (id !== claim.clientCriterionId && (!prior || sameScope(prior))
+            if (id !== claim.clientCriterionId
                 && (!prior?.criterion_id || prior.criterion_id === claim.criterionId)
-                && !coversAnotherCriterion) retireIds.add(id);
+                && !coversAnotherCriterion) retireReplacedClaim(id, claim);
           }
         }
       }
-      if (coverage.some((claim) => retireIds.has(claim.clientCriterionId))) {
+      if (coverage.some((claim) => retireIds.has(claim.clientCriterionId) || scopedRetirements.has(claim.clientCriterionId))) {
         throw new WorkflowImageEvidenceError("coverage_invalid", "A claim cannot be registered and withdrawn or superseded in the same call");
       }
-      const retired = new Map((this.db.prepare(
-        "SELECT client_criterion_id, MAX(generation) AS generation FROM workflow_evidence_coverage_retirements WHERE note_key = ? GROUP BY client_criterion_id",
-      ).all(noteKey) as Array<{ client_criterion_id: string; generation: number }>).map((row) => [row.client_criterion_id, row.generation]));
-      const changedRetireIds = [...retireIds].filter((id) =>
-        !retired.has(id) || (existingCoverage.get(id)?.generation ?? 0) > retired.get(id)!);
+      const retired = this.db.prepare(
+        "SELECT client_criterion_id, generation, source_roots_json FROM workflow_evidence_coverage_retirements WHERE note_key = ?",
+      ).all(noteKey) as Array<{ client_criterion_id: string; generation: number; source_roots_json: string | null }>;
+      const changedRetirements = new Map<string, Set<string> | null>();
+      for (const id of new Set([...retireIds, ...scopedRetirements.keys()])) {
+        const previous = retired.filter(row => row.client_criterion_id === id
+          && row.generation >= (existingCoverage.get(id)?.generation ?? 0));
+        if (previous.some(row => row.source_roots_json === null)) continue;
+        if (retireIds.has(id)) changedRetirements.set(id, null);
+        else {
+          const retiredRoots = new Set(previous.flatMap(row => JSON.parse(row.source_roots_json!) as string[]));
+          const roots = new Set([...scopedRetirements.get(id)!].filter(root => !retiredRoots.has(root)));
+          if (roots.size > 0) changedRetirements.set(id, roots);
+        }
+      }
       const changedItems: WorkflowStagedEvidenceWrite[] = [];
       const changedCoverage: WorkflowStagedEvidenceCoverageWrite[] = [];
       const affectedRoots = new Set<string>();
       let allAffected = false;
-      for (const id of changedRetireIds) {
+      for (const [id, roots] of changedRetirements) {
+        if (roots) {
+          for (const root of roots) affectedRoots.add(root);
+          continue;
+        }
         const prior = existingCoverage.get(id);
         if (!prior || prior.repository_scope === "all") allAffected = true;
         else affectedRoots.add(prior.source_root);
@@ -5468,7 +5490,7 @@ export class WorkflowStore {
         row.reserved_group_key = null;
         row.episode_key = episodeKey ?? row.episode_key;
       }
-      if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetireIds.length === 0) {
+      if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetirements.size === 0) {
         return this.listWorkflowEvidence(noteKey);
       }
 
@@ -5668,8 +5690,8 @@ export class WorkflowStore {
           now,
         );
       }
-      const retirementSequence = changedRetireIds.length > 0 ? this.coverageRetirementSequence() + 1 : 0;
-      for (const id of changedRetireIds) {
+      const retirementSequence = changedRetirements.size > 0 ? this.coverageRetirementSequence() + 1 : 0;
+      for (const [id, roots] of changedRetirements) {
         const versions = this.db.prepare(`SELECT DISTINCT c.staging_id FROM workflow_submission_evidence_coverage c
           JOIN workflow_submissions s ON s.id = c.submission_id
           JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
@@ -5678,9 +5700,9 @@ export class WorkflowStore {
         const registration = existingCoverage.get(id);
         if (registration) stagingIds.add(registration.id);
         this.db.prepare(`INSERT OR IGNORE INTO workflow_evidence_coverage_retirements
-          (note_key, client_criterion_id, generation, sequence, staging_ids_json) VALUES (?, ?, ?, ?, ?)`)
-          .run(noteKey, id, owner.generation, retirementSequence, JSON.stringify([...stagingIds]));
-        this.db.prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND client_criterion_id = ?")
+          (note_key, client_criterion_id, generation, sequence, staging_ids_json, source_roots_json) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(noteKey, id, owner.generation, retirementSequence, JSON.stringify([...stagingIds]), roots ? JSON.stringify([...roots]) : null);
+        if (!roots) this.db.prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND client_criterion_id = ?")
           .run(noteKey, id);
       }
       const writeCoverage = this.db.prepare(
@@ -5690,6 +5712,7 @@ export class WorkflowStore {
            reserved_group_key, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
+           id = excluded.id,
            criterion = excluded.criterion,
            criterion_id = excluded.criterion_id,
            proof_class = excluded.proof_class,
@@ -5705,7 +5728,10 @@ export class WorkflowStore {
       for (const claim of changedCoverage) {
         const prior = existingCoverage.get(claim.clientCriterionId);
         writeCoverage.run(
-          prior?.id ?? claim.id,
+          // A partially retired shared row survives for siblings. An edit is a fresh version,
+          // so its old scoped retirement must not suppress the newly registered proof.
+          prior && retired.some(row => row.client_criterion_id === claim.clientCriterionId
+            && row.generation >= prior.generation) ? randomUUID() : prior?.id ?? claim.id,
           noteKey,
           claim.clientCriterionId,
           claim.criterion,
@@ -5863,16 +5889,30 @@ export class WorkflowStore {
     ) AS sequence`).get() as { sequence: number }).sequence;
   }
 
+  /** Retirement is bounded by both the target reservation and its receiving repository. */
+  private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
+    if (stagingIds.length === 0) return new Set();
+    const rows = this.db.prepare(`SELECT DISTINCT version.value AS staging_id
+      FROM workflow_evidence_coverage_retirements r
+      JOIN json_each(r.staging_ids_json) version
+      JOIN json_each(?) candidate ON candidate.value = version.value
+      JOIN workflow_submissions target ON target.id = ? AND r.sequence <= target.coverage_retirement_sequence
+      JOIN workflow_runs run ON run.id = target.run_id
+      JOIN workflow_bindings binding ON binding.id = run.binding_id
+      WHERE r.source_roots_json IS NULL OR EXISTS (
+        SELECT 1 FROM json_each(r.source_roots_json) root
+        WHERE root.value = CASE WHEN binding.repo_root <> '' THEN binding.repo_root ELSE binding.session_cwd END
+      )`).all(JSON.stringify(stagingIds), targetId) as Array<{ staging_id: string }>;
+    return new Set(rows.map(row => row.staging_id));
+  }
+
   /** Claim versions retired before the target reservation, independent of conversation reattachment. */
   retiredSubmissionCoverageIds(submissionId: string, targetId: string): Set<string> {
-    const rows = this.db.prepare(`SELECT DISTINCT c.client_criterion_id
-      FROM workflow_submission_evidence_coverage c
-      JOIN workflow_evidence_coverage_retirements r
-      JOIN json_each(r.staging_ids_json) version ON version.value = c.staging_id
-      JOIN workflow_submissions target ON target.id = ? AND r.sequence <= target.coverage_retirement_sequence
-      WHERE c.submission_id = ?`)
-      .all(targetId, submissionId) as Array<{ client_criterion_id: string }>;
-    return new Set(rows.map(row => row.client_criterion_id));
+    const rows = this.db.prepare(`SELECT client_criterion_id, staging_id
+      FROM workflow_submission_evidence_coverage WHERE submission_id = ?`)
+      .all(submissionId) as Array<{ client_criterion_id: string; staging_id: string }>;
+    const retired = this.retiredCoverageVersions(rows.map(row => row.staging_id), targetId);
+    return new Set(rows.filter(row => retired.has(row.staging_id)).map(row => row.client_criterion_id));
   }
 
   listReservedWorkflowEvidence(submissionId: string): WorkflowReservedEvidence[] {
@@ -11085,6 +11125,7 @@ export class WorkflowStore {
         ORDER BY created_at ASC, id ASC`,
     ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
       .map(parseWorkflowEvidenceCoverageStagingRow);
+    const retiredVersions = this.retiredCoverageVersions(coverageRows.map(row => row.id), submissionId);
     if (coverageRows.length > WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims) {
       throw new Error(
         `At most ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims} workflow coverage claims apply to a submission`,
@@ -11102,6 +11143,7 @@ export class WorkflowStore {
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of coverageRows) {
+      if (retiredVersions.has(row.id)) continue;
       const claim = coverageClaimFromRow(row);
       /*
        * A claim whose links no longer resolve inside this submission is LEFT STAGED, neither
@@ -11227,6 +11269,7 @@ export class WorkflowStore {
           ORDER BY created_at ASC, id ASC`,
       ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
         .map(parseWorkflowEvidenceCoverageStagingRow);
+      const retiredVersions = this.retiredCoverageVersions(candidates.map(row => row.id), input.submissionId);
       if (candidates.length === 0) return { frozen: [], unresolved: [] };
       const held = new Set(
         this.listSubmissionCoverage(input.submissionId).map((claim) => claim.clientCriterionId),
@@ -11252,6 +11295,7 @@ export class WorkflowStore {
       const frozen: string[] = [];
       const unresolved: Array<{ clientCriterionId: string; unresolvedLinks: string[] }> = [];
       for (const row of candidates) {
+        if (retiredVersions.has(row.id)) continue;
         if (held.has(row.client_criterion_id)) continue;
         const claim = coverageClaimFromRow(row);
         const unresolvedLinks = claim.links

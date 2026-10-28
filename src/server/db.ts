@@ -175,7 +175,8 @@ let db: DatabaseSync | undefined;
 // 5: immutable managed plan bundles and recoverable checkout publication.
 // 6: pinned task plan inputs, local policy, final approval and artifact receipts.
 // 7: claim-version retirement identities and immutable retirement sequence boundaries.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 7;
+// 8: repository-specific retirement of shared coverage claim versions.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 8;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1183,6 +1184,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       note_key              TEXT NOT NULL,
       client_criterion_id   TEXT NOT NULL,
       generation            INTEGER NOT NULL,
+      source_roots_json     TEXT,
       PRIMARY KEY(note_key, client_criterion_id, generation)
     );
 
@@ -4211,6 +4213,8 @@ function migrateCoverageRetirements(d: DatabaseSync): void {
     const retirementBoundaryAdded = addColumn(d, "workflow_submissions", "coverage_retirement_sequence", "INTEGER NOT NULL DEFAULT 0");
     const retirementSequenceAdded = addColumn(d, "workflow_evidence_coverage_retirements", "sequence", "INTEGER NOT NULL DEFAULT 0");
     addColumn(d, "workflow_evidence_coverage_retirements", "staging_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    // NULL keeps historical withdrawals global; scoped replacement preserves sibling proof.
+    addColumn(d, "workflow_evidence_coverage_retirements", "source_roots_json", "TEXT");
     if (retirementSequenceAdded) {
       d.exec(`UPDATE workflow_evidence_coverage_retirements AS retirement
         SET sequence = rowid, staging_ids_json = (

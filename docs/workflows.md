@@ -1282,8 +1282,11 @@ when the tool reports an incompatible daemon.
 
 One uncited claim may answer several criteria. Replacing one criterion with an id-bound claim
 preserves a prior uncited claim that still answers another criterion; explicit `supersedes`
-retires the whole claim. When several claims still answer one criterion,
-`ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
+retires the whole claim. Replacement follows the receiving repository even when scope changes:
+an `all` replacement retires prior scoped claims, while a scoped replacement displaces a shared
+claim only in that repository. Siblings keep their shared proof, and withdrawing the replacement
+does not revive its predecessor in the replaced repository. When several claims still answer one
+criterion, `ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
 selected in stable caller-id order, and displays the competing ids. It never combines incomplete
 claims to manufacture a complete proof. If none is complete, the representative's invalid links,
 scope conflicts, or missing required roles still block. Missing coverage also remains a hard gap.
@@ -1295,7 +1298,8 @@ must be re-registered with the intended id; no text heuristic can reconstruct au
 Recovery honors claim retirements committed before it starts while retaining the parent's frozen
 evidence; it does not capture later staged proof into that recovered snapshot.
 The database upgrade creates the retirement ledger and records retired registration versions and
-each submission's retirement cutoff. Historical claims remain unchanged. Retirement follows a
+each submission's retirement cutoff. Historical claims remain unchanged. Retirement records have
+optional receiving-repository roots; existing records remain global. Retirement follows a
 claim version across conversation reattachment; a fresh registration with the same caller id is
 a new version. Resetting the old conversation retains retirement records still needed by that run.
 A resubmit after an image capture failure walks past the incomplete capture to retain earlier

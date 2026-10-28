@@ -330,6 +330,31 @@ test("a human send that provably did not land does not cost the controller its l
   assert.deepEqual([read?.origin, read?.originSession?.id], ["session", f.caller.id]);
 });
 
+test("a queued human turn the driver did not accept does not cost the controller its label", async (t) => {
+  const f = fixture(undefined, 0); await f.grant(true);
+  const key = f.target.agentSessionId!;
+  const text = "Run the migration again";
+  assert.equal((await f.act({ action: "message", text })).status, 200);
+  let calls = 0;
+  t.after(() => f.pending.stop());
+  // The agent turns busy before the queued turn is handed over: the row is released, unsent.
+  t.mock.method(f.sdk, "sendWhenIdle", async () => {
+    calls += 1;
+    f.pending.stop();
+    return null;
+  });
+  f.registry.applyDriverEvent(f.target.id, { kind: "state", state: "working", activity: null });
+  const queued = f.pending.submit(f.target.id, text).pendingTurn!;
+  f.registry.applyDriverEvent(f.target.id, { kind: "state", state: "idle", activity: null });
+  for (let attempt = 0; attempt < 200 && !(calls > 0 && listPendingTurns(key).find((row) => row.id === queued.id)?.state === "queued"); attempt++) await delay(10);
+  assert.equal(calls, 1);
+  assert.equal(listPendingTurns(key).find((row) => row.id === queued.id)?.state, "queued");
+  const t2 = fakeTranscript();
+  const controller = t2.append("controller", text, Date.now());
+  const [read] = attributeTranscript(f.target.id, [controller], null, undefined, t2.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+  assert.deepEqual([read?.origin, read?.originSession?.id], ["session", f.caller.id]);
+});
+
 test("a human send racing a delegated send of the same words credits neither, in either order", async () => {
   const humanHeaders = { origin: "http://localhost", "x-mission-operation-actor": "human" };
   for (const order of ["controller-first", "human-first"] as const) {

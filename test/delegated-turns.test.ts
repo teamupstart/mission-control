@@ -8,7 +8,7 @@ import { fakeTranscript } from "./helpers/fake-transcript.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-delegated-turns-"));
 process.env.HARNESS_HOME = home;
-const { delegatedTurnSources, forgetDelegatedTurnCache, noteOtherSend, pruneDelegatedTurns, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } =
+const { delegatedTurnSources, forgetDelegatedTurnCache, noteOtherSend, pruneDelegatedTurns, releaseDelegatedTurn, rememberedOtherSendKeys, reserveDelegatedTurn, withdrawOtherSend } =
   await import("../src/server/delegated-turns.ts");
 const { openDb } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -281,4 +281,13 @@ test("withdrawing an operator send keeps a contest that rival controllers caused
   withdrawOtherSend(noteOtherSend(t.conversation(k), "contended", now + 1));
   const page = [t.append("b", "contended", now + 2), t.append("a", "contended", now + 3)];
   assert.deepEqual(senders(t.conversation(k), page), [null, null]);
+});
+
+test("remembered sends expire after the race window, across every message", () => {
+  const t = fakeTranscript(); const k = key(); const start = Date.now();
+  for (let i = 0; i < 50; i++) noteOtherSend(t.conversation(k), `distinct message ${i}`, start);
+  assert.equal(rememberedOtherSendKeys(), 50);
+  // A day and a bit later, one unrelated send sweeps every expired entry.
+  noteOtherSend(t.conversation(k), "a new message", start + LAG + 61_000);
+  assert.equal(rememberedOtherSendKeys(), 1);
 });

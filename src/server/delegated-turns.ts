@@ -104,7 +104,27 @@ function sendKey(noteKey: string, fingerprint: string): string {
   return `${noteKey}\0${fingerprint}`;
 }
 
+/** When `otherSends` was last swept of entries past the race window. */
+let lastSweep = 0;
+const SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Drop every remembered send older than the race window, across all keys. Only a send under
+ * the same words is otherwise ever read back, so without this a long-running daemon would keep
+ * one entry per distinct message it ever delivered. Throttled: at most once a minute.
+ */
+function sweepOtherSends(now: number): void {
+  if (now - lastSweep < SWEEP_INTERVAL_MS) return;
+  lastSweep = now;
+  for (const [key, sends] of otherSends) {
+    const recent = sends.filter((send) => now - send.at <= DELIVERY_LAG_MS);
+    if (recent.length) otherSends.set(key, recent);
+    else otherSends.delete(key);
+  }
+}
+
 function recentSends(noteKey: string, fingerprint: string, now: number): OtherSend[] {
+  sweepOtherSends(now);
   const key = sendKey(noteKey, fingerprint);
   const recent = (otherSends.get(key) ?? []).filter((send) => now - send.at <= DELIVERY_LAG_MS);
   if (recent.length) otherSends.set(key, recent);
@@ -430,4 +450,10 @@ export function forgetDelegatedTurnCache(): void {
   expired.clear();
   twins.clear();
   otherSends.clear();
+  lastSweep = 0;
+}
+
+/** For tests: how many distinct send keys are remembered. */
+export function rememberedOtherSendKeys(): number {
+  return otherSends.size;
 }

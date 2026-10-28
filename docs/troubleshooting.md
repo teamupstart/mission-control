@@ -95,8 +95,8 @@ have cleared, so check the file again (names and timestamps only). Then dispatch
 One related limit: a local-scoped server (the default for `claude mcp add`, stored under the
 repository's path in `~/.claude.json`) is keyed by that path, so a dispatched session in a
 worktree at a different path may not see it. A project-scoped server in the repository's
-`.mcp.json` travels with the checkout. A user-scope server has no such limit, so add it
-there if every worktree needs it.
+`.mcp.json` reaches a worktree only when that file is committed or otherwise present in the
+checkout. A user-scope server has no such limit, so add it there if every worktree needs it.
 
 ## Playwright cannot find Chromium
 

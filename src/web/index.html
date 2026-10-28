@@ -8,7 +8,13 @@
     <title>Mission Control</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="./main.tsx"></script>
+    <div id="root">
+      <section role="status" style="max-width: 48rem; margin: 4rem auto; padding: 1rem; font-family: system-ui, sans-serif">
+        <h1>Loading Mission Control</h1>
+        <p>If this message stays here, the dashboard JavaScript has not started. Reload, then check Chrome DevTools Console and Network for blocked or missing assets. Make sure the Linux build completed and forward the daemon port to http://localhost:&lt;local-port&gt;/.</p>
+        <noscript>JavaScript must be enabled to use the dashboard.</noscript>
+      </section>
+    </div>
+    <script type="module" src="./bootstrap.ts"></script>
   </body>
 </html>

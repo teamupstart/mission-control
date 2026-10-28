@@ -7,7 +7,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Surface | Entry point | Ownership |
 |---|---|---|
 | Daemon | `src/server/index.ts` | State-home owner, loopback HTTP server, and the only SQLite writer |
-| Web dashboard | `src/web/main.tsx` | React UI over HTTP plus one Server-Sent Events connection |
+| Web dashboard | `src/web/bootstrap.ts` → `src/web/main.tsx` | Startup diagnostics, then React UI over HTTP plus one Server-Sent Events connection |
 | Shared contracts | `src/shared/` | Wire types, schemas, and browser-safe shared logic |
 | Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon; supervises the packaged Foreman worker |
 | MCP server | `src/mcp/server.ts` | Stdio child that reaches the daemon over HTTP |

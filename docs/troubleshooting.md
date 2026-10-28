@@ -23,6 +23,98 @@ it, or set `MISSION_HOME` to a genuinely independent state directory if both dae
 intentional. Do not delete `daemon.lock`: the file is durable metadata, while the kernel-held
 lock is the ownership authority and is released automatically after a crash.
 
+## Chrome is blank when forwarding a Linux daemon to a Mac
+
+Use the **built daemon** for a one-port forward. It serves the dashboard, `/api/*`, and
+`/events` on the same loopback port. Do not change its bind address to `0.0.0.0`, expose it
+through an EC2 security group, or disable the loopback Host guard. Anyone who can access the
+forward can control the daemon as you, so keep the Mac listener private too.
+
+### Isolated verification
+
+On Linux, in the checkout you want to verify, use Node.js 24 or newer:
+
+```sh
+node --version
+npm ci
+npm run build
+# A fresh home and disabled discovery avoid adopting the host's live sessions.
+STATE_DIR=$(mktemp -d /tmp/mission-forward-check.XXXXXX)
+mkdir -p "$STATE_DIR/workspace"
+MISSION_HOME="$STATE_DIR" MISSION_PORT=17317 MISSION_POLL_MS=0 \
+  MISSION_WORKSPACE_DIRS="$STATE_DIR/workspace" node dist/server/index.mjs
+```
+
+Leave that process running. From another Linux terminal:
+
+```sh
+curl -i http://127.0.0.1:17317/
+curl -i -H 'Host: localhost:27317' -H 'Origin: http://localhost:27317' \
+  http://127.0.0.1:17317/api/health
+```
+
+Both should return `200`. The first must be HTML containing an `/assets/` module script,
+not a Vite source entry or a 404. `MISSION_WEB_DIR`, if set in your environment, overrides
+which build is served; unset it before launching this check unless intentional.
+
+On the Mac, with AWS CLI credentials, the Session Manager plugin, and permission to start
+an SSM session on the instance:
+
+```sh
+aws ssm start-session --target <id> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["17317"],"localPortNumber":["27317"]}'
+```
+
+Keep the session open. In another Mac terminal:
+
+```sh
+curl -i http://localhost:27317/api/health
+open http://localhost:27317/
+```
+
+Repeat with `http://127.0.0.1:27317/`. Expect the dashboard and its Dispatch button, a
+successful `/events` request with snapshot frames, and no uncaught Console errors. Open
+Settings and confirm it loads. Unequal local and remote ports are intentional. For equal
+ports, change `localPortNumber` to `17317` and open `http://localhost:17317/`. An SSH
+alternative is `ssh -N -L 127.0.0.1:27317:127.0.0.1:17317 <user>@<host>`.
+Stop the daemon and tunnel with Ctrl-C when finished. The temporary state home is not your
+normal Mission Control state. Do not dispatch real agents just to verify page rendering.
+
+### If it still fails
+
+Open Chrome DevTools before reloading and retain the first Console error plus the failed
+Network request's URL, status and Content-Type. Do not share session payloads, tokens or
+unredacted logs. The HTML now retains loading instructions if the entry script never runs;
+a failed application import or uncaught React error replaces an empty root with recovery
+instructions. Details stay in Console, not on the page.
+
+These are ranked hypotheses, **not confirmed causes of the reported Mac failure**:
+
+1. **A stale, missing, blocked or mismatched JavaScript asset.** Reload with DevTools cache
+   disabled after a completed build. A requested `.js` receiving HTML can mean a missing
+   asset fell through to the SPA index route. Ensure the daemon serves the same checkout's
+   `dist/web`, including any `MISSION_WEB_DIR` override. Avoid rebuilding while testing.
+2. **Forwarding the wrong surface or port.** The default daemon is `7317`; this isolated
+   check explicitly uses `17317`. Vite development uses `5173` and proxies API/SSE to the
+   daemon. Forwarding only the daemon does not serve Vite's source dashboard. If deliberately
+   testing development, forward Vite's port, point its `MISSION_PORT` at the correct daemon,
+   and check HMR's WebSocket URL separately. A failed HMR connection alone does not prove
+   why initial rendering failed. The built dashboard needs no HMR or second forwarded port.
+3. **An initialization/render exception or browser-specific interference.** Try an Incognito
+   window without extensions, and preserve the first error. No Electron preload is required
+   to paint the browser dashboard, although desktop-only actions remain unavailable.
+4. **Using an EC2/custom hostname instead of local loopback.** API/SSE intentionally reject
+   non-loopback Host headers. Plain HTTP custom names can also lack secure-context APIs.
+   `localhost` and `127.0.0.1` are secure contexts in Chrome; a correctly addressed forward
+   does not lose `crypto.randomUUID` merely because its remote endpoint is Linux.
+
+The Linux Chromium regression covers a byte-preserving, different-port TCP tunnel on both
+loopback names, snapshot delivery, and a browser POST carrying the forwarded Origin. It does
+not reproduce a failure on that path. Actual AWS SSM transport, Mac Chrome and the failing
+operator profile still require the human check above. Keep security restrictions intact until
+an observed refusal identifies a specific problem.
+
 ## A Claude session stays grey, or its status looks stale
 
 `instrumented: true` means the daemon has fresh hook evidence for that session. Install

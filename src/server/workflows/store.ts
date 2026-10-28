@@ -5334,7 +5334,12 @@ export class WorkflowStore {
       const changedItems: WorkflowStagedEvidenceWrite[] = [];
       const changedCoverage: WorkflowStagedEvidenceCoverageWrite[] = [];
       const affectedRoots = new Set<string>();
-      let allAffected = changedRetireIds.length > 0;
+      let allAffected = false;
+      for (const id of changedRetireIds) {
+        const prior = existingCoverage.get(id);
+        if (!prior || prior.repository_scope === "all") allAffected = true;
+        else affectedRoots.add(prior.source_root);
+      }
       /*
        * Return byte-identical evidence to the mutable tray instead of doing nothing.
        *

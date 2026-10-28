@@ -2738,6 +2738,31 @@ for (const operation of ["withdraw", "supersedes"] as const) {
   });
 }
 
+for (const scope of ["repo-01", "all"] as const) for (const operation of ["binding", "supersedes", "withdraw"] as const) {
+  test(`${scope} claim retirement via ${operation} advances only the affected repository generations`, () => {
+    const { store, noteKey, runId } = fixture(home);
+    const siblingRoot = join(home, "sibling-checkout");
+    const old = { id: `${runId}-old`, clientCriterionId: "old", criterion: "Original result", criterionId: "canonical-a",
+      proofClass: "focused_execution" as const, repositoryScope: scope, sourceRoot: home, links: [] };
+    const sibling = { ...old, id: `${runId}-sibling`, clientCriterionId: "sibling", criterionId: "canonical-b",
+      repositoryScope: "repo-02" as const, sourceRoot: siblingRoot };
+    store.stageWorkflowEvidence(noteKey, [], 2, null, [old, sibling]);
+    const before = store.workflowEvidenceGeneration(noteKey, home);
+    const siblingBefore = store.workflowEvidenceGeneration(noteKey, siblingRoot);
+    const replacement = { ...old, id: `${runId}-new`, clientCriterionId: "new",
+      ...(operation === "supersedes" ? { criterionId: undefined, supersedes: ["old"] } : {}) };
+    const updated = store.stageWorkflowEvidence(noteKey, [], 3, null,
+      operation === "withdraw" ? [] : [replacement], operation === "withdraw" ? ["old"] : []);
+    assert.ok(updated.generation > before);
+    assert.equal(store.workflowEvidenceGeneration(noteKey, home), updated.generation);
+    assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), scope === "all" ? updated.generation : siblingBefore,
+      "scoped retirement must not make a sibling run eligible for an unchanged-evidence retry");
+    assert.equal(store.stageWorkflowEvidence(noteKey, [], 4, null,
+      operation === "withdraw" ? [] : [replacement], operation === "withdraw" ? ["old"] : []).generation, updated.generation,
+    "replaying the mutation does not advance any generation");
+  });
+}
+
 for (const operation of ["binding", "supersedes", "withdraw"] as const) {
   test(`retired claims stay out of later Persona rounds after ${operation}`, async () => {
     const { store, noteKey, binding, runId } = fixture(home);

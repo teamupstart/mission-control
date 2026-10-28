@@ -1192,7 +1192,7 @@ function stageCoverageClaim(
          repository_scope, source_root, links_json, episode_key, generation, state,
          reserved_group_key, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, 'visual', 'repo-01', ?, ?, NULL, ?, 'staged', NULL, ?, ?)
-       ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
+       ON CONFLICT(note_key, client_criterion_id) WHERE is_current = 1 DO UPDATE SET
          criterion = excluded.criterion,
          criterion_id = excluded.criterion_id,
          links_json = excluded.links_json,
@@ -1342,12 +1342,23 @@ manualPreflightTest("legacy unknown ids can be withdrawn and duplicate valid cov
   const contestedPane = await evidencePane(dashboard);
   const contestedRow = contestedPane.locator(".wf-evidence-criterion").filter({ hasText: "ambiguous mapping" });
   await expect(contestedRow).toHaveCount(1);
-  await expect(contestedRow).toContainText("contest-primary");
-  await expect(contestedRow).toContainText("contest-rival");
-  await expect(contestedRow).toContainText("contest-execution");
-  await expect(contestedPane).toContainText("ready");
+  await expect(contestedRow.getByText("contest-primary", { exact: true })).toBeVisible();
+  await expect(contestedRow.getByText("contest-rival", { exact: true })).toBeVisible();
+  await expect(contestedRow.getByText("contest-execution", { exact: true })).toBeVisible();
+  await expect(contestedPane.getByText("ready", { exact: true })).toBeVisible();
+  await contestedPane.getByText("Frozen author claims", { exact: true }).click();
+  for (const criterion of [
+    "Operator reworded this claim past every criterion's own words",
+    "Wording that matches no criterion (contest-rival)",
+  ]) {
+    const claim = contestedPane.locator(".wf-evidence-claim").filter({ hasText: criterion });
+    await expect(claim.getByText(criterion, { exact: true })).toBeVisible();
+    await expect(claim.getByText("contest-execution", { exact: true })).toBeVisible();
+    await expect(claim.getByText("contest-rendered", { exact: true })).toBeVisible();
+  }
   const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${run.id}`);
   expect(detail.submissions.at(-1)!.readiness?.gapCodes).toEqual([]);
   expect(detail.submissions.at(-1)!.readiness?.warningCodes).toContain("ambiguous_mapping");
-  await capture(dashboard, "17-duplicate-coverage-warning", contestedPane);
+  await dashboard.setViewportSize({ width: 1440, height: 1400 });
+  await capture(dashboard, "18-duplicate-coverage-expanded", contestedPane);
 });

@@ -1285,7 +1285,13 @@ preserves a prior uncited claim that still answers another criterion; explicit `
 retires the whole claim. Replacement follows the receiving repository even when scope changes:
 an `all` replacement retires prior scoped claims, while a scoped replacement displaces a shared
 claim only in that repository. Siblings keep their shared proof, and withdrawing the replacement
-does not revive its predecessor in the replaced repository. When several claims still answer one
+does not revive its predecessor in the replaced repository. A changed same-`clientCriterionId`
+registration creates a new claim version and retires its predecessor for the receiving scope,
+even if the new claim's links later drift and prevent it from freezing. Identical replays retain
+their version and generation. When scope narrows, the earlier staged version remains available
+under the same caller id for siblings that have not captured yet. Freezing selects one applicable,
+unretired version per caller id; an all-scope update or explicit withdrawal retires every earlier
+version. When several claims still answer one
 criterion, `ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
 selected in stable caller-id order, and displays the competing ids. It never combines incomplete
 claims to manufacture a complete proof. If none is complete, the representative's invalid links,
@@ -1302,6 +1308,9 @@ each submission's retirement cutoff. Historical claims remain unchanged. Retirem
 optional receiving-repository roots; existing records remain global. Retirement follows a
 claim version across conversation reattachment; a fresh registration with the same caller id is
 a new version. Resetting the old conversation retains retirement records still needed by that run.
+Schema v9 preserves existing registrations while allowing retained staged versions alongside the
+single current registration. It does not reconstruct shared versions already overwritten by an
+older daemon; those claims must be registered again for any sibling that never captured them.
 A resubmit after an image capture failure walks past the incomplete capture to retain earlier
 coverage and evidence, while preserving verification across changed repository snapshots.
 

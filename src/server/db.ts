@@ -176,7 +176,8 @@ let db: DatabaseSync | undefined;
 // 6: pinned task plan inputs, local policy, final approval and artifact receipts.
 // 7: claim-version retirement identities and immutable retirement sequence boundaries.
 // 8: repository-specific retirement of shared coverage claim versions.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 8;
+// 9: retain staged claim versions still applicable to sibling repositories.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1172,7 +1173,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       reserved_group_key    TEXT,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
-      UNIQUE(note_key, client_criterion_id)
+      is_current            INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
       ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
@@ -3306,6 +3307,37 @@ function migrate(d: DatabaseSync): void {
   // submission freezes and the mapping has to survive that copy.
   addColumn(d, "workflow_evidence_coverage_staging", "criterion_id", "TEXT");
   addColumn(d, "workflow_submission_evidence_coverage", "criterion_id", "TEXT");
+  // The caller id still identifies one mutable registration. Earlier versions can remain
+  // applicable to siblings when that registration narrows its scope before their capture.
+  // Replace the table's inline uniqueness constraint with a current-registration index.
+  if (!(d.prepare("PRAGMA table_info(workflow_evidence_coverage_staging)").all() as Array<{ name: string }>)
+    .some(column => column.name === "is_current")) {
+    d.exec(`
+      CREATE TABLE workflow_evidence_coverage_staging_versioned (
+        id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_criterion_id TEXT NOT NULL,
+        criterion TEXT NOT NULL, criterion_id TEXT, proof_class TEXT NOT NULL,
+        repository_scope TEXT NOT NULL, source_root TEXT NOT NULL, links_json TEXT NOT NULL,
+        episode_key TEXT, generation INTEGER NOT NULL, state TEXT NOT NULL,
+        reserved_group_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        is_current INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT INTO workflow_evidence_coverage_staging_versioned
+        SELECT id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+          repository_scope, source_root, links_json, episode_key, generation, state,
+          reserved_group_key, created_at, updated_at, 1
+        FROM workflow_evidence_coverage_staging;
+      DROP TABLE workflow_evidence_coverage_staging;
+      ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME TO workflow_evidence_coverage_staging;
+    `);
+  }
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_coverage_current
+      ON workflow_evidence_coverage_staging(note_key, client_criterion_id) WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
+      ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
+      ON workflow_evidence_coverage_staging(reserved_group_key, state);
+  `);
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what

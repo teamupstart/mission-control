@@ -2851,8 +2851,8 @@ test("v8 coverage staging migration preserves registrations and permits retained
   } finally { db.close(); }
 });
 
-for (const leadCaptured of [false, true]) {
-  test(`same-id scope narrowing preserves shared proof before the sibling's first capture (${leadCaptured ? "lead captured" : "neither captured"})`, async () => {
+for (const sameId of [true, false]) for (const leadCaptured of [false, true]) {
+  test(`${sameId ? "same-id" : "different-id"} scope narrowing preserves shared proof before the sibling's first capture (${leadCaptured ? "lead captured" : "neither captured"})`, async () => {
     const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-")));
     const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-root-")));
     try {
@@ -2876,7 +2876,8 @@ for (const leadCaptured of [false, true]) {
         store.updateSubmissionCapture(parent.submission.id, { context: {}, evidence: {}, fingerprint: "parent",
           repositoryFingerprint: "tree-1", status: "running" }, 3);
       }
-      const replacement = { ...original, repositoryScope: "repo-01" as const, links: [] };
+      const replacement = { ...original, id: `${runId}-replacement`,
+        clientCriterionId: sameId ? original.clientCriterionId : "replacement", repositoryScope: "repo-01" as const, links: [] };
       const siblingGeneration = store.workflowEvidenceGeneration(noteKey, siblingRoot);
       const changed = store.stageWorkflowEvidence(noteKey, [], 4, null, [replacement]);
       assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), siblingGeneration,
@@ -2912,7 +2913,7 @@ for (const leadCaptured of [false, true]) {
       store.freezeDeferredSubmissionCoverage({ submissionId: next.submission.id, now: 9 });
       assert.deepEqual(readinessFor(next.submission.id).criteria[0]?.gaps, ["missing_execution"]);
       assert.equal(readinessFor(siblingFirst.submission.id).status, "ready", "the earlier frozen snapshot remains immutable");
-      store.stageWorkflowEvidence(noteKey, [], 10, null, [], ["claim"]);
+      store.stageWorkflowEvidence(noteKey, [], 10, null, [], [replacement.clientCriterionId]);
       assert.deepEqual(store.listWorkflowEvidence(noteKey).coverage, [], "withdrawal removes every staged version of the caller id");
       const withdrawn = store.createRepairSubmission({ id: `${runId}-sibling-withdrawn`, runId: `${runId}-sibling`, round: 3,
         triggerSource: "manual", triggerKey: `${runId}-sibling-withdrawn`, context: {}, evidence: {}, now: 11 });

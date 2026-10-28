@@ -5720,10 +5720,17 @@ export class WorkflowStore {
           .run(noteKey, id, owner.generation, retirementSequence, JSON.stringify([...stagingIds]), roots ? JSON.stringify([...roots]) : null);
         if (!roots) this.db.prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND client_criterion_id = ?")
           .run(noteKey, id);
-        else this.db.prepare(`DELETE FROM workflow_evidence_coverage_staging
-          WHERE note_key = ? AND client_criterion_id = ? AND is_current = 0
-            AND repository_scope <> 'all' AND source_root IN (SELECT value FROM json_each(?))`)
-          .run(noteKey, id, JSON.stringify([...roots]));
+        else {
+          // A shared claim displaced only here remains proof for siblings, including their
+          // first capture under a different reservation group and a different replacement id.
+          this.db.prepare(`UPDATE workflow_evidence_coverage_staging
+            SET is_current = 0, state = 'staged', reserved_group_key = NULL
+            WHERE note_key = ? AND client_criterion_id = ? AND repository_scope = 'all'`).run(noteKey, id);
+          this.db.prepare(`DELETE FROM workflow_evidence_coverage_staging
+            WHERE note_key = ? AND client_criterion_id = ? AND is_current = 0
+              AND repository_scope <> 'all' AND source_root IN (SELECT value FROM json_each(?))`)
+            .run(noteKey, id, JSON.stringify([...roots]));
+        }
       }
       const writeCoverage = this.db.prepare(
         `INSERT INTO workflow_evidence_coverage_staging (
@@ -5757,7 +5764,7 @@ export class WorkflowStore {
         writeCoverage.run(
           // Every material edit is a new version. Retirement applies to the old proof,
           // including shared proof retained for siblings, never to this replacement.
-          prior ? randomUUID() : claim.id,
+          existingCoverageRows.some(row => row.client_criterion_id === claim.clientCriterionId) ? randomUUID() : claim.id,
           noteKey,
           claim.clientCriterionId,
           claim.criterion,

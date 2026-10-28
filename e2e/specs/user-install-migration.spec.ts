@@ -8,6 +8,7 @@ import { UpdateController } from '../../src/main/updater.ts';
 import { repairMigrationIntegrations } from '../../src/main/migration-integrations.ts';
 import { migrationPlanFixture } from '../../test/helpers/migration-plan.ts';
 import { MIGRATION_PROTOCOL, migrationBundleIdentity, prepareMigration } from '../../scripts/install-migration.mjs';
+import { expectDashboardReady } from '../fixtures/dashboard-ready.ts';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
 
@@ -45,6 +46,8 @@ async function bridge(page: Page, initial: UpdateSnapshot = ready): Promise<void
     }});
   }, initial);
   await page.reload();
+  // The async bootstrap can finish navigation before React subscribes to bridge events.
+  await expectDashboardReady(page);
 }
 
 async function capture(page: Page, name: string): Promise<void> {

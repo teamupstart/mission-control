@@ -466,11 +466,16 @@ test("development StrictMode replay offers only once per document", async ({ pag
   const dev = await startDevDashboard(daemon);
   try {
     await page.goto(`${dev.origin}/#/fleet`);
+    // Navigation now finishes at the small bootstrap, before Vite's cold application
+    // transform and module graph have loaded. Give startup its own bounded budget;
+    // the picker assertions below keep the ordinary interaction timeout.
+    await expectDashboardReady(page, { timeout: 90_000 });
     await expect(picker(page)).toHaveCount(1);
     await picker(page).getByRole("button", { name: "Dismiss", exact: true }).click();
     await page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ }).click();
     await expect(picker(page)).toBeHidden();
     await page.reload();
+    await expectDashboardReady(page);
     await expect(picker(page)).toHaveCount(1);
   } finally { dev.stop(); }
 });

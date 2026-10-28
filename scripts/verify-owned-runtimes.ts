@@ -92,13 +92,15 @@ assert.equal(outcome.emptiness, 'empty');`, resolveDir:process.cwd()},
   writeFileSync(join(root,".claude/settings.json"),JSON.stringify({hooks:{Stop:[{hooks:[{command:'"/mise/shims/node" "/source/hooks/harness-hook.mjs" Stop'}]}]}}));
   writeFileSync(join(root,".claude.json"),JSON.stringify({mcpServers:{"mission-control":{command:"/mise/shims/node",args:["/source/dist/mcp/server.mjs"],env:{CUSTOM:"keep"}}}}));
   const installer = await buildOwnedIntegrationInstaller(root);
-  const installEnv = {...env, MISSION_TEST_APP_ROOT:root,MISSION_CLAUDE_BIN:"/usr/bin/false",MISSION_CODEX_BIN:"/usr/bin/false",MISSION_NODE_BIN:join(trapDir,"node")};
+  // Codex has no existing registration here, so its vendor-CLI boundary must
+  // succeed. Real MCP runtime handshakes are exercised separately above.
+  const installEnv = {...env, MISSION_TEST_APP_ROOT:root,MISSION_CLAUDE_BIN:"/usr/bin/false",MISSION_CODEX_BIN:"/usr/bin/true",MISSION_NODE_BIN:join(trapDir,"node")};
   assert.equal(JSON.parse(await run(installer,[],"",installEnv)).ok,true);
   const repaired=parse(readFileSync(join(root,".claude/settings.json"),"utf8"));
   assert.ok(repaired.hooks.Stop[0].hooks[0].command.includes(electron));
   assert.equal(parse(readFileSync(join(root,".claude.json"),"utf8")).mcpServers["mission-control"].command,electron);
   const once=readFileSync(join(root,".claude/settings.json"),"utf8");
-  await run(installer,[],"",installEnv);
+  assert.equal(JSON.parse(await run(installer,[],"",installEnv)).ok,true);
   assert.equal(readFileSync(join(root,".claude/settings.json"),"utf8"),once);
   console.log("[owned-runtime] Real desktop installer on Electron repaired old source registrations and repeated without changes.");
   assert.equal(existsSync(hits),false,"no host Node/npm/npx invocation");

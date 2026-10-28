@@ -3130,6 +3130,31 @@ for (const oldScope of ["repo-01", "all"] as const) for (const captured of [fals
   });
 }
 
+for (const frozenOnly of [false, true]) test(`global withdrawal advances sibling generations for ${frozenOnly ? "frozen" : "staged"} prior shared versions`, () => {
+  const { store, noteKey, binding, runId } = fixture(home);
+  const siblingRoot = join(home, "withdrawal-sibling");
+  const shared = { id: `${runId}-shared`, clientCriterionId: "claim", criterion: "Shared result",
+    proofClass: "focused_execution" as const, repositoryScope: "all" as const, sourceRoot: home, links: [] };
+  store.stageWorkflowEvidence(noteKey, [], 2, null, [shared]);
+  if (frozenOnly) store.createInitialSubmission(
+    { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: runId, now: 3 },
+    { id: `${runId}-parent`, triggerSource: "manual", triggerKey: runId, context: {}, evidence: {}, now: 3 });
+  const siblingBefore = store.workflowEvidenceGeneration(noteKey, siblingRoot);
+  store.stageWorkflowEvidence(noteKey, [], 4, null, [{ ...shared, repositoryScope: "repo-01" }]);
+  assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), siblingBefore,
+    "narrowing preserves the sibling's shared proof without waking it");
+  if (frozenOnly) openDb().prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND is_current = 0").run(noteKey);
+  const withdrawn = store.stageWorkflowEvidence(noteKey, [], 5, null, [], ["claim"]);
+  assert.ok(withdrawn.generation > siblingBefore);
+  assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), withdrawn.generation,
+    "withdrawing every version also wakes siblings that lost the earlier shared proof");
+  assert.equal(store.stageWorkflowEvidence(noteKey, [], 6, null, [], ["claim"]).generation, withdrawn.generation);
+  store.stageWorkflowEvidence(noteKey, [], 7, null, [{ ...shared, id: `${runId}-fresh`, repositoryScope: "repo-01" }]);
+  store.stageWorkflowEvidence(noteKey, [], 8, null, [], ["claim"]);
+  assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), withdrawn.generation,
+    "already globally retired shared history does not wake siblings for a later scoped claim");
+});
+
 test("withdrawing an unknown claim leaves evidence and repository generations unchanged", () => {
   const { store, noteKey, binding, runId } = fixture(home);
   const claim = { id: `${runId}-known`, clientCriterionId: "known", criterion: "The result works",

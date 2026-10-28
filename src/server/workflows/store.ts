@@ -5366,14 +5366,27 @@ export class WorkflowStore {
       const changedCoverage: WorkflowStagedEvidenceCoverageWrite[] = [];
       const affectedRoots = new Set<string>();
       let allAffected = false;
+      const globallyRetiredVersions = new Set(retired.filter(row => row.source_roots_json === null)
+        .flatMap(row => JSON.parse(row.staging_ids_json) as string[]));
       for (const [id, roots] of changedRetirements) {
         if (roots) {
           for (const root of roots) affectedRoots.add(root);
           continue;
         }
-        const prior = existingCoverage.get(id);
-        if (!prior || prior.repository_scope === "all") allAffected = true;
-        else affectedRoots.add(prior.source_root);
+        // Global withdrawal retires every live version, including earlier shared proof
+        // retained for siblings and legacy versions that survive only in frozen packets.
+        const frozen = this.db.prepare(`SELECT c.staging_id AS id, c.repository_scope,
+            CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+          FROM workflow_submission_evidence_coverage c JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{
+            id: string; repository_scope: string; source_root: string | null;
+          }>;
+        for (const version of [...existingCoverageRows.filter(row => row.client_criterion_id === id), ...frozen]) {
+          if (globallyRetiredVersions.has(version.id)) continue;
+          if (version.repository_scope === "all") allAffected = true;
+          else if (version.source_root) affectedRoots.add(version.source_root);
+        }
       }
       /*
        * Return byte-identical evidence to the mutable tray instead of doing nothing.

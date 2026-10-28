@@ -137,4 +137,6 @@ test("coverage mutations reach a capable daemon intact", async () => {
   });
   assert.equal(result.isError, false);
   assert.deepEqual(posted, { ...identity, images: [], artifacts: [], commandOutputs: [], ...input });
+  assert.match(result.text, /Requested withdrawal of 1 id\(s\); unknown ids are ignored/);
+  assert.doesNotMatch(result.text, /Withdrew/);
 });

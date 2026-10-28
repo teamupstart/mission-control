@@ -37,6 +37,7 @@ import {
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "../config.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
 import { isInside } from "../archives/paths.ts";
 import {
@@ -351,8 +352,10 @@ export async function stageAgentWorkflowEvidence(input: {
           source = input.store.evidenceInheritanceSource(source)?.source ?? null;
         }
       }
+      const checkoutRoot = binding.repoRoot || binding.sessionCwd || "";
       return [{
-        checkoutRoot: binding.repoRoot || binding.sessionCwd || "",
+        checkoutRoot: checkoutRoot ? canonicalWorktreePath(checkoutRoot) : "",
+        criteriaCaptured: criteria !== undefined,
         ids: new Set((criteria ?? []).map((criterion) => criterion.id)),
       }];
     });
@@ -363,6 +366,10 @@ export async function stageAgentWorkflowEvidence(input: {
       if (recipients.length === 0) {
         throw new WorkflowImageEvidenceError("unknown_criterion_id",
           `No active workflow run receives repository scope ${claim.repositoryScope}, so criterionId ${claim.criterionId} cannot be validated for coverage claim ${claim.clientCriterionId}; omit criterionId until a repair message names the criteria.`);
+      }
+      if (recipients.some(run => !run.criteriaCaptured)) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `Canonical criteria have not been captured for every run receiving repository scope ${claim.repositoryScope}, so criterionId ${claim.criterionId} cannot yet be validated; omit criterionId until a repair message names the criteria.`);
       }
       if (recipients.some((run) => !run.ids.has(claim.criterionId!))) {
         throw new WorkflowImageEvidenceError("unknown_criterion_id",

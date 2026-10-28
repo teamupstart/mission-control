@@ -123,7 +123,7 @@ export async function submitWorkflowEvidenceToDaemon(
       text: `Registered ${images?.length ?? 0} image(s), `
         + `${(artifacts?.length ?? 0) + (commandOutputs?.length ?? 0)} text artifact(s), `
         + `and ${coverage?.length ?? 0} coverage claim(s) at generation ${body.generation ?? 0}.`
-        + (withdrawClientCriterionIds?.length ? ` Withdrew ${withdrawClientCriterionIds.length} coverage claim(s).` : ""),
+        + (withdrawClientCriterionIds?.length ? ` Requested withdrawal of ${withdrawClientCriterionIds.length} id(s); unknown ids are ignored.` : ""),
       isError: false,
     };
   } catch (error) {

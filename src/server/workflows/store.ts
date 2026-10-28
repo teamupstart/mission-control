@@ -11121,18 +11121,22 @@ export class WorkflowStore {
       `UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?`,
     ).run(owner.generation, submissionId);
     const coverageRows = this.applicableCoverageRows(owner.note_key, groupKey, owner.checkout_root ?? "", submissionId);
-    // A retained version may be a sibling's first proof, with no ancestor to inherit and a
-    // different reservation group. Reuse its registered items through the normal scope,
-    // size and capture-integrity checks without changing earlier frozen reservations.
-    const retainedItemIds = new Set(coverageRows.filter(row => row.is_current === 0)
+    // A current replacement can share the retained sibling version's proof. Reuse only
+    // that shared proof here; ordinary ancestor evidence still goes through inheritance.
+    const retainedItemIds = new Set((this.db.prepare(`SELECT * FROM workflow_evidence_coverage_staging
+      WHERE note_key = ? AND is_current = 0`).all(owner.note_key) as unknown[])
+      .map(parseWorkflowEvidenceCoverageStagingRow)
       .flatMap(row => coverageClaimFromRow(row).links.map(link => link.clientItemId)));
+    const linkedItemIds = new Set(coverageRows
+      .flatMap(row => coverageClaimFromRow(row).links.map(link => link.clientItemId))
+      .filter(id => retainedItemIds.has(id)));
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
         WHERE note_key = ?
           AND (state = 'staged' OR reserved_group_key = ? OR client_item_id IN (SELECT value FROM json_each(?)))
           AND (repository_scope = 'all' OR source_root = ?)
         ORDER BY created_at ASC, id ASC`,
-    ).all(owner.note_key, groupKey, JSON.stringify([...retainedItemIds]), owner.checkout_root ?? "") as unknown[])
+    ).all(owner.note_key, groupKey, JSON.stringify([...linkedItemIds]), owner.checkout_root ?? "") as unknown[])
       .map(parseWorkflowEvidenceStagingRow);
     const imageRows = rows.filter((row) => row.evidence_kind === "image");
     const textRows = rows.filter((row) => row.evidence_kind === "text");
@@ -11159,11 +11163,14 @@ export class WorkflowStore {
     const mark = this.db.prepare(
       `UPDATE workflow_evidence_staging
           SET state = 'reserved', reserved_group_key = ?, updated_at = ?
-        WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ? OR ?)`,
+        WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ?)`,
     );
     rows.forEach((row, ordinal) => {
-      const marked = mark.run(groupKey, now, row.id, groupKey, retainedItemIds.has(row.client_item_id) ? 1 : 0);
-      if (Number(marked.changes) !== 1) {
+      // The per-submission reservation grants access without stealing the staging row's
+      // original reservation from another repository or rewriting its frozen snapshot.
+      const reused = row.state === "reserved" && linkedItemIds.has(row.client_item_id);
+      const marked = reused ? null : mark.run(groupKey, now, row.id, groupKey);
+      if (marked && Number(marked.changes) !== 1) {
         throw new Error(`Workflow evidence item ${row.client_item_id} was reserved concurrently`);
       }
       reserve.run(row.id, submissionId, ordinal, now);

@@ -2870,8 +2870,8 @@ test("v8 coverage staging migration preserves registrations and permits retained
   } finally { db.close(); }
 });
 
-for (const sameId of [true, false]) for (const leadCaptured of [false, true]) {
-  test(`${sameId ? "same-id" : "different-id"} scope narrowing preserves shared proof before the sibling's first capture (${leadCaptured ? "lead captured" : "neither captured"})`, async () => {
+for (const sameId of [true, false]) for (const leadCaptured of [false, true]) for (const complete of [false, true]) {
+  test(`${sameId ? "same-id" : "different-id"} scope narrowing preserves shared proof before the sibling's first capture (${leadCaptured ? "lead captured" : "neither captured"}, ${complete ? "complete" : "incomplete"} replacement)`, async () => {
     const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-")));
     const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-root-")));
     try {
@@ -2896,7 +2896,8 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) {
           repositoryFingerprint: "tree-1", status: "running" }, 3);
       }
       const replacement = { ...original, id: `${runId}-replacement`,
-        clientCriterionId: sameId ? original.clientCriterionId : "replacement", repositoryScope: "repo-01" as const, links: [] };
+        clientCriterionId: sameId ? original.clientCriterionId : "replacement", repositoryScope: "repo-01" as const,
+        links: complete ? original.links : [] };
       const siblingGeneration = store.workflowEvidenceGeneration(noteKey, siblingRoot);
       const changed = store.stageWorkflowEvidence(noteKey, [], 4, null, [replacement]);
       assert.equal(store.workflowEvidenceGeneration(noteKey, siblingRoot), siblingGeneration,
@@ -2916,16 +2917,22 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) {
         "the sibling can still freeze the original shared claim without any ancestor to inherit");
       assert.deepEqual(store.listSubmissionCoverage(siblingFirst.submission.id).map(c => [c.clientCriterionId, c.links]),
         [["claim", original.links]], "preservation does not invent a caller claim id");
+      const reservedGroup = () => openDb().prepare("SELECT reserved_group_key FROM workflow_evidence_staging WHERE note_key = ? AND client_item_id = 'proof'")
+        .get(noteKey)?.reserved_group_key;
+      assert.equal(reservedGroup(), leadCaptured ? runId : `${runId}-sibling`,
+        "a sibling capture does not move an existing evidence reservation to its own group");
       const lead = leadCaptured ? store.createRepairSubmission({ id: `${runId}-second`, runId, round: 2,
         triggerSource: "manual", triggerKey: `${runId}-second`, evidenceGroupKey: runId, context: {}, evidence: {}, now: 7 })
         : initial(binding, runId, 7);
       await captureSubmissionTextArtifacts(store, lead.submission.id, 7);
       await inheritSubmissionEvidence(new WorkflowStore(), lead.submission, 7);
       store.freezeDeferredSubmissionCoverage({ submissionId: lead.submission.id, now: 7 });
-      assert.deepEqual(readinessFor(lead.submission.id).criteria[0]?.gaps, ["missing_execution"],
-        "the retained shared version cannot hide the receiving repository's incomplete replacement");
+      assert.deepEqual(readinessFor(lead.submission.id).criteria[0]?.gaps, complete ? [] : ["missing_execution"],
+        "the replacement keeps access to shared proof while incomplete replacements still block");
+      assert.equal(reservedGroup(), leadCaptured ? runId : `${runId}-sibling`,
+        "the replacement can capture shared proof without stealing the sibling's reservation");
       // A later all-scope update must replace both the current and the retained versions.
-      store.stageWorkflowEvidence(noteKey, [], 8, null, [{ ...replacement, repositoryScope: "all" }]);
+      store.stageWorkflowEvidence(noteKey, [], 8, null, [{ ...replacement, repositoryScope: "all", links: [] }]);
       const next = store.createRepairSubmission({ id: `${runId}-sibling-next`, runId: `${runId}-sibling`, round: 2,
         triggerSource: "manual", triggerKey: `${runId}-sibling-next`, context: {}, evidence: {}, now: 9 });
       await inheritSubmissionEvidence(new WorkflowStore(), next.submission, 9);

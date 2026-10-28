@@ -978,6 +978,40 @@ test("canonical citations must belong to every run receiving the claim's reposit
   }
 });
 
+test("citation validation recognises symlinked binding roots and pending canonical criteria", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-alias-")));
+  const alias = `${root}-alias`;
+  try {
+    symlinkSync(root, alias, "dir");
+    const store = new WorkflowStore();
+    const noteKey = "citation-alias-note";
+    const binding = store.insertBinding({ id: "citation-alias-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey, sessionId: "citation-alias-session", sessionAgent: "codex", sessionName: "Alias",
+      sessionCwd: alias, sessionRepoRoot: alias, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+    const created = store.createInitialSubmission(
+      { id: "citation-alias-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "citation-alias-first", now: 2 },
+      { id: "citation-alias-first", triggerSource: "manual", triggerKey: "citation-alias-first", context: {}, evidence: {}, now: 2 });
+    const claim = { clientCriterionId: "claim", criterionId: "canonical-alias", criterion: "The result works",
+      proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const, links: [] };
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [], coverage: [claim] };
+    const before = store.listWorkflowEvidence(noteKey);
+    await assert.rejects(stageAgentWorkflowEvidence(input), (error: unknown) => {
+      assert.ok(error instanceof WorkflowImageEvidenceError);
+      assert.match(error.message, /Canonical criteria have not been captured/);
+      assert.match(error.message, /omit criterionId until a repair message names the criteria/);
+      return true;
+    });
+    assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    store.freezeRunCriteria(created.run.id, { intentFingerprint: created.run.intent!.fingerprint,
+      constraints: [], acceptanceCriteria: [], canonicalCriteria: [
+        { id: claim.criterionId, text: claim.criterion, material: true, suggestedProofClass: null },
+      ], compaction: { status: "model", runner: "codex", model: "fake", error: null },
+      compactedFromSubmissionId: created.submission.id, compactedAt: 3 });
+    const registered = await stageAgentWorkflowEvidence(input);
+    assert.equal(registered.coverage?.[0]?.criterionId, claim.criterionId);
+  } finally { rmSync(alias, { force: true }); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy canonical citations survive failed image captures with empty contexts", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-citation-")));
   try {

@@ -75,6 +75,38 @@ and keeps one OTel runtime per process. There is no per-session input. Mutating 
 environment or the operator's settings file would change every Pi session at once, so Pi keeps
 whatever its installed extension is configured to do.
 
+### Installing the published Pi telemetry extension
+
+The separately maintained [`@upstart/pi-router-otel`](https://github.com/nigel-upstart/pi-buildout/tree/main/packages/pi-router-otel)
+package contains the same vendored Pi OTel extension used in `pi-buildout`. It is **not** a
+Mission Control npm dependency or part of the app bundle. Pi discovers it from its own agent
+home, including when Mission Control embeds Pi's SDK. Install it only in the Pi home the daemon
+will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home), after reviewing the package's
+full-content capture default and removing any separately installed `npm:pi-otel` to avoid
+duplicate instrumentation:
+
+```sh
+# Configure read-only @upstart npm access via the supported UMT flow first.
+umt artifacts --tools npm
+pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
+pi list
+```
+
+An isolated validation can instead set `PI_CODING_AGENT_DIR` to a disposable directory and use
+a short-lived `NPM_CONFIG_USERCONFIG` with a CodeArtifact token. See the
+[Pi package consumer instructions](https://github.com/nigel-upstart/pi-buildout/blob/main/packages/README.md#consumer-setup-read-only).
+The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
+all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
+overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
+
+This is a **runtime install**, not a build-time dependency: putting a CodeArtifact tarball in
+Mission Control's public `npm ci` lockfile would require credentials in every GitHub-hosted
+Node 24/26 dependency producer, E2E shard and release build. Until a read-only CI identity,
+scoped npm auth and artifact-provenance policy are provisioned, the app build must not fetch
+this private package or silently turn Pi's full-content telemetry on for every installation.
+The existing app build and CI only bundle Mission Control's own Pi integration. A successful
+Pi export does not imply the daemon relay saw it: Pi sends directly to its configured gateway.
+
 ## When a managed policy wins
 
 This is accepted behavior, and Mission Control does not work around it. Both agents apply their

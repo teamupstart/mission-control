@@ -1,5 +1,6 @@
 // Runs only in the complete private, publisher-verified app created by install.sh.
 // No source clone, host interpreter, package manager or compiler participates.
+import { LEGACY_APP_BUNDLE_NAME } from "../src/shared/app-naming.mjs";
 import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
@@ -65,6 +66,7 @@ export async function installBinary(options, ports = {}) {
   const prepare = ports.prepare ?? prepareStagedInstall;
   const descriptor = prepare({bundle, receipt, publisher});
   const occupied = !!lstatSync(receipt.appPath, {throwIfNoEntry: false});
+  if (!previous && lstatSync(join(destination.appsDir, LEGACY_APP_BUNDLE_NAME), {throwIfNoEntry: false})) throw new Error("An unmanaged Mission Control.app already exists in this folder. Preserve that app and its state; use its managed receipt or move the copy aside explicitly before installing.");
   if (!previous && occupied && !options.enroll) throw new Error('An unmanaged app already occupies the destination. To enroll this exact signed build, rerun with --enroll; a different build must be moved aside explicitly.');
   if (options.enroll) {
     if (!occupied) throw new Error('There is no copied app at this destination to enroll');
@@ -105,7 +107,7 @@ export async function installBinary(options, ports = {}) {
       throw new Error('The previous installation was recovered. Reopen the managed app or rerun this installer after inspecting its outcome.');
     }
     if (previous && !options.enroll) {
-      if (previous.appPath !== receipt.appPath) {
+      if (previous.appPath !== receipt.appPath && previous.appPath !== join(destination.appsDir, LEGACY_APP_BUNDLE_NAME)) {
         // Integration inventory/repair requires Electron's existing migration owner.
         // The canonical in-place recovery route is always available without relocation.
         throw new Error('Use the managed app relocation flow to move this installation and repair its integrations. Rerun without destination flags for a Node-free in-place replacement.');

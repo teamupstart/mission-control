@@ -54,5 +54,5 @@ export async function startBinaryEnrollment(bundle: string, stateDirectory: stri
   }
   const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
   if (code !== 0) throw new Error(`Enrollment could not complete. Your existing installation was preserved. See ${logPath} for the reason.`);
-  return {started: true, message: "This copied app is now managed. Automatic binary updates will be available in a later build; use the signed installer for manual replacement."};
+  return {started: true, message: "This copied app is now managed. Reopen Mission Control to enable automatic binary updates, or use the signed installer for recovery."};
 }

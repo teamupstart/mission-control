@@ -22,11 +22,13 @@ export interface UpdatePhaseCopy {
   detail: string;
 }
 
-export function migrationReadyDetail(source: string, target: string): string {
+export function migrationReadyDetail(source: string, target: string, kind?: "rename"): string {
+  if (kind === "rename") return `This update renames ${source} to ${target} in the same folder. Your installation scope, settings and sessions stay in the same state home. The old app is retired only after the new app confirms readiness. You can cancel before restart.`;
   return `This update moves Mission Control from ${source} to ${target}. The system copy is retained for other accounts and existing sessions. Your state stays where it is. Mission Control will close and reopen from your personal Applications folder.`;
 }
 
-export function migrationCompleteDetail(target: string): string {
+export function migrationCompleteDetail(target: string, kind?: "rename"): string {
+  if (kind === "rename") return `Agent Mission Control is installed at ${target}. The previous app is retained privately for recovery. Replace the old Dock shortcut with the renamed app.`;
   return `Mission Control is installed at ${target}. The system copy was retained. Replace the old Dock shortcut with the personal app, and start fresh agent sessions to use repaired integration paths.`;
 }
 
@@ -39,14 +41,14 @@ export const UPDATE_COPY: {
   preparing: {
     title: (version) => `Preparing Mission Control ${version}`,
     detail:
-      "Mission Control keeps running while the new version is built, and will ask before it restarts.",
+      "Mission Control keeps running while the signed binary downloads and is verified, and will ask before it restarts.",
   },
   cancelling: {
     title: (version) => `Cancelling the Mission Control ${version} update`,
-    // Not "cancelled": the build is being torn down, and the offer comes back when it is
-    // actually gone. Starting another one before that would put a fresh checkout and install
-    // into the directory the dying processes are still writing to.
-    detail: "Waiting for the build to stop. The update will be offered again in a moment.",
+    // Each binary preparation owns a private attempt directory. Cancellation waits for its
+    // worker and subprocess group to settle and for the attempt to be cleaned up before
+    // returning the offer, so retry cannot overlap work that is still shutting down.
+    detail: "Waiting for the download and verification to stop. The update will be offered again in a moment.",
   },
   ready: {
     title: (version) => `Mission Control ${version} is ready to install`,

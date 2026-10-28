@@ -159,6 +159,37 @@ installer refuses one outright for that reason. Packaged-app users press **Insta
 integrations** instead; either installer now replaces the other's entries rather than
 stacking a second bridge beside them.
 
+## An MCP server I added is missing from a dispatched Claude session
+
+A user-added MCP server with HTTP transport, usually one that needs a browser login, can be
+absent from a Claude session that Mission Control dispatched. It does not show up at all,
+not even as "needs authentication", and it can be missing from your own new sessions too.
+
+Mission Control is not what removes it. A dispatch passes Mission Control's own MCP server and
+filters none of yours, in both the terminal and the Agent SDK runtimes, and an SDK dispatch
+loads your user, project and local settings. See [It already composes](upstart.md#it-already-composes).
+
+The cause is in the `claude` binary, and this part comes from an earlier investigation
+rather than from this repository's code. A server recorded in
+`~/.claude/mcp-needs-auth-cache.json` can be skipped without a connection attempt; the
+binary logs `Skipping connection (cached needs-auth)`. That file is shared by every Claude
+session on the machine, so an entry written by one session can hide the server from all of
+them. What writes an entry, and how long it lasts, is not known.
+
+To check, open `~/.claude/mcp-needs-auth-cache.json` and look only at the server names and
+their timestamps, to see whether your server is listed. Do not paste the file's contents into
+a chat, ticket or pull request.
+
+To fix it, run `/mcp` in a terminal and log in to the server again. A successful login should
+clear its entry. If the server is still missing after a successful login, the entry may not
+have cleared, so check the file again (names and timestamps only). Then dispatch again.
+
+One related limit: a local-scoped server (the default for `claude mcp add`, stored under the
+repository's path in `~/.claude.json`) is keyed by that path, so a dispatched session in a
+worktree at a different path may not see it. A project-scoped server in the repository's
+`.mcp.json` reaches a worktree only when that file is committed or otherwise present in the
+checkout. A user-scope server has no such limit, so add it there if every worktree needs it.
+
 ## Playwright cannot find Chromium
 
 If the end-to-end run reports `browserType.launch: Executable doesn't exist`, install
@@ -256,6 +287,26 @@ Wait for removal before treating the session as fully gone, then inspect the tas
 its recorded outcome and cleanup choice. See [session lifecycle](session-lifecycle.md#from-observation-to-removal)
 and [when a task's agent goes away](dispatch-and-backlog.md#when-a-tasks-agent-goes-away).
 
+
+## A desktop binary update is unavailable or fails verification
+
+Use **Check again** to refresh the stable release or exact-main-SHA alpha offer. A release without
+a complete manifest, ZIP and DMG is not ready. An alpha may still be publishing or may have expired;
+the updater never substitutes an older alpha or compiles source. An intact local prepared binary
+can still be installed in the current session. Native GitHub CLI authentication is required, but
+host Node, npm and a source clone are not.
+
+The download bar measures bytes. Archive and signature checks show their stage without a guessed
+percentage. Cancellation waits for the worker and owned subprocesses to stop before retry appears.
+Wrong signer, digest, architecture, OS requirement or helper protocol leaves the installed app and
+receipt unchanged. Free enough space for the archive, expanded app and measured runtime/recovery
+copies, then retry. See the bounded, redacted `update.log` for diagnostics.
+
+If the app cannot update itself, use the [signed binary installer](desktop-and-packaging.md#binary-installation-and-manual-recovery)
+to replace the existing destination without host Node. Preserve the state home, receipt and
+recovery directories. A failure after receipt commitment needs forward recovery; do not manually
+launch an older app against potentially migrated state. Signed publication and real packaged
+qualification remain required before this route can be declared release-ready.
 
 ## Mission Control is not open anymore, or an update relaunch fails
 

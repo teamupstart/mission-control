@@ -706,6 +706,48 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
       ON session_launch_turns(updated_at);
 
+    -- WHICH SESSION SENT A DELEGATED MESSAGE, one row per delivery.
+    --
+    -- A message one session sends another through session control lands in the target's
+    -- transcript as an ordinary user turn, so without this the target's log credits the
+    -- operator with it as soon as the in-memory label is gone. One row per DELIVERY rather
+    -- than per text, because two controllers can send identical words and each turn must
+    -- still name its own sender. transcript_offset is the target transcript's byte size
+    -- when the message was sent: the row binds to the first matching user turn written
+    -- after it, in rowid (reservation) order, and message_id is never re-pointed after.
+    CREATE TABLE IF NOT EXISTS session_delegated_turns (
+      id              TEXT PRIMARY KEY,
+      note_key        TEXT NOT NULL,   -- the TARGET's noteKeyFor(s)
+      fingerprint     TEXT NOT NULL,   -- injectionFingerprint of the delivered text
+      controller_id   TEXT NOT NULL,   -- the sending session's id
+      controller_name TEXT NOT NULL,   -- its name when it sent the message
+      delivered_at    INTEGER NOT NULL,
+      transcript_offset INTEGER,        -- target transcript size at send; NULL if none was located or its size was unreadable
+      contested       INTEGER NOT NULL DEFAULT 0, -- 1: another send of the same words raced it
+      message_id      TEXT,            -- native id of the bound turn, NULL until seen
+      message_ts      INTEGER          -- that turn's timestamp, for re-synthesized ids
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_delegated_turns_key
+      ON session_delegated_turns(note_key, fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_session_delegated_turns_age
+      ON session_delegated_turns(delivered_at);
+
+    -- NON-DELEGATED SENDS STILL IN THEIR RACE WINDOW, so a delegated message of the same words
+    -- is contested even after a restart. A pasted, unsubmitted draft is one: the operator's Enter
+    -- turns it into a message outside Mission Control, perhaps after the daemon has restarted.
+    -- No message text, only its fingerprint; rows expire after the 24-hour race window.
+    CREATE TABLE IF NOT EXISTS session_other_sends (
+      id                TEXT PRIMARY KEY,
+      note_key          TEXT NOT NULL,   -- the target's noteKeyFor(s)
+      fingerprint       TEXT NOT NULL,   -- injectionFingerprint of the sent text
+      sent_at           INTEGER NOT NULL,
+      transcript_offset INTEGER          -- target transcript size at send; NULL if unknown
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_key
+      ON session_other_sends(note_key);
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
+      ON session_other_sends(sent_at);
+
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
     -- A session outlives the setting that launched it. Reading live configuration back to a
@@ -10502,6 +10544,131 @@ export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: n
     )
     .run(olderThan, ...keys);
   return Number(r.changes);
+}
+
+// ---- delegated turns (which controlling session sent a message) ----
+
+/** One delegated delivery into a target conversation, bound to its turn once seen. */
+export interface DelegatedTurnRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  controllerId: string;
+  controllerName: string;
+  deliveredAt: number;
+  /** The target transcript's size at send; null when none was located or its size could not be read, and the row never binds. */
+  transcriptOffset: number | null;
+  /** Another send of the same words was in flight with it, so its turn cannot be told apart. */
+  contested: boolean;
+  messageId: string | null;
+  messageTs: number | null;
+}
+
+export function insertDelegatedTurn(row: DelegatedTurnRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_delegated_turns
+         (id, note_key, fingerprint, controller_id, controller_name, delivered_at,
+          transcript_offset, contested, message_id, message_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.controllerId, row.controllerName,
+      row.deliveredAt, row.transcriptOffset, row.contested ? 1 : 0, row.messageId, row.messageTs);
+}
+
+/** Drop a delivery that provably did not land. */
+export function deleteDelegatedTurn(id: string): void {
+  openDb().prepare(`DELETE FROM session_delegated_turns WHERE id = ?`).run(id);
+}
+
+/** In reservation order: rowid, not a timestamp two senders can share or a random id. */
+export function loadDelegatedTurns(noteKey: string): DelegatedTurnRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, controller_id AS controllerId,
+              controller_name AS controllerName, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, message_id AS messageId, message_ts AS messageTs
+         FROM session_delegated_turns WHERE note_key = ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey) as unknown as Array<Omit<DelegatedTurnRow, "contested"> & { contested: number }>;
+  return rows.map((row) => ({ ...row, contested: row.contested === 1 }));
+}
+
+/**
+ * Mark an unbound delivery as raced by another send of its words, so it is never bound; or
+ * clear that mark when the only send that raced it provably did not land.
+ */
+export function contestDelegatedTurn(id: string, contested = true): void {
+  openDb()
+    .prepare(`UPDATE session_delegated_turns SET contested = ? WHERE id = ? AND message_id IS NULL`)
+    .run(contested ? 1 : 0, id);
+}
+
+/** Write-once: a bound delivery is never re-pointed at a later turn with the same words. */
+export function bindDelegatedTurn(id: string, messageId: string, messageTs: number): boolean {
+  const r = openDb()
+    .prepare(
+      `UPDATE session_delegated_turns SET message_id = ?, message_ts = ?
+         WHERE id = ? AND message_id IS NULL`,
+    )
+    .run(messageId, messageTs, id);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Delete rows older than `olderThan` whose conversation holds no live key. A live key is never
+ * touched. `liveKeys` null means liveness is unknown and deletes nothing; an EMPTY list is a
+ * known answer - every session has exited - and prunes every old row.
+ */
+export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan: number): number {
+  if (liveKeys === null) return 0;
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_delegated_turns
+         WHERE delivered_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+/** One non-delegated send still inside its race window. */
+export interface OtherSendRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  sentAt: number;
+  transcriptOffset: number | null;
+}
+
+export function insertOtherSend(row: OtherSendRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset);
+}
+
+/** Take back a send with positive evidence that nothing landed. */
+export function deleteOtherSend(id: string): void {
+  openDb().prepare(`DELETE FROM session_other_sends WHERE id = ?`).run(id);
+}
+
+/** A conversation's sends newer than `since`, oldest first. */
+export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
+  return openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset
+         FROM session_other_sends WHERE note_key = ? AND sent_at >= ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey, since) as unknown as OtherSendRow[];
+}
+
+/** Drop sends past the race window, for every conversation. */
+export function pruneOtherSends(olderThan: number): number {
+  return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
 }
 
 // ---- session standing instructions (what a launch actually delivered) ----

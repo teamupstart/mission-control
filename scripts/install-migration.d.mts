@@ -2,7 +2,7 @@ import type { InstallReceipt } from '../src/shared/install-receipt-schema.mjs';
 import type { LockOperations, ProcessRecord } from './update-lock.mjs';
 export interface MigrationIdentity { commit: string | null; version: string | null; revision: string | null; protocol: number | null; automatic: boolean }
 export interface MigrationPlan {
-  kind?: "in-place"; descriptor?: import("./install-staged-app.mjs").StagedInstallDescriptor; backup?: string; sourceDigest?: string; oldReceiptText?: string;
+  kind?: "in-place" | "rename"; descriptor?: import("./install-staged-app.mjs").StagedInstallDescriptor; backup?: string; sourceDigest?: string; oldReceiptText?: string;
   protocol: number; nonce: string; source: string; target: string; stateDirectory: string;
   stagedBundle: string; stagedRevision: string; sourceIdentity: MigrationIdentity; targetIdentity: MigrationIdentity;
   oldReceipt: InstallReceipt; intendedReceipt: InstallReceipt;

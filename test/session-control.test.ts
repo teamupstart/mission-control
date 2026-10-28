@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -29,7 +29,39 @@ const {
 const { upsertSdkSession, getSdkSession } = await import("../src/server/sdk/store.ts");
 const { sessionController } = await import("../src/server/session-control.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
-const { originOf } = await import("../src/server/injections.ts");
+const { originOf, forgetInjections } = await import("../src/server/injections.ts");
+const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
+const { forgetDelegatedTurnCache, reserveDelegatedTurn } = await import("../src/server/delegated-turns.ts");
+const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
+const { noteKeyFor } = await import("../src/server/registry.ts");
+const { fakeTranscript } = await import("./helpers/fake-transcript.ts");
+const { sessionMessages } = await import("../src/server/harness/index.ts");
+
+/**
+ * Give the target a real Claude JSONL transcript, read by the production reader, so the route
+ * records true send offsets and binding walks the actual file.
+ */
+function realTranscript(f: ReturnType<typeof fixture>) {
+  const path = join(home, `target-${++serial}.jsonl`);
+  writeFileSync(path, "");
+  const target = f.registry.getSession(f.target.id)!;
+  f.registry.applyDriverEvent(f.target.id, { kind: "bound", agentSessionId: target.agentSessionId!, transcriptPath: path, modelId: null, pid: null });
+  const conversation = () => {
+    const session = f.registry.getSession(f.target.id)!;
+    return { key: noteKeyFor(session), transcript: sessionMessages(session) };
+  };
+  return {
+    append(uuid: string, text: string, ts: number) {
+      appendFileSync(path, JSON.stringify({ type: "user", uuid, timestamp: new Date(ts).toISOString(), message: { role: "user", content: text } }) + "\n");
+    },
+    read() {
+      const c = conversation();
+      assert.ok(c.transcript, "the target's transcript is readable");
+      const messages = c.transcript.read.window(c.transcript.path).messages;
+      return attributeTranscript(f.target.id, messages, null, undefined, c).map((m) => [m.id, m.originSession?.id ?? m.origin ?? "operator"]);
+    },
+  };
+}
 const cleanups: Array<() => void> = [];
 after(() => { for (const cleanup of cleanups) cleanup(); rmSync(home, { recursive: true, force: true }); });
 let serial = 0;
@@ -158,6 +190,8 @@ test("authenticated revokes still refuse a session that stops during authorizati
 
 test("control is off for every session, cannot be self-granted, and revocation is immediate", async () => {
   const f = fixture();
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   assert.equal(f.registry.sessionControlEnabled(f.caller.id), false);
   assert.equal((await f.act({ action: "message", text: "must not send" })).status, 403);
   assert.equal((await f.request(`/api/sessions/${f.caller.id}/session-control`, { enabled: true }, f.agentHeaders, "PUT")).status, 403);
@@ -167,6 +201,21 @@ test("control is off for every session, cannot be self-granted, and revocation i
   assert.equal((await f.act({ action: "message", text: "delegated\nmessage" })).status, 200);
   assert.deepEqual(f.messages, [{ id: f.target.id, text: "delegated\nmessage" }]);
   assert.equal(originOf(f.target.id, "delegated\nmessage"), "session");
+  // The target's transcript names the controller, and keeps naming it after a restart
+  // forgets every in-memory label.
+  const t = fakeTranscript();
+  const conversation = () => t.conversation(noteKeyFor(f.registry.getSession(f.target.id)!));
+  const turn = t.append("m1", "delegated\nmessage", Date.now());
+  const read = () => attributeTranscript(f.target.id, [turn], null, undefined, conversation())[0];
+  assert.deepEqual([read()?.origin, read()?.originSession], ["session", { id: f.caller.id, name: f.caller.name }]);
+  // The operator repeating those words is not the controller, though the live text label says so.
+  const again = t.append("m2", turn.text, turn.ts + 1);
+  assert.equal(originOf(f.target.id, again.text), "session");
+  const [, repeated] = attributeTranscript(f.target.id, [turn, again], null, undefined, conversation());
+  assert.deepEqual([repeated?.origin, repeated?.originSession], [undefined, undefined]);
+  forgetInjections(); forgetDelegatedTurnCache();
+  assert.equal(originOf(f.target.id, "delegated\nmessage"), undefined);
+  assert.deepEqual([read()?.origin, read()?.originSession], ["session", { id: f.caller.id, name: f.caller.name }]);
   assert.equal((await f.grant(false)).status, 200);
   assert.equal((await f.act({ action: "message", text: "revoked" })).status, 403);
   assert.equal(f.messages.length, 1);
@@ -192,6 +241,8 @@ test("direct message routes cannot claim delegated origin, even with an enabled 
 
 test("verified delegation labels messages without attributing concurrent direct input to the controller", async () => {
   const f = fixture(); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
   const responses = await Promise.all([
     f.act({ action: "message", text: "Delegated message" }),
     f.request(`/api/sessions/${f.target.id}/inject`, { text: "Direct message", buffer: false }, {
@@ -202,6 +253,161 @@ test("verified delegation labels messages without attributing concurrent direct 
   assert.deepEqual(f.messages.map((message) => message.text).sort(), ["Delegated message", "Direct message"]);
   assert.equal(originOf(f.target.id, "Delegated message"), "session");
   assert.equal(originOf(f.target.id, "Direct message"), undefined);
+  const t = fakeTranscript();
+  const now = Date.now();
+  const page = [t.append("d", "Delegated message", now), t.append("h", "Direct message", now)];
+  const attributed = attributeTranscript(f.target.id, page, null, undefined, t.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+  assert.deepEqual(attributed.map((m) => m.originSession?.id), [f.caller.id, undefined]);
+});
+
+async function grantOther(f: ReturnType<typeof fixture>): Promise<string> {
+  const requestId = randomUUID(); f.clicks.set(requestId, { sessionId: f.other.id, enabled: true });
+  assert.equal((await f.request(`/api/sessions/${f.other.id}/session-control`, { enabled: true, requestId }, f.headers, "PUT")).status, 200);
+  return readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(f.other.id)}`), "utf8").trim();
+}
+
+test("identical messages from two controllers each name their own sender", async () => {
+  const f = fixture(); await f.grant(true);
+  const otherCredential = await grantOther(f);
+  const transcript = realTranscript(f);
+  const text = "Rebase onto main";
+  const sent = Date.now();
+  assert.equal((await f.act({ action: "message", text })).status, 200);
+  transcript.append("first", text, sent);
+  // The second controller sends once the first one's turn is in the transcript.
+  assert.equal((await f.request("/mcp/session-control/act", { sessionId: f.target.id, command: { action: "message", text } },
+    { ...f.agentHeaders, "x-mission-scout-credential": otherCredential })).status, 200);
+  transcript.append("second", text, sent + 1);
+  // The operator then repeats the words; a restart forgets every in-memory label.
+  transcript.append("third", text, sent + 2);
+  forgetInjections(); forgetDelegatedTurnCache();
+  assert.deepEqual(transcript.read(), [["first", f.caller.id], ["second", f.other.id], ["third", "operator"]]);
+});
+
+test("two controllers sending identical words before either lands credit neither", async () => {
+  const f = fixture(); await f.grant(true);
+  const otherCredential = await grantOther(f);
+  const transcript = realTranscript(f);
+  const text = "Ship the hotfix";
+  assert.equal((await f.act({ action: "message", text })).status, 200);
+  assert.equal((await f.request("/mcp/session-control/act", { sessionId: f.target.id, command: { action: "message", text } },
+    { ...f.agentHeaders, "x-mission-scout-credential": otherCredential })).status, 200);
+  // The second controller's turn reaches the transcript first.
+  const sent = Date.now();
+  transcript.append("from-other", text, sent);
+  transcript.append("from-caller", text, sent + 1);
+  assert.deepEqual(transcript.read(), [["from-other", "operator"], ["from-caller", "operator"]]);
+});
+
+test("a delegated delivery that provably did not land labels no later turn", async () => {
+  const f = fixture(); await f.grant(true);
+  const text = "Retry the migration";
+  const send = f.sdk.send;
+  // The driver rejects the turn, so `/inject` reports `pasted: false`.
+  Object.assign(f.sdk, { send: async () => { throw new Error("driver refused the turn"); } });
+  const refused = await f.act({ action: "message", text });
+  Object.assign(f.sdk, { send });
+  assert.equal(refused.status, 500);
+  assert.equal((await refused.json()).pasted, false);
+  assert.deepEqual(f.messages, []);
+  // The operator then types the same words; nothing the controller tried may claim them.
+  const t = fakeTranscript();
+  const typed = t.append("operator", text, Date.now());
+  const [read] = attributeTranscript(f.target.id, [typed], null, undefined, t.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+  assert.deepEqual([read?.origin, read?.originSession], [undefined, undefined]);
+});
+
+test("a human send that provably did not land does not cost the controller its label", async () => {
+  const f = fixture(); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
+  const text = "Rebuild the index";
+  assert.equal((await f.act({ action: "message", text })).status, 200);
+  const send = f.sdk.send;
+  // The operator's attempt is refused by the driver, so `/inject` reports `pasted: false`.
+  Object.assign(f.sdk, { send: async () => { throw new Error("driver refused the turn"); } });
+  const refused = await f.request(`/api/sessions/${f.target.id}/inject`, { text, buffer: false }, {
+    ...f.headers, origin: "http://localhost", "x-mission-operation-actor": "human",
+  });
+  Object.assign(f.sdk, { send });
+  assert.equal((await refused.json()).pasted, false);
+  const t = fakeTranscript();
+  const controller = t.append("controller", text, Date.now());
+  const [read] = attributeTranscript(f.target.id, [controller], null, undefined, t.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+  assert.deepEqual([read?.origin, read?.originSession?.id], ["session", f.caller.id]);
+});
+
+test("a queued human turn the driver did not accept does not cost the controller its label", async (t) => {
+  const f = fixture(undefined, 0); await f.grant(true);
+  // The route records a send boundary only against a readable target transcript.
+  realTranscript(f);
+  const key = f.target.agentSessionId!;
+  const text = "Run the migration again";
+  assert.equal((await f.act({ action: "message", text })).status, 200);
+  let calls = 0;
+  t.after(() => f.pending.stop());
+  // The agent turns busy before the queued turn is handed over: the row is released, unsent.
+  t.mock.method(f.sdk, "sendWhenIdle", async () => {
+    calls += 1;
+    f.pending.stop();
+    return null;
+  });
+  f.registry.applyDriverEvent(f.target.id, { kind: "state", state: "working", activity: null });
+  const queued = f.pending.submit(f.target.id, text).pendingTurn!;
+  f.registry.applyDriverEvent(f.target.id, { kind: "state", state: "idle", activity: null });
+  for (let attempt = 0; attempt < 200 && !(calls > 0 && listPendingTurns(key).find((row) => row.id === queued.id)?.state === "queued"); attempt++) await delay(10);
+  assert.equal(calls, 1);
+  assert.equal(listPendingTurns(key).find((row) => row.id === queued.id)?.state, "queued");
+  const t2 = fakeTranscript();
+  const controller = t2.append("controller", text, Date.now());
+  const [read] = attributeTranscript(f.target.id, [controller], null, undefined, t2.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+  assert.deepEqual([read?.origin, read?.originSession?.id], ["session", f.caller.id]);
+});
+
+test("an unsubmitted terminal draft contests a delegated message of the same words", async () => {
+  const f = fixture();
+  const discovered = {
+    syntheticId: `proc:ttys9${++serial}:${serial}:0`, agent: "claude", name: "terminal target", nameSource: "process",
+    cwd: home, gitBranch: "main", pid: 7000 + serial, tty: `ttys9${serial}`,
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: `%${serial}` })], startedAt: 0,
+  } as unknown as import("../src/server/discovery/correlate.ts").DiscoveredSession;
+  f.registry.applyDiscovery([discovered]);
+  const terminal = f.registry.getSession(discovered.syntheticId)!;
+  assert.notEqual(terminal.runtime, "sdk");
+  const t = fakeTranscript();
+  const conversation = t.conversation(noteKeyFor(terminal));
+  const text = "Draft the release notes";
+  // A controller's message to the terminal target is still on its way...
+  reserveDelegatedTurn(conversation, text, { id: f.caller.id, name: f.caller.name });
+  // ...when the operator pastes the same words without submitting them.
+  await f.request(`/api/sessions/${terminal.id}/send`, { text, submit: false }, { ...f.headers, origin: "http://localhost", "x-mission-operation-actor": "human" });
+  const page = [t.append("operator", text, Date.now()), t.append("controller", text, Date.now() + 1)];
+  const read = attributeTranscript(terminal.id, page, null, undefined, conversation);
+  assert.deepEqual(read.map((m) => m.originSession?.id), [undefined, undefined]);
+});
+
+test("a human send racing a delegated send of the same words credits neither, in either order", async () => {
+  const humanHeaders = { origin: "http://localhost", "x-mission-operation-actor": "human" };
+  for (const order of ["controller-first", "human-first"] as const) {
+    const f = fixture(); await f.grant(true);
+    const text = `Run the parser tests (${order})`;
+    const human = () => f.request(`/api/sessions/${f.target.id}/inject`, { text, buffer: false }, { ...f.headers, ...humanHeaders });
+    // Neither turn has been written to the target's transcript when the second send starts.
+    if (order === "controller-first") {
+      assert.equal((await f.act({ action: "message", text })).status, 200);
+      assert.equal((await human()).status, 200);
+    } else {
+      assert.equal((await human()).status, 200);
+      assert.equal((await f.act({ action: "message", text })).status, 200);
+    }
+    const sent = Date.now();
+    const t = fakeTranscript();
+    // The human's turn is written first, which is exactly the turn a naive walk would credit.
+    const page = [t.append("human", text, sent), t.append("controller", text, sent + 1)];
+    const read = attributeTranscript(f.target.id, page, null, undefined, t.conversation(noteKeyFor(f.registry.getSession(f.target.id)!)));
+    assert.deepEqual(read.map((m) => [m.id, m.originSession?.id]), [["human", undefined], ["controller", undefined]], order);
+    assert.equal(read[0]?.origin, undefined, `${order}: the human's turn never reads as delegated`);
+  }
 });
 
 test("shared machine token, claimed ids, forged signatures and stale episodes do not grant control", async () => {

@@ -65,11 +65,11 @@ export function createMigrationIntegrationPorts(app: LoginApp, options: {
       const target = join(plan.target, "Contents/MacOS/Mission Control");
       const source = join(plan.source, "Contents/MacOS/Mission Control");
       if (executable !== target) throw new Error("Login repair must run from the personal installation.");
-      if (platform === "darwin") await (options.sourceCleanup ?? launchSourceCleanup)(plan);
+      if (platform === "darwin" && plan.kind !== "rename") await (options.sourceCleanup ?? launchSourceCleanup)(plan);
       else if (platform === "win32") {
         if (app.getLoginItemSettings({path: source}).openAtLogin) app.setLoginItemSettings({path: source, openAtLogin: false});
         if (app.getLoginItemSettings({path: source}).openAtLogin) throw new Error("The retained source login entry could not be removed.");
-      } else throw new Error("Login item repair is unsupported on this platform.");
+      } else if (platform !== "darwin") throw new Error("Login item repair is unsupported on this platform.");
       if (app.getLoginItemSettings({path: target}).openAtLogin !== openAtLogin) app.setLoginItemSettings({path: target, openAtLogin});
       const settings = app.getLoginItemSettings({path: target});
       if (settings.openAtLogin !== openAtLogin || (platform === "win32" && openAtLogin && !settings.executableWillLaunchAtLogin)) throw new Error("Login startup could not be verified for the personal app. Toggle Open at Login in the personal app, then retry.");

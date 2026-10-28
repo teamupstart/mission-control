@@ -1,8 +1,10 @@
 import {
   updateDialogDismissal,
+  liveUpdateDialog,
   type UpdateDialogChoice,
   type UpdateDialogRequest,
 } from "@shared/update-dialog.ts";
+import type { UpdateSnapshot } from "@shared/update.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -16,18 +18,21 @@ import { Tooltip } from "./Tooltip.tsx";
  * the installed app, and ask for an administrator password on the way when that app lives in a
  * shared system folder.
  *
- * There is no per-phase branch here. The seven conversations differ only in words, tone and
+ * The seven conversations differ only in words, tone and
  * which buttons they offer, and `shared/update-dialog.ts` owns all three - so this renders
  * whatever arrives, and a new phase costs a builder there rather than a component here.
  */
 export function UpdateDialog({
   request,
   onAnswer,
+  snapshot,
 }: {
   request: UpdateDialogRequest | null;
   onAnswer: (id: string, choice: UpdateDialogChoice) => void;
+  snapshot?: UpdateSnapshot | null;
 }): React.JSX.Element | null {
   if (!request) return null;
+  request = liveUpdateDialog(request, snapshot);
 
   // Escape and the backdrop answer with the dialog's own dismissal, read off the content
   // rather than assumed: "Later" on the two that offer it, "OK" on the five that do not.

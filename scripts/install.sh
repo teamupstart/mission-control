@@ -26,7 +26,7 @@ download() {
 
 verify_app() {
   local app=$1 link target count=0 size depth value
-  [[ -d "$app" && ! -L "$app" ]] || fail "The image has no regular Mission Control.app."
+  [[ -d "$app" && ! -L "$app" ]] || fail "The image has no regular app matching its manifest."
   app=$(cd -P -- "$app" && pwd) || fail "Could not resolve the app root."
   size=$(/usr/bin/du -sk "$app"); size=${size%%[[:space:]]*}
   [[ $size -le 8388608 ]] || fail "The app exceeds the unpacked size limit."
@@ -52,10 +52,12 @@ verify_app() {
   [[ $(field "$app/Contents/Info.plist" CFBundleIdentifier) == 'com.mission-control.app' ]] || fail "Unexpected app identity."
   [[ $(field "$app/Contents/Info.plist" CFBundleExecutable) == 'Mission Control' ]] || fail "Unexpected app executable."
   [[ $(/usr/bin/od -An -tx1 -N8 "$app/Contents/MacOS/Mission Control" | /usr/bin/tr -d ' \n') == cffaedfe0c000001 ]] || fail "The app is not an arm64 executable."
-  /usr/bin/codesign --verify --deep --strict --all-architectures -R 'anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "S2FPCQK39Z"' "$app" 2>"$mission_tmp/signature.log" || fail "App publisher verification failed."
+  /usr/bin/codesign --verify --deep --strict --all-architectures -R '=anchor apple generic and identifier "com.mission-control.app" and certificate leaf[subject.OU] = "S2FPCQK39Z"' "$app" 2>"$mission_tmp/signature.log" || fail "App publisher verification failed."
   /usr/sbin/spctl --assess --type execute --verbose=4 "$app" 2>"$mission_tmp/assessment.log" || fail "macOS refused the app."
   /usr/bin/grep -qx 'source=Notarized Developer ID' "$mission_tmp/assessment.log" || fail "The app is not notarized."
-  local metadata="$app/Contents/Resources/app/package.json"
+  local metadata="$app/Contents/Resources/app/package.json" signed_name
+  signed_name=$(/usr/bin/plutil -extract missionBinary.appBundleName raw -o - "$metadata" 2>/dev/null) || signed_name='Mission Control.app'
+  [[ "$signed_name" == "$app_bundle" ]] || fail 'The signed app name differs from the manifest.'
   [[ $(field "$metadata" missionBinary.commit) == "$commit" && $(field "$metadata" missionBinary.version) == "$version" ]] || fail "The signed app differs from the selected release."
 }
 
@@ -126,6 +128,10 @@ main() {
   download "repos/teamupstart/mission-control/releases/assets/$manifest_id" "$manifest" 16384 application/octet-stream
   [[ $(field "$manifest" protocol) == 1 && $(field "$manifest" repo) == 'teamupstart/mission-control' && $(field "$manifest" bundleId) == 'com.mission-control.app' && $(field "$manifest" arch) == arm64 && $(field "$manifest" platform) == darwin && $(field "$manifest" channel) == "$channel" ]] || fail 'Unexpected manifest identity or protocol.'
   commit=$(field "$manifest" commit); version=$(field "$manifest" version)
+  app_bundle=$(/usr/bin/plutil -extract appBundleName raw -o - "$manifest" 2>/dev/null) || app_bundle='Mission Control.app'
+  # Historical bundles carry an installer that still targets the old name. Reject them
+  # here before downloading or running candidate code, even when correctly signed.
+  [[ "$app_bundle" == 'Agent Mission Control.app' ]] || fail 'Unsupported app bundle name. Select a current Agent Mission Control release.'
   [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid commit.'
   if [[ "$channel" == stable ]]; then [[ "$tag" == "v$version" && $(field "$manifest" releaseTag) == "$tag" ]] || fail 'Stable identity mismatch.'
   else [[ "$commit" == "$ref" ]] || fail 'Alpha identity mismatch.'; fi
@@ -150,7 +156,7 @@ main() {
   echo "Installing $tag ($commit) from teamupstart/mission-control"
   download "repos/teamupstart/mission-control/releases/assets/$dmg_id" "$mission_tmp/installer.dmg" "$dmg_bytes" application/octet-stream
   [[ $(/usr/bin/stat -f %z "$mission_tmp/installer.dmg") == "$dmg_bytes" && $(digest "$mission_tmp/installer.dmg") == "$dmg_hash" ]] || fail 'DMG size or SHA-256 mismatch.'
-  /usr/bin/codesign --verify --strict -R 'anchor apple generic and certificate leaf[subject.OU] = "S2FPCQK39Z"' "$mission_tmp/installer.dmg" 2>"$mission_tmp/signature.log" || fail 'DMG publisher verification failed.'
+  /usr/bin/codesign --verify --strict -R '=anchor apple generic and certificate leaf[subject.OU] = "S2FPCQK39Z"' "$mission_tmp/installer.dmg" 2>"$mission_tmp/signature.log" || fail 'DMG publisher verification failed.'
   /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=4 "$mission_tmp/installer.dmg" 2>"$mission_tmp/assessment.log" || fail 'macOS refused the DMG.'
   /usr/bin/grep -qx 'source=Notarized Developer ID' "$mission_tmp/assessment.log" || fail 'The DMG is not notarized.'
   /bin/mkdir "$mission_tmp/image"
@@ -159,17 +165,17 @@ main() {
   local entry
   shopt -s dotglob nullglob
   for entry in "$mission_tmp/image/"*; do
-    case "${entry##*/}" in 'Mission Control.app'|'Read Me.txt'|'.DS_Store'|'.background'|'.VolumeIcon.icns'|'.fseventsd'|'.Trashes') ;; *) fail 'Unexpected DMG root.';; esac
+    case "${entry##*/}" in "$app_bundle"|'Read Me.txt'|'.DS_Store'|'.background'|'.VolumeIcon.icns'|'.fseventsd'|'.Trashes') ;; *) fail 'Unexpected DMG root.';; esac
   done
-  verify_app "$mission_tmp/image/Mission Control.app"
-  /usr/bin/ditto "$mission_tmp/image/Mission Control.app" "$mission_tmp/Mission Control.app"
-  verify_app "$mission_tmp/Mission Control.app"
+  verify_app "$mission_tmp/image/$app_bundle"
+  /usr/bin/ditto "$mission_tmp/image/$app_bundle" "$mission_tmp/$app_bundle"
+  verify_app "$mission_tmp/$app_bundle"
   /usr/bin/hdiutil detach "$mission_tmp/image" >/dev/null; mission_mounted=0
   # The complete private runtime survives every destination rename and all its
   # synchronous children. Failures retain it for recovery; no candidate runs mounted.
-  ELECTRON_RUN_AS_NODE=1 "$mission_tmp/Mission Control.app/Contents/MacOS/Mission Control" \
-    "$mission_tmp/Mission Control.app/Contents/Resources/app/scripts/install-binary.mjs" \
-    --bundle "$mission_tmp/Mission Control.app" --manifest "$manifest" ${forwarded[@]+"${forwarded[@]}"}
+  ELECTRON_RUN_AS_NODE=1 "$mission_tmp/$app_bundle/Contents/MacOS/Mission Control" \
+    "$mission_tmp/$app_bundle/Contents/Resources/app/scripts/install-binary.mjs" \
+    --bundle "$mission_tmp/$app_bundle" --manifest "$manifest" ${forwarded[@]+"${forwarded[@]}"}
   trap - EXIT
   /bin/rm -rf -- "$mission_tmp"
 }

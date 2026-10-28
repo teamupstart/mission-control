@@ -1,5 +1,5 @@
 import type { TranscriptMessage } from "@shared/types.ts";
-import { originLabel, turnAuthor } from "./find.ts";
+import { turnAuthor, turnOriginLabel } from "./find.ts";
 
 // The "Yours" rail's row model - an INDEX of the operator's own messages, not a filter
 // over the log. Pure and browser-safe, so the one rule that matters here (what counts as
@@ -67,7 +67,7 @@ export function yourMessages(messages: TranscriptMessage[]): YoursIndex {
     }
     // Narrowed to `TurnOrigin` by the two checks above rather than asserted, so a fourth
     // origin added to the union fails to compile here instead of rendering as null.
-    injected.push({ id: m.id, ts: m.ts, text: m.text, who: originLabel(author) });
+    injected.push({ id: m.id, ts: m.ts, text: m.text, who: turnOriginLabel(m, author) });
   }
   return { yours, injected };
 }

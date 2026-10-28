@@ -2,8 +2,13 @@
 
 ## Qualification status
 
-The producer, publisher and workflow are implemented, but **Phase 2 has not met its release
-exit gate**. The operator-approved Developer ID team `S2FPCQK39Z` is pinned in
+The producer, publisher and workflow are implemented, but **real signed-release qualification
+remains outstanding**. The operator's 2026-10-26
+[forward-rollout contract](plans/desktop-without-system-node/forward-rollout.md) owns the
+implementation acceptance gates and R1/R2 release qualification rules. This runbook records
+observed status and execution procedures; no signed journey is claimed passed by this change.
+
+The operator-approved Developer ID team `S2FPCQK39Z` is pinned in
 [`binary-publisher-policy.mjs`](../src/shared/binary-publisher-policy.mjs). The approval was
 recovered from the task's saved human answer on 2026-10-15 after the original tool call had
 timed out. Neither an environment variable nor a downloaded manifest can supply this trust root.
@@ -37,6 +42,134 @@ the verified local identity, and both API identifiers have the expected formats.
 secret values cannot be read back; only a real signing/notarization run can establish that
 the exported certificate, password and API key work together. Environment configuration is
 complete; real signed-release qualification and controlled publication remain outstanding.
+
+## Packaging failure diagnostics (2026-10-28 UTC)
+
+[Run 39854793560](https://github.com/teamupstart/mission-control/actions/runs/39854793560/job/120090269790)
+for stable v1.27.1 (`c0a78a371`) reached Developer ID signing after a successful build.
+It then printed the old generic failure message. GitHub recorded the packaging step as
+successful, ran Bundle smoke, and failed artifact retention because no archives or JSON
+existed. This was not a successful signed qualification. The discarded exception cannot
+be reconstructed from the log, so the elapsed signing time does not establish whether
+codesign, notarization or a later verifier failed.
+
+A complete run inventory also found
+[alpha run 38918357329](https://github.com/teamupstart/mission-control/actions/runs/38918357329/job/117031718971):
+it logged signing at 11:58:21 UTC on October 28 and the same generic failure at 12:00:27,
+again with a successful packaging step and failed artifact retention. Thus the supplied
+"only one executed run" observation was incomplete: at least these two reached signing.
+Neither log contains the discarded underlying exception.
+
+Two code defects are verified independently:
+
+- The locked `temp-file@3.4.0` installs `async-exit-hook@2.0.1`, whose
+  `add.hookEvent('beforeExit', 0)` calls `process.exit(0)` after cleanup. That overwrites
+  the producer's `process.exitCode = 1`. A child-process reproduction exits zero without
+  the fix. The producer now pins failure again in an `exit` listener, matching
+  electron-builder's own `out/cli/cli-util.js` workaround for
+  [upstream #2940](https://github.com/electron-userland/electron-builder/issues/2940).
+  Asynchronous temporary-file/keychain cleanup still gets to finish.
+- `app-builder-lib@26.15.3`, used by that run, creates a random temporary-keychain
+  password but passes the certificate import password to `security set-key-partition-list
+  -k`. Those are different credentials. The dependency is now pinned to
+  `electron-builder@26.16.1`, which contains the
+  [v26 keychain fix](https://github.com/electron-userland/electron-builder/pull/10172).
+  A focused test intercepts every security call and checks that create, unlock and
+  partition-list use the same generated password while import uses the fake `.p12`
+  password. It fails on 26.15.3 and passes on 26.16.1 without accessing a keychain.
+  This removes a real signing defect; it does not prove which error the historical run hid.
+
+`package:distribution` reports the failing stage: preflight, build, sign (including
+identity/keychain preparation after packaging), notarize (app), verifyDistributionApp,
+qualifySignedRuntime, dmg build (including DMG signing), notarize (dmg), ditto, archive
+verification or metadata. Error records retain the class/code, child status/signal and
+bounded redacted details. Explicit `notarytool submit` and `wait` calls report submission
+IDs and statuses; failed submissions also retrieve Apple's issue list when available.
+Accepted submissions are stapled before verification. A wait timeout retains the ID so
+the release operator can inspect that submission before deciding whether to retry.
+
+The original builder app notarization and explicit DMG notarization were **different
+artifacts**, not duplicate submissions. The producer now owns both explicit notarization
+stages and disables builder's implicit notarization. Each artifact is submitted once.
+Builder still owns certificate import, identity selection and signing; hardened runtime,
+entitlements, fuses, publisher policy, immutable bytes and approval gates stay enforced.
+
+Raw builder retry logs are suppressed because they can contain credential arguments.
+Build children receive no Apple/signing credentials; debug logging is disabled. Only the
+bounded diagnostic projection emits third-party failures. It redacts provisioned values,
+PEM private keys, private-key paths and credential-bearing command lines, including
+generated keychain passwords. Do not enable `DEBUG`, shell tracing, dump environments,
+upload raw error objects or attach a private key to investigate a failure.
+The workflow retains `distribution-diagnostics-<commit>` for 14 days even on failure.
+Its explicit Bash shell preserves the producer's failure through `tee`; smoke, qualified
+asset retention and publication remain success-only, while private-key removal always runs.
+
+Local fixture verification includes:
+
+```sh
+node --import ./test/setup-state.mjs --import tsx test/helpers/distribution-failure-runs.ts
+```
+
+This executes the actual `npm run package:distribution` entry point in disposable fixtures,
+forces every stage to fail, and checks exit 1 plus the redacted stage/status record. It
+does not access real credentials, Apple services or the operator's keychain, and it is
+not evidence of real signed qualification.
+
+**Release follow-up and PR handoff:** the operator must obtain `developer-platform`
+approval for the next eligible Signed distribution run on a commit containing this fix.
+Do not claim that run passed until its real signature, notarization, archive and runtime
+checks pass. The pending stable runs
+[39439350935](https://github.com/teamupstart/mission-control/actions/runs/39439350935) and
+[40014670460](https://github.com/teamupstart/mission-control/actions/runs/40014670460), and
+alpha [40679134880](https://github.com/teamupstart/mission-control/actions/runs/40679134880),
+were still waiting for `desktop-distribution` approval at this check; their commits do not
+contain this fix. No deployment was approved, rejected or rerun, and no release was published.
+PR #1214 is closed and superseded by #1216; it is not a repair target.
+
+If the next diagnostic points to credentials or Apple account state, the release operator
+must privately check that the exported `.p12` includes the matching private key, its password
+matches `CSC_KEY_PASSWORD`, and its Developer ID Application certificate for `S2FPCQK39Z`
+is valid, unexpired and unrevoked. For notarization authentication failures, check that the
+team API key is active, its Key ID and Issuer ID match the provisioned `.p8`, and its App
+Manager permission, team membership and required Apple agreements remain valid. For an
+Invalid submission, use the reported submission ID and issue list to identify the exact
+binary/signature failure. None of these secret/account facts was inspected or established
+by this repair; do not rotate credentials merely because the old log masked an error.
+
+## App-name transition observation (2026-10-27 UTC)
+
+The rename task rechecked PR #1214: it remains OPEN, draft, and DO NOT MERGE at
+`fa0e8987c1c466fa1b6773cfa58a411c9737089b`. Its implementation was integrated and adapted
+on the isolated rename branch; the held branch was not overwritten. The renamed producer
+and compatible consumer must be reviewed together before any binary installation or upgrade.
+See [app-name migration](app-name-migration.md) for compatibility limits and recovery.
+
+The [retained October 27 capture and recount](https://github.com/teamupstart/mission-control/pull/1216#issuecomment-6455779143)
+contain 40 distinct release records (`tag_name`, from `v1.27.2` through `v1.0.0`) and zero
+assets. The combined transcript has 41 JSON object lines, but one is PR #1214 metadata,
+not a release; the distribution-run array is also excluded. This count describes that
+capture, not a later live inventory. Its SHA-256 is
+`a72c05329512dcb6c4035aeb2d8d9b6203126f7e3004ed07b660e2a657b66513`.
+Distribution run `40422966224`, for `1c5f609b4e07518857e89621374c23eee2dc0840`, was pending
+in the same capture.
+This observation is time-bound and is not a rollout gate or authorization to publish, merge
+#1214, approve the protected environment, or alter any immutable asset.
+
+Local verification exercised the renamed ZIP through real binary preparation and detached
+Electron replacement for stable, old-name migration and exact-SHA alpha, with Node/npm/npx
+invocation traps. Apple trust was simulated inside disposable fixtures. The actual local
+non-distribution app, ZIP and read-only DMG were also inspected: outer bundle and plist name
+are Agent Mission Control, executable remains Mission Control, bundle ID remains
+com.mission-control.app, and the packaged Electron runtime executes in Node mode. This local
+package is not a Developer ID/notarization/Gatekeeper result.
+
+R1 (`e25403bf-a82b-46a0-a6dc-386b21ae1f5d`) and the pending Phase 5 implementation now depend on the combined rename task;
+R2 (`6f0a5344-5634-4747-b08c-92da251c3b3c`) retains its R1 and Phase 5 dependencies.
+Both remain off autopilot and reference managed plan
+`8ef94e48-d50d-4091-b18a-3e8745518556`, revision 6. Its forward-rollout.md remains the sole
+qualification contract. Registered workflow evidence contains the focused runtime/transaction
+logs, inspected UI images, package inspection, exact legacy-validator compatibility check,
+publication observation and complete plan Markdown. These gitignored artifacts do not enter Git.
 
 ## Ownership and prerequisites
 
@@ -289,15 +422,89 @@ qualification. On 2026-10-16, canonical main was `cf069aca707268f551e1f97780cd43
 all 37 release records lacked `mission-control-manifest.json`, and `distribution.yml` had
 no runs. No production publication or installation is claimed by the consumer implementation.
 
-After publishing a complete signed set, run the standard `scripts/install.sh` in a fresh
-macOS account or VM with synthetic `MISSION_HOME`, fake agents and Node/npm/npx/git/Xcode
-commands absent, then repeat with recording trap executables. Exercise default personal,
-explicit system and custom destinations, managed launch, rerun, copied-app enrollment,
-mounted-DMG refusal, and in-place replacement of a schema-1 clone/retained-installer receipt.
-Capture exact app/receipt identity, unchanged state, process identity, native command versions,
-and readiness/rollback outcomes. Include malformed/truncated assets, wrong signer/architecture,
-occupied destination, escaping symlink, permissions, concurrent attempts, receipt-write failure
-and interrupted replacement. Preserve quarantine. Repeat native bootstrap verification on the
-minimum supported macOS 12; fixtures substituting native tools cannot establish that support.
-Never use the operator's installed app or live state. These results remain required before
-calling the no-Node recovery route qualified or releasing Phase 4 against it.
+Follow the [R1 qualification contract](plans/desktop-without-system-node/forward-rollout.md#r1-first-signed-binary-and-migration).
+Use the standard `scripts/install.sh` entry point and capture native command versions alongside
+its results. Include mounted-DMG refusal, malformed/truncated assets, wrong signer/architecture,
+occupied destinations, escaping symlinks, permissions, concurrent attempts and receipt-write
+failure. Repeat native bootstrap verification on the minimum supported macOS 12; fixtures
+substituting native tools cannot establish that support.
+
+
+## Phase 4 consumer qualification
+
+The desktop consumer now selects complete stable publications or the exact observed main SHA,
+downloads and verifies their ZIP in a bundled-runtime worker, and hands the accepted binary
+descriptor to the existing installation transaction. Canonical schema-1 receipts migrate without
+executing their source installer. Source-only commands remain available explicitly.
+
+On 2026-10-25 a complete paginated inventory found 40 canonical releases and no attached
+assets.[^release-inventory-20261025] The Actions artifact inventory contained 35 artifacts and
+no `distribution-*` artifact.[^artifact-inventory-20261025] The
+[successful distribution run](https://github.com/teamupstart/mission-control/actions/runs/40014616303)
+completed input validation but skipped its package job; it supplies no signed test inputs.
+The [pending distribution run](https://github.com/teamupstart/mission-control/actions/runs/40014670460)
+was waiting at `desktop-distribution`, and GitHub reported `current_user_can_approve: false`
+for `Jordan7265` at that check.[^producer-20261025]
+On 2026-10-26, the complete release and retained-artifact inventories were checked again:
+the counts remained 40 and 35, with no signed distribution inputs.[^inventory-20261026]
+The latest five distribution runs at that check were skipped.[^producer-20261026]
+These observations establish input availability only at the stated checks, not current release
+availability. Their registered command outputs are retained in Mission Control run
+`b32df0df-7c01-4422-a692-eb4752c10844`, submission `63596c67-6cbe-4b1b-9fac-def5b9613374`
+(round 3, segment 0). Use that run's **Download the run history as JSON** action and locate the
+cited artifact IDs in the submission's `evidence.artifacts`. Registration timestamps can be
+later than the observations.
+
+The real signed update journey remains **unqualified**. Unit fixtures and browser tests do not
+prove Gatekeeper, a signed successful replacement or signed recovery.
+No signing credentials, releases or deployment configuration were changed by the consumer work.
+
+Follow the [R1 baseline requirements](plans/desktop-without-system-node/forward-rollout.md#r1-first-signed-binary-and-migration)
+and [R2 target sequence and test matrix](plans/desktop-without-system-node/forward-rollout.md#r2-subsequent-stablealpha-updates-and-recovery).
+During ZIP verification, check that extraction preserves the signed app and notarization,
+including the producer's framework symlinks and AppleDouble resources. Record the execution
+results and their registered evidence locations in this runbook when qualification is performed.
+
+Implementation reconciliations for the later pull request: the existing native-menu questions
+already render in the dashboard's themed modal, so they retain that owner and shared copy. Binary
+progress extends the existing snapshot with optional measured byte counts and appended stage IDs;
+older source progress remains readable. The product is intentionally dark-only, so browser
+verification covers both dark and light OS preferences without introducing another theme.
+
+[^release-inventory-20261025]: `phase4-recheck-all-releases-command-output.txt`, artifact
+    `txt_c9952d1b677172269a06274c9a51b459`: paginated canonical releases query, exit 0,
+    `{"pageReleaseCount":40,"releasesWithAssets":[]}`.
+
+[^artifact-inventory-20261025]: `phase4-recheck-all-action-artifacts-command-output.txt`, artifact
+    `txt_f83ee2530a69a34b0b927a0253b1f971`: paginated Actions artifacts query, exit 0,
+    `{"distribution":[],"pageArtifactCount":35}`.
+
+[^producer-20261025]: `phase4-recheck-success-skipped-package-command-output.txt`, artifact
+    `txt_ad6a9de82f5322320f9face9dc3c9865`, retains the successful input job and skipped package
+    job. `phase4-recheck-protected-producer-command-output.txt`, artifact
+    `txt_9ccfc636a5fe2e7d68830084616f8ff5`, retains the pending deployment and approval response.
+    Both commands exited 0.
+
+[^inventory-20261026]: `phase4-oct26-releases-command-output.txt`, artifact
+    `txt_82a0b96c5da06a33148c7b448a4052aa`, retains
+    `{"pageReleaseCount":40,"releasesWithAssets":[]}`; `phase4-oct26-artifacts-command-output.txt`,
+    artifact `txt_2a016bf632590b76927843ccdc125ab6`, retains
+    `{"distribution":[],"pageArtifactCount":35}`. Both paginated queries exited 0.
+
+[^producer-20261026]: `phase4-oct26-producer-command-output.txt`, artifact
+    `txt_955a514cc0334ceb8f871b629cf8cf11`: latest-five distribution workflow query, exit 0,
+    five completed runs with `conclusion: skipped`.
+
+## Phase 5 owned-runtime handoff to R2
+
+The [owned-runtime inventory and combined NC-1 through NC-6 checklist](owned-runtimes.md)
+are the Phase 5 inputs to R2. In the implementation checks recorded on **2026-10-28 UTC**,
+local Electron executed shipped integration helpers with host runtimes absent and with
+invocation traps; focused config tests and browser fixtures passed for repair and Setup.
+The [dated execution record](owned-runtimes.md#observed-implementation-checks-2026-10-28-utc)
+identifies the workflow runs, immutable submissions, exact supporting artifacts and fixture
+limits. These are observations of those executions, not guarantees for later commits. They do
+not qualify a signed install, stable/alpha update or recovery.
+R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
+include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
+protection policy are unchanged.

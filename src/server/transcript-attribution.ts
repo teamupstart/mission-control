@@ -1,4 +1,5 @@
 import type { TranscriptMessage } from "@shared/types.ts";
+import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
 import { originOf } from "./injections.ts";
 import { launchPresentationFor, type LaunchTurnMarker } from "./launch-presentation.ts";
 
@@ -26,8 +27,14 @@ export function attributeTranscript(
   messages: TranscriptMessage[],
   launch: LaunchTurnMarker | null = null,
   onLaunchTurnIdentified?: (messageId: string) => void,
+  conversation?: DelegatedConversation | null,
 ): TranscriptMessage[] {
   if (!sessionId) return messages;
+  // Delegated turns are answered from the durable per-delivery record, bound against the
+  // target's transcript file, so they keep naming their sender across a restart and
+  // identical words from two controllers keep naming each. Callers without the conversation
+  // get the live label only.
+  const delegated = delegatedTurnSources(conversation, messages);
   /**
    * The launch turn's native id, once this page has established it.
    *
@@ -40,7 +47,15 @@ export function attributeTranscript(
   let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
-    const origin = originOf(sessionId, message.text);
+    const originSession = delegated.sources.get(message.id);
+    const live = originOf(sessionId, message.text);
+    // A turn whose words this conversation delegated, but which no delivery claims, is the
+    // operator repeating them; the text-keyed live label would credit the controller. And while
+    // a delivery of those words is unresolved, the turn could be it, so no live label - Foreman's
+    // included - names its author either.
+    const origin = originSession
+      ? "session"
+      : delegated.ambiguous.has(message.id) || (live === "session" && delegated.contested.has(message.id)) ? undefined : live;
     const marker = launch && anchor !== null && launch.messageId === null
       ? { ...launch, messageId: anchor }
       : launch;
@@ -51,10 +66,13 @@ export function attributeTranscript(
       // from the fingerprint. Best-effort by contract: see `bindLaunchTurnMessage`.
       onLaunchTurnIdentified?.(message.id);
     }
-    if (!origin && !presentation) return message;
+    const unresolved = !origin && delegated.ambiguous.has(message.id);
+    if (!origin && !presentation && !unresolved) return message;
     return {
       ...message,
       ...(origin ? { origin } : {}),
+      ...(originSession ? { originSession } : {}),
+      ...(unresolved ? { originUnresolved: true as const } : {}),
       ...(presentation ? { presentation } : {}),
     };
   });

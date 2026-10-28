@@ -1,7 +1,7 @@
 // Where a managed install puts the app, and which of those destinations anyone actually chose.
 //
 // Split out of `app-bundle-swap.mjs` on purpose. That module owns one thing the rest of the
-// install must never widen: the exact `/Applications/Mission Control.app` an administrator
+// install must never widen: the exact old/new product bundle names in `/Applications` an administrator
 // prompt may write to. It used to own the default destination as well, under one constant, so
 // moving the default would have moved the privilege boundary with it. The default now lives
 // here and resolves from the signed-in account's home; the boundary stays where it was.

@@ -3990,7 +3990,7 @@ export function App(): React.JSX.Element {
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
         />
-        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} />
+        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} snapshot={desktopUpdates.snapshot} />
         <SettingsRestoredBanner
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}

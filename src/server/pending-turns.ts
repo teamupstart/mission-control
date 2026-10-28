@@ -28,6 +28,7 @@ import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
 import { sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
+import { noteOtherSend, withdrawOtherSend } from "./delegated-turns.ts";
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
@@ -878,6 +879,9 @@ export class PendingTurnManager {
   }
 
   private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+    // The operator's queued words may race a delegated send of the same ones. Every path below
+    // that releases the row is positive evidence nothing landed, so it withdraws this record.
+    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
     // Where the transcript ends BEFORE the driver can take the steer, so the line the agent
     // writes when it reads it is always after this point, however soon that is.
     const receiptFrom = steer ? this.transcriptEnd(session) : null;
@@ -906,6 +910,7 @@ export class PendingTurnManager {
           handoff.acceptanceBoundaryCrossed,
         );
       } else if (accepted === null) {
+        withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -971,6 +976,7 @@ export class PendingTurnManager {
           true,
         );
       } else {
+        withdrawOtherSend(otherSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
     } finally {
@@ -986,6 +992,7 @@ export class PendingTurnManager {
   }
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
+    const otherSend = noteOtherSend({ key: noteKeyFor(session), transcript: sessionMessages(session) }, turn.text);
     let boundaryCrossed = false;
     const beforeWrite = (): string | null => {
       const current = this.registry.getSession(session.id);
@@ -1042,6 +1049,7 @@ export class PendingTurnManager {
           boundaryCrossed || result.pasted || result.ok,
         );
       } else {
+        withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -1106,6 +1114,7 @@ export class PendingTurnManager {
         );
       }
     } else {
+      withdrawOtherSend(otherSend);
       releasePendingTurn(
         turn.id,
         turn.revision,

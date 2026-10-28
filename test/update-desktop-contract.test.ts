@@ -157,7 +157,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         /mission:update-apply[\s\S]{0,160}updateController\.apply\(\)/.test(updateHandlers) &&
         /mission:update-install[\s\S]{0,160}updateController\.install\(\)/.test(updateHandlers) &&
         /mission:update-keep-system[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.keepSystem\(\)/.test(updateHandlers) &&
-        /mission:update-repair-migration[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.retryMigrationRepair\(\)/.test(updateHandlers) &&
+        /mission:update-repair-migration[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.retryMigrationRepair\(true\)/.test(updateHandlers) &&
         /mission:update-cancel[\s\S]{0,160}updateController\.cancel\(\)/.test(updateHandlers) &&
         /mission:update-defer[\s\S]{0,160}updateController\.defer\(\)/.test(updateHandlers) &&
         !updateHandlers.includes("updateController?."),
@@ -273,7 +273,7 @@ test("every update surface takes its words from one owner", () => {
     {
       dialogContentReadsTheSharedCopy:
         /import \{[^}]*\bUPDATE_COPY\b[^}]*\} from "\.\/update-copy\.ts"/.test(dialogs) &&
-        dialogs.includes("migrationReadyDetail(migration.source, migration.target)") &&
+        dialogs.includes("migrationReadyDetail(migration.source, migration.target, migration.kind)") &&
         ["preparing", "ready", "applying"].every(
           (phase) =>
             dialogs.includes(`UPDATE_COPY.${phase}.title(version)`) &&
@@ -281,8 +281,8 @@ test("every update surface takes its words from one owner", () => {
         ),
       bannerReadsTheSharedCopy:
         /import \{[^}]*\bUPDATE_COPY\b[^}]*\} from "@shared\/update-copy\.ts"/.test(banner) &&
-        banner.includes("migrationReadyDetail(snapshot.migration.source, snapshot.migration.target)") &&
-        banner.includes("migrationCompleteDetail(migration.target)") &&
+        banner.includes("migrationReadyDetail(snapshot.migration.source, snapshot.migration.target, snapshot.migration.kind)") &&
+        banner.includes("migrationCompleteDetail(migration.target, migration.kind)") &&
         ["preparing", "ready", "applying"].every(
           (phase) =>
             banner.includes(`UPDATE_COPY.${phase}.title(snapshot.newVersion)`) &&

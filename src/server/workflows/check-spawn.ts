@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { basename } from "node:path";
+import { resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
+import { currentOwnedRuntime } from "../owned-runtime.ts";
 import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import type { CheckExecutionResult } from "./checks.ts";
@@ -207,10 +208,7 @@ interface ShimReport {
  * binary, which behaves as node when `ELECTRON_RUN_AS_NODE` is set.
  */
 function shimRuntime(): { command: string; env: NodeJS.ProcessEnv } {
-  if (/^node(\.exe)?$/.test(basename(process.execPath))) {
-    return { command: process.execPath, env: {} };
-  }
-  return { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+  return resolveOwnedRuntime(currentOwnedRuntime());
 }
 
 /**

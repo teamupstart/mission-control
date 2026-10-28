@@ -677,7 +677,8 @@ function checkPrerequisites({ needsBuildTools }) {
  * receipt an update writes and the receipt a fresh install writes have to be one receipt.
  */
 function swapAndRecord({dryRun, bundle, appsDir, installScope, home, repo, ref, source, clone, sourceVersion, stagedRevision = null, progress}) {
-  const appPath = join(appsDir, APP_BUNDLE_NAME);
+  const existingReceipt = readReceipt();
+  const appPath = existingReceipt && dirname(existingReceipt.appPath) === appsDir ? existingReceipt.appPath : join(appsDir, APP_BUNDLE_NAME);
   progress("install");
   heading("Install");
   if (dryRun) {
@@ -760,7 +761,7 @@ function installApp(options) {
   const installScope = destination.installScope;
   if (!options.stageOnly) {
     console.log(
-      `   destination: ${join(appsDir, APP_BUNDLE_NAME)}  (${describeInstallScope(installScope)})`,
+      `   destination: ${previousReceipt && dirname(previousReceipt.appPath) === appsDir ? previousReceipt.appPath : join(appsDir, APP_BUNDLE_NAME)}  (${describeInstallScope(installScope)})`,
     );
     // Read-only, and deliberately before the minutes of work: a destination this account cannot
     // use is not worth a fetch and a package to discover. `swapAndRecord` looks again, because

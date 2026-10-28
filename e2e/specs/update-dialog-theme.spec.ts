@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { launchConflictMessage } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_COPY } from "../../src/shared/update-copy.ts";
 import { UPDATE_DIALOGS, type UpdateDialogRequest } from "../../src/shared/update-dialog.ts";
+import type { UpdateSnapshot } from "../../src/shared/update.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { Page } from "@playwright/test";
@@ -23,6 +24,7 @@ import type { Page } from "@playwright/test";
 interface DialogBridge {
   /** Requests the shell has pushed, in order. */
   push(request: UpdateDialogRequest): void;
+  snapshot(snapshot: UpdateSnapshot): void;
   /** The answers the dashboard sent back. */
   answers(): { id: string; choice: string }[];
   delivered(): string[];
@@ -44,6 +46,7 @@ declare global {
 async function installDialogBridge(dashboard: Page): Promise<void> {
   await dashboard.addInitScript(() => {
     const listeners = new Set<(request: unknown) => void>();
+    const states = new Set<(snapshot: unknown) => void>();
     const delivered: string[] = [];
     const answered: { id: string; choice: string }[] = [];
     Object.defineProperty(window, "missionDesktop", {
@@ -52,7 +55,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
         onOpenSettings: () => () => {},
         updates: {
           getState: async () => null,
-          onState: () => () => {},
+          onState: (cb: (snapshot: unknown) => void) => {states.add(cb); return () => states.delete(cb);},
           onDialog: (cb: (request: unknown) => void) => {
             listeners.add(cb);
             return () => listeners.delete(cb);
@@ -67,6 +70,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
         push: (request: unknown) => {
           for (const listener of listeners) listener(request);
         },
+        snapshot: (snapshot: unknown) => {for (const listener of states) listener(snapshot);},
         answers: () => answered,
         delivered: () => delivered,
       },
@@ -75,6 +79,38 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
   await dashboard.reload();
   await expectDashboardReady(dashboard);
 }
+
+test("a menu preparation notice follows live download, verification, cancellation and completion", async ({dashboard}) => {
+  await installDialogBridge(dashboard);
+  const preparing: UpdateSnapshot = {phase: "preparing", currentVersion: "1.2.3", newVersion: "1.2.4", releaseTag: "v1.2.4",
+    stage: "download", transfer: {received: 25, total: 100}, lastOutcome: null};
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), preparing);
+  await dashboard.evaluate(request => window.updateDialogFixture.push(request),
+    {...UPDATE_DIALOGS.preparing("1.2.4", "Downloading the signed binary · 25% downloaded"), id: "live-preparation"});
+  const modal = dashboard.getByRole("dialog", {name: "Mission Control update"});
+  await expect(modal).toContainText("25% downloaded");
+  await expectContentClearsBorder(modal);
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), {...preparing, transfer: {received: 75, total: 100}});
+  await expect(modal).toContainText("75% downloaded");
+  await expect(modal).not.toContainText("25% downloaded");
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), {...preparing, stage: "signature", transfer: undefined});
+  await expect(modal).toContainText("Verifying publisher and build identity");
+  await expect(modal).not.toContainText("% downloaded");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = join(process.cwd(), "e2e/.artifacts/binary-update"); await mkdir(dir, {recursive: true});
+    await dashboard.screenshot({path: join(dir, "live-menu-verification.png"), fullPage: true});
+  }
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), {...preparing, cancelling: true});
+  await expect(modal).toContainText("Waiting for the download and verification to stop");
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), {phase: "idle", currentVersion: "1.2.3", lastOutcome: null, lastCheckedAt: null} satisfies UpdateSnapshot);
+  await expect(modal).toContainText("Update preparation has stopped");
+  await dashboard.evaluate(snapshot => window.updateDialogFixture.snapshot(snapshot), {phase: "ready", currentVersion: "1.2.3", newVersion: "1.2.4", releaseTag: "v1.2.4", stagedAt: 1, lastOutcome: null} satisfies UpdateSnapshot);
+  await expect(modal).toContainText("1.2.4 is ready to install");
+  // A status notice never silently changes its acknowledgement into installation consent.
+  await expect(modal.getByRole("button", {name: "Restart and Install"})).toHaveCount(0);
+  await modal.getByRole("button", {name: "OK", exact: true}).click();
+  expect(await dashboard.evaluate(() => window.updateDialogFixture.answers())).toEqual([{id: "live-preparation", choice: "dismiss"}]);
+});
 
 test("the updater asks through a themed modal and its answer carries the question's id", async ({ dashboard }) => {
   await installDialogBridge(dashboard);
@@ -112,7 +148,7 @@ test("the updater asks through a themed modal and its answer carries the questio
   // Both answers are ordinary dashboard buttons, tooltips and all.
   await modal.getByRole("button", { name: "Update Now" }).hover();
   await expect(dashboard.locator(".tooltip")).toHaveText(
-    "Build Mission Control 1.9.1 now, then restart when it is ready",
+    "Download Mission Control 1.9.1 now, then restart when it is ready",
   );
   await dashboard.mouse.move(1, 1);
 

@@ -8,6 +8,7 @@ import type {
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
+  TurnOriginSession,
   Session,
 } from "@shared/types.ts";
 import type { ConversationView } from "@shared/protocol.ts";
@@ -1842,7 +1843,7 @@ function Turn({
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
-        {who}
+        {m.origin === "session" && m.originSession ? <DelegatedByline source={m.originSession} /> : who}
         {receivedBy && <span className="turn-received" role="status">✓ received by {receivedBy}</span>}
         <ConversationTimestamp at={m.ts} className="turn-time" />
       </div>
@@ -1870,6 +1871,23 @@ function Turn({
         onViewInFiles={onViewInFiles}
       />
     </article>
+  );
+}
+
+/**
+ * A delegated turn's byline: the delegation itself, then the session that sent it. Two
+ * parts so the source reads as its own fact, never as the human or Foreman typing.
+ */
+function DelegatedByline({ source }: { source: TurnOriginSession }): React.JSX.Element {
+  return (
+    <>
+      <span className="turn-delegated-tag">Delegated session</span>
+      <Tooltip label={`Sent by session ${source.id}`}>
+        <span className="turn-delegated-from">
+          from <span className="turn-delegated-source">{source.name}</span>
+        </span>
+      </Tooltip>
+    </>
   );
 }
 
@@ -1992,16 +2010,28 @@ function TerminalTurn({
   // readers most of the time.
   if (m.role === "user") {
     const foreman = m.origin === "foreman";
+    const delegated = m.origin === "session";
+    // A delegated turn's shell host is the sending session, on the `session` host.
+    const host = delegated && m.originSession
+      ? `${m.originSession.name.replace(/\s+/g, "-")}@session`
+      : `${who.replace(/\s+/g, "-")}@mission`;
     return (
       <article
-        className={`pty-entry pty-user${foreman ? " pty-foreman" : ""}${flashed ? " is-flashed" : ""}`}
+        className={`pty-entry pty-user${foreman ? " pty-foreman" : ""}${delegated ? " pty-session" : ""}${flashed ? " is-flashed" : ""}`}
         aria-label={who}
         data-turn-id={m.id}
       >
         <p className="pty-commandline">
           {/* A shell host is one token, so a two-word author becomes one: "mission
               control" is `mission-control@mission`, the same name the titlebar uses. */}
-          <span className="pty-host">{who.replace(/\s+/g, "-")}@mission</span>
+          {/* A delegated host names the sending session; hover it for that session's id. */}
+          {delegated && m.originSession ? (
+            <Tooltip label={`Sent by session ${m.originSession.id}`}>
+              <span className="pty-host">{host}</span>
+            </Tooltip>
+          ) : (
+            <span className="pty-host">{host}</span>
+          )}
           {/* `~/leaf` is the shell's own shorthand and the shape the mockup drew, which
               means it is short by leaving something out. The whole path is one hover
               away, so the abbreviation never has to be taken at face value. Rendered

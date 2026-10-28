@@ -303,14 +303,14 @@ for (const ending of ["normal", "crash", "SIGHUP", "SIGINT", "SIGQUIT"] as const
   const stop = join(home, `agent-stop-${ending}`);
   const script = join(home, "agent.mjs");
   writeFileSync(script, `import {writeFileSync,renameSync,existsSync} from 'node:fs';
-writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME,native:process.env.MISSION_AGENT_SESSION_ID,sdk:process.env.MISSION_SESSION_ID}));
+writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME,native:process.env.MISSION_AGENT_SESSION_ID,sdk:process.env.MISSION_SESSION_ID,nodeMode:process.env.ELECTRON_RUN_AS_NODE}));
 renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});
 const t=setInterval(()=>{if(existsSync(${JSON.stringify(stop)}))clearInterval(t)},30);`);
   const configPath = join(p.stateHome, "launch.json");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, script] }));
   p.beginLaunch();
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
   if (!crash) {
     // Parallel workers can start new orphans that correctly make real inventory ambiguous.
     // Isolate only this positive cleanup proof; crash and detached regressions use real ps.
@@ -331,6 +331,7 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
     assert.equal(observed.home, p.stateHome);
     assert.equal(observed.native, nativeId);
     assert.equal(observed.sdk, undefined);
+    assert.equal(observed.nodeMode, undefined, "owned Node mode must not reach the independent agent");
     reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
     assert.ok(existsSync(configPath));
     if (crash) {

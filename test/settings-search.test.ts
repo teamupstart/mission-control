@@ -307,9 +307,12 @@ test("guided dispatch is reachable by the words someone would half-remember", ()
 // from the other end: the copy that says local-only means local-only, that a destination is a
 // separate decision, and that a withdrawal drops the backlog is the whole substance of the
 // choice. A consent flipped anonymously from a search row is consent nobody gave.
-test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, Workflow's two, and the two consents", () => {
+//
+// Agent telemetry's relay is the third consent: it sends prompts and tool output off the machine.
+test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, Workflow's two, and the three consents", () => {
   const risky = SETTINGS_CONTROLS.filter((c) => c.risky).map((c) => c.id).sort();
   assert.deepEqual(risky, [
+    "agent-telemetry-relay",
     "inspector-enabled",
     "inspector-mode",
     "telemetry-collect",

@@ -36,6 +36,7 @@ import type { SettingsBackupDomainId } from "./settings-backup-domains.ts";
 import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
 import { TelemetryConfigSchema } from "./telemetry.ts";
+import { AgentTelemetryConfigSchema } from "./agent-telemetry.ts";
 import { TelemetryOrganizationRecordSchema } from "./organizations.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
@@ -376,6 +377,16 @@ export const APP_CONFIG_ENTRIES = {
     "operational",
     null,
   ),
+  /**
+   * Agent telemetry: whether SDK sessions' own OpenTelemetry is relayed, where to, and what
+   * the agents may capture. Used only when no device management policy decides.
+   *
+   * `operational` with no backup domain, for `telemetry`'s reason: it is consent to send
+   * prompts and tool output off this machine, and a snapshot restored from another
+   * installation must not be able to turn that on. Its headers are credentials and live in
+   * the `agent_telemetry_headers` table instead.
+   */
+  agentTelemetry: wholeEntry("agentTelemetry", AgentTelemetryConfigSchema, "operational", null),
 } as const;
 
 export type AppConfigEntry = (typeof APP_CONFIG_ENTRIES)[keyof typeof APP_CONFIG_ENTRIES];

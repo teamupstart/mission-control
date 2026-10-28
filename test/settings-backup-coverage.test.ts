@@ -94,6 +94,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.deepEqual(
     APP_CONFIG_ENTRY_LIST.map((entry) => entry.key).sort(),
     [
+      // Agent telemetry consent: `operational` with no backup domain, for `telemetry`'s reason.
+      // Its header credentials are not in app_config at all.
+      "agentTelemetry",
       "away",
       "backlog.plan",
       "cost",

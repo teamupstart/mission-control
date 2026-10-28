@@ -527,6 +527,19 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("cost"),
   },
   {
+    id: "agent-telemetry-relay",
+    label: "Relay agent telemetry",
+    description: "Send Claude Code's and Codex's own logs, metrics and traces for SDK sessions to a gateway.",
+    category: "agent-telemetry",
+    anchor: "agent-telemetry/enabled",
+    keywords: ["opentelemetry", "otel", "prompts", "tool details", "gateway", "mdm", "relay"],
+    // A jump for Telemetry's reason: this is consent to send prompts off the machine, and the
+    // panel's copy has to be on screen when it changes.
+    kind: "jump",
+    risky: true,
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
     id: "telemetry-collect",
     label: "Collect telemetry on this machine",
     description: "Record Mission Control's own activity locally. Nothing is sent anywhere.",

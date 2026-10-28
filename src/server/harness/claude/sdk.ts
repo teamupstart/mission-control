@@ -1264,7 +1264,14 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
-        env: withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
+        // Agent telemetry's per-signal keys go on last, over the inherited environment. That
+        // is a deliberate override of an operator's own OTEL_* for these sessions while the
+        // feature relays (Settings lists which inherited keys exist), and it is all a
+        // managed Claude Code policy needs to beat: the CLI applies managed `env` after this.
+        env: {
+          ...withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
+          ...(deps.agentOtelEnv ? await deps.agentOtelEnv() : {}),
+        },
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),

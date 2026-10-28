@@ -254,6 +254,22 @@ test("an embedded session opts in to the Artifact tool, unless the operator set 
   assert.equal((await off.started).options.env.CLAUDE_CODE_ARTIFACT, "0");
 });
 
+test("agent telemetry's env goes on over the inherited environment", async () => {
+  const relayed = fakeDeps();
+  relayed.deps.env = () => ({ PATH: "/usr/bin", OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://operator:4318/v1/logs" });
+  relayed.deps.agentOtelEnv = async () => ({
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:7317/v1/logs",
+    OTEL_LOGS_EXPORTER: "otlp",
+  });
+  await claudeSdkSpec(relayed.deps).launch(launchOpts());
+  assert.deepEqual((await relayed.started).options.env, {
+    PATH: "/usr/bin",
+    CLAUDE_CODE_ARTIFACT: "1",
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:7317/v1/logs",
+    OTEL_LOGS_EXPORTER: "otlp",
+  });
+});
+
 test("secondary worktrees reach the driver as additionalDirectories, and only when there are any", async () => {
   // The multi-repo write grant on the embedded runtime. `additionalDirectories` is the
   // vendor's own option name at the pinned SDK version; getting it wrong produces a session

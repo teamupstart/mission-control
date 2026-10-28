@@ -1,3 +1,4 @@
+import type { AgentTelemetryPatch, AgentTelemetryStatus } from "@shared/agent-telemetry.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type {
@@ -389,6 +390,7 @@ export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
  * another checkout) and a panel showing only the intent would be confidently wrong.
  */
 export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
+export const fetchAgentTelemetry = () => fetchJson<AgentTelemetryStatus>("/api/agent-telemetry");
 export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
 /**
  * The adoption ledger, in one of its two readings.
@@ -2067,6 +2069,8 @@ export const api = {
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
+  setAgentTelemetry: (patch: AgentTelemetryPatch) =>
+    put<ActionResult & Partial<AgentTelemetryStatus>>(`/api/agent-telemetry`, patch),
 
   // --- First-run setup reminder ---
   dismissSetupBanner: (snapshotToken: string, acknowledged: SetupRowId[]) =>

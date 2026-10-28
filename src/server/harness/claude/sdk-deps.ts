@@ -1,3 +1,4 @@
+import { agentOtelLaunchInputs } from "../../agent-otel/hook.ts";
 import { spawn } from "node:child_process";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
@@ -151,6 +152,8 @@ export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
   query: startQuery,
   executable: claudeExecutable,
   env: (cwd, stateHome) => sdkSubprocessEnv(process.env, cwd, stateHome),
+  // Installed by the daemon at startup (`agent-otel/hook.ts`); empty in any other process.
+  agentOtelEnv: async () => (await agentOtelLaunchInputs("claude")).env,
 };
 
 /** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */

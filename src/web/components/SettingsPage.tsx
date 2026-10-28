@@ -5,6 +5,8 @@ import { useSkills } from "../useSkills.ts";
 import { useInspector } from "../useInspector.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
+import { AgentTelemetrySettingsPanel } from "./AgentTelemetrySettingsPanel.tsx";
+import { useAgentTelemetry } from "../useAgentTelemetry.ts";
 import { TelemetrySettingsPanel } from "./TelemetrySettingsPanel.tsx";
 import { useTelemetry } from "../useTelemetry.ts";
 import { RestoreSettingsPanel } from "./RestoreSettingsPanel.tsx";
@@ -342,6 +344,8 @@ export function SettingsPage({
   // two reads are triggered by that summary changing. A poll beside it would be a second store
   // of queue state, disagreeing with the live one by up to one interval.
   const telemetry = useTelemetry(settingsStatus?.telemetry ?? null, shown === "telemetry");
+  // Read when its panel opens and after each save; never polled. See `useAgentTelemetry`.
+  const agentTelemetry = useAgentTelemetry(shown === "agent-telemetry");
   // The resolved chord for the palette, shown as the rail box's hint so the box and the
   // shortcut always agree even after a rebind.
   const { bindings: keyBindings } = useKeybindings();
@@ -647,6 +651,8 @@ export function SettingsPage({
         return <CostSettingsPanel state={cost} />;
       case "telemetry":
         return <TelemetrySettingsPanel state={telemetry} />;
+      case "agent-telemetry":
+        return <AgentTelemetrySettingsPanel state={agentTelemetry} />;
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":

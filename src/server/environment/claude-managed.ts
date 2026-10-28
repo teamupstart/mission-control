@@ -107,12 +107,28 @@ export function managedSettingsLocations(root: string, user: string | null): Man
 export async function readManagedClaudeEnv(
   deps: ClaudeManagedDeps,
 ): Promise<ManagedClaudeEnv | null> {
+  const read = await readManagedClaudeEnvKeys(deps, MANAGED_ENV_KEYS);
+  return read === null ? null : { source: read.source, env: read.env };
+}
+
+/**
+ * The same precedence walk, keeping a caller-named set of keys instead of the four.
+ *
+ * Agent telemetry (`src/server/agent-otel/managed.ts`) needs the managed policy's whole OTEL
+ * routing and capture family, while the Cost warning above needs only four keys. One walk
+ * serves both, so the two can never disagree about which location is in force. The caller
+ * still names every key it keeps: nothing outside that list is ever read out of the policy.
+ */
+export async function readManagedClaudeEnvKeys<const K extends string>(
+  deps: ClaudeManagedDeps,
+  keys: readonly K[],
+): Promise<{ source: ManagedClaudeSettingsSource; env: Partial<Record<K, string>> } | null> {
   for (const location of managedSettingsLocations(deps.root, deps.user)) {
     // Stat first, so a Mac with no policy at a location never spawns `plutil` for it.
     const info = await deps.stat(location.path);
     if (info === "missing") continue;
     if (info === "unreadable") return null;
-    const read = await readLocationEnv(location, deps);
+    const read = await readLocationEnv(location, deps, keys);
     if (read.kind === "absent") continue;
     if (read.kind === "unreadable") return null;
     return { source: location.source, env: read.env };
@@ -128,15 +144,16 @@ export async function readManagedClaudeEnv(
  * timeout, an overflow or a malformed file, so a profile that does not hand back an `env`
  * dictionary is unreadable. Claiming nothing there is the fail-closed direction.
  */
-type LocationRead =
-  | { kind: "env"; env: Partial<Record<ManagedEnvKey, string>> }
+type LocationRead<K extends string> =
+  | { kind: "env"; env: Partial<Record<K, string>> }
   | { kind: "absent" }
   | { kind: "unreadable" };
 
-async function readLocationEnv(
+async function readLocationEnv<K extends string>(
   location: ManagedLocation,
   deps: ClaudeManagedDeps,
-): Promise<LocationRead> {
+  keys: readonly K[],
+): Promise<LocationRead<K>> {
   let value: unknown;
   if (location.format === "plist") {
     value = await readPlistValue(location.path, "env", { run: deps.run });
@@ -150,13 +167,16 @@ async function readLocationEnv(
     if (!("env" in parsed)) return { kind: "absent" };
     value = parsed.env;
   }
-  return isRecord(value) ? { kind: "env", env: pickManagedEnv(value) } : { kind: "unreadable" };
+  return isRecord(value) ? { kind: "env", env: pickManagedEnv(value, keys) } : { kind: "unreadable" };
 }
 
-/** Only the four keys, as strings. Every other key is dropped unread. */
-function pickManagedEnv(env: Record<string, unknown>): Partial<Record<ManagedEnvKey, string>> {
-  const picked: Partial<Record<ManagedEnvKey, string>> = {};
-  for (const key of MANAGED_ENV_KEYS) {
+/** Only the named keys, as strings. Every other key is dropped unread. */
+function pickManagedEnv<K extends string>(
+  env: Record<string, unknown>,
+  keys: readonly K[],
+): Partial<Record<K, string>> {
+  const picked: Partial<Record<K, string>> = {};
+  for (const key of keys) {
     const value = env[key];
     // A plist can carry an integer or boolean where Claude Code expects a string. Claude Code
     // sees it as the process environment would, so it is read the same way.

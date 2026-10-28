@@ -146,6 +146,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/keep-awake", "settings.keep_awake", "settings"],
   ["PUT", "/api/ui/config", "settings.appearance", "settings"],
   ["PUT", "/api/cost/config", "settings.cost", "settings"],
+  ["PUT", "/api/agent-telemetry", "settings.agent_telemetry", "settings"],
   ["PUT", "/api/skills/config", "settings.skills", "settings"],
   ["PUT", "/api/instructions", "settings.instructions", "settings"],
   ["PUT", "/api/llm/config", "settings.automation_models", "settings"],

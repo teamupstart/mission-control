@@ -1695,6 +1695,34 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
   await handle.stop();
 });
 
+test("agent telemetry's -c overrides ride the same launch, after the MCP keys", async () => {
+  const server = new FakeServer(defaultReplies());
+  let args: readonly string[] = [];
+  const otel = ["-c", 'otel.exporter={otlp-http={endpoint="http://127.0.0.1:7317/v1/logs",protocol="json"}}'];
+  const spec = codexSdkSpec({
+    connect: async (a) => {
+      args = a;
+      return server;
+    },
+    agentOtelArgs: async () => otel,
+  });
+  const handle = await spec.launch({
+    cwd: "/work/repo",
+    stateHome: "/tmp/mission-sdk-state",
+    prompt: "",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    mcp: null,
+    extraDirs: [],
+    standingInstructions: "",
+    standingInstructionsPrompt: "",
+    resume: null,
+  });
+  assert.deepEqual(args, otel);
+  await handle.stop();
+});
+
 // ---- the pure projections, on their own ------------------------------------------------
 
 test("an approval prompt leads with the reason and shows what is being run", () => {

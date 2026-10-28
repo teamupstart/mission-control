@@ -21,6 +21,7 @@ Mission Control's product reference is organized by feature below.
 - [Models, and per task kind dispatch defaults](models.md)
 - [Foreman](foreman.md)
 - [Work queues and backlog autopilot](work-queues.md)
+- [Agent telemetry](agent-telemetry.md): SDK sessions' own OpenTelemetry, relayed through the daemon, and how device management takes precedence.
 - [Observability and telemetry](observability.md): what Mission Control can record about itself, and the local Grafana stack.
 - [Primary actions and safe error telemetry](observability-actions.md): source semantics, operation coverage, privacy and recovery limits.
 - [Grafana dashboards and demo](observability-dashboards.md): six provisioned views, exact cohorts, trace drill-down and isolated acceptance.

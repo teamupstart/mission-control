@@ -12,6 +12,8 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/statusline", "Phase 3 observed execution metadata; status refresh is not feature use."],
   ["POST", "/ingest/conductor", "Provider notifications are reconciled at the normalized pipeline owner; ingest traffic is not a second action."],
   ["POST", "/v1/metrics", "Existing agent cost receiver; Phase 3 owns deduplicated usage."],
+  ["POST", "/v1/logs", "Agent telemetry relay ingest; agent export traffic is not intentional feature use."],
+  ["POST", "/v1/traces", "Agent telemetry relay ingest; agent export traffic is not intentional feature use."],
   ["POST", "/mcp/status", "Presence/status refresh, not intentional feature use."],
   ["POST", "/api/sessions/:id/composer-activity", "High-frequency typing/liveness signal; explicitly excluded from activity telemetry."],
   ["POST", "/api/sessions/:id/send", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

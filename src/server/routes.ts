@@ -404,6 +404,16 @@ import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
+  AgentTelemetryInvalidError,
+  AgentTelemetryManagedError,
+  agentOtelForwarder,
+  agentTelemetryStatus,
+  setAgentTelemetryConfig,
+} from "./agent-otel/config.ts";
+import { MAX_OTLP_BODY_BYTES } from "./agent-otel/relay.ts";
+import { AGENT_OTEL_RELAY_HEADER, checkAgentOtelRelayToken } from "./agent-otel/relay-token.ts";
+import { AgentTelemetryPatchSchema, type AgentOtelSignal } from "@shared/agent-telemetry.ts";
+import {
   TelemetryConfigPatchSchema,
   TelemetryOperationRequestSchema,
   TelemetryProbeRequestSchema,
@@ -4551,16 +4561,83 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // The exporter posts here when the `env` block in ~/.claude/settings.json points
   // `OTEL_EXPORTER_OTLP_ENDPOINT` at the daemon; the path is OTLP's, not ours - the SDK
   // appends `/v1/metrics` to the base. ---
+  //
+  // Agent telemetry's tee (docs/agent-telemetry.md) shares this route and adds `/v1/logs` and
+  // `/v1/traces` beside it. The local answer below is the one it always was; a copy of the
+  // raw bytes, content type and encoding intact, is queued for the effective upstream, and
+  // nothing that upstream does can reach this response.
+  //
+  // Two credentials. `x-harness-token` is what Claude Code carries (Cost's settings block and
+  // agent telemetry's per-signal env alike), and only it reaches the ledger. The relay-only
+  // token Codex carries on its command line can forward and do nothing else.
+  const otlpCaller = (c: Context): "harness" | "relay" | null =>
+    authed(c) ? "harness" : checkAgentOtelRelayToken(c.req.header(AGENT_OTEL_RELAY_HEADER)) ? "relay" : null;
+
+  /** The raw export, or a ready response when it is too large or could not be read. */
+  const readOtlpBody = async (c: Context): Promise<Uint8Array | Response> => {
+    const tooLarge = () =>
+      c.json({ error: `export too large; the limit is ${MAX_OTLP_BODY_BYTES} bytes` }, 413);
+    const declared = Number(c.req.header("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_OTLP_BODY_BYTES) return tooLarge();
+    let body: Uint8Array;
+    try {
+      body = new Uint8Array(await c.req.arrayBuffer());
+    } catch {
+      return c.json({ error: "could not read the export body" }, 503);
+    }
+    return body.byteLength > MAX_OTLP_BODY_BYTES ? tooLarge() : body;
+  };
+
+  const teeOtlp = (c: Context, signal: AgentOtelSignal, body: Uint8Array): void => {
+    try {
+      agentOtelForwarder().enqueue(
+        signal,
+        body,
+        c.req.header("content-type") ?? null,
+        c.req.header("content-encoding") ?? null,
+      );
+    } catch {
+      // Fail-open: the copy is the optional half.
+    }
+  };
+
   app.post("/v1/metrics", async (c) => {
-    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const parsed = await parseBody(c, OtlpMetricsSchema);
-    if (!parsed.ok) return parsed.res;
+    const caller = otlpCaller(c);
+    if (caller === null) return c.json({ error: "unauthorized" }, 401);
+    const body = await readOtlpBody(c);
+    if (body instanceof Response) return body;
+    teeOtlp(c, "metrics", body);
+    // A relay-token export is forwarded only: that token is on a command line, and the
+    // ledger is not something a command line may write to.
+    if (caller === "relay") return c.json({});
+    // Exactly what `parseBody` did before the tee: an unparseable body (protobuf, gzip,
+    // garbage) reads as `{}`, which the loose schema accepts as an empty export.
+    let json: unknown;
+    try {
+      json = JSON.parse(new TextDecoder().decode(body));
+    } catch {
+      json = {};
+    }
+    const parsed = OtlpMetricsSchema.safeParse(json);
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     registry.applyOtelMetrics(parsed.data);
     // A JSON body, NOT a 204: the OTel SDK reads a non-JSON 2xx as a partial failure and
     // retries the export, which would double the request volume from every session on
     // the machine while looking, from here, like everything was fine.
     return c.json({});
   });
+
+  // Nothing local reads logs or traces; the answer is `/v1/metrics`'s, for its reason. Each is
+  // registered literally, so the route inventory's source scan can see it.
+  const relayOnly = (signal: AgentOtelSignal) => async (c: Context) => {
+    if (otlpCaller(c) === null) return c.json({ error: "unauthorized" }, 401);
+    const body = await readOtlpBody(c);
+    if (body instanceof Response) return body;
+    teeOtlp(c, signal, body);
+    return c.json({});
+  };
+  app.post("/v1/logs", relayOnly("logs"));
+  app.post("/v1/traces", relayOnly("traces"));
 
   // --- MCP product issues (token-guarded; source and session are daemon-derived) ---
   app.post(
@@ -7606,6 +7683,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // The GET reports what is actually in `~/.claude/settings.json` alongside the stored
   // intent, because those genuinely diverge (a hand-edited file, an install from another
   // checkout) and a panel showing only the intent would be confidently wrong.
+  // --- Agent telemetry (localhost only) ---
+  //
+  // SDK sessions' own OpenTelemetry: the policy, the relay's counters, and the operator's
+  // settings. Stored header values never appear in a response; only their names do. Writes
+  // are refused while device management decides.
+  app.get("/api/agent-telemetry", async (c) => c.json(await agentTelemetryStatus()));
+  app.put("/api/agent-telemetry", async (c) => {
+    const parsed = await parseBody(c, AgentTelemetryPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      await setAgentTelemetryConfig(parsed.data);
+    } catch (err) {
+      if (err instanceof AgentTelemetryManagedError) return c.json({ error: err.message }, 409);
+      if (err instanceof AgentTelemetryInvalidError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+    return c.json(await agentTelemetryStatus());
+  });
+
   app.get("/api/cost/config", (c) => c.json(costTelemetryStatus()));
   app.put("/api/cost/config", async (c) => {
     const parsed = await parseBody(c, CostConfigPatchSchema);

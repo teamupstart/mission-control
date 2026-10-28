@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { agentOtelLaunchInputs } from "../../agent-otel/hook.ts";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
@@ -129,6 +130,11 @@ export async function* readFrames(child: {
 export interface CodexSdkDeps {
   /** Start one connection. `args` are the launch-scoped `-c` config overrides. */
   connect(args: readonly string[], cwd: string, stateHome?: string): Promise<AppServerTransport>;
+  /**
+   * Agent telemetry's `-c otel.*` overrides (`src/server/agent-otel/`). Optional so a scripted
+   * seam carries none; resolves to `[]` on any failure and never blocks a launch.
+   */
+  agentOtelArgs?(): Promise<string[]>;
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
@@ -144,5 +150,9 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
       cwd,
       sdkSubprocessEnv(process.env, cwd, stateHome),
     );
+  },
+  // Installed by the daemon at startup (`agent-otel/hook.ts`); empty in any other process.
+  async agentOtelArgs() {
+    return (await agentOtelLaunchInputs("codex")).args;
   },
 };

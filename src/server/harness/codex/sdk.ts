@@ -1433,7 +1433,14 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
           ? multiRepo.launchArgs(opts.extraDirs)
           : [];
-      const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome);
+      // Agent telemetry's `-c otel.*` overrides, last. A managed Codex profile still wins:
+      // Codex layers MDM `config_toml_base64` above `-c`, and the builder sends nothing then.
+      const otelArgs = deps.agentOtelArgs ? await deps.agentOtelArgs() : [];
+      const transport = await deps.connect(
+        [...args, ...extraDirArgs, ...otelArgs],
+        opts.cwd,
+        opts.stateHome,
+      );
       const config: LaunchConfig = {
         cwd: opts.cwd,
         model: opts.model,

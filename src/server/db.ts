@@ -838,6 +838,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       value TEXT NOT NULL
     );
 
+    -- Agent telemetry's upstream headers: credentials for the gateway the relay forwards to.
+    -- Not in app_config for the reason telemetry_secrets is not: app_config is enumerated by
+    -- the settings backup service and read back by config routes, and a credential there would
+    -- be copied into every snapshot. Only the relay reads a value, at send time.
+    CREATE TABLE IF NOT EXISTS agent_telemetry_headers (
+      name       TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     -- Operational identity for daemon-owned native worktree pools. Policy does not live
     -- here: app_config.worktrees is the sole source for enablement, capacity and setup argv.
     -- The physical Git common directory is the pool identity, not a remote URL, so two local

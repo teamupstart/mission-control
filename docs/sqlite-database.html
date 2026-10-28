@@ -551,7 +551,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>17 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>18 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -568,6 +568,7 @@ LIMIT 20;
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
                 <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>
                 <div class="table-row"><code>app_config</code><p>Generic JSON-encoded application settings stored as key and value text.</p></div>
+                <div class="table-row"><code>agent_telemetry_headers</code><p>Credential headers for the agent telemetry relay's upstream, by name. Kept out of <code>app_config</code> so no settings snapshot or config read carries one; only the relay reads a value, at send time.</p></div>
                 <div class="table-row"><code>personas</code><p>Reusable, revisioned model-review definitions with exact operator-authored Markdown guidance and optional provider/model choices.</p></div>
                 <div class="table-row"><code>session_actions</code><p>Reusable workflow instructions with exact Markdown prompts, required skill capabilities, and server-owned completion proof kinds.</p></div>
               </div>

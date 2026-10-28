@@ -243,6 +243,12 @@ export interface ClaudeSdkDeps {
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
+  /**
+   * Agent telemetry's per-session env (`src/server/agent-otel/`), applied over `env`. Optional
+   * so a scripted test seam carries none; it resolves to `{}` on any failure and never blocks
+   * a launch.
+   */
+  agentOtelEnv?(): Promise<Record<string, string>>;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */

@@ -68,6 +68,9 @@ import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
 import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
+import { managedAgentOtel } from "./agent-otel/managed.ts";
+import { agentOtelLaunch } from "./agent-otel/config.ts";
+import { configureAgentOtelLaunch } from "./agent-otel/hook.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { pendingPlanWriteWarnings } from "./plans/store.ts";
@@ -182,6 +185,12 @@ warnIfSessionAttributionDisabled();
 // is on: that is the only time the panel names it, and an installation that never switched Cost
 // on has no reason to read its organization's policy.
 if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
+// Agent telemetry's managed read, primed so the relay's per-send lookup (which reads only the
+// cached answer) knows about device management before the first SDK session exports. It
+// never throws, and a launch that beats it resolves its own fresh read.
+void managedAgentOtel();
+// The harness drivers reach agent telemetry through this seam only; see `agent-otel/hook.ts`.
+configureAgentOtelLaunch(agentOtelLaunch);
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
 const reconcileManagedResumeResources = () => {

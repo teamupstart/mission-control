@@ -250,6 +250,31 @@ export const SETTINGS_CATEGORIES = [
     ],
   },
   {
+    id: "agent-telemetry",
+    label: "Agent telemetry",
+    icon: "⇉",
+    blurb: "The agents' own OpenTelemetry for SDK sessions, and where a copy is sent",
+    // Beside Cost and Telemetry, the two it is most often confused with: Cost is Claude Code
+    // reporting usage INTO this daemon, Telemetry is Mission Control's facts about itself, and
+    // this is the agents' own logs, metrics and traces relayed OUT. `machine` for Telemetry's
+    // reason: the destination is per-machine consent, not a GitHub action.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "agent telemetry",
+      "opentelemetry",
+      "otel",
+      "otlp",
+      "prompts",
+      "tool details",
+      "logs",
+      "traces",
+      "gateway",
+      "mdm",
+      "relay",
+    ],
+  },
+  {
     id: "restore",
     label: "Restore",
     icon: "↶",

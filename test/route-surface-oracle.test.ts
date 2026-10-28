@@ -146,6 +146,9 @@ const VOLATILE_KEYS = new Set([
   "startedAt",
   "now",
   "installed",
+  // Agent telemetry reports the OTEL_* variable names the daemon inherited, which is the
+  // environment of whoever ran the suite.
+  "inheritedOtelEnv",
 ]);
 
 function normalize(value: unknown): unknown {

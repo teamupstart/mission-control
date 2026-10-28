@@ -290,6 +290,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
+import { pruneDelegatedTurns } from "./delegated-turns.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -7805,6 +7806,12 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
     return this.launchTurns.get(noteKeyFor(s)) ?? null;
+  }
+
+  /** Delegated-turn senders, pruned on the launch markers' terms: live keys are never touched. */
+  pruneDelegatedTurns(olderThan: number): number {
+    if (!this.sweptSessions) return 0;
+    return pruneDelegatedTurns([...this.sessions.values()].map((s) => noteKeyFor(s)), olderThan);
   }
 
   /**

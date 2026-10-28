@@ -115,3 +115,17 @@ test("carries the message's own id, so a row can address its turn in the log", (
   const { yours } = yourMessages([msg({ id: "5f0c-uuid", text: "jump here", ts: 9 })]);
   assert.deepEqual(yours, [{ id: "5f0c-uuid", ts: 9, text: "jump here", who: null }]);
 });
+
+test("a delegated turn names the session that sent it, on the rail and the byline alike", () => {
+  const sent = msg({
+    id: "d", text: "Rebase onto main.", origin: "session", ts: 1,
+    originSession: { id: "sdk:controller", name: "Controller" },
+  });
+  // Delivered before a restart, or by a build that did not record the sender.
+  const unnamed = msg({ id: "u", text: "Rerun the tests.", origin: "session", ts: 2 });
+  const { yours, injected } = yourMessages([sent, unnamed]);
+  assert.deepEqual(yours, []);
+  assert.deepEqual(injected.map((r) => r.who), ["Delegated session from Controller", "Delegated session"]);
+  assert.equal(turnWho(sent, "claude"), "Delegated session from Controller");
+  assert.equal(turnWho(unnamed, "claude"), "Delegated session");
+});

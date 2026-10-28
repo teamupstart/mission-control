@@ -1201,6 +1201,16 @@ when they happened, so an agent that blocked on a question for an hour shows you
 after the hour of work, not before it. The original pull request includes a runtime capture of
 how the four read against each other.
 
+A fifth voice appears only when another session is
+[controlling this one](#let-a-session-steer-other-sessions): a message it sends is drawn in pink, under a
+**Delegated session** tag followed by **from** and the sending session's name, whenever Mission
+Control can tell which turn that message produced. The terminal rendering names the sender on the
+shell host, as `<session-name>@session`. Hover the sender for its session id. When it cannot
+tell - identical words sent by you, Foreman or a second controlling session while the first is
+still on its way, so either turn could have arrived first - the message is left unlabelled
+rather than credited to the wrong sender, and it then reads like an ordinary turn. See
+[Let a session steer other sessions](#let-a-session-steer-other-sessions) for the exact cases.
+
 What the CLI writes into the conversation on its own behalf is not one of those voices and
 never reaches the dashboard: the note it leaves in place of a pasted image, the payload it
 attaches when a skill loads, its own resume nudge. The CLI marks those records as its own
@@ -1970,7 +1980,23 @@ For example, after inspecting the target:
 {"sessionId":"sdk:target-id","command":{"action":"message","text":"Focus on the failing parser test first."}}
 ```
 
-Messages are marked **Delegated session** in the live conversation. Review answers retain
+Messages are marked **Delegated session** in the live conversation, in their own pink colour
+and with the controller named beside the tag (**from Controller**). The name is the one the
+controller had when it sent the message, so it still reads after that session ends. Unlike the
+other bylines, the sender is recorded durably, one row per delivery, and bound to the
+transcript turn the first time the conversation is read, so a daemon restart does not hand the
+message back to you, and identical words sent by two controllers each name their own sender
+when the second is sent after the first one's message has arrived.
+A later turn you type with the same words reads as yours, even when nobody had the target open
+in between: each delivery claims the first turn with its words written to the transcript after
+it was sent, so neither a turn you wrote just before it nor a later repeat is mistaken for it.
+If you send the same words while the controller's message is still on its way, so that either
+turn could be written first, neither is labelled: the message is never credited to the
+controller when it might be yours. A send of yours that is refused before anything reaches the
+session does not count as a race. The same holds between two controlling sessions: if both send
+identical words before either message reaches the transcript, neither is labelled, because
+either could have arrived first. A second controller sending after the first one's message has
+arrived keeps both labels. Review answers retain
 `session:<controller-id>` attribution and remain visible after reload. They are not recorded
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.

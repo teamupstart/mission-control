@@ -236,6 +236,31 @@ association separately from their public human/Foreman schemas, so concurrent di
 cannot inherit delegated attribution. Delegated single-option commands and SDK form answers
 require the current prompt id. Pane form rows retain their existing request-id compatibility. Authenticated revocation
 still removes the grant if the live session identity changes while authorization is pending.
+A delegated `/inject` also reserves a `session_delegated_turns` row through
+`delegated-turns.ts`, keyed by the target's note key, before delivery and releases it only on
+positive evidence nothing landed. `attributeTranscript` binds each row write-once to the native
+turn it produced, so the sender survives a restart and identical text from two controllers
+keeps two senders when the second is reserved after the first is bound (concurrent rivals are
+contested, below). Each row records the target transcript's byte size at send, and an unbound
+row binds, in rowid (reservation) order, to the first unclaimed user turn with its words
+written after that offset in the file, walked with the reader's forward `after` page. Binding
+never depends on the page being read, so an operator turn written before the delivery, or a
+later repeat on a page that skips the delivery's own turn, is never claimed. Bound turns answer
+by exact native id; the timestamp fallback for re-synthesized ids (Codex) applies only when the
+whole transcript, not just the page, holds exactly one user turn with those words at that
+timestamp, so a same-millisecond operator repeat is left unattributed rather than credited.
+Every other sender of words to the target - the `/send` and `/inject` direct arms and the
+pending-turn delivery seams - calls `noteOtherSend` before it writes. A delegated row whose
+words race such a send, in either order, is marked `contested`, persisted, and never bound. An
+in-flight check never credits a landed turn to another send while a contested or boundary-less
+delivery of the same words is unbound. A send with positive evidence that nothing landed
+(`pasted: false`) is withdrawn with `withdrawOtherSend`, which clears the contest once no
+other send of those words remains. A transcript size that cannot be read stores a NULL offset,
+and that row is never bound. A reservation whose words match a different controller's unbound,
+unexpired delivery contests both, after first binding what has already landed; the same
+controller twice cannot swap names and stays bindable. Withdrawing a send and releasing a
+delivery both call `reconsider`, which clears a contest only when no other send is remembered
+and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
 
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through
 `workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;

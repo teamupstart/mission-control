@@ -1,7 +1,7 @@
 import type { RetroReason, RetroSummary, Session, TranscriptMessage } from "@shared/types.ts";
 import { envVar } from "./config.ts";
 import { sessionMessages } from "./harness/index.ts";
-import type { Registry } from "./registry.ts";
+import { noteKeyFor, type Registry } from "./registry.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
 import { unref } from "./util/timers.ts";
 
@@ -187,7 +187,7 @@ export function createRetroCorrectionScanner(): RetroCorrectionScanner {
     // very offer delivers - and every one of those is a `user` record on disk. Counted as
     // human they would make the offer self-fulfilling: deliver a retro, and the session it
     // was delivered to becomes retro-worthy.
-    for (const message of attributeTranscript(session.id, messages)) {
+    for (const message of attributeTranscript(session.id, messages, null, undefined, { key: noteKeyFor(session), transcript: located })) {
       if (message.role !== "user" || message.origin !== undefined || !message.text.trim()) continue;
       const print = turnPrint(message);
       if (scan.opening === null) {

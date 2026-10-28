@@ -161,11 +161,35 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
       await expect(controlButton).toHaveAttribute("aria-label", "Session control: Off");
       await expect(dashboard.getByText("A delegated follow-up about CSS", { exact: true }).first()).toBeVisible();
-      await expect(dashboard.getByRole("article", { name: "Delegated session", exact: true }).first()).toBeVisible();
+      // The target's log names the controller and wears the delegated colour, never the human's.
+      const delegatedTurn = dashboard.getByRole("article", { name: "Delegated session from Controller", exact: true }).first();
+      await expect(delegatedTurn).toBeVisible();
+      await expect(delegatedTurn).toContainText("Delegated session");
+      await expect(delegatedTurn).toContainText("from Controller");
+      await expect(delegatedTurn.getByText("Delegated session", { exact: true })).toHaveCSS("color", "rgb(219, 97, 162)");
+      // The operator's own launch request is in the same log; the two bubbles must differ.
+      const bubbleColor = (turn: typeof delegatedTurn, text: string | RegExp) =>
+        turn.getByText(text).first().evaluate((node) => getComputedStyle(node.closest(".turn-text") ?? node).backgroundColor);
+      const operatorTurn = dashboard.getByRole("article", { name: "you", exact: true }).first();
+      await expect(operatorTurn).toContainText("write a haiku about Target");
+      expect(await bubbleColor(delegatedTurn, "A delegated follow-up about CSS"))
+        .not.toBe(await bubbleColor(operatorTurn, "write a haiku about Target"));
       if (process.env.MC_E2E_EVIDENCE === "1") {
         mkdirSync(artifactsDir("session-control"), { recursive: true });
         await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-message.png") });
       }
+      // The terminal rendering says the same thing on its shell host.
+      await api(daemon, "/api/ui/config", { conversationView: "terminal" }, "PUT");
+      await dashboard.reload();
+      await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
+      const delegatedEntry = dashboard.getByRole("article", { name: "Delegated session from Controller", exact: true }).first();
+      await expect(delegatedEntry.getByText("Controller@session", { exact: true })).toHaveCSS("color", "rgb(219, 97, 162)");
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-message-terminal.png") });
+      }
+      await api(daemon, "/api/ui/config", { conversationView: "chat" }, "PUT");
+      await dashboard.reload();
+      await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
 
       // Exercise the native SDK question channel, through the same built MCP tool.
       expect((await act({ action: "message", text: "ask me which linter to use" })).isError).toBe(false);
@@ -223,6 +247,16 @@ test("operator desktop clicks grant and revoke a controller; real MCP messages a
       await controlButton.click();
       await expect(toggle).not.toBeChecked();
       expect((await client.callTool({ name: "read_sessions", arguments: {} })).isError).toBe(true);
+      // The restart forgot every in-memory label; the target still names who sent its message.
+      await dashboard.keyboard.press("Escape");
+      await rail.locator("button.rail-row").filter({ hasText: "Target" }).click();
+      const afterRestart = dashboard.getByRole("article", { name: "Delegated session from Controller", exact: true }).first();
+      await expect(afterRestart).toContainText("A delegated follow-up about CSS");
+      await expect(afterRestart.getByText("Delegated session", { exact: true })).toHaveCSS("color", "rgb(219, 97, 162)");
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        await afterRestart.scrollIntoViewIfNeeded();
+        await dashboard.screenshot({ path: join(artifactsDir("session-control"), "delegated-message-after-restart.png") });
+      }
     } finally { await client.close(); }
   } finally {
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());

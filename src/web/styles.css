@@ -49,6 +49,12 @@
      the agent talking. One colour everywhere is the honest version of that. */
   --foreman: var(--purple);
 
+  /* A message one session sent into another through delegated session control. Its OWN
+     hue, because the whole point is that it reads as neither the human (blue) nor Foreman
+     (purple), and the agent colours are spoken for: Claude's terracotta, Codex's teal and
+     Pi's blue. A pink sits clear of all of them. */
+  --delegated: #db61a2;
+
   /* A session idle only because an open workflow run owns its next turn.
      Three colours were eliminated before this one. `--working` blue is the RUN's colour
      and already means a running workflow (`.workflow-running` below), so a held agent
@@ -8386,6 +8392,36 @@ kbd {
   background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
   border-color: color-mix(in oklab, var(--foreman) 24%, var(--border-soft));
 }
+/* A turn another session sent through delegated session control. Its own colour, and a
+   tagged byline naming the sender, so the target's log never credits it to the human or
+   to Foreman. */
+.turn-session .turn-role {
+  color: color-mix(in oklab, var(--delegated) 78%, var(--muted));
+}
+.turn-session .turn-text {
+  background: color-mix(in oklab, var(--delegated) 9%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--delegated) 30%, var(--border-soft));
+}
+.turn-delegated-tag {
+  padding: 1px 6px;
+  border: 1px solid color-mix(in oklab, var(--delegated) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--delegated) 14%, var(--bg-2));
+  color: var(--delegated);
+  white-space: nowrap;
+}
+/* A long session name clips rather than pushing the timestamp off the row. */
+.turn-delegated-from {
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-delegated-source {
+  color: color-mix(in oklab, var(--delegated) 55%, var(--fg));
+  font-weight: 600;
+}
 /* The dashboard's own `/reload-skills`. Deliberately the quietest turn on the page: it
    is plumbing the reader never asked for and needn't act on - it earns a label so it
    stops being mistaken for the human, and no more attention than that. */
@@ -9290,6 +9326,14 @@ mark.find-hit.is-current {
 }
 .pty-foreman .pty-host {
   color: var(--foreman);
+}
+/* A delegated turn carries the same pink provenance as its chat bubble. */
+.pty-session::after {
+  border-color: var(--delegated);
+  background: color-mix(in oklab, var(--delegated) 38%, var(--bg-2));
+}
+.pty-session .pty-host {
+  color: var(--delegated);
 }
 /* The agent's node in the agent's own colour, from the inline `--agent-accent` the panel
    already carries - so a third harness is marked in its colour with no rule here. */

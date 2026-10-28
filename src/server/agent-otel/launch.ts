@@ -29,7 +29,7 @@ export interface RelayAddress {
   baseUrl: string;
   /** The daemon token. Env-only: never placed on a command line. */
   harnessToken: string;
-  /** The relay-only capability, which may appear in argv because it can do nothing else. */
+  /** An argv-visible forwarding capability, restricted to the configured gateway and headers. */
   relayToken: string;
 }
 
@@ -95,8 +95,9 @@ const tomlString = (value: string): string => JSON.stringify(value);
  * Codex's launch-scoped `-c` overrides for one `codex app-server`, or none.
  *
  * Headers use the relay-only token rather than the daemon token, because `-c` is argv and
- * argv is visible to every process on the machine: the relay token can post OTLP to the relay
- * and nothing else, and metrics it carries are forwarded without being written to the ledger.
+ * argv is visible to every process on the machine. A holder can forward arbitrary bodies to
+ * the configured gateway with stored upstream headers attached, but cannot write the local
+ * ledger or authorize other daemon operations.
  * `json`, for the daemon's parser and because it is what Codex's own managed profile uses.
  */
 export function codexAgentOtelArgs(policy: AgentOtelPolicy, relay: RelayAddress): string[] {

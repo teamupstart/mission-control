@@ -4569,7 +4569,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   //
   // Two credentials. `x-harness-token` is what Claude Code carries (Cost's settings block and
   // agent telemetry's per-signal env alike), and only it reaches the ledger. The relay-only
-  // token Codex carries on its command line can forward and do nothing else.
+  // token Codex carries in argv can forward arbitrary bodies with stored upstream headers,
+  // but cannot write the ledger or authorize other daemon operations.
   const otlpCaller = (c: Context): "harness" | "relay" | null =>
     authed(c) ? "harness" : checkAgentOtelRelayToken(c.req.header(AGENT_OTEL_RELAY_HEADER)) ? "relay" : null;
 

@@ -4,8 +4,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 //
 // Codex takes its exporter headers through `-c`, which is argv, which any process on the
 // machine can read. The daemon token must never be there: it authorizes hooks, MCP and the
-// ledger. This token authorizes exactly one thing, posting OTLP to `/v1/{logs,metrics,traces}`
-// for forwarding, and metrics it carries never reach the ledger. Minted per daemon process and
+// ledger. This token authorizes posting arbitrary bodies to `/v1/{logs,metrics,traces}`
+// for forwarding with the configured upstream headers; metrics never reach the local ledger. Minted per daemon process and
 // never persisted: the app-server processes that carry it are children of this process.
 
 /** The header a relay-token holder authenticates with. */

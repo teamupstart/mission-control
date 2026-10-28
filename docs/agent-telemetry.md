@@ -34,8 +34,10 @@ Codex app-server    --OTLP json, x-mission-otel-relay token-->  | daemon /v1/...
   - Claude Code carries `x-harness-token`. It travels in env, never argv.
   - Codex carries `x-mission-otel-relay`, a per-process token that can only post OTLP for
     forwarding. Codex takes exporter headers only through `-c`, which is argv and visible to
-    other processes, so the daemon token is never put there. Metrics carrying the relay token
-    are forwarded but never written to the ledger.
+    other processes, so the daemon token is never put there. A holder can submit arbitrary
+    request bodies to these routes; when Settings supplies the destination, the relay attaches
+    the operator's stored upstream headers. This capability permits telemetry injection at
+    that configured gateway, but never local ledger writes or other daemon operations.
 - The relay forwards every export these routes receive while a signal is on. That includes
   Cost-switch metrics from terminal Claude sessions.
 - An upstream that targets this daemon is never forwarded to. Signal paths are appended to
@@ -81,51 +83,6 @@ Why Pi is not plumbed: Pi's SDK runs inside the daemon process. Its OTel extensi
 and keeps one OTel runtime per process. There is no per-session input. Mutating the daemon
 environment or the operator's settings file would change every Pi session at once, so Pi keeps
 whatever its installed extension is configured to do.
-
-### Installing the published Pi telemetry extension
-
-The separately maintained [`@upstart/pi-router-otel`](https://github.com/nigel-upstart/pi-buildout/tree/main/packages/pi-router-otel)
-package contains the same vendored Pi OTel extension used in `pi-buildout`. It is **not** a
-Mission Control npm dependency or part of the app bundle. Pi discovers it from its own agent
-home, including when Mission Control embeds Pi's SDK. Install it only in the Pi home the daemon
-will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home), after reviewing the package's
-full-content capture default and removing any separately installed `npm:pi-otel` to avoid
-duplicate instrumentation:
-
-Use the AWS CLI with a read-only CodeArtifact profile; UMT is not required. The temporary npm
-configuration routes only `@upstart` to CodeArtifact and leaves public npm resolution alone:
-
-```sh
-export AWS_PROFILE=YOUR_CODEARTIFACT_READONLY_PROFILE
-export CODEARTIFACT_AUTH_TOKEN="$(aws codeartifact get-authorization-token \
-  --domain code-artifacts-prod --domain-owner 801997600626 --region us-east-1 \
-  --query authorizationToken --output text)"
-export NPM_CONFIG_USERCONFIG="$(mktemp)"
-chmod 600 "$NPM_CONFIG_USERCONFIG"
-trap 'rm -f "$NPM_CONFIG_USERCONFIG"; unset CODEARTIFACT_AUTH_TOKEN NPM_CONFIG_USERCONFIG' EXIT
-printf '%s\n' \
-  '@upstart:registry=https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/' \
-  '//code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/:_authToken=${CODEARTIFACT_AUTH_TOKEN}' \
-  > "$NPM_CONFIG_USERCONFIG"
-pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
-pi list
-```
-
-For isolated validation, set `PI_CODING_AGENT_DIR` to a disposable directory before installing.
-If UMT is already installed, `umt artifacts --tools npm` is an alternative authentication
-setup; do not combine its persistent npm config with the temporary override above. See the
-[Pi package consumer instructions](https://github.com/nigel-upstart/pi-buildout/blob/main/packages/README.md#consumer-setup-read-only).
-The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
-all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
-overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
-
-This is a **runtime install**, not a build-time dependency: putting a CodeArtifact tarball in
-Mission Control's public `npm ci` lockfile would require credentials in every GitHub-hosted
-Node 24/26 dependency producer, E2E shard and release build. Until a read-only CI identity,
-scoped npm auth and artifact-provenance policy are provisioned, the app build must not fetch
-this private package or silently turn Pi's full-content telemetry on for every installation.
-The existing app build and CI only bundle Mission Control's own Pi integration. A successful
-Pi export does not imply the daemon relay saw it: Pi sends directly to its configured gateway.
 
 ## When a managed policy wins
 

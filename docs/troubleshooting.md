@@ -89,11 +89,14 @@ their timestamps, to see whether your server is listed. Do not paste the file's 
 a chat, ticket or pull request.
 
 To fix it, run `/mcp` in a terminal and log in to the server again. A successful login should
-clear its entry. Then dispatch again.
+clear its entry. If the server is still missing after a successful login, the entry may not
+have cleared, so check the file again (names and timestamps only). Then dispatch again.
 
-One related limit: a project-scoped server is keyed by the repository's path, so a
-dispatched session in a worktree at a different path may not see it. A user-scope server
-has no such limit, so add it there if every worktree needs it.
+One related limit: a local-scoped server (the default for `claude mcp add`, stored under the
+repository's path in `~/.claude.json`) is keyed by that path, so a dispatched session in a
+worktree at a different path may not see it. A project-scoped server in the repository's
+`.mcp.json` travels with the checkout. A user-scope server has no such limit, so add it
+there if every worktree needs it.
 
 ## Playwright cannot find Chromium
 

@@ -848,9 +848,10 @@ function appendTurn(role, content) {
 }
 
 /**
- * Record a message the running turn took, the way Claude Code does: never as a `user`
- * record, only as a `queued_command` attachment on that turn. A fake that wrote a `user`
- * record here hid the daemon's failure to read the real shape behind a green spec.
+ * Record a message the running turn took in the form Claude Code usually uses: a
+ * `queued_command` attachment on that turn, with no `user` record. A fake that wrote only a
+ * `user` record here hid the daemon's failure to read the attachment behind a green spec.
+ * `STEER_RECORDED_TWICE` adds the matching `user` record that can also follow it.
  */
 function appendQueuedCommand(prompt) {
   turn += 1;

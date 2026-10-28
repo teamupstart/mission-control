@@ -155,11 +155,11 @@ function withIdentity(
 /**
  * A message the operator sent while a turn was running, or null for any other attachment.
  *
- * Claude Code writes no `user` record for it: it folds the message into the running turn
- * as a `queued_command` attachment, and that line is the only record the agent read it.
- * Dropping it hid the operator's words from the log and left the daemon's steer-receipt
- * scan with nothing to match, so a steer Claude was already answering stayed pinned under
- * the log until the turn ended.
+ * Claude Code usually records it only as a `queued_command` attachment on the running turn,
+ * with no `user` record. A matching `user` record can follow; `collapseSteerEchoes` draws
+ * the pair once. Dropping the attachment hid the operator's words from the log and left the
+ * daemon's steer-receipt scan with nothing to match, so a steer Claude was already
+ * answering stayed pinned under the log until the turn ended.
  *
  * `commandMode: "prompt"` with no `origin` is what a person typed. The same attachment also
  * carries background-task completions (`task-notification`) and messages from a peer agent

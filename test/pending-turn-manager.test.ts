@@ -1812,8 +1812,8 @@ test("a steer leaves the moment the transcript shows it, while its turn is still
 
 test("a Claude steer leaves when Claude records it as a queued command, mid-turn", async () => {
   // The real transcript reader over a real file, because the bug lived in the parse: Claude
-  // Code writes a mid-turn message as a `queued_command` attachment, never as a `user`
-  // record, so a steer it had read stayed pinned under the log until the turn ended.
+  // Code usually records a mid-turn message only as a `queued_command` attachment, so a
+  // steer it had read stayed pinned under the log until the turn ended.
   const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-"));
   const path = join(dir, "transcript.jsonl");
   const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;

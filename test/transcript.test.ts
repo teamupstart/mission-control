@@ -197,8 +197,8 @@ const queuedCommand = (attachment: Record<string, unknown>): Record<string, unkn
 });
 
 test("a steered message is the operator's turn, though Claude records it as an attachment", () => {
-  // Claude Code never writes a `user` record for a message that arrives while a turn is
-  // running: it folds it into that turn as a `queued_command` attachment. Dropped, the
+  // Claude Code usually records a message that arrives while a turn is running only as a
+  // `queued_command` attachment on that turn, with no `user` record. Dropped, the
   // operator's own words vanished from the log and the daemon never saw the steer read.
   assert.deepEqual(toMessage(queuedCommand({ prompt: "skip e2e for now" })), {
     id: "q1",

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -36,12 +36,26 @@ for (const family of ["sol", "terra"]) {
     expect(changed.ok(), await changed.text()).toBe(true);
     await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
     const detail = dashboard.locator(".console-detail");
+    const chip = detail.getByRole("button", { name: /^Model:/ });
+    // A growing rewrite keeps the old inode and both end windows, but changes the
+    // observed turn outside the tail. The pending badge must become confirmed.
+    const previous = readFileSync(session.transcriptPath!, "utf8");
+    const rewritten = previous.replaceAll(JSON.stringify(older), JSON.stringify(newer));
+    expect(rewritten).not.toBe(previous);
+    const inode = statSync(session.transcriptPath!).ino;
+    writeFileSync(session.transcriptPath!, rewritten + JSON.stringify({ type: "event_msg", payload: {
+      type: "token_count", info: { last_token_usage: { total_tokens: 50 }, model_context_window: 1000 },
+    } }) + "\n");
+    expect(statSync(session.transcriptPath!).ino).toBe(inode);
+    await expect.poll(async () => (await live()).meta?.contextTokens).toBe(50);
+    await expect(chip).toHaveAccessibleName(`Model: ${newer}. Change model for this session`);
+    expect((await live()).meta?.modelId).toBe(newer);
     const composer = detail.getByPlaceholder(/^Reply to this session/);
     await composer.fill("use the selected model for the next turn");
     await composer.press("Enter");
+    await expect(detail.getByText("Mock reply to: use the selected model for the next turn", { exact: true })).toBeVisible();
     await expect.poll(async () => (await live()).meta?.modelId).toBe(newer);
     await expect.poll(async () => (await live()).state).toBe("idle");
-    const chip = detail.getByRole("button", { name: /^Model:/ });
     await expect(chip).toHaveAccessibleName(`Model: ${newer}. Change model for this session`);
 
     // The newest turn now falls outside BOTH old read windows. Fresh token records

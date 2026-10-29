@@ -106,6 +106,40 @@ test("an in-place rewrite with unchanged size invalidates the cached model", (t)
   assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-sol");
 });
 
+test("a growing in-place rewrite invalidates a cached turn even when the head and old tail match", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-growing-rewrite-"));
+  t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
+  const path = join(dir, "rollout.jsonl");
+  // Preserve both end windows; only the previously observed turn in the middle changes.
+  const prefix = output;
+  writeFileSync(path, prefix + turn("gpt-5.6-sol", "high", "old") + output + tokens);
+  utimesSync(path, 1, 1);
+  const before = statSync(path);
+  assert.equal(readRolloutMeta(path)?.modelId, "gpt-5.6-sol");
+  writeFileSync(path, prefix + turn("gpt-6.1-sol", "high", "new") + output + tokens + tokens);
+  utimesSync(path, 2, 2);
+  const after = statSync(path);
+  assert.equal(after.ino, before.ino);
+  assert.ok(after.size > before.size);
+  const meta = readRolloutMeta(path);
+  assert.equal(meta?.modelId, "gpt-6.1-sol");
+  assert.equal(meta?.effortRevision, "new");
+  assert.equal(meta?.contextPct, 10);
+  const reads = t.mock.method(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    appendFileSync(path, tokens);
+    assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-sol");
+    const bytesRead = reads.mock.calls.reduce((sum, call) => sum + call.result!, 0);
+    const limit = 128 * 1024 + Buffer.byteLength(turn("gpt-6.1-sol", "high", "new")) + 1;
+    t.diagnostic(`Verified model append: ${bytesRead} bytes read`);
+    assert.ok(bytesRead > 0 && bytesRead <= limit, "an ordinary append reads only the tail and retained turn record");
+  } finally {
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 test("the latest turn is confirmed only while its record boundary fits within the 16 MiB scan ceiling", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "codex-scan-boundary-"));
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });

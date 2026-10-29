@@ -1,4 +1,5 @@
 import { openSync, readSync, closeSync, statSync, fstatSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PermissionMode, Session, ThinkingLevel } from "@shared/types.ts";
@@ -38,6 +39,7 @@ const FALLBACK_START_SLOP_MS = 30 * 1000;
  * before reusing this identity. File replacement/truncation invalidates the cache.
  */
 type TurnMeta = Pick<RuntimeMetaRead, "modelId" | "thinkingLevel" | "effortRevision">;
+interface TurnRecordProof { offset: number; length: number; digest: string }
 interface RolloutTurnCache {
   fileId: string;
   size: number;
@@ -45,6 +47,8 @@ interface RolloutTurnCache {
   /** End of verified records, or a discarded oversized record prefix with a null turn. */
   checkedThrough: number;
   turn: TurnMeta | null;
+  /** Recheck the source record before reusing a turn across file growth. */
+  source: TurnRecordProof | null;
 }
 const rolloutTurnMeta = new Map<string, RolloutTurnCache>();
 
@@ -222,6 +226,10 @@ function normalizeEffort(effort: unknown): ThinkingLevel | null {
  * Returns null when neither is present. Pure, for testing.
  */
 export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
+  return parseRolloutRecords(lines)?.meta ?? null;
+}
+
+function parseRolloutRecords(lines: string[]): { meta: RuntimeMetaRead; turnLine: number } | null {
   let modelId: string | null = null;
   let thinkingLevel: ThinkingLevel | null = null;
   let effortRevision: string | null = null;
@@ -229,6 +237,7 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
   let contextWindow: number | null = null;
   let haveTurn = false;
   let haveTokens = false;
+  let turnLine = -1;
 
   for (let i = lines.length - 1; i >= 0 && (!haveTurn || !haveTokens); i--) {
     const line = lines[i]!.trim();
@@ -245,6 +254,7 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
       thinkingLevel = normalizeEffort(payload.effort);
       effortRevision = typeof o.timestamp === "string" ? o.timestamp : null;
       haveTurn = true;
+      turnLine = i;
     } else if (!haveTokens && o.type === "event_msg" && payload.type === "token_count") {
       const info = (payload.info ?? {}) as Record<string, unknown>;
       // `total_token_usage` is cumulative across the rollout and can exceed the context
@@ -264,14 +274,28 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
       ? Math.round(Math.min(100, (contextTokens / contextWindow) * 100))
       : null;
   return {
-    modelId,
-    contextTokens: contextPct !== null ? contextTokens : null,
-    contextWindow: contextPct !== null ? contextWindow : null,
-    contextPct,
-    longContext: isLongContext(contextWindow),
-    thinkingLevel,
-    effortRevision,
+    turnLine,
+    meta: {
+      modelId,
+      contextTokens: contextPct !== null ? contextTokens : null,
+      contextWindow: contextPct !== null ? contextWindow : null,
+      contextPct,
+      longContext: isLongContext(contextWindow),
+      thinkingLevel,
+      effortRevision,
+    },
   };
+}
+
+/** Preserve the exact source bytes, including its leading record boundary, as a digest. */
+function turnRecordProof(window: Buffer, offset: number, line: number): TurnRecordProof {
+  let start = offset > 0 ? window.indexOf(0x0a) + 1 : 0;
+  for (let i = 0; i < line; i++) start = window.indexOf(0x0a, start) + 1;
+  const newline = window.indexOf(0x0a, start);
+  const end = newline >= 0 ? newline + 1 : window.length;
+  if (start > 0) start--; // A surviving JSON suffix is not proof of a whole record.
+  const record = window.subarray(start, end);
+  return { offset: offset + start, length: record.length, digest: createHash("sha256").update(record).digest("hex") };
 }
 
 /**
@@ -292,11 +316,11 @@ function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | nu
     const { size, mtimeMs } = stat;
     const fileId = `${stat.dev}:${stat.ino}`;
     const previous = rolloutTurnMeta.get(path);
-    const cached = previous?.fileId === fileId && size >= previous.size &&
+    let cached = previous?.fileId === fileId && size >= previous.size &&
       (size !== previous.size || mtimeMs === previous.mtimeMs) ? previous : undefined;
-    const read = (bytes: number): Buffer => {
+    const read = (bytes: number, offset = size - bytes): Buffer => {
       const buf = Buffer.allocUnsafe(bytes);
-      if (readSync(fd, buf, 0, bytes, size - bytes) !== bytes) throw new Error("rollout changed during read");
+      if (readSync(fd, buf, 0, bytes, offset) !== bytes) throw new Error("rollout changed during read");
       return buf;
     };
     let bytes = Math.min(size, ROLLOUT_TAIL_BYTES);
@@ -308,18 +332,31 @@ function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | nu
     let scanned = tail;
     let window = lines;
     let turn: TurnMeta | null = null;
+    let source: TurnRecordProof | null = null;
     for (;;) {
-      const found = parseRolloutMeta(window);
+      const parsed = parseRolloutRecords(window);
+      const found = parsed?.meta;
       if (found?.modelId) {
         turn = { modelId: found.modelId, thinkingLevel: found.thinkingLevel, effortRevision: found.effortRevision };
+        source = turnRecordProof(scanned, size - bytes, parsed!.turnLine);
         break;
       }
       // An overlap with the last verified boundary proves there
       // is no unseen turn between this window and the retained result, even when
       // that result is unknown because an earlier scan reached the ceiling.
       if (cached && size - bytes < cached.checkedThrough) {
-        turn = cached.turn;
-        break;
+        // Size and inode alone cannot distinguish an append from a growing in-place
+        // rewrite. Validate the retained turn itself, even if both end windows match.
+        const proof = cached.source;
+        const record = proof && (proof.offset >= size - bytes
+          ? scanned.subarray(proof.offset - (size - bytes), proof.offset - (size - bytes) + proof.length)
+          : read(proof.length, proof.offset));
+        if (!proof || createHash("sha256").update(record!).digest("hex") === proof.digest) {
+          turn = cached.turn;
+          source = proof;
+          break;
+        }
+        cached = undefined;
       }
       if (bytes >= Math.min(size, ROLLOUT_META_SCAN_BYTES)) break;
       bytes = Math.min(size, ROLLOUT_META_SCAN_BYTES, bytes * 2);
@@ -337,7 +374,7 @@ function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | nu
       checkedThrough = size;
     }
     rolloutTurnMeta.set(path, {
-      fileId, size, mtimeMs, turn, checkedThrough,
+      fileId, size, mtimeMs, turn, source, checkedThrough,
     });
     return { lines, turn };
   } catch {

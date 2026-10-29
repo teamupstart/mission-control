@@ -950,6 +950,9 @@ evidence for both terminal and SDK sessions and scans backwards across missed ou
 a restart or a gap between reads. If the latest turn cannot be established within the bounded
 16 MiB scan, its model remains unconfirmed rather than reverting to an older model from the log's
 beginning. This observation never changes the model configured for future turns.
+Before reusing a turn across file growth, the reader rechecks that turn's source record so
+an in-place rewrite cannot retain a model from the replaced record. A stale explicit rollout
+path falls back to discovery for the current session, with the usual lookup cache and retry delay.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the

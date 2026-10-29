@@ -61,12 +61,15 @@ const bindings = new Map<string, RolloutBinding>();
  */
 function locate(s: Session): string | null {
   if (s.transcriptPath) {
-    const path = rolloutBelongsToSession(s.transcriptPath, s) ? s.transcriptPath : null;
     // Explicit SDK/hook paths own the same retained metadata as discovered paths.
     // Otherwise retain() drops their verified turn after every poll.
-    if (path) bindings.set(s.id, { cwd: s.cwd ?? "", agentSessionId: s.agentSessionId, path, triedAt: Date.now() });
-    else bindings.delete(s.id); // A stale explicit path must not delay discovery after a rebind.
-    return path;
+    if (rolloutBelongsToSession(s.transcriptPath, s)) {
+      bindings.set(s.id, { cwd: s.cwd ?? "", agentSessionId: s.agentSessionId, path: s.transcriptPath, triedAt: Date.now() });
+      return s.transcriptPath;
+    }
+    // Reject the stale binding, then discover a replacement. A hint that stays stale
+    // across polls must not evict that replacement (or its cached discovery miss).
+    if (bindings.get(s.id)?.path === s.transcriptPath) bindings.delete(s.id);
   }
   if (!s.cwd) return null;
   const now = Date.now();

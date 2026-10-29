@@ -794,10 +794,11 @@ export interface SdkLaunchOptions {
    * `sessionTraceContext`, or null to launch it with none.
    *
    * An adapter that starts an agent process applies it through `withAgentTraceContext`, which
-   * also removes any `TRACEPARENT` the daemon inherited, and adds nothing else: no `OTEL_*`
-   * variable and no `-c otel.*` override, because where the agent's telemetry goes is the
-   * machine's own configuration. Pi runs in this process and has no launch environment to
-   * carry it. Optional so a direct caller that does not name it launches with none.
+   * also removes any `TRACEPARENT` the daemon inherited, and adds nothing else. Where the 
+   * agent's telemetry goes is dictated outside of mission control; it's the machine's 
+   * configuration for the specific harness (Claude or Codex) application that decides this.
+   * Pi runs in this process and has no launch environment to carry it. Optional so a direct
+   * caller that does not name it launches with none.
    */
   traceContext?: AgentTraceContext | null;
 }

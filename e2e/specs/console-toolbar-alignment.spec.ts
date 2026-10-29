@@ -320,6 +320,10 @@ test("a long launch error wraps inside the pane and leaves the toolbar in view",
 
   const detail = await openConsoleDetail(dashboard, daemon, /Wrap a Long Launch Error/i);
   const tabs = detail.locator(".detail-tabs");
+  // The rung the row settled on before the error, so the end of this test can show the error
+  // did not strand the ladder on a collapsed one.
+  await settle(dashboard);
+  const rungBefore = (await tabs.getAttribute("data-rung")) ?? "";
   await tabs.getByRole("button", { name: "Terminal", exact: true }).click();
   await detail.getByRole("menuitem", { name: /tmux/ }).click();
 
@@ -343,4 +347,16 @@ test("a long launch error wraps inside the pane and leaves the toolbar in view",
   }
 
   await shoot(dashboard, tabs, "launch-error-flash");
+
+  // The error is a notice, not a state: while it shows, the strip wraps around it, and when it
+  // clears the row must be the one even band again, on the rung it had before. An error that
+  // left the ladder stranded on a collapsed rung would be a regression this test should catch.
+  await expect(flash).toBeHidden({ timeout: 15_000 });
+  await settle(dashboard);
+  await expect
+    .poll(async () => (await tabs.getAttribute("data-rung")) ?? "", {
+      message: "the launch error left the tab row on a different ladder rung",
+    })
+    .toBe(rungBefore);
+  expectOneBand(await toolbar(dashboard, detail), "after the launch error cleared");
 });

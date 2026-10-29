@@ -12,7 +12,8 @@ import { prepareStagedInstall, prepareSourceUpdate, installStagedApp, inspectBun
 import { prepareInPlaceInstall, runMigration, recoverMigration, migrationReceipt, readMigrationJournal, validateMigrationPlan, atomicMigrationJson, MIGRATION_JOURNAL, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
-import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
+import { processIdentity } from '../scripts/update-lock.mjs';
+import { sameMigrationProcess } from '../scripts/migration-runtime.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 
 ensureNativeStateLockAddon();
@@ -71,7 +72,11 @@ test('detached migration waits for its identified parent before checking launch 
   const quit = setTimeout(() => parent.stdin.end(), 250);
   t.after(() => clearTimeout(quit));
   const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
-    if (processIsAlive(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
+    // "Gone" has to mean what the helper waits on: the identified process no longer matching.
+    // A parent that has exited but not yet been reaped by this test process still answers
+    // kill(pid, 0), while its identity is already `<defunct>`, so the helper moves on. A bare
+    // liveness check here would call that window a race and fail on a loaded runner.
+    if (sameMigrationProcess({pid, identity})) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
     events.push(bundle);
     // Stop at the real conflict boundary without staging or launching an app.
     if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});

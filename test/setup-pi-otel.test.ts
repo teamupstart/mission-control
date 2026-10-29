@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
 import { PI_OTEL_PACKAGE } from "../src/shared/setup-catalog.ts";
-import { piOtelPackageStatus } from "../src/server/setup/pi-otel.ts";
+import { expandPiAgentDir, piOtelPackageStatus } from "../src/server/setup/pi-otel.ts";
 import type { EnvironmentDeps, FileRead } from "../src/server/environment/types.ts";
 
 const HOME = "/fixture/home";
@@ -135,4 +136,21 @@ test("missing, unreadable and empty extension entries report their specific inst
     assert.equal(status.state, state);
     assert.doesNotMatch(JSON.stringify(status), /private diagnostic/);
   }
+});
+
+test("PI_CODING_AGENT_DIR expands only a bare leading tilde, as Pi does", () => {
+  const home = "/Users/op";
+  assert.equal(expandPiAgentDir(undefined, home), undefined);
+  assert.equal(expandPiAgentDir("~", home), home);
+  assert.equal(expandPiAgentDir("~/pi", home), "/Users/op/pi");
+  assert.equal(expandPiAgentDir("~\\pi", home), "/Users/op\\pi");
+  assert.equal(expandPiAgentDir("~user/pi", home), "~user/pi");
+  assert.equal(expandPiAgentDir("/abs/pi", home), "/abs/pi");
+});
+
+test("the Pi telemetry guide installs and removes the cataloged package pin", () => {
+  const guide = readFileSync(new URL("../docs/pi-telemetry.md", import.meta.url), "utf8");
+  const pinned = `npm:${PI_OTEL_PACKAGE.name}@${PI_OTEL_PACKAGE.version}`;
+  assert.ok(guide.includes(`pi install ${pinned}`), "install command drifted from the catalog pin");
+  assert.ok(guide.includes(`pi remove ${pinned}`), "remove command drifted from the catalog pin");
 });

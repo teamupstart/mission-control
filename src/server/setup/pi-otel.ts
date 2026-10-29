@@ -38,6 +38,11 @@ function namesPackage(source: string, name: string): boolean {
   return source === `npm:${name}` || source.startsWith(`npm:${name}@`);
 }
 
+/** Expand only a bare leading `~`, as Pi does; `~user` stays unchanged. */
+export function expandPiAgentDir(value: string | undefined, homeDir: string): string | undefined {
+  return value?.replace(/^~(?=$|[/\\])/, homeDir);
+}
+
 /** Installation evidence only: never import extension code, change Pi settings or contact npm. */
 export async function piOtelPackageStatus(deps: EnvironmentDeps, configuredDir?: string): Promise<SetupStatus> {
   const agentDir = configuredDir || join(deps.homeDir, ".pi", "agent");

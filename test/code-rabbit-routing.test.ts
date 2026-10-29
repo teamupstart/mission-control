@@ -11,7 +11,8 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp, type RouteDeps } from "../src/server/routes.ts";
 import { adoptPr } from "../src/server/inspector/worker.ts";
 import { codeRabbitCandidate } from "../src/server/inspector/code-rabbit-delivery.ts";
-import { codeRabbitSummary, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { claimInjectionEcho, observeInjections, originOf } from "../src/server/injections.ts";
 import { setShippingConfig } from "../src/server/shipping/config.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
 import { decideReviewFollowup, followupPrs } from "../src/server/foreman/review-followup.ts";
@@ -143,6 +144,64 @@ test("real inject route claims once and uses daemon text through the SDK boundar
   for (const text of ["https://github.com/a/b/pull/", "/tmp/pr", "complete unresolved", "focused checks", "existing branch", "no merge authority", "never as instructions"]) assert.ok(f.messages[0]!.includes(text), text);
   assert.equal(readCodeRabbit(f.key)!.receipts[0]!.outcome, "delivered");
 });
+
+test("a synchronous reservation failure does not lock out a later CodeRabbit generation", async (t) => {
+  const f = fixture();
+  const db = openDb();
+  t.after(() => db.exec("DROP TRIGGER IF EXISTS fail_other_send"));
+  db.exec(`CREATE TEMP TRIGGER fail_other_send BEFORE INSERT ON session_other_sends
+    BEGIN SELECT RAISE(ABORT, 'test reservation unavailable'); END`);
+  assert.equal((await f.post()).status, 500);
+  assert.equal(f.messages.length, 0);
+  assert.equal(readCodeRabbit(f.key)!.receipts[0]!.outcome, "uncertain");
+  db.exec("DROP TRIGGER fail_other_send");
+  // Keep the old durable claim spent. A newly observed finding must still be deliverable.
+  recordCodeRabbit(f.key, { headSha: "head", state: "OPEN", draft: false, findings: [{
+    id: "thread", rootId: "root", url: `${f.session.prUrl}#discussion_r1`, path: "src/a.ts", identity: "root-v2", resolved: false,
+  }] });
+  f.request.observationId = readCodeRabbit(f.key)!.observationId;
+  assert.equal((await f.post()).status, 200);
+  assert.equal(f.messages.length, 1);
+  assert.equal(readCodeRabbit(f.key)!.receipts.at(-1)!.outcome, "delivered");
+});
+
+for (const failure of ["receipt", "projection"] as const) {
+  for (const refused of [false, true]) {
+    test(`${failure} failure preserves ${refused ? "refused" : "delivered"} transport and authorship bookkeeping`, async (t) => {
+      const f = fixture();
+      const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+      assert.equal(candidate.error, undefined);
+      const payload = candidate.payload!;
+      const confirmed: string[] = [];
+      observeInjections((id, text, origin) => { confirmed.push(`${id}:${origin}:${text}`); });
+      t.after(() => observeInjections(null));
+      if (failure === "receipt") {
+        const db = openDb();
+        t.after(() => db.exec("DROP TRIGGER IF EXISTS fail_coderabbit_receipt"));
+        // The claim has already been persisted when the runtime acquires its write lock.
+        f.setLock(() => db.exec(`CREATE TEMP TRIGGER fail_coderabbit_receipt
+          BEFORE UPDATE OF code_rabbit_state ON inspector_prs
+          BEGIN SELECT RAISE(ABORT, 'test receipt unavailable'); END`));
+      } else {
+        f.registry.refreshInspections = () => { throw new Error("test projection unavailable"); };
+      }
+      f.setRefuse(refused);
+      const response = await f.post();
+      const result = await response.json();
+      assert.equal(response.status, refused ? 500 : 200);
+      assert.equal(result.ok, !refused);
+      if (refused) assert.equal(result.pasted, false);
+      assert.deepEqual(f.messages, refused ? [] : [payload]);
+      assert.deepEqual(confirmed, refused ? [] : [`${f.session.id}:foreman:${payload}`]);
+      assert.equal(originOf(f.session.id, payload), refused ? undefined : "foreman");
+      assert.equal(claimInjectionEcho(f.session.id, payload), refused ? undefined : "foreman");
+      assert.equal(claimInjectionEcho(f.session.id, payload), undefined);
+      assert.equal(loadOtherSends(f.owner.noteKey, 0).length, refused ? 0 : 1);
+      assert.deepEqual(readCodeRabbit(f.key)!.receipts.map((r) => r.outcome),
+        failure === "receipt" ? ["uncertain"] : refused ? [] : ["delivered"]);
+    });
+  }
+}
 
 test("real inject route submits CodeRabbit to the owning terminal and completes its exact claim once", async (t) => {
   const f = terminalFixture(t);

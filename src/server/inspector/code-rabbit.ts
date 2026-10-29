@@ -36,7 +36,7 @@ export async function observeCodeRabbit(
       }
       ids.add(thread.id);
       if (root.actorType !== "Bot" || root.author.toLowerCase().replace(/\[bot\]$/, "") !== "coderabbitai") continue;
-      if (!root.id || !root.updatedAt || !root.url || !root.url.startsWith(`https://github.com/${input.owner}/${input.repo}/pull/${input.number}#`)) {
+      if (!root.id || !root.updatedAt || !root.url || !root.url.toLowerCase().startsWith(`https://github.com/${input.owner}/${input.repo}/pull/${input.number}#`.toLowerCase())) {
         return { ok: false, error: "Missing CodeRabbit root metadata" };
       }
       findings.push({

@@ -5703,7 +5703,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const id = claimCodeRabbit(request.prKey, candidate.owner, request.observationId);
       if (!id) return c.json({ error: "CodeRabbit feedback was already claimed or its history limit was reached", pasted: false }, 409);
       claim = { id, ...candidate.owner, checkout: candidate.checkout };
-      codeRabbitSending.add(claim.noteKey);
       text = candidate.payload;
     }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
@@ -5732,6 +5731,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           name: registry.getSession(controller)?.name ?? controller,
         })
       : null;
+    // All reservations above are synchronous. Acquire only when the transport's finally
+    // can release it, so a reservation failure cannot strand this conversation's lock.
+    if (claim) codeRabbitSending.add(claim.noteKey);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
@@ -5742,8 +5744,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
     if (request && claim) {
-      if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
-      registry.refreshInspections();
+      try {
+        if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
+        registry.refreshInspections();
+      } catch (error) {
+        // Transport already completed. A failed receipt stays uncertain, but must not
+        // prevent attribution from settling or replace the actual delivery response.
+        console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation

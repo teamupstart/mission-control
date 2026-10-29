@@ -41,6 +41,27 @@ test("deleted or unknown authors are unknown; empty complete connections are zer
   assert.equal((await observeCodeRabbit(malformed)).ok, false);
 });
 
+test("root URLs match repository casing while retaining the exact origin and PR boundary", async () => {
+  const root = thread();
+  const adopted = { ...input([root]), owner: "A", repo: "B" };
+  assert.equal((await observeCodeRabbit(adopted)).ok, true);
+  root.comments[0]!.url = "https://github.com/A/B/pull/1#discussion_rOne";
+  const result = await observeCodeRabbit(input([root]));
+  assert.equal(result.ok, true);
+  assert.equal(result.value?.[0]?.url, root.comments[0]!.url);
+  for (const url of [
+    "https://github.com/a/other/pull/1#discussion_r1",
+    "https://github.com/other/b/pull/1#discussion_r1",
+    "https://github.com/a/b/pull/10#discussion_r1",
+    "https://github.com/a/b/pull/1/extra#discussion_r1",
+    "https://github.com.evil.test/a/b/pull/1#discussion_r1",
+    "http://github.com/a/b/pull/1#discussion_r1",
+  ]) {
+    root.comments[0]!.url = url;
+    assert.equal((await observeCodeRabbit(adopted)).ok, false, url);
+  }
+});
+
 test("page two is included; replies do not change the root generation identity", async () => {
   const first = thread();
   const a = await observeCodeRabbit(input([first], true, "cursor"), async () => ({ ok: true, value: {

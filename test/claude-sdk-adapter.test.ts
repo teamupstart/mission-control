@@ -7,7 +7,7 @@ import {
   permissionPrompt,
   sdkPermissionMode,
 } from "../src/server/harness/claude/sdk.ts";
-import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
+import { defaultClaudeSdkDeps, sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type {
@@ -1399,17 +1399,27 @@ test("the adapter refuses a duplicated question too, against its own request", a
  * must never contribute one. Trace-context propagation (`TRACEPARENT`) is not routing.
  */
 const CLAUDE_OTEL_ROUTING =
-  /\bOTEL_(?:EXPORTER_|LOGS_|METRICS?_|TRACES_|LOG_|SDK_DISABLED)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
+  /\bOTEL_(?:EXPORTER_|BSP_|LOGS_|METRICS?_|TRACES_|LOG_|SDK_DISABLED)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
 
-test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async () => {
+test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async (t) => {
+  // MDM is read by Claude itself. Remove inherited routing keys for this assertion so any
+  // match came from Mission Control, including its shipped environment callback.
+  const inherited = Object.entries(process.env).filter(([name]) => CLAUDE_OTEL_ROUTING.test(name));
+  t.after(() => {
+    for (const [name, value] of inherited) process.env[name] = value;
+  });
+  for (const [name] of inherited) delete process.env[name];
   for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
     const { deps, started } = fakeDeps();
-    // The fake hands the driver a base env with no telemetry key, so any match below was
-    // added by the launch itself: in `env`, in inline `settings`, or anywhere else.
-    await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
-    const { options } = await started;
-    const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
-    assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+    deps.env = defaultClaudeSdkDeps.env;
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
+    try {
+      const { options } = await started;
+      const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+      assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+    } finally {
+      await handle.stop();
+    }
   }
 });
 

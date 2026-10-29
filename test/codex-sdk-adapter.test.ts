@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { Readable } from "node:stream";
 import {
   codexSdkSpec,
@@ -9,7 +11,8 @@ import {
   turnInput,
   userInputQuestions,
 } from "../src/server/harness/codex/sdk.ts";
-import { readFrames, spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
+import { defaultCodexSdkDeps, readFrames, spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
+import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
@@ -1724,6 +1727,26 @@ test("an SDK launch passes no otel config, so a managed Codex policy keeps routi
     assert.deepEqual(overrides.filter((value) => /^\s*otel\b/.test(value)), []);
     await handle.stop();
   }
+});
+
+test("the shipped app-server wrapper adds no config after the launch argument check", async (t) => {
+  t.mock.method(executableLocator, "resolve", async () => ({
+    id: "codex" as const, path: "/fake/bin/codex", source: "inherited-path" as const,
+    sourceDetail: "test fixture", generation: 1, refreshedAt: new Date(0).toISOString(), env: {},
+  }));
+  const stopped = new Error("stop at spawn, without executing an agent");
+  let argv: readonly string[] | undefined;
+  const spawn = t.mock.method(childProcess, "spawn", (_executable: string, args: readonly string[]) => {
+    argv = args;
+    throw stopped;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawn.mock.restore(); syncBuiltinESMExports(); });
+
+  const args = ["-c", 'mcp_servers.mission-control.command="/usr/bin/node"'];
+  await assert.rejects(() => defaultCodexSdkDeps.connect(args, "/work/repo", "/tmp/mission-sdk-state"),
+    (error) => error === stopped);
+  assert.deepEqual(argv, ["app-server", ...args]);
 });
 
 // ---- the pure projections, on their own ------------------------------------------------

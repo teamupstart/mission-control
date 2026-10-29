@@ -173,6 +173,9 @@ export interface WorkflowDraftState {
   redo: () => void;
 }
 
+/** What the editor says when a round limit saved but the version list it changed did not refetch. */
+export const VERSIONS_STALE_MESSAGE = "Repair rounds saved, but the version history could not be refreshed.";
+
 /** One-workflow CAS autosave state machine. No second save starts while one is in flight. */
 export function useWorkflowDraft(
   workflowId: string | null,
@@ -470,10 +473,15 @@ export function useWorkflowDraft(
       // as such, with Retry reloading the detail that carries the versions.
       try {
         await refreshVersions(current.id);
+        // A refresh that lands clears what an earlier failed one left behind.
+        if (workflowIdRef.current === current.id) {
+          setVersionsStale(false);
+          setError((message) => (message === VERSIONS_STALE_MESSAGE ? null : message));
+        }
       } catch {
         if (workflowIdRef.current === current.id) {
           setVersionsStale(true);
-          setError("Repair rounds saved, but the version history could not be refreshed.");
+          setError(VERSIONS_STALE_MESSAGE);
         }
       }
       return true;

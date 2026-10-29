@@ -278,4 +278,30 @@ test("a saved round limit whose version refresh fails is reported as saved, with
   await history.getByRole("button", { name: new RegExp(`^Version ${newest}\\b`) }).click();
   await expect(history.locator("dl > div").filter({ hasText: "Maximum repair rounds" }))
     .toContainText(String(shipped + 4));
+
+  // Fail again, then let a LATER save's refresh land: that save clears the stale warning and
+  // its Retry on its own, with no Retry pressed.
+  failVersions = true;
+  await rail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 5));
+  await rail.getByRole("button", { name: "Save rounds" }).click();
+  await expect(notice).toBeVisible();
+  failVersions = false;
+  await rail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 6));
+  await rail.getByRole("button", { name: "Save rounds" }).click();
+  await expect(rail.getByRole("spinbutton", { name: "Maximum repair rounds" })).toHaveValue(String(shipped + 6));
+  await expect(rail.getByRole("button", { name: "Save rounds" })).toBeDisabled();
+  await expect(notice).toHaveCount(0);
+  await expect(dashboard.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  expect((await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds).toBe(shipped + 6);
+
+  // The stale flag is gone, not merely hidden: a later, unrelated save failure reports itself
+  // without offering a history Retry that no longer applies.
+  await dashboard.route("**/round-limit", (route) => route.request().method() === "PUT"
+    ? route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"round limit write failed"}' })
+    : route.continue());
+  await rail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 7));
+  await rail.getByRole("button", { name: "Save rounds" }).click();
+  const failure = dashboard.getByRole("alert").filter({ hasText: "round limit write failed" });
+  await expect(failure).toBeVisible();
+  await expect(failure.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });

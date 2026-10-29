@@ -56,7 +56,7 @@ However, the gateway fails open silently.
 - The check uses the daemon's `PI_CODING_AGENT_DIR`, or `~/.pi/agent`. Use that same directory
   for `pi install`; a terminal using another home does not repair the daemon's installation.
 - Disabled package autoload, a filtered entry, duplicate declarations, unreadable or truncated settings, an
-  unsupported manifest, a non-exact version range/tag or a separate `npm:pi-otel` registration
+  unsupported manifest, an empty or non-exact version range/tag, or a separate `npm:pi-otel` registration
   reports **Unknown**, not Ready. An installed version that differs from its registered pin
   reports **Needs setup**.
   Custom checkout/git installations and project-only installs are outside this check.

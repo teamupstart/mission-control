@@ -66,6 +66,7 @@ export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = '
   const app = join(output, 'mac-arm64/Agent Mission Control.app');
   const roots: string[] = [], mounts: string[] = [], stages: string[] = [], mcpMethods: string[] = [];
   const snapshots = new Map<string, string>();
+  const validationAttempts = new Map<string, number>();
   let metadata: any, dmgNotarized = false, recovery = false;
   const env = {CSC_NAME: `Developer ID Application: Fixture (${policy.teamId})`, CSC_LINK: 'fixture-certificate-secret', CSC_KEY_PASSWORD: 'fixture-password-secret',
     APPLE_API_KEY: join(root, 'key.p8'), APPLE_API_KEY_ID: 'fixture-key-id', APPLE_API_ISSUER: 'fixture-issuer',
@@ -92,7 +93,7 @@ export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = '
       pid: parentPid, kill(_signal: string): boolean {proc.signalCode = 'SIGKILL'; queueMicrotask(() => proc.emit('close', null)); return true;}});
     return proc;
   }
-  const f = {root, output, app, roots, mounts, stages, mcpMethods, env, assertUnqualified,
+  const f = {root, output, app, roots, mounts, stages, mcpMethods, validationAttempts, env, assertUnqualified,
     beforeWrite(path: string) {
       if (failure === 'metadata' && path === join(output, 'build-metadata.json')) throw injectedError();
     },
@@ -183,9 +184,19 @@ export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = '
         stderr = failure === 'gatekeeper' ? 'source=Unnotarized Developer ID' : 'source=Notarized Developer ID';
         if (failure === 'gatekeeper-status') {status = 3; stderr = 'rejected\nsource=Unnotarized Developer ID';}
       } else if (command === '/usr/bin/xcrun') {
-        const dmg = args.at(-1)!.endsWith('.dmg');
+        const path = args.at(-1)!;
+        const attempt = (validationAttempts.get(path) ?? 0) + 1;
+        validationAttempts.set(path, attempt);
+        const dmg = path.endsWith('.dmg');
         stages.push(dmg ? 'validate-dmg-staple' : 'validate-app-staple');
         if ((dmg && (!dmgNotarized || failure === 'dmg-staple')) || (!dmg && failure === 'app-staple')) status = 1;
+        if ((failure === 'parent-staple-transient' && path.endsWith('/Parent.app') && attempt === 1)
+          || (failure === 'dmg-staple-transient' && dmg && attempt === 1)
+          || (failure === 'parent-staple-network' && path.endsWith('/Parent.app'))) {
+          status = 68;
+          stdout = 'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\n'
+            + "CloudKit's response is inconsistent with expections: (null)\nThe validate action failed! Error 68.\n";
+        }
       } else if (command === '/usr/libexec/PlistBuddy') {
         const key = args[1]!.slice('Print :'.length);
         stdout = ({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: "Mission Control", CFBundleName: "Agent Mission Control", CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion} as Record<string, string>)[key]!;

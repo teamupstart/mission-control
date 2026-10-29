@@ -145,7 +145,7 @@ export async function qualifiedDistribution(directory, policy) {
   }
   // Retained JSON and hashes are not a trust root. Reassess the actual archives
   // with Apple tools and the shipped publisher policy on every publication retry.
-  verifyDistributionDmg(files.dmg, policy);
+  await verifyDistributionDmg(files.dmg, policy);
   await verifyDistributionArchives({appDigest: qualification.appDigest, files, metadata, policy, requalifyRuntime: true});
   return {metadata, files};
 }

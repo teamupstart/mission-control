@@ -131,9 +131,9 @@ test('real codesign accepts Apple anchor text and refuses wrong identifier and t
   }
 });
 
-test('real production app and DMG verifiers refuse an Apple binary at the publisher gate', macOnly, t => {
+test('real production app and DMG verifiers refuse an Apple binary at the publisher gate', macOnly, async t => {
   for (const verify of [verifyBinaryPublisher, verifyDistributionDmg]) {
-    assert.throws(() => verify('/bin/ls', policy), (error: {status: number; stderr: string}) => {
+    await assert.rejects(async () => verify('/bin/ls', policy), (error: {status: number; stderr: string}) => {
       t.diagnostic(JSON.stringify({verifier: verify.name, status: error.status, stderr: error.stderr}));
       assertUnsatisfied(error, verify.name);
       return true;

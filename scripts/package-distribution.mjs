@@ -76,8 +76,8 @@ export async function packageDistribution({repoRoot = process.cwd(), env = proce
   const names = distributionNames(metadata);
   const dmg = join(output, names.dmg);
   await stages.run('notarize (dmg)', () => notarizeDistribution(dmg, credentials, {env}));
-  await stages.run('archive verification', () => {
-    verifyDistributionDmg(dmg, policy);
+  await stages.run('archive verification', async () => {
+    await verifyDistributionDmg(dmg, policy);
     if (inspectBundle(app).digest !== before.digest) throw new Error('The signed app changed during archive generation');
   });
   await stages.run('ditto', () => execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, join(output, names['app-zip'])],

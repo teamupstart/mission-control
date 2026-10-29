@@ -14,6 +14,29 @@ const commit = 'a'.repeat(40);
 before(() => { installDistributionFixture(); mock.method(console, 'log', () => {}); });
 after(restoreDistributionFixture);
 
+for (const target of ['parent', 'dmg']) test(`${target} ticket validation recovers from Apple's dropped connection`, async (t) => {
+  const f = fixture(t, `${target}-staple-transient`);
+  await packageDistribution({repoRoot: f.root, env: f.env});
+  const path = [...f.validationAttempts.keys()].find((path) => target === 'parent' ? path.endsWith('/Parent.app') : path.endsWith('.dmg'))!;
+  assert.equal(f.validationAttempts.get(path), 2);
+  assert.ok(existsSync(join(f.output, 'qualification.json')));
+});
+
+test('persistent Apple ticket transport failure withholds qualification and retains the failing stage', async (t) => {
+  const f = fixture(t, 'parent-staple-network');
+  await assert.rejects(packageDistribution({repoRoot: f.root, env: f.env}), (error: Error) => {
+    const diagnostic = JSON.parse(distributionFailure(error).slice('[distribution] failed '.length));
+    assert.equal(diagnostic.stage, 'qualifySignedRuntime');
+    assert.equal(diagnostic.command, '/usr/bin/xcrun');
+    assert.equal(diagnostic.status, 68);
+    assert.match(diagnostic.stdout, /NSURLErrorDomain Code=-1005/);
+    return true;
+  });
+  const path = [...f.validationAttempts.keys()].find((path) => path.endsWith('/Parent.app'))!;
+  assert.equal(f.validationAttempts.get(path), 4);
+  f.assertUnqualified();
+});
+
 test('Gatekeeper child refusal keeps spctl status and assessment in the stage diagnostic', async (t) => {
   const f = fixture(t, 'gatekeeper-status');
   await assert.rejects(packageDistribution({repoRoot: f.root, env: f.env}), (error: Error) => {

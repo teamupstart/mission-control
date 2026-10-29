@@ -186,6 +186,40 @@ final signed archive verification remain that run's obligations. No protected de
 approved, rejected or rerun, no release was published, and no credential, publisher policy,
 environment protection or immutable-asset rule was changed.
 
+## Apple ticket validation connection loss (2026-10-29 UTC)
+
+[Run 40788261287, package job 123166921765](https://github.com/teamupstart/mission-control/actions/runs/40788261287/job/123166921765)
+at `40d47a45d0c9872ba45b520257d6750d5c04e45f` completed signing, received Accepted for
+app notarization submission `3f71dbd3-082c-495d-9307-c18fd5ddeea7`, and passed the first
+`verifyDistributionApp`. It then failed in `qualifySignedRuntime` while validating
+`Parent.app`: `stapler validate` returned 68 with `NSURLErrorDomain Code=-1005` from
+Apple's CloudKit ticket lookup. This is a lost network connection, not evidence of a bad
+signing identity or a rejected notarization. Apple documents that meaning in
+[QA1941](https://developer.apple.com/library/archive/qa/qa1941/_index.html).
+
+The shared app/DMG ticket validator now repeats this specific transport failure at most
+three times, after 1, 2 and 4 seconds. Each native invocation retains its 60-second timeout.
+Validation must actually succeed before qualification continues. Missing, invalid or revoked
+tickets, unknown failures, TLS errors and process failures remain immediate refusals; a
+persistent connection loss also fails closed. Retry diagnostics contain only the operation,
+attempt, status and delay; exhausted failures retain the existing redacted stage diagnostic.
+Copied runtimes, archive verification and retained-asset publication all use this boundary.
+No app is re-signed, re-stapled or re-submitted by a validation retry.
+
+Focused fixture tests reproduce the reported failure, recovery for app and DMG validation,
+the retry limit and continued refusal of unqualified publication inputs. They do not prove
+Apple service availability or a completed signed runtime journey. The linked run never reached
+DMG creation, final archive qualification or publication.
+
+For recovery, use the next eligible protected Signed distribution run containing the fix
+and its normal `desktop-distribution` approval. Re-running the failed job at its old SHA can
+recover if the network is healthy, but does not pick up this repair. If the bounded retries
+also exhaust, retain the diagnostic and investigate connectivity from the runner to
+`api.apple-cloudkit.com` before retrying through the existing release procedure. This error
+alone does not call for rotating credentials. Do not bypass ticket validation, strip
+quarantine or replace already published immutable assets. A successful protected run is
+still required to establish real signed-release qualification.
+
 ## App-name transition observation (2026-10-27 UTC)
 
 The rename task rechecked PR #1214: it remains OPEN, draft, and DO NOT MERGE at

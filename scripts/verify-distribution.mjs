@@ -8,19 +8,43 @@ import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
-import { distributionToolError } from './distribution-diagnostics.mjs';
+import { distributionDiagnostic, distributionToolError } from './distribution-diagnostics.mjs';
 import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
 
+function runMacTool(command, args) {
+  return spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
+}
+
 function macTool(command, args) {
-  const result = spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
+  const result = runMacTool(command, args);
   if (result.error || result.status !== 0) throw distributionToolError(command, result);
   return {stdout: result.stdout.trim(), stderr: result.stderr};
+}
+
+export async function validateDistributionTicket(path, {
+  run = runMacTool, wait = (ms) => new Promise((done) => setTimeout(done, ms)), log = console.log,
+} = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const result = run('/usr/bin/xcrun', ['stapler', 'validate', path]);
+    if (!result.error && !result.signal && result.status === 0) return;
+    // validate still contacts CloudKit even after stapling succeeded. Retry only
+    // the observed dropped-connection failure, never a ticket/trust refusal.
+    const connectionLost = result.status === 68 && !result.error && !result.signal
+      && /\bNSURLErrorDomain Code=-1005\b/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+    if (!connectionLost || attempt === 3) throw distributionToolError('/usr/bin/xcrun', result);
+    const retryInMs = 1000 * 2 ** attempt;
+    // No raw tool output or argv in retry logs; the final failure goes through
+    // the existing bounded, redacted stage diagnostic.
+    log(`[distribution] ${distributionDiagnostic({command: 'stapler', operation: 'validate',
+      status: result.status, attempt: attempt + 1, retryInMs, reason: 'Apple ticket service connection lost'})}`);
+    await wait(retryInMs);
+  }
 }
 
 export async function verifyDistributionApp(app, metadata, policy) {
   assertBuildMetadata(metadata);
   verifyBinaryPublisher(app, policy);
-  macTool('/usr/bin/xcrun', ['stapler', 'validate', app]);
+  await validateDistributionTicket(app);
   const plist = join(app, 'Contents/Info.plist');
   for (const [key, value] of Object.entries({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: APP_EXECUTABLE_NAME,
     CFBundleName: binaryBundleName(metadata).slice(0, -4),
@@ -43,9 +67,9 @@ export async function verifyDistributionApp(app, metadata, policy) {
   assert.equal(fuses[FuseV1Options.OnlyLoadAppFromAsar], 48, 'Plain-file satellites and helpers require asar disabled');
 }
 
-export function verifyDistributionDmg(dmg, policy) {
+export async function verifyDistributionDmg(dmg, policy) {
   macTool('/usr/bin/codesign', ['--verify', '--strict', '-R', imagePublisherRequirement(policy.teamId), dmg]);
-  macTool('/usr/bin/xcrun', ['stapler', 'validate', dmg]);
+  await validateDistributionTicket(dmg);
   const assessment = macTool('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg]);
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);
 }

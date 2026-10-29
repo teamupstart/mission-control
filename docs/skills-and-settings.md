@@ -521,10 +521,14 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
   Commands** is on, the double-dagger footnote names a new repo as soon as it is added. The
   add waits until Foreman, Workflows and GitHub Inspector have all answered, and says which it
-  is waiting for, so a new repo never lands with only some of its defaults. If none of the
-  three grants can be written, for example while the daemon is unreachable, the
-  repo is remembered as an ungranted row per machine so it survives a reload, and its cells
-  can be granted later.
+  is waiting for, so an add is never made while one of them is still loading.
+- **A failed write is reported, not hidden.** The three grants are separate writes, so one
+  can fail while the others land. The new row then holds only the grants that landed, and
+  the pane names the ones that did not so you can click their cells to retry. If none of the
+  three can be written, the repo is kept as an ungranted row on this machine, which survives
+  a reload until its cells are granted. If that fallback cannot be saved either, no row is
+  created: the pane says the add was lost and keeps your picks and typed path, so adding
+  again is one click.
 - **Repository labels use directory names.** Read-only repository labels normally show only
   the final directory name; hover the label to see its complete path. If a Trust warning names
   two repositories with the same directory name, it shows their full paths in the warning so

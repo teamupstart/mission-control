@@ -43,11 +43,34 @@ test("the development dashboard boots through its diagnostic entry", async ({ pa
   }
 });
 
+// The reveal is a delayed CSS animation, so `animationstart` fires exactly when the hint paints.
+function recordStartupHint() {
+  addEventListener("animationstart", (event) => {
+    if (event.animationName === "startup-pending-reveal") (window as { startupHintShown?: boolean }).startupHintShown = true;
+  }, true);
+}
+const startupHintShown = () => (window as { startupHintShown?: boolean }).startupHintShown === true;
+
 test("a blocked entry script leaves actionable HTML instead of an empty root", async ({ page, daemon }) => {
+  await page.addInitScript(recordStartupHint);
   await page.route("**/assets/app-*.js", (route) => route.abort());
   await page.goto(daemon.baseURL);
-  await expect(page.getByRole("heading", { name: "Loading Mission Control" })).toBeVisible();
+  const heading = page.getByRole("heading", { name: "Loading Mission Control" });
+  // Held back for two seconds so a start that is merely in progress shows nothing.
+  expect(await heading.isVisible()).toBe(false);
+  await expect(heading).toBeVisible();
   await expect(page.getByRole("status")).toContainText("Console and Network");
+  expect(await page.evaluate(startupHintShown)).toBe(true);
+});
+
+test("a healthy load never paints the troubleshooting hint", async ({ page, daemon }) => {
+  await page.addInitScript(recordStartupHint);
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  // Past the reveal delay: had the placeholder survived this long, the animation would have started.
+  await page.waitForFunction(() => performance.now() > 2_500);
+  expect(await page.evaluate(startupHintShown)).toBe(false);
+  await expect(page.getByRole("heading", { name: "Loading Mission Control" })).toHaveCount(0);
 });
 
 test("a failed application chunk displays a startup diagnostic", async ({ page, daemon }) => {

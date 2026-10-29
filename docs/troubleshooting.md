@@ -85,7 +85,8 @@ normal Mission Control state. Do not dispatch real agents just to verify page re
 
 Open Chrome DevTools before reloading and retain the first Console error plus the failed
 Network request's URL, status and Content-Type. Do not share session payloads, tokens or
-unredacted logs. The HTML now retains loading instructions if the entry script never runs;
+unredacted logs. The HTML now reveals loading instructions if the dashboard has not replaced
+them within two seconds, including when the entry script never runs;
 a failed application import or uncaught React error replaces an empty root with recovery
 instructions. Details stay in Console, not on the page.
 

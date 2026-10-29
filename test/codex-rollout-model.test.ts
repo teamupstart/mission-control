@@ -106,6 +106,31 @@ test("an in-place rewrite with unchanged size invalidates the cached model", (t)
   assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-sol");
 });
 
+test("the latest turn is confirmed only while its record boundary fits within the 16 MiB scan ceiling", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-scan-boundary-"));
+  t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
+  const scanBytes = 16 * 1024 * 1024;
+  const prefix = turn("gpt-5.6-sol", "medium", "old") + output;
+  const latest = turn("gpt-6.1-sol", "high", "new");
+  const emptyOutput = JSON.stringify({ type: "response_item", payload: { text: "" } }) + "\n";
+  for (const offset of [-1, 0, 1]) {
+    const path = join(dir, `rollout-${offset}.jsonl`);
+    // Include the preceding newline in the budget: without it, even valid JSON
+    // at the window's first byte cannot prove that it starts a complete record.
+    const padding = scanBytes + offset - Buffer.byteLength("\n" + latest + emptyOutput + tokens);
+    const paddedOutput = JSON.stringify({ type: "response_item", payload: { text: "x".repeat(padding) } }) + "\n";
+    writeFileSync(path, prefix + latest + paddedOutput + tokens);
+    const boundaryDistance = statSync(path).size - (Buffer.byteLength(prefix) - 1);
+    assert.equal(boundaryDistance, scanBytes + offset, "fixture places the leading newline at the exact byte boundary");
+    const meta = readRolloutMeta(path);
+    assert.equal(meta?.modelId, offset <= 0 ? "gpt-6.1-sol" : null, `record boundary ${boundaryDistance} bytes from EOF`);
+    assert.equal(meta?.thinkingLevel, offset <= 0 ? "high" : null);
+    assert.equal(meta?.effortRevision, offset <= 0 ? "new" : null);
+    assert.equal(meta?.contextPct, 10, "tail counters remain readable even when the model is unconfirmed");
+    t.diagnostic(`Record boundary ${boundaryDistance} bytes from EOF: ${meta?.modelId ?? "unconfirmed"}`);
+  }
+});
+
 test("an unobserved gap beyond the scan budget stays unknown without rescanning history on each append", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "codex-bounded-model-"));
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });

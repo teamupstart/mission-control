@@ -1695,6 +1695,37 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
   await handle.stop();
 });
 
+test("an SDK launch passes no otel config, so a managed Codex policy keeps routing telemetry", async () => {
+  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
+    const server = new FakeServer(defaultReplies());
+    let args: readonly string[] = [];
+    const spec = codexSdkSpec({
+      connect: async (a) => {
+        args = a;
+        return server;
+      },
+    });
+    const handle = await spec.launch({
+      cwd: "/work/repo",
+      stateHome: "/tmp/mission-sdk-state",
+      prompt: "",
+      model: null,
+      effort: null,
+      permissionMode: null,
+      mcp,
+      extraDirs: ["/work/other"],
+      standingInstructions: "",
+      standingInstructionsPrompt: "",
+      resume: null,
+    });
+    // A launch-scoped `-c otel.*` override would beat the managed config.toml for this
+    // process, so no `-c` value may name the otel table at all.
+    const overrides = args.filter((_arg, i) => args[i - 1] === "-c");
+    assert.deepEqual(overrides.filter((value) => /^\s*otel\b/.test(value)), []);
+    await handle.stop();
+  }
+});
+
 // ---- the pure projections, on their own ------------------------------------------------
 
 test("an approval prompt leads with the reason and shows what is being run", () => {

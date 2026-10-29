@@ -1389,3 +1389,29 @@ test("the adapter refuses a duplicated question too, against its own request", a
     /answered twice/,
   );
 });
+
+// ---- managed telemetry stays the agent's own --------------------------------------------
+
+/**
+ * Anything that would change where Claude Code's OpenTelemetry goes: exporter routing,
+ * protocol, headers, the enable switch and the capture switches. On a managed Mac the
+ * organization's policy routes these; Mission Control must never contribute one.
+ */
+const CLAUDE_OTEL_ROUTING = /\bOTEL_(?:EXPORTER_|LOGS_|METRICS_|TRACES_|LOG_)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
+
+test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async () => {
+  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
+    const { deps, started } = fakeDeps();
+    // The fake hands the driver a base env with no telemetry key, so any match below was
+    // added by the launch itself: in `env`, in inline `settings`, or anywhere else.
+    await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
+    const { options } = await started;
+    const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+    assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+  }
+});
+
+test("the SDK subprocess env adds no OpenTelemetry routing of its own", () => {
+  const env = sdkSubprocessEnv({ PATH: "/bin", HOME: "/home/op" }, "/wt/one", "/tmp/mission-sdk-state");
+  assert.deepEqual(Object.keys(env).filter((name) => CLAUDE_OTEL_ROUTING.test(name)), []);
+});

@@ -1197,7 +1197,7 @@ export class Registry extends EventEmitter {
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
-      workflowRunSummaries: [...this.workflowRuns.values()],
+      workflowRunSummaries: this.workflowRunSummaries(),
       workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
@@ -1966,6 +1966,11 @@ export class Registry extends EventEmitter {
 
   initializeWorkflowRuns(runs: WorkflowRunSummary[]): void {
     this.workflowRuns = new Map(runs.map((run) => [run.id, run]));
+  }
+
+  /** Live workflow ownership without computing the full dashboard snapshot. */
+  workflowRunSummaries(): WorkflowRunSummary[] {
+    return [...this.workflowRuns.values()];
   }
 
   upsertWorkflowRun(run: WorkflowRunSummary): void {
@@ -8649,10 +8654,10 @@ export class Registry extends EventEmitter {
     if (!parsed) return null;
     const row = this.inspections.get(parsed.key);
     if (!row) return null;
+    const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
+    const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
-      codeRabbit: codeRabbitSummary(row.key, session && resolvedSessionIntent(this.getGoal(session.id))?.episodeKey
-        ? { noteKey: noteKeyFor(session), episodeKey: resolvedSessionIntent(this.getGoal(session.id))!.episodeKey }
-        : undefined),
+      codeRabbit: codeRabbitSummary(row.key, owner),
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,

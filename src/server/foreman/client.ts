@@ -1291,6 +1291,11 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as WorkItem;
   }
 
+  /** Shipping owns this source switch independently of Foreman's review settings. */
+  async shippingConfig(): Promise<import("@shared/protocol.ts").ShippingConfig> {
+    return get("/api/shipping/config");
+  }
+
   /**
    * Deliver a whole prompt as ONE bracketed-paste submission. Throws on failure,
    * which is what lets the caller stamp `awaiting_pickup` only after it resolves.
@@ -1300,10 +1305,6 @@ export class ForemanClient implements ForemanActions {
    * ever safe when the daemon positively said `pasted: false`; a request that never
    * completed tells us nothing about what the daemon did with it.
    */
-  async shippingConfig(): Promise<import("@shared/protocol.ts").ShippingConfig> {
-    return get("/api/shipping/config");
-  }
-
   async inject(id: string, text: string, codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup): Promise<void> {
     let res: Response;
     try {

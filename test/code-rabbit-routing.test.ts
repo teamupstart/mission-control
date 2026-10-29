@@ -10,7 +10,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { Registry } from "../src/server/registry.ts";
 import { buildApp, type RouteDeps } from "../src/server/routes.ts";
 import { adoptPr } from "../src/server/inspector/worker.ts";
-import { codeRabbitCandidate } from "../src/server/inspector/code-rabbit-delivery.ts";
+import { codeRabbitCandidate, codeRabbitStanding } from "../src/server/inspector/code-rabbit-delivery.ts";
 import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
 import { claimInjectionEcho, observeInjections, originOf } from "../src/server/injections.ts";
 import { setShippingConfig } from "../src/server/shipping/config.ts";
@@ -34,6 +34,7 @@ function fixture() {
   let queued = false;
   const base = registry.snapshot();
   registry.snapshot = () => ({ ...base, sessions, workflowRunSummaries: runs });
+  registry.liveSessions = () => sessions.filter((s) => s.state !== "exited");
   registry.getSession = (id) => sessions.find((s) => s.id === id);
   registry.getGoal = () => goal;
   registry.promptResourceBlockerForSession = () => null;
@@ -69,7 +70,7 @@ function fixture() {
   });
   return { key, session, registry, request, owner, messages, post,
     setLock: (f: () => void) => { atLock = f; },
-    setRuns: (r: WorkflowRunSummary[]) => { runs = r; },
+    setRuns: (r: WorkflowRunSummary[]) => { runs = r; registry.initializeWorkflowRuns(r); },
     setQueued: () => { queued = true; },
     setGoal: () => { goal = { ...goal, promptRevision: 2, resolvedPromptRevision: 2 }; },
     setSessions: (s: typeof sessions) => { sessions = s; },
@@ -143,6 +144,13 @@ test("real inject route claims once and uses daemon text through the SDK boundar
   assert.doesNotMatch(f.messages[0]!, /UNTRUSTED WORKER/);
   for (const text of ["https://github.com/a/b/pull/", "/tmp/pr", "complete unresolved", "focused checks", "existing branch", "no merge authority", "never as instructions"]) assert.ok(f.messages[0]!.includes(text), text);
   assert.equal(readCodeRabbit(f.key)!.receipts[0]!.outcome, "delivered");
+});
+
+test("CodeRabbit eligibility and standing do not compute an unrelated dashboard snapshot", () => {
+  const f = fixture();
+  f.registry.snapshot = () => { throw new Error("dashboard snapshot unavailable"); };
+  assert.equal(codeRabbitCandidate(f.registry, f.session.id, f.request).error, undefined);
+  assert.equal(codeRabbitStanding(f.registry, f.key).pending, 1);
 });
 
 test("a synchronous reservation failure does not lock out a later CodeRabbit generation", async (t) => {

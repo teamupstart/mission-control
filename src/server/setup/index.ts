@@ -42,6 +42,7 @@ import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
+import { expandPiAgentDir, piOtelPackageStatus } from "./pi-otel.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -316,6 +317,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
   "node-runtime": nodeRuntimeStatus,
+  "pi-otel": (deps) => piOtelPackageStatus(deps.environment, deps.piAgentDir),
 };
 
 function reasonOf(error: unknown): string {
@@ -356,6 +358,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    piAgentDir: expandPiAgentDir(process.env.PI_CODING_AGENT_DIR, environment.homeDir),
     runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },

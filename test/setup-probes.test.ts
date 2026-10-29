@@ -10,6 +10,7 @@ import {
   CMUX_APP_REMEDY,
   CMUX_SOCKET_CONTROL_REMEDY,
   HERDR_SERVER_REMEDY,
+  PI_OTEL_PACKAGE,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
@@ -38,7 +39,16 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
   return {
     environment: {
       homeDir: "/home/operator",
-      readText: async () => ({ ok: false, missing: true, reason: "missing" }),
+      readText: async (path) => {
+        const packageDir = `/home/operator/.pi/agent/npm/node_modules/${PI_OTEL_PACKAGE.name}`;
+        const files: Record<string, string> = {
+          "/home/operator/.pi/agent/settings.json": JSON.stringify({ packages: [`npm:${PI_OTEL_PACKAGE.name}`] }),
+          [`${packageDir}/package.json`]: JSON.stringify({ name: PI_OTEL_PACKAGE.name, version: PI_OTEL_PACKAGE.version, pi: { extensions: [PI_OTEL_PACKAGE.entry] } }),
+          [`${packageDir}/${PI_OTEL_PACKAGE.entry}`]: "export default function () {}",
+        };
+        return path in files ? { ok: true, text: files[path]!, truncated: false }
+          : { ok: false, missing: true, reason: "missing" };
+      },
       subdirectories: async () => [],
     },
     agentBin: (agent) => `/tools/${agent}`,

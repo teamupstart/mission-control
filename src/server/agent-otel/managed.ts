@@ -320,11 +320,13 @@ async function readCodex(deps: AgentOtelManagedDeps): Promise<ManagedAgentOtel |
     const info = await deps.stat(location.path);
     if (info === "missing") continue;
     if (info === "unreadable") return null;
-    const encoded = await readPlistString(location.path, "config_toml_base64", { run: deps.run });
-    // A profile without a string config configures something else about Codex; the next
-    // location may still carry one.
-    if (encoded === null) continue;
-    const bytes = Buffer.from(encoded.replace(/\s+/g, ""), "base64");
+    const read = await readPlistString(location.path, "config_toml_base64", { run: deps.run });
+    // A profile without the key configures something else about Codex; the next location may
+    // still carry a config. One that could not be read may be the policy that wins, so the
+    // answer is "no managed policy" rather than whatever a lower location says.
+    if (read.kind === "absent") continue;
+    if (read.kind === "unreadable") return null;
+    const bytes = Buffer.from(read.value.replace(/\s+/g, ""), "base64");
     if (bytes.length === 0 || bytes.length > MAX_CODEX_TOML_BYTES) return null;
     const values = parseCodexOtelToml(bytes.toString("utf8"));
     if (values === null) return null;

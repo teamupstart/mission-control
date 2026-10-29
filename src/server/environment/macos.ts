@@ -103,19 +103,28 @@ export async function readPlistValue(
   }
 }
 
+/** One string preference read: its value, the key not being there, or anything else. */
+export type PlistStringRead =
+  | { kind: "string"; value: string }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
 /**
- * Read one string value out of a property list, or null when it is absent, not a string, or
- * unreadable.
+ * Read one string value out of a property list.
  *
  * Not `readPlistValue`: `plutil -extract <key> json` refuses a scalar ("Invalid object in plist
  * for JSON format") and only converts dictionaries and arrays. `raw -expect string` prints the
  * string itself, with one trailing newline, and refuses every other type.
+ *
+ * `absent` only for plutil's own "No value at that key path", so a caller walking a precedence
+ * chain can tell "this profile says nothing" from "this profile could not be read". Any other
+ * failure, a timeout, or a value of another type is `unreadable`.
  */
 export async function readPlistString(
   path: string,
   keyPath: string,
   deps: MacosReaderDeps,
-): Promise<string | null> {
+): Promise<PlistStringRead> {
   let result;
   try {
     result = await deps.run("plutil", ["-extract", keyPath, "raw", "-expect", "string", "-o", "-", path], {
@@ -123,10 +132,13 @@ export async function readPlistString(
       maxBuffer: PLIST_MAX_BUFFER,
     });
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
-  if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
-  return result.stdout.replace(/\n$/, "");
+  if (result.outcomeUnknown || result.overflowed) return { kind: "unreadable" };
+  if (result.code !== 0) {
+    return result.stderr.includes("No value at that key path") ? { kind: "absent" } : { kind: "unreadable" };
+  }
+  return { kind: "string", value: result.stdout.replace(/\n$/, "") };
 }
 
 /** `word` alone, or `word (qualifier)`, case-insensitively, and nothing else. */

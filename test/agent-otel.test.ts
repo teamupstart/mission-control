@@ -177,6 +177,9 @@ test("an [otel] line the Codex reader cannot read fails open to no policy", () =
   assert.deepEqual(parseCodexOtelToml(`[rules]\nallow = [ "a", { b = 1 } ]\n`)?.size, 0);
 });
 
+/** A plist value whose read fails for a reason other than the key being absent. */
+const READ_FAILS = Symbol("read fails");
+
 /** Deps over an in-memory set of plist files, with every `plutil` call counted. */
 function fakeDeps(
   files: Record<string, unknown>,
@@ -198,7 +201,10 @@ function fakeDeps(
       const key = args[1]!;
       const format = args[2];
       const value = (files[path] as Record<string, unknown> | undefined)?.[key];
-      if (value === undefined) return stubRun({ stdout: "", stderr: "no value", code: 1 });
+      if (value === undefined) {
+        return stubRun({ stdout: "", stderr: `${path}: Could not extract value, error: No value at that key path or invalid key path: ${key}`, code: 1 });
+      }
+      if (value === READ_FAILS) return stubRun({ stdout: "", stderr: `${path}: Permission denied`, code: 1 });
       if (format === "raw") {
         return args[3] === "-expect" && args[4] === "string" && typeof value !== "string"
           ? stubRun({ stdout: "", stderr: "unexpected type", code: 1 })
@@ -226,6 +232,17 @@ test("both managed profiles are read on macOS", async () => {
   assert.equal(state.codex?.endpoints.traces, `${GATEWAY}/v1/traces`);
   // A header in the managed env is never read out of it.
   assert.doesNotMatch(JSON.stringify(state), /secret|Authorization/);
+});
+
+test("a failed read of the per-user Codex profile does not fall through to the machine one", async () => {
+  const USER_CODEX = "/fx/Library/Managed Preferences/ada/com.openai.codex.plist";
+  const machine = { config_toml_base64: Buffer.from(CODEX_MDM_TOML).toString("base64") };
+  // The per-user profile without the key configures something else: the machine one applies.
+  const absent = fakeDeps({ [USER_CODEX]: { other: "x" }, [CODEX_PLIST]: machine });
+  assert.equal((await readManagedAgentOtel(absent.deps)).codex?.source, "mdm");
+  // A per-user profile that cannot be read might be the policy that wins; fail open instead.
+  const failed = fakeDeps({ [USER_CODEX]: { config_toml_base64: READ_FAILS }, [CODEX_PLIST]: machine });
+  assert.equal((await readManagedAgentOtel(failed.deps)).codex, null);
 });
 
 test("off macOS the reader answers none without spawning plutil", async () => {

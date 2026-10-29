@@ -88,10 +88,19 @@ async function openSettings(page: Page, category: string, heading: RegExp): Prom
   await expect(page.getByText(heading).first()).toBeVisible();
 }
 
-/** Put `repo` in the matrix by typing its path into the add row. Grants nothing. */
+/**
+ * Put `repo` in the matrix as an ungranted row. Grants nothing.
+ *
+ * Through the staged list rather than the add pane, because an add now grants Foreman,
+ * Workflows and the Inspector straight away, and these cases need the Workflows cell OFF so
+ * the click under test is the one that writes it. The staged list is not polled, so the page
+ * reloads to read it.
+ */
 async function stageRepo(page: Page, repo: string): Promise<void> {
-  await page.getByRole("combobox", { name: /search repos or type a path/i }).fill(repo);
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const base = page.url().split("#")[0];
+  const saved = await page.request.put(`${base}api/ui/config`, { data: { trustStaged: [repo] } });
+  expect(saved.ok(), await saved.text()).toBe(true);
+  await page.reload();
   await expect(
     page.getByRole("table", { name: "Repository trust grants" }).locator(".trust-repo-path"),
   ).toHaveText(basename(repo));
@@ -148,8 +157,7 @@ test("granting the Workflows cell writes the daemon's workflow allowlist", async
   await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
   await stageRepo(dashboard, daemon.repo);
 
-  // Staged and ungranted: the cell offers to grant, which is the "adding is configuration,
-  // enabling is consent" rule stated as a control rather than as prose.
+  // Staged and ungranted: the cell offers to grant, and nothing has been written yet.
   const cell = dashboard.getByRole("button", {
     name: `Grant: Workflows act for ${daemon.repo}`,
   });

@@ -8,14 +8,14 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 const EVIDENCE = artifactsDir("trust-matrix-scroll");
 
 /**
- * A Trust page full of repositories keeps its add picker usable.
+ * A Trust page full of repositories keeps adding on screen.
  *
  * The matrix used to grow one row per repository with no ceiling, which pushed the add row to
- * the bottom of the settings pane. The picker's list opens downward and is capped to the room
- * left below its input, so at the bottom of the pane it opened a few pixels tall and showed no
- * readable option at all. Two things fix it and both are asserted here: the matrix scrolls on
- * its own past a height cap, so the add row stays near the table's top; and the picker opens
- * upward when the room below cannot hold it.
+ * the bottom of the settings pane, where its dropdown had no room to open. The page is now two
+ * panes side by side in a split of fixed height, and both claims here are about that: the
+ * matrix scrolls inside its own pane under a header that stays put, and the add pane - its
+ * search, its list and its Add button - is fully on screen without scrolling the settings
+ * pane at all, however many repositories are trusted.
  *
  * Driven in a browser because both claims are laid-out geometry against a real viewport.
  * Nothing here dispatches, so no agent binary runs and no model tokens are spent.
@@ -45,21 +45,7 @@ async function seedTrusted(page: Page, baseURL: string): Promise<void> {
   expect(saved.ok(), await saved.text()).toBe(true);
 }
 
-/** Scroll every scrollable ancestor of `selector` to its very end, as an operator would. */
-async function scrollAncestorsToEnd(
-  page: Page,
-  selector: string,
-): Promise<void> {
-  await page.evaluate((sel) => {
-    let el = document.querySelector(sel)?.parentElement ?? null;
-    while (el) {
-      if (el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight;
-      el = el.parentElement;
-    }
-  }, selector);
-}
-
-test("the matrix scrolls on its own and the add picker opens fully on screen", async ({
+test("the matrix scrolls on its own and the add pane stays fully on screen", async ({
   dashboard,
   daemon,
 }) => {
@@ -73,7 +59,7 @@ test("the matrix scrolls on its own and the add picker opens fully on screen", a
   await expect(table.locator(".trust-repo-path")).toHaveCount(TRUSTED.length);
 
   // The table holds its own scroll rather than stretching the pane: every row is still in
-  // it, but its box stops at the cap and the overflow is reachable by scrolling it.
+  // it, but its box stops at the pane and the overflow is reachable by scrolling it.
   const grid = await table.evaluate((el) => ({
     scrollHeight: el.scrollHeight,
     clientHeight: el.clientHeight,
@@ -82,7 +68,27 @@ test("the matrix scrolls on its own and the add picker opens fully on screen", a
   expect(grid.overflowY).toBe("auto");
   expect(grid.scrollHeight).toBeGreaterThan(grid.clientHeight);
 
-  // The header stays put while the rows scroll under it.
+  // With no scrolling anywhere, the whole add pane is on screen - the search it starts from
+  // and the button it ends at - beside a matrix forty rows long.
+  const addPane = dashboard.getByRole("group", { name: "Add repositories" });
+  await expect(addPane.getByRole("searchbox", { name: "Search repositories to add" }))
+    .toBeInViewport({ ratio: 1 });
+  await expect(addPane.getByRole("textbox", { name: "Repository path" }))
+    .toBeInViewport({ ratio: 1 });
+  await expect(addPane.getByRole("button", { name: /^Add/ })).toBeInViewport({ ratio: 1 });
+  const paneScroll = await dashboard.evaluate(() => {
+    let el = document.querySelector(".trust-split")?.parentElement ?? null;
+    let scrolled = 0;
+    while (el) {
+      scrolled += el.scrollTop;
+      el = el.parentElement;
+    }
+    return scrolled + window.scrollY;
+  });
+  expect(paneScroll).toBe(0);
+  await shoot(dashboard, "trust-many-repos-add-on-screen");
+
+  // The header stays put while the rows scroll under it, and the last row is reachable.
   const header = table.getByText("Repository", { exact: true });
   const headerTop = (await header.boundingBox())!.y;
   await table.evaluate((el) => {
@@ -93,45 +99,7 @@ test("the matrix scrolls on its own and the add picker opens fully on screen", a
     name: `Remove every grant for ${TRUSTED[TRUSTED.length - 1]}`,
   });
   await expect(last).toBeInViewport();
-
-  // The operator's position from the report: the settings pane scrolled to its end, the add
-  // row as low as it will go, and the picker opened by typing.
-  await scrollAncestorsToEnd(dashboard, ".trust-add");
-  const input = dashboard.getByRole("combobox", {
-    name: /search repos or type a path/i,
-  });
-  await input.click();
-  const listbox = dashboard.getByRole("listbox");
-  await expect(listbox).toBeVisible();
-  const options = listbox.getByRole("option");
-  expect(await options.count()).toBeGreaterThan(1);
-
-  // Every pixel of the list is inside the viewport, and it is tall enough to read options in
-  // rather than a sliver: either it shows every option it holds, or it reaches its full cap.
-  const box = (await listbox.boundingBox())!;
-  const viewport = dashboard.viewportSize()!;
-  expect(box.y).toBeGreaterThanOrEqual(0);
-  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
-  const fit = await listbox.evaluate((el) => ({
-    scrollHeight: el.scrollHeight,
-    clientHeight: el.clientHeight,
-  }));
-  expect(fit.clientHeight >= fit.scrollHeight || box.height >= 200).toBe(true);
-  await expect(options.first()).toBeInViewport({ ratio: 1 });
-
-  // It never covers the field being typed into.
-  const field = (await input.boundingBox())!;
-  const overlaps =
-    box.y < field.y + field.height && box.y + box.height > field.y;
-  expect(overlaps).toBe(false);
-
-  await shoot(dashboard, "trust-picker-open-with-many-repos");
-
-  // And it still works: picking a row writes it into the field.
-  const name = (await options
-    .first()
-    .locator(".combobox-option-name")
-    .textContent())!;
-  await options.first().click();
-  await expect(input).toHaveValue(new RegExp(`/${name}$`));
+  // Scrolling the matrix moved nothing else: the add button is exactly where it was.
+  await expect(addPane.getByRole("button", { name: /^Add/ })).toBeInViewport({ ratio: 1 });
+  await shoot(dashboard, "trust-many-repos-scrolled");
 });

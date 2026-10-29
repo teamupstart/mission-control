@@ -140,8 +140,8 @@ operator to re-check.
 The **Set up this machine** guided tour shows you how to reach this panel and what to do with
 it, then continues into **Trust**, in seven stops: the ⚙ gear, **Setup** in the Settings rail,
 the dependency list where you install the tools you will use, **Re-check** to confirm they
-took, then **Trust** in the rail, its repository-by-grant matrix, and the row that adds a
-repository to it. It runs once automatically on a fresh profile, and can be started again from
+took, then **Trust** in the rail, its repository-by-grant matrix, and the pane that adds
+repositories to it. It runs once automatically on a fresh profile, and can be started again from
 **Help & tours** at the bottom of the Settings rail or from **Start Set up this machine tour**
 in the command palette. It executes no remedy and clicks no grant, and it leaves you on Trust
 rather than returning you to the page you started from. See

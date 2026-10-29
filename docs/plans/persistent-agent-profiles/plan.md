@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 4, repaired after plan validation). Implementation is split into seven phases in
+Status: decisions recorded (revision 5, repaired after plan validation). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -178,7 +178,10 @@ stateDiagram-v2
    usage. A profile whose model cannot be priced cannot keep a spend cap. Save and launch refuse
    it with that reason, and the operator either picks a priced model or clears the cap themselves.
 5. **Durable**: `resident_runs` holds loop state. After a restart the loop re-arms once SDK
-   restore settles, and a missed wake fires once.
+   restore settles, and a missed wake fires once. Each wake is claimed in the database before it
+   is sent, following the repository's claim-before-inject contract. After a crash, a wake with
+   evidence that it landed continues normally. A wake without that evidence is never resent; the
+   run pauses and asks for attention.
 6. **Controls**: Pause, Resume, Run now and Restart on new profile on the card menu, Console band,
    dock and page.
 

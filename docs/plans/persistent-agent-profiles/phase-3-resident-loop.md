@@ -37,6 +37,11 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
   `PendingTurnManager` (`src/server/pending-turns.ts`) is the subscriber shape to copy.
 - Restart order: SDK restore settles before discovery; a loop must re-arm only after it.
   `RESTART_CONTINUATION_PROMPT` already resumes a turn that was in flight.
+- Delivery precedent: "Pre-PR ship recovery: claim before inject" in
+  `docs/agent-guides/change-contracts.md`. A delivery is claimed durably before it is sent. Only
+  a positively confirmed non-delivery releases it; a success and an unknown outcome stay spent,
+  because retrying uncertainty is a duplicate-send bug. `src/server/delegated-turns.ts` records
+  the target transcript's byte size at send and finds the landed turn after that offset.
 - `TurnOrigin` (`src/shared/types.ts`) labels transcript turns.
 - New MCP tools need `MISSION_MCP_TOOLS` and `KIND_MISSION_MCP_TOOLS`
   (`src/server/mission-mcp.ts`), argument schemas in both `src/shared/protocol.ts` and
@@ -54,27 +59,59 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    the guardrail defaults applied to new profiles and to old revisions without the section. A
    spend cap on a harness and model that step 7 cannot price is refused at save, and again at
    launch, naming the reason. The operator either chooses a priced model or clears the cap.
-2. **Persistence**: `addColumn` on `resident_runs` for `loop_state` (`working`, `waiting`,
-   `compacting`, `paused`), `iteration`, `next_wake_at`, `consumed_generation`, `pause_reason`,
-   `wake_reason`; and a new append-only `resident_iterations` table (`run_id`, `seq`, `trigger`
-   of `launch`, `loop` or `run_now`, `sent_at`) indexed by (`run_id`, `sent_at`) and pruned
-   beyond seven days. Upgrade test from a Phase 1 database.
+2. **Persistence**:
+   - `addColumn` on `resident_runs` for `loop_state` (`working`, `waiting`, `compacting`,
+     `paused`), `iteration`, `next_wake_at`, `consumed_generation`, `pause_reason`,
+     `wake_reason`, `delivery_state` (`idle`, `sending`), `delivery_seq` and
+     `delivery_offset`.
+   - A new append-only `resident_iterations` table (`run_id`, `seq`, `trigger` of `launch`,
+     `loop` or `run_now`, `delivery` of `claimed` or `sent`, `sent_at`) indexed by
+     (`run_id`, `sent_at`).
+   - **`iteration` is the durable cumulative counter.** It lives on `resident_runs` and is never
+     recomputed from rows. Each iteration writes a row whose `seq` equals the new `iteration`,
+     so `iteration` always equals the highest `seq` ever written. Rows are pruned beyond seven
+     days. They exist only to count the rolling 24-hour window, and pruning older rows never
+     changes that count or the counter.
+   - Upgrade test from a Phase 1 database.
 3. **ResidentLoop** in `src/server/residents/loop.ts`, constructed in `src/server/index.ts` after
    SDK restore settles. It reads the loop prompt, cadence, bounds, guardrails and compaction
    settings only from the run's pinned revision (`ResidentStore.revision`):
    - **The launch turn is iteration 1.** When `ResidentManager.launch` records a run, the loop
      initializes its state with `iteration` 1 and appends a `resident_iterations` row with
-     trigger `launch` and `sent_at` equal to the launch time, in the same write. A run already
-     live when this phase deploys is adopted the same way, at adoption time.
+     `seq` 1, trigger `launch`, delivery `sent` and `sent_at` equal to the launch time, in the
+     same write. A run already live when this phase deploys is adopted the same way, at
+     adoption time.
    - Subscribes to Registry session upserts. When a resident session's work-cycle generation
      advances past `consumed_generation` and the driver is idle, it consumes that generation and
      schedules `next_wake_at` in one write.
    - At wake: if the session is `needs-you`, pause with that reason; if a guardrail is reached,
-     pause with that reason; if `contextPct` is at or above the threshold, compact first; then
-     send the loop prompt with `sendWhenIdle` and origin `resident`, incrementing `iteration` and
-     appending a `resident_iterations` row (trigger `loop`, or `run_now` for **Run now**) in the
-     same write. Compaction turns and human turns are not iterations. `iteration` always equals
-     the run's row count, launch included.
+     pause with that reason; if `contextPct` is at or above the threshold, compact first. Then
+     deliver the loop prompt through the claim below. Compaction turns and human turns are not
+     iterations.
+   - **Claim before send.** One write claims the wake:
+     - it increments `iteration`;
+     - it appends a `resident_iterations` row with `seq` equal to the new `iteration`, trigger
+       `loop` (or `run_now` for **Run now**) and delivery `claimed`;
+     - it records the target transcript's byte size as `delivery_offset`;
+     - it sets `delivery_state` to `sending` and `delivery_seq` to that `seq`.
+     Only after that write commits is the loop prompt sent with `sendWhenIdle` and origin
+     `resident`. The prompt carries a hidden marker naming the run and `seq`. At most one wake
+     per run is ever `sending`.
+   - **Outcome.**
+     - The driver's positive acceptance marks the row `sent` and returns `delivery_state` to
+       `idle`, in one write.
+     - A positive refusal (the driver was not idle or rejected the turn before accepting it)
+       releases the claim in one write: the row is deleted and `iteration` goes back by one,
+       because nothing landed.
+     - Nothing else releases a claim.
+   - **Crash reconciliation** runs once SDK restore settles, for every run still `sending`:
+     - **Evidence that the wake landed** marks the row `sent`, and the loop continues: the
+       `seq` marker in the transcript after `delivery_offset`, `turn_in_progress` set for the
+       session, or a work-cycle generation past `consumed_generation`.
+     - **Without that evidence the outcome is unknown, and an unknown wake is never resent.**
+       The row stays `claimed` and counts toward the cap. The run pauses with the reason "wake
+       delivery unconfirmed" and raises attention. **Resume** or **Run now** then claims the next
+       iteration.
    - A human turn (pending-turn delivery) cancels the pending wake; the next completed
      generation reschedules.
    - Restart: wakes that came due while the daemon was down fire once; paused runs stay paused.
@@ -128,8 +165,8 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    the selected profile.
    - Pause, Resume and Run now appear in the card menu, the band, the dock rows and each run row
      on that page.
-   - Restart on new profile appears on the band, the dock rows and the page when the run's
-     revision is older than the profile's.
+   - Restart on new profile appears in the card menu, the band, the dock rows and the page when
+     the run's revision is older than the profile's.
    - All four surfaces call the same run-control routes.
 10. **Documentation**: loop, compaction and guardrails in `docs/residents.md`; turn origin in
     `docs/sessions.md`; `ResidentLoop` ownership in `docs/agent-guides/architecture.md`.
@@ -139,8 +176,20 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 - Unit (`test/residents-loop.test.ts`) with injected clock and fake supervisor: one wake per
   generation, duplicate turn ends, human precedence, `needs-you` pause, compaction ordering,
   clamp of `schedule_next_iteration`, restart re-arm firing a missed wake once, and shutdown.
-- Iteration tests: a launch records iteration 1 with a `launch` row; each wake and **Run now**
-  adds exactly one row; compaction and human turns add none; `iteration` equals the row count.
+- Iteration tests:
+  - a launch records iteration 1 with a `launch` row of `seq` 1;
+  - each wake and **Run now** claims exactly one row whose `seq` equals the new `iteration`;
+  - compaction and human turns add none;
+  - after rows older than seven days are pruned, `iteration` is unchanged and still equals the
+    highest `seq` written, and the 24-hour count is unchanged.
+- Delivery crash tests with injected failures at each boundary:
+  - a crash after the claim commits and before the send is not resent: reconciliation finds no
+    evidence, the row stays `claimed`, and the run pauses with "wake delivery unconfirmed";
+  - a crash after the driver accepted and before the `sent` write is reconciled as delivered
+    from the transcript marker or `turn_in_progress`, without a second send;
+  - a positive refusal releases the claim, and the next wake reuses that `seq`;
+  - reconciliation is idempotent across repeated restarts, and no run ever has two wakes
+    `sending`.
 - Guardrail boundary tests:
   - an iteration sent exactly 24 hours before a wake no longer counts, and one sent 1 ms later
     does;
@@ -158,9 +207,9 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 - Harness tests against those fixtures, and against the regenerated bindings.
 - `npm run build` then `npm run smoke` (new MCP tool published).
 - Playwright `e2e/specs/residents-loop.spec.ts` with fake agents: a resident loops, shows next
-  wake, pauses at a cap and resumes. Pause, Resume and Run now are exercised from the card menu,
-  the Console band, the dock and the `#/residents` page. Restart on new profile appears on the
-  band, dock and page after an edit.
+  wake, pauses at a cap and resumes. Pause, Resume and Run now are exercised from each of the
+  card menu, the Console band, the dock and the `#/residents` page. After a profile edit, Restart
+  on new profile appears on all four surfaces and is exercised from each of them.
 - `npm run typecheck`, `npm run lint`, `npm run test:e2e`.
 
 ## Exit criteria
@@ -187,3 +236,9 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   - spend is verified for both harnesses, and unpriced models are refused rather than uncapped;
   - both compaction layers are probed on real installations, with an operator gate if either
     fails.
+- Repair round 3:
+  - `iteration` is a durable cumulative counter, separate from the pruned rows that serve the
+    24-hour cap;
+  - Restart on new profile is in the card menu and is verified on all four surfaces;
+  - wake delivery is claim-before-send, with crash reconciliation that never resends an
+    unknown outcome.

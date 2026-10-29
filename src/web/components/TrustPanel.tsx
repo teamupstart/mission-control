@@ -337,7 +337,7 @@ export function TrustPanel({
   async function add(): Promise<void> {
     const typed = pathDraft.trim();
     const chosen = candidates.filter((r) => picked.has(r));
-    if ((chosen.length === 0 && !typed) || adding) return;
+    if ((chosen.length === 0 && !typed) || adding || awaiting.length > 0) return;
     setAdding(true);
     setAddError(null);
     // Resolve + canonicalize server-side - picked repos as well as the typed path - so every
@@ -469,6 +469,16 @@ export function TrustPanel({
   const shownCandidates = filterRepos(candidates, pickQuery);
   const pickedCount = candidates.filter((r) => picked.has(r)).length;
   const addCount = pickedCount + (pathDraft.trim() ? 1 : 0);
+  // The subsystems whose default grant an add would have to skip right now. An add waits for
+  // every one of them to answer rather than writing what it can: a subsystem that has not
+  // loaded yet is not one that refused, and adding before it does would quietly hand a new
+  // repository two grants out of three - which is exactly what a quick add after opening the
+  // page used to do.
+  const awaiting = [
+    !foreman.config && "Foreman",
+    !workflows.config && "Workflows",
+    !inspector.config && "GitHub Inspector",
+  ].filter((x): x is string => Boolean(x));
   // The matrix pane's filter, by the same name-first rule as every repository picker.
   const keepRows = new Set(filterRepos(rows.map((r) => r.repo), trustedQuery));
   const shownRows = rows.filter((r) => keepRows.has(r.repo));
@@ -613,7 +623,7 @@ export function TrustPanel({
               <button
                 type="button"
                 className="btn btn-primary trust-add-btn"
-                disabled={addCount === 0 || adding}
+                disabled={addCount === 0 || adding || awaiting.length > 0}
                 onClick={() => void add()}
               >
                 {adding
@@ -623,6 +633,12 @@ export function TrustPanel({
                     : `Add ${addCount} ${addCount === 1 ? "repository" : "repositories"}`}
               </button>
             </Tooltip>
+            {awaiting.length > 0 && (
+              <p className="settings-hint trust-add-waiting">
+                Waiting for {awaiting.join(", ")} to answer before adding, so a new repository
+                gets every default grant.
+              </p>
+            )}
             {addError && <p className="settings-error trust-add-error">{addError}</p>}
           </div>
         </div>

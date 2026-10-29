@@ -23814,7 +23814,8 @@ button.sc-row:focus-visible {
   width: 100%;
   padding: 7px 11px;
 }
-.trust-add-error {
+.trust-add-error,
+.trust-add-waiting {
   margin: 0;
 }
 .trust-new-tag {

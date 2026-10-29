@@ -137,14 +137,36 @@ test("a typed path is added with the defaults, and a path already trusted is ref
   daemon,
 }) => {
   await dashboard.setViewportSize({ width: 1440, height: 900 });
+  // Hold the Inspector's config back until the path is typed. This is the race CI found: an
+  // add made before that config loaded skipped the Inspector's write and left the new repo
+  // with two grants out of three. The add must wait for it instead.
+  let releaseInspector: () => void = () => {};
+  const inspectorHeld = new Promise<void>((resolve) => {
+    releaseInspector = resolve;
+  });
+  await dashboard.route("**/api/inspector/config", async (route) => {
+    if (route.request().method() === "GET") await inspectorHeld;
+    await route.continue();
+  });
   await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
 
   const addPane = dashboard.getByRole("group", { name: "Add repositories" });
   const table = dashboard.getByRole("table", { name: "Repository trust grants" });
   const path = addPane.getByRole("textbox", { name: "Repository path" });
+  const addOne = addPane.getByRole("button", { name: "Add 1 repository" });
 
   await path.fill(daemon.repo);
-  await expect(addPane.getByRole("button", { name: "Add 1 repository" })).toBeEnabled();
+  await expect(addPane.getByText("Waiting for GitHub Inspector to answer before adding"))
+    .toBeVisible();
+  await expect(addOne).toBeDisabled();
+  // Enter is held too, not just the button.
+  await path.press("Enter");
+  await expect(path).toHaveValue(daemon.repo);
+  await expect(table.locator(".trust-repo-path")).toHaveCount(0);
+
+  releaseInspector();
+  await expect(addOne).toBeEnabled();
+  await expect(addPane.getByText(/Waiting for/)).toHaveCount(0);
   await path.press("Enter");
 
   await expect(table.locator(".trust-repo-path")).toHaveText([basename(daemon.repo)]);

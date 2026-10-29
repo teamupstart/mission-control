@@ -394,6 +394,19 @@ test("the add pane and the matrix sit side by side, each with its own search", (
   assert.match(html, /<button type="button" class="btn btn-primary trust-add-btn" disabled=""[^>]*>Add repositories<\/button>/);
 });
 
+test("an add waits for every default-granted subsystem to answer", () => {
+  // The CI race this pins: a quick add right after the page opened found the Inspector's
+  // config not loaded yet, skipped that write, and handed the repo two grants out of three.
+  // An unloaded config is not a refusal, so the add holds until all three can be written.
+  const waiting = render(foreman(), inspector({ config: null }), shipping());
+  assert.match(waiting, /trust-add-btn" disabled=""/);
+  assert.match(waiting, /Waiting for GitHub Inspector to answer before adding/);
+
+  // Shipping holds no default grant, so its silence does not hold an add.
+  const ready = render(foreman(), inspector(), shipping({ config: null }));
+  assert.doesNotMatch(ready, /Waiting for/);
+});
+
 test("a merge-without-review, armed, flies the dagger footnote with both fixes", () => {
   const html = render(
     foreman(),

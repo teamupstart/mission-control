@@ -519,8 +519,10 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   **Workflows act** and **GitHub Inspector posts reviews** straight away; **YOLO merges**
   stays off until you click its cell. Every default is one click to revoke. Because the
   Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
-  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. If
-  none of the three grants can be written, for example while the daemon is unreachable, the
+  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. The
+  add waits until Foreman, Workflows and GitHub Inspector have all answered, and says which it
+  is waiting for, so a new repo never lands with only some of its defaults. If none of the
+  three grants can be written, for example while the daemon is unreachable, the
   repo is remembered as an ungranted row per machine so it survives a reload, and its cells
   can be granted later.
 - **Repository labels use directory names.** Read-only repository labels normally show only

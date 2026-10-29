@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -309,4 +309,74 @@ test("a minimized Foreman sheds its mode chip but still shows an issue count", a
   await expect(troubled.locator(".foreman-chip")).toHaveText("1 issue");
   await expectDrawn(troubled.locator(".foreman-chip"), true, "the issue count survives minimizing");
   await shoot(bar, "05-minimized-foreman-issue");
+});
+
+test("a minimized Recurring missions control drops its word but keeps its attention badge", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.setViewportSize({ width: 1920, height: 1000 });
+  // A real mission whose last run failed, which is one of the states the daemon's own
+  // `deriveScheduleHealth` flags as needing attention. It is saved against this test's second
+  // seeded repository; the repository is then moved away, so "Run now" fails its fire-time
+  // repository check and records a failed occurrence. Nothing between the daemon's health and
+  // the badge is scripted. (`POST` refuses a cadence that never comes due, and refuses to
+  // re-enable a schedule it cannot read, so those cheaper routes to the same state are shut.)
+  const created = await fetch(`${daemon.baseURL}/api/schedules`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "needs attention",
+      expression: "0 * * * *",
+      timezone: "UTC",
+      overlapPolicy: "skip-active",
+      missedPolicy: "coalesce-latest",
+      completionPolicy: "manual",
+      template: {
+        title: "needs attention",
+        intent: "a mission whose repository goes away",
+        repoRoot: daemon.secondRepo,
+        kind: "ship",
+        workflowId: null,
+      },
+    }),
+  });
+  expect(created.ok, `/api/schedules answered ${created.status}: ${await created.clone().text()}`)
+    .toBe(true);
+  const { id } = (await created.json()) as { id: string };
+  renameSync(daemon.secondRepo, `${daemon.secondRepo}-moved-away`);
+  const ran = await fetch(`${daemon.baseURL}/api/schedules/${id}/run-now`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  expect(ran.ok, `run-now answered ${ran.status}: ${await ran.clone().text()}`).toBe(true);
+  await expect
+    .poll(async () => {
+      const list = (await (await fetch(`${daemon.baseURL}/api/schedules`)).json()) as
+        { id: string; health: string; healthReasons: string[] }[];
+      const mission = list.find((s) => s.id === id);
+      return `${mission?.health}:${mission?.healthReasons.join(",")}`;
+    }, { message: "the daemon flags the mission whose last run failed" })
+    .toBe("attention:last-run-failed");
+
+  const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ compactTopbarItems: ["missions"] }),
+  });
+  expect(pinned.ok, "the daemon accepted the minimized Missions control").toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.reload();
+
+  const missions = dashboard
+    .locator("header.topbar")
+    .getByRole("button", { name: "Recurring missions - 1 need attention" });
+  await expect(missions).toHaveClass(/\btb-compact\b/);
+  // Minimized: the word is not drawn...
+  await expectDrawn(missions.locator(".tb-label"), false, "the minimized Missions control drops its word");
+  // ...and the count is, because an attention badge is not ink to be saved.
+  await expect(missions.locator(".ghost-badge")).toHaveText("1");
+  await expectDrawn(missions.locator(".ghost-badge"), true, "the attention badge survives minimizing");
+  await shoot(dashboard.locator("header.topbar"), "06-minimized-missions-attention");
 });

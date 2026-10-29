@@ -54,7 +54,7 @@ type Layout = { hidden: readonly string[]; compact: readonly string[] };
 const noop = (): void => {};
 
 /** The bar against the preview's fixture fleet, which populates every optional item. */
-function bar(layout: Layout): string {
+function bar(layout: Layout, scheduleAttentionCount = 0): string {
   return renderToStaticMarkup(
     createElement(Topbar, {
       layout,
@@ -69,7 +69,7 @@ function bar(layout: Layout): string {
       fleetCost: previewFleetCost(Date.now()),
       costView: "usd",
       onOpenCostSettings: noop,
-      scheduleAttentionCount: 0,
+      scheduleAttentionCount,
       onOpenMissions: noop,
       foreman: PREVIEW_FOREMAN,
       onOpenModels: noop,
@@ -242,5 +242,24 @@ test("minimizing Foreman hides its mode chip but never its issue count", () => {
   const selector = hiding[0]![1]!.split(",").map((part) => part.trim())
     .find((part) => part.includes(".foreman-chip"))!;
   assert.match(selector, /\.tb-compact:not\(\.has-errors\)/, `"${selector}" hides the issue count too`);
+});
+
+test("minimizing Recurring missions keeps its attention badge in the markup", () => {
+  const html = bar({ hidden: [], compact: ["missions"] }, 2);
+  const button = html.match(/<button class="ghost-btn missions-btn tb-compact"(?:(?!<\/button>).)*<\/button>/)?.[0];
+  assert.ok(button, "the minimized Missions button is not marked tb-compact");
+  assert.match(button, /aria-label="Recurring missions - 2 need attention"/);
+  assert.match(button, /<span class="ghost-badge">2<\/span>/, "the attention badge was dropped");
+  // And nothing in the stylesheet hides a badge on a minimized control.
+  const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ");
+  for (const [, selector = ""] of css.matchAll(/([^{}]+)\{[^{}]*display:\s*none[^{}]*\}/g)) {
+    for (const part of selector.split(",")) {
+      assert.ok(
+        !(/\.tb-compact/.test(part) && /\.ghost-badge/.test(part)),
+        `"${part.trim()}" hides an attention badge on a minimized control`,
+      );
+    }
+  }
 });
 

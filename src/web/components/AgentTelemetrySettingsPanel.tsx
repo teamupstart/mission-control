@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   AGENT_OTEL_CAPTURE_KEYS,
   AGENT_OTEL_SIGNALS,
+  agentOtelDestinationProblem,
   agentOtelHeaderNameProblem,
   type AgentOtelCapture,
   type AgentOtelCaptureKey,
@@ -10,7 +11,6 @@ import {
   type AgentOtelSignals,
   type AgentTelemetryPatch,
 } from "@shared/agent-telemetry.ts";
-import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
 import type { AgentTelemetryState } from "../useAgentTelemetry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -91,9 +91,10 @@ export function AgentTelemetrySettingsPanel({
       : (agentOtelHeaderNameProblem(headerName.trim()) ?? (headerValue === "" ? "Give the header a value." : null))
     : null;
   const hasHeaders = addingHeader || (status?.headerNames.length ?? 0) > 0;
-  const check = endpoint.trim() === "" ? null : validateEndpoint(endpoint, { hasCredential: hasHeaders });
   const endpointProblem =
-    enabled && endpoint.trim() === "" ? "Set an endpoint to turn this on." : check && !check.ok ? check.detail : null;
+    endpoint.trim() === ""
+      ? enabled ? "Set an endpoint to turn this on." : null
+      : agentOtelDestinationProblem(endpoint, hasHeaders);
 
   const onSave = async (): Promise<void> => {
     const patch: AgentTelemetryPatch = { enabled, endpoint: endpoint.trim(), signals, capture };
@@ -210,7 +211,6 @@ export function AgentTelemetrySettingsPanel({
                 </Tooltip>
               )}
               {endpointProblem && <span className="settings-error">{endpointProblem}</span>}
-              {check?.ok && check.warning && <span className="settings-warn">{check.warning}</span>}
 
               <label className="ts-field">
                 <span className="ts-field-label">Header name</span>

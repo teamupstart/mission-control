@@ -80,6 +80,11 @@ test.describe("unmanaged", () => {
     const saveButton = dashboard.getByRole("button", { name: "Save agent telemetry" });
     await expect(saveButton).toBeDisabled();
 
+    // A remote plaintext destination is refused in the form, even without a credential.
+    await dashboard.getByLabel("Agent telemetry endpoint").fill("http://collector.example.com");
+    await expect(dashboard.getByText("Agent telemetry needs HTTPS unless the endpoint is loopback.")).toBeVisible();
+    await expect(saveButton).toBeDisabled();
+
     await dashboard.getByLabel("Agent telemetry endpoint").fill(sinkUrl);
     await dashboard.getByLabel("Agent telemetry header name").fill("Authorization");
     await dashboard.getByLabel("Agent telemetry header value").fill(SECRET);

@@ -56,10 +56,18 @@ such as `ECONNREFUSED`. Bodies, headers and URLs are never logged.
 | 3 | Off | Otherwise (the default) | Editable |
 
 When device management applies, its routing and capture switches become the effective policy.
-Claude Code's policy speaks for capture, and Codex's fills any signal Claude's does not route.
+An enabled Claude Code policy speaks for capture; a disabled one is ignored, and Codex's
+capture applies. Codex's policy fills any signal Claude's does not route.
 Stored Settings headers are never sent to a managed destination. Only OTLP/HTTP destinations
 are reusable by the relay: console exporters and managed gRPC routes do not become HTTP
-upstreams. Managed agents still export directly using their own configured transport. When
+upstreams.
+
+Every relay destination, from Settings or device management, must use HTTPS unless it is
+loopback. This is stricter than Mission Control's own telemetry, which only warns about remote
+plaintext, because agent telemetry can carry prompts, tool detail and responses. Settings
+refuses to save such an endpoint. A managed remote plaintext route is not used by the relay,
+though the managed agent still exports there directly. The relay checks the scheme again
+immediately before each send. Managed agents still export directly using their own configured transport. When
 no HTTP destination remains, the relay is shown as off even though its policy is managed.
 Relay traffic triggers a background policy refresh, so existing sessions notice managed
 routing changes without another launch or a Settings visit. An export already in flight

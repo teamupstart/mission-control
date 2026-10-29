@@ -1,4 +1,4 @@
-import type { AgentOtelRelayStats, AgentOtelSignal } from "@shared/agent-telemetry.ts";
+import { agentOtelDestinationProblem, type AgentOtelRelayStats, type AgentOtelSignal } from "@shared/agent-telemetry.ts";
 
 // The tee: every OTLP export the daemon receives on `/v1/{logs,metrics,traces}` is answered
 // locally exactly as before, and a copy of its raw bytes is queued for the upstream the
@@ -121,6 +121,12 @@ export class OtlpForwarder {
       upstream = null;
     }
     if (upstream === null) return;
+    // Policy already applied this rule; checked again where the bytes leave, so no future
+    // upstream source can reach `fetch` with a remote plaintext URL.
+    if (agentOtelDestinationProblem(upstream.url, Object.keys(upstream.headers).length > 0) !== null) {
+      this.fail("insecure destination");
+      return;
+    }
     const headers: Record<string, string> = { ...upstream.headers };
     if (item.contentType) headers["content-type"] = item.contentType;
     if (item.contentEncoding) headers["content-encoding"] = item.contentEncoding;

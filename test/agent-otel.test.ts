@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AgentTelemetryConfigSchema, AgentTelemetryPatchSchema } from "../src/shared/agent-telemetry.ts";
+import {
+  AgentTelemetryConfigSchema,
+  AgentTelemetryPatchSchema,
+  agentTelemetryConfigProblem,
+} from "../src/shared/agent-telemetry.ts";
 import {
   claudeManagedOtelFromEnv,
   codexManagedOtelFromToml,
@@ -264,6 +268,56 @@ test("precedence: managed policy, then Settings, then off", () => {
   // A credential bound for a remote plaintext endpoint is not a usable config.
   const plain = resolveAgentOtelPolicy({ config: settings({ endpoint: "http://collector.example.com" }), hasHeaders: true, managed: none });
   assert.equal(plain.source, "off");
+});
+
+test("a remote agent-telemetry destination must use HTTPS; plain HTTP is loopback-only", () => {
+  const none = { claude: null, codex: null };
+  const remote = AgentTelemetryConfigSchema.parse({
+    enabled: true,
+    endpoint: "http://collector.example.com",
+    signals: { logs: true, metrics: true, traces: true },
+  });
+  // Without any stored header: Mission Control's own telemetry only warns here, the relay refuses.
+  assert.match(agentTelemetryConfigProblem(remote, false) ?? "", /HTTPS/);
+  assert.equal(resolveAgentOtelPolicy({ config: remote, hasHeaders: false, managed: none }).source, "off");
+  for (const endpoint of ["http://127.0.0.1:4318", "http://localhost:4318", "http://[::1]:4318", GATEWAY]) {
+    assert.equal(agentTelemetryConfigProblem({ ...remote, endpoint }, false), null, endpoint);
+  }
+
+  // A managed plaintext remote route is the agent's own business; the relay does not copy
+  // other agents' telemetry onto it.
+  const claude = claudeManagedOtelFromEnv("mdm", {
+    ...CLAUDE_MDM_ENV,
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://collector.example.com/v1/logs",
+    OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://collector.example.com/v1/metrics",
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://127.0.0.1:4318/v1/traces",
+  });
+  const mdm = resolveAgentOtelPolicy({ config: remote, hasHeaders: false, managed: { claude, codex: null } });
+  assert.equal(mdm.source, "mdm");
+  assert.deepEqual(mdm.upstream, { logs: null, metrics: null, traces: "http://127.0.0.1:4318/v1/traces" });
+  assert.deepEqual(mdm.signals, { logs: false, metrics: false, traces: true });
+});
+
+test("the relay re-checks the destination scheme immediately before sending", async () => {
+  const seen: string[] = [];
+  const relay = new OtlpForwarder({
+    now: () => 42,
+    fetch: async (url) => {
+      seen.push(String(url));
+      return new Response("{}", { status: 200 });
+    },
+    upstream: (signal) => ({
+      url: signal === "logs" ? "http://gw.example.com/v1/logs" : `http://127.0.0.1:4318/v1/${signal}`,
+      headers: {},
+    }),
+  });
+  const body = new Uint8Array([1]);
+  relay.enqueue("logs", body, "application/x-protobuf");
+  relay.enqueue("metrics", body, "application/x-protobuf");
+  await relay.drain();
+  assert.deepEqual(seen, ["http://127.0.0.1:4318/v1/metrics"]);
+  assert.equal(relay.snapshot().failed, 1);
+  assert.equal(relay.snapshot().lastError, "insecure destination");
 });
 
 test("signal paths preserve a gateway's base path and query", () => {

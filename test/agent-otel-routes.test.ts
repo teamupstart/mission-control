@@ -160,6 +160,7 @@ test("Settings stores a header whose value never comes back out", async () => {
 
 test("an invalid config is refused at the route", async () => {
   assert.equal((await putConfig({ endpoint: "ftp://nope" })).status, 400);
+  assert.equal((await putConfig({ enabled: true, endpoint: "http://collector.example.com" })).status, 400);
   assert.equal((await putConfig({ endpoint: "http://127.0.0.1:7317" })).status, 400);
   assert.equal((await putConfig({ headers: [{ name: "x-harness-token", value: "x" }] })).status, 400);
   assert.equal((await putConfig({ nonsense: true })).status, 400);

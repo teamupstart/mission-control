@@ -6,8 +6,8 @@ import {
   type AgentOtelSignals,
   type AgentOtelSource,
   type AgentTelemetryConfig,
+  agentOtelDestinationProblem,
 } from "@shared/agent-telemetry.ts";
-import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
 import type { ManagedAgentOtel, ManagedAgentOtelState } from "./managed.ts";
 
 // Who decides where agent telemetry goes, and what may be in it.
@@ -47,7 +47,7 @@ export function resolveAgentOtelPolicy(input: {
 }): AgentOtelPolicy {
   const { config, managed } = input;
   if (isManaged(managed)) return managedPolicy(managed);
-  const valid = validateEndpoint(config.endpoint, { hasCredential: input.hasHeaders }).ok;
+  const valid = agentOtelDestinationProblem(config.endpoint, input.hasHeaders) === null;
   if (!config.enabled || !valid) {
     return {
       source: "off",
@@ -82,9 +82,12 @@ function managedPolicy(managed: ManagedAgentOtelState): AgentOtelPolicy {
   );
   const upstream = { logs: null, metrics: null, traces: null } as Record<AgentOtelSignal, string | null>;
   for (const signal of AGENT_OTEL_SIGNALS) {
-    upstream[signal] = sources.find(
-      (m) => m.transports[signal] === "http" && m.endpoints[signal] !== null,
-    )?.endpoints[signal] ?? null;
+    // A managed agent exports to its own route directly; the relay only copies other agents'
+    // telemetry there when the route meets the relay's own destination rule.
+    upstream[signal] = sources.find((m) => {
+      const endpoint = m.endpoints[signal];
+      return m.transports[signal] === "http" && endpoint !== null && agentOtelDestinationProblem(endpoint, false) === null;
+    })?.endpoints[signal] ?? null;
   }
   const signals = {} as AgentOtelSignals;
   for (const signal of AGENT_OTEL_SIGNALS) signals[signal] = upstream[signal] !== null;

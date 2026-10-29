@@ -127,18 +127,27 @@ export const AgentTelemetryPatchSchema = z
 export type AgentTelemetryPatch = z.infer<typeof AgentTelemetryPatchSchema>;
 
 /**
- * Why a config cannot be saved, or null. Shared so the form and the route agree.
- *
- * An enabled config needs a usable endpoint; a credential needs HTTPS unless the endpoint is
- * loopback, the same rule Mission Control's own telemetry applies.
+ * Why the relay may not send to `endpoint`, or null. Stricter than Mission Control's own
+ * telemetry, which only warns about remote plaintext: agent telemetry can carry prompts, tool
+ * detail and responses, so a remote destination needs HTTPS and plain HTTP is loopback-only.
+ * Shared by the form, the route, the policy (Settings and managed routes) and the relay's send.
  */
+export function agentOtelDestinationProblem(endpoint: string, hasHeaders: boolean): string | null {
+  const checked = validateEndpoint(endpoint, { hasCredential: hasHeaders });
+  if (!checked.ok) return checked.detail;
+  if (!checked.loopback && new URL(endpoint.trim()).protocol !== "https:") {
+    return "Agent telemetry needs HTTPS unless the endpoint is loopback.";
+  }
+  return null;
+}
+
+/** Why a config cannot be saved, or null. Shared so the form and the route agree. */
 export function agentTelemetryConfigProblem(
   config: AgentTelemetryConfig,
   hasHeaders: boolean,
 ): string | null {
   if (!config.enabled && config.endpoint.trim() === "") return null;
-  const checked = validateEndpoint(config.endpoint, { hasCredential: hasHeaders });
-  return checked.ok ? null : checked.detail;
+  return agentOtelDestinationProblem(config.endpoint, hasHeaders);
 }
 
 /** Where the effective policy came from. */

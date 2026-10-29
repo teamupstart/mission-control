@@ -1721,9 +1721,13 @@ test("an SDK launch passes no otel config, so a managed Codex policy keeps routi
       standingInstructionsPrompt: "",
       resume: null,
     });
-    // A launch-scoped `-c otel.*` override would beat the managed config.toml for this
-    // process, so no `-c` value may name the otel table at all.
-    const overrides = args.filter((_arg, i) => args[i - 1] === "-c");
+    // Config overrides beat managed config.toml regardless of the option spelling.
+    const overrides = args.flatMap((arg, i) => {
+      if (arg === "-c" || arg === "--config") return [args[i + 1] ?? ""];
+      if (arg.startsWith("--config=")) return [arg.slice("--config=".length)];
+      if (arg.startsWith("-c")) return [arg.slice(2)];
+      return [];
+    });
     assert.deepEqual(overrides.filter((value) => /^\s*otel\b/.test(value)), []);
     await handle.stop();
   }

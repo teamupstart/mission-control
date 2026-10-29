@@ -105,21 +105,38 @@ test("a built-in's round limit reaches its definition and every version, and not
   }
 });
 
-test("null or the shipped value restores the shipped built-in", () => {
+test("null or the shipped value restores the shipped built-in, and every later read is dated by the reset", () => {
   const { store } = fixture();
   store.setBuiltinRoundLimit(NO_MISTAKES_REVIEW_WORKFLOW_ID, 12, 1_000);
   const reset = store.setBuiltinRoundLimit(NO_MISTAKES_REVIEW_WORKFLOW_ID, null, 2_000);
   assert.equal(reset.ok, true);
-  assert.equal(reset.ok && reset.workflow.updatedAt, 2_000, "a reset still dates the change it made");
-  assert.deepEqual(store.getWorkflow(NO_MISTAKES_REVIEW_WORKFLOW_ID), shipped.definition);
+  assert.equal(reset.ok && reset.workflow.updatedAt, 2_000, "a reset dates the change it made");
+  // A refetch after the reset must not fall back to the shipped `updatedAt`, or an editor that
+  // compares definition timestamps would keep the rounds it held before the reset.
+  const reread = store.getWorkflow(NO_MISTAKES_REVIEW_WORKFLOW_ID)!;
+  assert.equal(reread.updatedAt, 2_000);
+  assert.equal(
+    store.listWorkflows().find((workflow) => workflow.id === NO_MISTAKES_REVIEW_WORKFLOW_ID)?.updatedAt,
+    2_000,
+  );
+  assert.equal(store.summary(reread).updatedAt, 2_000);
+  assert.deepEqual({ ...reread, updatedAt: shipped.definition.updatedAt }, shipped.definition);
+  assert.deepEqual(
+    store.listWorkflowVersions(NO_MISTAKES_REVIEW_WORKFLOW_ID),
+    [...shipped.versions].reverse(),
+    "the versions are exactly as shipped again",
+  );
 
   store.setBuiltinRoundLimit(NO_MISTAKES_REVIEW_WORKFLOW_ID, 12, 3_000);
   store.setBuiltinRoundLimit(NO_MISTAKES_REVIEW_WORKFLOW_ID, SHIPPED_ROUNDS, 4_000);
-  assert.deepEqual(store.getWorkflow(NO_MISTAKES_REVIEW_WORKFLOW_ID), shipped.definition);
+  const shippedAgain = store.getWorkflow(NO_MISTAKES_REVIEW_WORKFLOW_ID)!;
+  assert.equal(shippedAgain.updatedAt, 4_000);
+  assert.deepEqual({ ...shippedAgain, updatedAt: shipped.definition.updatedAt }, shipped.definition);
   assert.equal(
-    db.prepare(`SELECT COUNT(*) AS n FROM workflow_builtin_round_limits`).get()?.n,
-    0,
-    "the shipped value is stored as no row, so a later build's default is followed",
+    db.prepare(`SELECT max_repair_rounds AS n FROM workflow_builtin_round_limits WHERE workflow_id = ?`)
+      .get(NO_MISTAKES_REVIEW_WORKFLOW_ID)?.n,
+    null,
+    "the shipped value is stored as no count, so a later build's default is followed",
   );
 });
 

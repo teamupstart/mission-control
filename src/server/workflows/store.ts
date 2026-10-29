@@ -2928,9 +2928,9 @@ function coverageSchemaReason(error: unknown): string {
  * verification it was captured for. So an unknown episode leaves provenance alone; only a known
  * one moves it.
  */
-/** One `workflow_builtin_round_limits` row, read. */
+/** One `workflow_builtin_round_limits` row, read. A null count is a reset to the shipped value. */
 interface BuiltinRoundLimit {
-  maxRepairRounds: number;
+  maxRepairRounds: number | null;
   updatedAt: number;
 }
 
@@ -2947,10 +2947,19 @@ function withBuiltinRoundLimit(
   limit: BuiltinRoundLimit | undefined,
 ): BuiltinWorkflow {
   const shippedMaxRepairRounds = builtin.definition.bindingDefaults.maxRepairRounds;
-  if (!limit || limit.maxRepairRounds === shippedMaxRepairRounds) return builtin;
+  if (!limit) return builtin;
+  // A reset, or a value a later build now ships: the shipped built-in, still dated by the
+  // change, so an editor that refetches after a reset sees a newer definition than it holds.
+  if (limit.maxRepairRounds === null || limit.maxRepairRounds === shippedMaxRepairRounds) {
+    return {
+      ...builtin,
+      definition: { ...builtin.definition, updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt) },
+    };
+  }
+  const rounds = limit.maxRepairRounds;
   const withRounds = <T extends { bindingDefaults: WorkflowDefinition["bindingDefaults"] }>(item: T): T => ({
     ...item,
-    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: limit.maxRepairRounds },
+    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: rounds },
   });
   return {
     definition: {
@@ -4199,14 +4208,14 @@ export class WorkflowStore {
         .all(workflowId)) as Array<Record<string, unknown>>;
     const out = new Map<string, BuiltinRoundLimit>();
     for (const row of rows) {
-      const rounds = Number(row.max_repair_rounds);
+      const rounds = row.max_repair_rounds === null ? null : Number(row.max_repair_rounds);
       const updatedAt = Number(row.updated_at);
       // An unreadable row is the shipped value, never a budget outside the binding schema.
       if (typeof row.workflow_id !== "string"
-        || !Number.isInteger(rounds)
-        || rounds < WORKFLOW_LIMITS.repairRoundsMin
-        || rounds > WORKFLOW_LIMITS.repairRoundsMax
-        || !Number.isSafeInteger(updatedAt)) continue;
+        || !Number.isSafeInteger(updatedAt)
+        || (rounds !== null && (!Number.isInteger(rounds)
+          || rounds < WORKFLOW_LIMITS.repairRoundsMin
+          || rounds > WORKFLOW_LIMITS.repairRoundsMax))) continue;
       out.set(row.workflow_id, { maxRepairRounds: rounds, updatedAt });
     }
     return out;
@@ -4216,8 +4225,9 @@ export class WorkflowStore {
    * Change the one setting a built-in workflow lets an operator change in place.
    *
    * Everything else about a built-in stays read-only, and nothing here can reach it: the only
-   * input is a round count. `null`, or the value this build ships, removes the row so the
-   * built-in follows the shipped value again, including when a later build changes it. The new
+   * input is a round count. `null`, or the value this build ships, stores a NULL count so the
+   * built-in follows the shipped value again, including when a later build changes it, while
+   * the row keeps dating the definition with the time of the reset. The new
    * value is what every NEW binding of any of its versions starts from; a binding or run that
    * already exists keeps the budget it copied when it was created.
    */
@@ -4234,22 +4244,17 @@ export class WorkflowStore {
           ? { ok: false, reason: "not_builtin", current }
           : { ok: false, reason: "not_found", current: null };
       }
-      if (maxRepairRounds === null
-        || maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds) {
-        this.db.prepare(`DELETE FROM workflow_builtin_round_limits WHERE workflow_id = ?`).run(id);
-      } else {
-        this.db.prepare(
-          `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(workflow_id) DO UPDATE SET
-             max_repair_rounds = excluded.max_repair_rounds,
-             updated_at = excluded.updated_at`,
-        ).run(id, maxRepairRounds, updatedAt);
-      }
-      const workflow = this.builtinWorkflowById(id)!.definition;
-      // A reset has no row left to date, and the shipped definition's `updatedAt` is 0. The
-      // write is still a change other open editors have to notice, so it carries the time.
-      return { ok: true, workflow: { ...workflow, updatedAt: Math.max(workflow.updatedAt, updatedAt) } };
+      const stored = maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds
+        ? null
+        : maxRepairRounds;
+      this.db.prepare(
+        `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(workflow_id) DO UPDATE SET
+           max_repair_rounds = excluded.max_repair_rounds,
+           updated_at = excluded.updated_at`,
+      ).run(id, stored, updatedAt);
+      return { ok: true, workflow: this.builtinWorkflowById(id)!.definition };
     }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 

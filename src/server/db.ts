@@ -1006,10 +1006,11 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- A built-in is not a row: its definition and versions ship with the build and stay
     -- read-only. The round budget is the one setting an operator may change on one without
     -- duplicating it, so it lives beside the catalog rather than in it, keyed by the
-    -- built-in's stable id. No row means the shipped value.
+    -- built-in's stable id. No row, or a NULL count, means the shipped value; a reset keeps
+    -- its row with a NULL count so the time of the reset still dates the definition.
     CREATE TABLE IF NOT EXISTS workflow_builtin_round_limits (
       workflow_id       TEXT PRIMARY KEY,
-      max_repair_rounds INTEGER NOT NULL,
+      max_repair_rounds INTEGER,
       updated_at        INTEGER NOT NULL
     );
 

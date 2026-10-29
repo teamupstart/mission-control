@@ -440,7 +440,12 @@ export function WorkflowLibrary({
   // What is open, reported back so the address bar can name it. One effect on the id rather
   // than a call inside `openWorkflow`, because the restore above and the removal handler
   // below both set it without going through there.
-  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
+  useEffect(() => {
+    // Before the catalog arrives, null means selection has not been restored yet. Reporting
+    // it would erase the deep link that the restore effect still needs from the parent.
+    if (!hasSnapshot && selectedId === null) return;
+    onSelectionChange?.(selectedId);
+  }, [hasSnapshot, onSelectionChange, selectedId]);
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(

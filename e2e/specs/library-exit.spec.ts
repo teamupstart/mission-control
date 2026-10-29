@@ -294,6 +294,28 @@ test("the builder rail carries the same exit, so the four surfaces do not disagr
   await expect.poll(() => hash(dashboard)).toBe("#/library");
 });
 
+test("a workflow deep link survives a delayed catalog snapshot", async ({ dashboard, daemon }) => {
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Delayed catalog workflow",
+    description: "Keep the requested workflow while the catalog loads.",
+  });
+  const target = `#/library/workflows/${workflow.workflow.id}`;
+  await dashboard.route("**/events", (route) => route.abort());
+  // A fresh document has no catalog yet; hash-only navigation would retain the old stream.
+  await dashboard.goto("about:blank");
+  await dashboard.goto(`${daemon.baseURL}/${target}`);
+  await expect(dashboard.getByRole("complementary", { name: "Workflow library and node palette" }))
+    .toBeVisible();
+  expect(await hash(dashboard)).toBe(target);
+
+  // EventSource reconnect supplies the real daemon snapshot, without another navigation.
+  await dashboard.unroute("**/events");
+  await expect(dashboard.getByRole("heading", { name: "Delayed catalog workflow", exact: true }))
+    .toBeVisible();
+  expect(await hash(dashboard)).toBe(target);
+  await shoot(dashboard, "delayed-workflow-deep-link");
+});
+
 test("Escape on a focused graph node is the canvas's, not the page's", async ({
   dashboard,
   daemon,

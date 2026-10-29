@@ -11,7 +11,8 @@ import { Registry } from "../src/server/registry.ts";
 import { buildApp, type RouteDeps } from "../src/server/routes.ts";
 import { adoptPr } from "../src/server/inspector/worker.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "../src/server/inspector/code-rabbit-delivery.ts";
-import { codeRabbitSummary, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { claimCodeRabbit, codeRabbitSummary, finishCodeRabbit, loadDelegatedTurns, loadOtherSends, openDb, recordCodeRabbit, readCodeRabbit, updateInspectorPr } from "../src/server/db.ts";
+import { reserveDelegatedTurn } from "../src/server/delegated-turns.ts";
 import { claimInjectionEcho, observeInjections, originOf } from "../src/server/injections.ts";
 import { setShippingConfig } from "../src/server/shipping/config.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
@@ -153,24 +154,78 @@ test("CodeRabbit eligibility and standing do not compute an unrelated dashboard 
   assert.equal(codeRabbitStanding(f.registry, f.key).pending, 1);
 });
 
-test("a synchronous reservation failure does not lock out a later CodeRabbit generation", async (t) => {
-  const f = fixture();
-  const db = openDb();
-  t.after(() => db.exec("DROP TRIGGER IF EXISTS fail_other_send"));
-  db.exec(`CREATE TEMP TRIGGER fail_other_send BEFORE INSERT ON session_other_sends
-    BEGIN SELECT RAISE(ABORT, 'test reservation unavailable'); END`);
-  assert.equal((await f.post()).status, 500);
-  assert.equal(f.messages.length, 0);
-  assert.equal(readCodeRabbit(f.key)!.receipts[0]!.outcome, "uncertain");
-  db.exec("DROP TRIGGER fail_other_send");
-  // Keep the old durable claim spent. A newly observed finding must still be deliverable.
-  recordCodeRabbit(f.key, { headSha: "head", state: "OPEN", draft: false, findings: [{
-    id: "thread", rootId: "root", url: `${f.session.prUrl}#discussion_r1`, path: "src/a.ts", identity: "root-v2", resolved: false,
-  }] });
-  f.request.observationId = readCodeRabbit(f.key)!.observationId;
-  assert.equal((await f.post()).status, 200);
-  assert.equal(f.messages.length, 1);
-  assert.equal(readCodeRabbit(f.key)!.receipts.at(-1)!.outcome, "delivered");
+for (const boundary of ["before insert", "after insert"] as const) {
+  test(`reservation failure ${boundary} releases only its claim and reservations for same-observation retry`, async (t) => {
+    const f = fixture();
+    const previous = claimCodeRabbit(f.key, { ...f.owner, episodeKey: "intent:previous" }, f.request.observationId)!;
+    finishCodeRabbit(f.key, previous, "delivered");
+    const history = readCodeRabbit(f.key)!.receipts;
+    const candidate = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(candidate.error, undefined);
+    const payload = candidate.payload!;
+    let transportCalls = 0;
+    f.setLock(() => { transportCalls++; });
+    const db = openDb();
+    t.after(() => db.exec("DROP TRIGGER IF EXISTS fail_other_send"));
+    if (boundary === "after insert") {
+      // Fail after the sender row AND one delegated contest have been written.
+      const conversation = { key: f.owner.noteKey, transcript: null };
+      const source = { id: "controller", name: "Controller" };
+      const first = reserveDelegatedTurn(conversation, payload, source);
+      reserveDelegatedTurn(conversation, payload, source);
+      db.exec(`CREATE TEMP TRIGGER fail_other_send BEFORE UPDATE OF contested ON session_delegated_turns
+        WHEN NEW.contested = 1 AND NEW.id <> '${first}'
+        BEGIN SELECT RAISE(ABORT, 'test reservation unavailable'); END`);
+    } else {
+      db.exec(`CREATE TEMP TRIGGER fail_other_send BEFORE INSERT ON session_other_sends
+        BEGIN SELECT RAISE(ABORT, 'test reservation unavailable'); END`);
+    }
+    const response = await f.post();
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { ok: false, error: "Error: test reservation unavailable", pasted: false, submitVerified: false });
+    assert.equal(transportCalls, 0);
+    assert.deepEqual(f.messages, []);
+    assert.deepEqual(readCodeRabbit(f.key)!.receipts, history);
+    assert.equal(codeRabbitSummary(f.key, f.owner).pending, 1);
+    assert.equal(originOf(f.session.id, payload), undefined);
+    assert.equal(claimInjectionEcho(f.session.id, payload), undefined);
+    assert.deepEqual(loadOtherSends(f.owner.noteKey, 0), []);
+    assert.ok(loadDelegatedTurns(f.owner.noteKey).every((row) => !row.contested));
+    db.exec("DROP TRIGGER fail_other_send");
+    assert.equal((await f.post()).status, 200);
+    assert.equal(transportCalls, 1);
+    assert.deepEqual(f.messages, [payload]);
+    assert.deepEqual(readCodeRabbit(f.key)!.receipts.slice(0, -1), history);
+    assert.equal(readCodeRabbit(f.key)!.receipts.at(-1)!.outcome, "delivered");
+  });
+}
+
+test("daemon rechecks the exact in-flight claim and uses the shared payload for every enabled source", () => {
+  for (const trackReviewComments of [false, true]) for (const trackCiFailures of [false, true]) {
+    const f = fixture();
+    f.session.inspector!.postedOpen = 2;
+    f.session.prChecks = "failing";
+    setForemanConfig({ trackReviewFeedback: trackReviewComments, trackCiFailures });
+    const before = codeRabbitCandidate(f.registry, f.session.id, f.request);
+    assert.equal(before.error, undefined);
+    const pr = { ...followupPrs(f.session)[0]!, repoRoot: f.session.cwd };
+    const decision = decideReviewFollowup({ session: f.session, pr, mark: null, bucket: "idle", mayActLive: true,
+      workflowOwnsSession: false, cfg: { trackReviewComments, trackCiFailures, codeRabbitAutoResolve: true, settleMs: 0 }, now: Date.now(),
+    });
+    assert.equal(decision.kind, "nudge");
+    if (decision.kind !== "nudge") continue;
+    assert.equal(before.payload, decision.payload);
+    const claim = claimCodeRabbit(f.key, f.owner, f.request.observationId)!;
+    assert.ok(claim);
+    const after = codeRabbitCandidate(f.registry, f.session.id, f.request, claim);
+    assert.equal(after.error, undefined);
+    assert.equal(after.payload, decision.payload);
+    assert.equal(after.summary!.pending, 0);
+    assert.ok(codeRabbitCandidate(f.registry, f.session.id, f.request, "not-this-claim").error);
+    assert.ok(codeRabbitCandidate(f.registry, f.session.id, f.request).error);
+    finishCodeRabbit(f.key, claim, "delivered");
+    assert.ok(codeRabbitCandidate(f.registry, f.session.id, f.request, claim).error);
+  }
 });
 
 for (const failure of ["receipt", "projection"] as const) {

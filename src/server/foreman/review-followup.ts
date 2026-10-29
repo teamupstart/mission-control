@@ -1,6 +1,7 @@
 import type { InspectorSummary, PrChecks, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { ReportBucket } from "@shared/session.ts";
+import type { CodeRabbitFollowup } from "@shared/code-rabbit.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
@@ -93,6 +94,11 @@ export interface ReviewFollowupInput {
    * `advanceFollowupMark` for this pass's observation. Null when we have never nudged it.
    */
   mark: FollowupMark | null;
+  /**
+   * Daemon-verified in-flight claim being rechecked at the write lock. Its findings are
+   * already suppressed from `pending`; all freshness, consent and ownership gates still apply.
+   */
+  claimedCodeRabbit?: CodeRabbitFollowup;
   cfg: ReviewFollowupConfig;
   now: number;
 }
@@ -101,7 +107,7 @@ export type ReviewFollowupDecision =
   /** Not a candidate. `why` is for the tests/log - every skip is explicable. */
   | { kind: "skip"; why: string }
   /** Type the follow-up. Carries the mark to stamp on delivery and the exact payload. */
-  | { kind: "nudge"; codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup; prKey: string; mark: FollowupMark; reason: string; payload: string };
+  | { kind: "nudge"; codeRabbit?: CodeRabbitFollowup; prKey: string; mark: FollowupMark; reason: string; payload: string };
 
 /**
  * What we have already relayed to a session about ONE pull request, so we neither nag an
@@ -212,11 +218,11 @@ export function activeWorkflowOwnsSession(
   return runs.some((run) => !["completed", "cancelled", "failed"].includes(run.status));
 }
 
-function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig, now: number): Feedback {
+function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig, now: number, claimedCodeRabbit: boolean): Feedback {
   const findings = cfg.trackReviewComments && !!pr.inspector && pr.inspector.postedOpen > 0;
   const cr = pr.inspector?.codeRabbit;
   return { findings, ciFailing: cfg.trackCiFailures && pr.checks === "failing",
-    codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
+    codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && (cr.pending > 0 || claimedCodeRabbit)
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
   };
 }
@@ -230,7 +236,7 @@ function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig, now: number): 
  * dealt with - and there is no model call here to catch a mistake the gates let through.
  */
 export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowupDecision {
-  const { session: s, pr, bucket, mayActLive, workflowOwnsSession, mark, cfg, now } = input;
+  const { session: s, pr, bucket, mayActLive, workflowOwnsSession, mark, claimedCodeRabbit, cfg, now } = input;
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
@@ -285,7 +291,12 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
   //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
-  const fb = feedbackState(pr, cfg, now);
+  if (claimedCodeRabbit && (claimedCodeRabbit.prKey !== pr.prKey
+    || claimedCodeRabbit.observationId !== pr.inspector?.codeRabbit?.observationId)) {
+    return skip("the CodeRabbit claim no longer matches this observation");
+  }
+  const fb = feedbackState(pr, cfg, now, claimedCodeRabbit !== undefined);
+  if (claimedCodeRabbit && !fb.codeRabbit) return skip("claimed CodeRabbit feedback is no longer eligible");
   if (!fb.findings && !fb.ciFailing && !fb.codeRabbit) return skip("no enabled review comments or failing CI");
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps

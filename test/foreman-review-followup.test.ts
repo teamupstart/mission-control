@@ -167,6 +167,49 @@ test("findings and a red CI together are reported together", () => {
 
 // ---- what stays quiet ----
 
+function codeRabbit(over: Partial<NonNullable<InspectorSummary["codeRabbit"]>> = {}): NonNullable<InspectorSummary["codeRabbit"]> {
+  return { status: "complete", observationId: "observation", headSha: "head", observedAt: NOW,
+    freshUntil: NOW + 60_000, unresolved: 1, pending: 1, error: null, threads: [], delivery: "Waiting for an eligible session", ...over };
+}
+
+test("an explicit CodeRabbit claim preserves the shared payload and marks without inflating pending feedback", () => {
+  for (const trackReviewComments of [false, true]) for (const trackCiFailures of [false, true]) {
+    const session = mkSession({ inspector: inspector({ open: 2, codeRabbit: codeRabbit() }), prChecks: "failing" });
+    const cfg = { trackReviewComments, trackCiFailures, codeRabbitAutoResolve: true, settleMs: SETTLE };
+    const before = decide({ session, cfg });
+    assert.equal(before.kind, "nudge");
+    if (before.kind !== "nudge") continue;
+    session.inspector!.codeRabbit!.pending = 0;
+    assert.equal(decide({ session, cfg, mark: before.mark }).kind, "skip");
+    const after = decide({ session, cfg, mark: before.mark, claimedCodeRabbit: before.codeRabbit! });
+    assert.deepEqual(after, before);
+    assert.equal(session.inspector!.codeRabbit!.pending, 0);
+    assert.equal(before.payload.includes("GitHub Inspector left"), trackReviewComments);
+    assert.equal(before.payload.includes("its CI checks are failing"), trackCiFailures);
+    assert.deepEqual(before.mark, { prKey: "owner/repo#7", findingsRound: trackReviewComments ? 1 : null, ciNudged: trackCiFailures });
+  }
+});
+
+test("claimed CodeRabbit delivery still requires the exact fresh observation and every shared consent gate", () => {
+  const claimedCodeRabbit = { prKey: "owner/repo#7", observationId: "observation" };
+  const session = mkSession({ inspector: inspector({ open: 2, codeRabbit: codeRabbit({ pending: 0 }) }), prChecks: "failing" });
+  const input = { session, claimedCodeRabbit, cfg: { trackReviewComments: true, trackCiFailures: true, codeRabbitAutoResolve: true, settleMs: SETTLE } };
+  for (const change of [
+    { claimedCodeRabbit: { ...claimedCodeRabbit, prKey: "owner/other#7" } },
+    { claimedCodeRabbit: { ...claimedCodeRabbit, observationId: "old-observation" } },
+    { session: { ...session, inspector: inspector({ open: 2, codeRabbit: codeRabbit({ pending: 0, status: "error" }) }) } },
+    { session: { ...session, inspector: inspector({ open: 2, codeRabbit: codeRabbit({ pending: 0, freshUntil: NOW - 1 }) }) } },
+    { cfg: { ...input.cfg, codeRabbitAutoResolve: false } },
+    { session: { ...session, foremanInvite: null } },
+    { session: { ...session, state: "working" as const } },
+    { session: { ...session, state: "awaiting_input" as const } },
+    { session: { ...session, queue: queue(1) } },
+    { bucket: "needs-you" as const },
+    { workflowOwnsSession: true },
+    { mayActLive: false },
+  ]) assert.equal(decide({ ...input, ...change }).kind, "skip", JSON.stringify(change));
+});
+
 test("an UNINVITED session is never followed up - the personal-chat regression", () => {
   // THE bug this whole plan exists for. This path iterated every session with an open PR
   // and typed "create a PR" / "CI is red" into personal Claude chats, because a

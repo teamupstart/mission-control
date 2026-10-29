@@ -5681,7 +5681,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!request) return null;
       try {
         if (origin !== "foreman" || !workflowManager()) return "CodeRabbit delivery requires Foreman and workflow ownership";
-        const candidate = codeRabbitCandidate(registry, session.id, request, claim !== null);
+        const candidate = codeRabbitCandidate(registry, session.id, request, claim?.id);
         if (candidate.error !== undefined) return candidate.error;
         if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
         if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
@@ -5718,38 +5718,44 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.
     const delegatedKey = noteKeyFor(session);
-    const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
-    const otherSend = controller ? null : noteOtherSend(conversation, text);
-    const delegatedTurn = controller
-      ? reserveDelegatedTurn(conversation, text, {
-          id: controller,
-          name: registry.getSession(controller)?.name ?? controller,
-        })
-      : null;
-    // All reservations above are synchronous. Acquire only when the transport's finally
-    // can release it, so a reservation failure cannot strand this conversation's lock.
-    if (claim) codeRabbitSending.add(claim.noteKey);
-    const r = await injectPromptForRuntime(
+    let otherSend: ReturnType<typeof noteOtherSend> | null = null;
+    let delegatedTurn: string | null = null;
+    let setupFailure: Awaited<ReturnType<typeof injectPromptForRuntime>> | undefined;
+    try {
+      if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
+      const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
+      otherSend = controller ? null : noteOtherSend(conversation, text);
+      delegatedTurn = controller ? reserveDelegatedTurn(conversation, text, {
+        id: controller,
+        name: registry.getSession(controller)?.name ?? controller,
+      }) : null;
+    } catch (error) {
+      // No transport was attempted. Settle the exact claim and completed reservations
+      // through the same positive non-delivery cleanup as a runtime refusal below.
+      setupFailure = { ok: false, error: String(error), pasted: false, submitVerified: false };
+    }
+    // Acquire only when the transport's finally can release the conversation lock.
+    if (!setupFailure && claim) codeRabbitSending.add(claim.noteKey);
+    const r = setupFailure ?? await injectPromptForRuntime(
       sdkSessions,
       session,
       text,
       undefined,
       () => codeRabbitGuard() ?? registry.promptResourceBlockerForSession(session.id),
       origin,
-    ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
+    ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined, submitVerified: false }))
       .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
     if (request && claim) {
       try {
         if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
         registry.refreshInspections();
       } catch (error) {
-        // Transport already completed. A failed receipt stays uncertain, but must not
-        // prevent attribution from settling or replace the actual delivery response.
+        // The delivery outcome is known. A failed receipt stays uncertain, but must not
+        // prevent attribution from settling or replace that response.
         console.warn(`[mission-control] CodeRabbit delivery bookkeeping failed for ${request.prKey}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

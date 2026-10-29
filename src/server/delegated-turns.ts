@@ -262,12 +262,19 @@ export function noteOtherSend(conversation: DelegatedConversation, text: string,
   sends.push(send);
   otherSends.set(sendKey(conversation.key, fingerprint), sends);
   const handle: OtherSendHandle = { key: conversation.key, fingerprint, send };
-  const rows = rowsFor(conversation.key);
-  const racing = () => rows.filter((row) => row.fingerprint === fingerprint && row.messageId === null && !row.contested);
-  if (!racing().length) return handle;
-  if (conversation.transcript) bindPending(rows, conversation.transcript, now);
-  for (const row of racing()) contest(row);
-  return handle;
+  try {
+    const rows = rowsFor(conversation.key);
+    const racing = () => rows.filter((row) => row.fingerprint === fingerprint && row.messageId === null && !row.contested);
+    if (!racing().length) return handle;
+    if (conversation.transcript) bindPending(rows, conversation.transcript, now);
+    for (const row of racing()) contest(row);
+    return handle;
+  } catch (error) {
+    // Setup failed before the caller received a handle or attempted transport. Take back
+    // this exact reservation here, including any delegated contests it already created.
+    withdrawOtherSend(handle);
+    throw error;
+  }
 }
 
 /** What `withdrawOtherSend` needs to take one send back. */

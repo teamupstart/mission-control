@@ -90,3 +90,48 @@ test("PR and episode identities stay independent; bounded state refuses to disca
   openDb().prepare("DELETE FROM inspector_prs WHERE key = ?").run(a.key);
   assert.equal(readCodeRabbit(a.key), null, "adoption deletion owns cleanup");
 });
+
+test("claims may retain exactly 10,000 receipts but refuse overflow without discarding history", () => {
+  const s = setup();
+  s.observe([finding("handled")]);
+  const handledClaim = s.claim();
+  assert.ok(handledClaim);
+  finishCodeRabbit(s.key, handledClaim, "delivered");
+  const history = readCodeRabbit(s.key)!;
+  const receipt = history.receipts[0]!;
+  // Seed prior owners efficiently while retaining this owner's already handled finding.
+  // Both delivered and uncertain receipts must survive a claim at the storage boundary.
+  history.receipts = Array.from({ length: 9999 }, (_, i) => i === 0 ? receipt : {
+    ...receipt, noteKey: `past-conversation-${i}`, claimId: `past-claim-${i}`,
+    outcome: i % 2 === 0 ? "delivered" : "uncertain",
+  });
+  const db = openDb();
+  db.prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ?")
+    .run(JSON.stringify(history), s.key);
+
+  s.observe([finding("handled"), finding("at-limit")]);
+  assert.equal(s.pending(), 1, "the handled finding stays suppressed");
+  const before = readCodeRabbit(s.key)!;
+  assert.equal(before.receipts.length, 9999);
+  const now = Date.now();
+  const claim = claimCodeRabbit(s.key, owner, before.observationId, now);
+  assert.ok(claim, "adding the 10,000th receipt must succeed");
+  const atLimit = readCodeRabbit(s.key)!;
+  assert.equal(atLimit.receipts.length, 10000);
+  assert.deepEqual(atLimit.receipts.slice(0, -1), before.receipts);
+  assert.deepEqual(atLimit.receipts.at(-1), {
+    ...owner, threadId: "at-limit", generation: 1, observationId: before.observationId,
+    headSha: "head", claimId: claim, at: now, outcome: "uncertain",
+  });
+  assert.equal(s.pending(), 0);
+
+  s.observe([finding("handled"), finding("at-limit"), finding("over-limit")]);
+  assert.equal(s.pending(), 1, "only the new finding is eligible before the overflow attempt");
+  const persisted = () => db.prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?")
+    .get(s.key)!.code_rabbit_state;
+  const beforeOverflow = persisted();
+  assert.equal(s.claim(), null, "adding the 10,001st receipt must hold delivery");
+  assert.equal(persisted(), beforeOverflow, "a refused claim must not write or evict suppression history");
+  assert.deepEqual(readCodeRabbit(s.key)!.receipts, atLimit.receipts);
+  assert.equal(s.pending(), 1, "the held finding was not partially claimed");
+});

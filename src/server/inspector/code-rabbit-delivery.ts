@@ -4,13 +4,13 @@ import { reportBucket } from "@shared/session.ts";
 import { taskRepoRefs } from "@shared/task-repos.ts";
 import { codeRabbitSummary, getInspectorPr, readCodeRabbit } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
-import { activeWorkflowOwnsSession, buildPayload, decideReviewFollowup, followupPrs } from "../foreman/review-followup.ts";
+import { activeWorkflowOwnsSession, decideReviewFollowup, followupPrs } from "../foreman/review-followup.ts";
 import { foremanMayActLive } from "../foreman/verdict.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
 
 /** Rebuilt at claim AND inside the runtime's write lock. No worker boolean is authority. */
-export function codeRabbitCandidate(registry: Registry, sessionId: string, request: CodeRabbitFollowup, claimed = false) {
+export function codeRabbitCandidate(registry: Registry, sessionId: string, request: CodeRabbitFollowup, claimId?: string) {
   const session = registry.getSession(sessionId);
   const row = getInspectorPr(request.prKey);
   if (!session || !row || row.state !== "open") return { error: "PR or owning session is unavailable" } as const;
@@ -34,24 +34,27 @@ export function codeRabbitCandidate(registry: Registry, sessionId: string, reque
     || record.headSha !== row.observedHeadSha || record.state !== "OPEN" || record.draft) {
     return { error: "CodeRabbit observation is stale, incomplete, closed or draft" } as const;
   }
+  if (claimId && !record.receipts.some((receipt) => receipt.claimId === claimId && receipt.outcome === "uncertain"
+    && receipt.noteKey === owner.noteKey && receipt.episodeKey === owner.episodeKey
+    && receipt.observationId === request.observationId && receipt.headSha === record.headSha)) {
+    return { error: "CodeRabbit delivery claim is no longer current" } as const;
+  }
   if (!codeRabbitEnabled()) return { error: "CodeRabbit follow-up is off or unavailable" } as const;
   if (session.pendingTurns?.length) return { error: "Queued conversation turns own this session" } as const;
   const cfg = getForemanConfig();
   const workflowOwnsSession = activeWorkflowOwnsSession(registry.workflowRunSummaries().filter((r) => r.noteKey === owner.noteKey || r.sessionId === sessionId));
-  const currentPr = { ...pr, inspector: { ...pr.inspector!, codeRabbit: { ...summary, pending: claimed ? 1 : summary.pending } } };
+  const currentPr = { ...pr, repoRoot: checkout, inspector: { ...pr.inspector!, codeRabbit: summary } };
   const decision = decideReviewFollowup({
     session, pr: currentPr, mark: null, now: Date.now(), bucket: reportBucket(session, sessions),
     mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot) && foremanMayActLive(cfg, checkout, row.repoRoot),
     workflowOwnsSession,
-    cfg: { trackReviewComments: false, trackCiFailures: false, codeRabbitAutoResolve: true,
+    ...(claimId ? { claimedCodeRabbit: request } : {}),
+    cfg: { trackReviewComments: cfg.trackReviewFeedback, trackCiFailures: cfg.trackCiFailures, codeRabbitAutoResolve: true,
       settleMs: Number(process.env.FOREMAN_QUEUE_SETTLE_MS || 10_000) },
   });
   if (decision.kind === "skip") return { error: decision.why } as const;
-  const payload = buildPayload({ ...currentPr, repoRoot: checkout }, {
-    findings: cfg.trackReviewFeedback && (pr.inspector?.postedOpen ?? 0) > 0,
-    ciFailing: cfg.trackCiFailures && pr.checks === "failing", codeRabbit: true,
-  });
-  return { owner, session, payload, summary, checkout } as const;
+  if (!decision.codeRabbit) return { error: "No eligible CodeRabbit feedback" } as const;
+  return { owner, session, payload: decision.payload, summary, checkout } as const;
 }
 
 /** Settings uses the same live eligibility explanation as delivery. */

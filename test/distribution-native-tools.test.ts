@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
@@ -11,7 +12,83 @@ const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS arch
 const native = (command: string, args: string[]) => execFileSync(command, args,
   {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}, stdio: ['ignore', 'pipe', 'pipe']});
 
-test('real cp, quarantine, ditto and read-only DMG round trips preserve bundle bytes, modes and links', macOnly, t => {
+async function attachDmg(dmg: string, mount: string, {
+  run = native,
+  wait = setTimeout,
+  diagnostic = (_message: string) => {},
+}: {run?: typeof native; wait?: (ms: number) => Promise<unknown>; diagnostic?: (message: string) => void} = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return run('/usr/bin/hdiutil', ['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
+    } catch (error) {
+      // The real macOS probe can hit temporary mount resource exhaustion while
+      // other tests run. Retry only that refusal, never corrupt images or timeouts.
+      if (attempt >= 3 || !(error instanceof Error)
+        || !('status' in error) || error.status !== 1
+        || !('signal' in error) || error.signal !== null
+        || !('stderr' in error) || typeof error.stderr !== 'string'
+        || error.stderr.trim() !== 'hdiutil: attach failed - Resource temporarily unavailable') throw error;
+      diagnostic(`DMG attach attempt ${attempt}: Resource temporarily unavailable; retrying in ${attempt}s.`);
+      await wait(attempt * 1000);
+    }
+  }
+}
+
+const unavailableMount = () => Object.assign(new Error('attach refused'), {
+  status: 1, signal: null, stderr: 'hdiutil: attach failed - Resource temporarily unavailable\n',
+});
+
+test('DMG attach retries temporary resource refusal with the same read-only mount arguments', async () => {
+  const calls: string[][] = [];
+  const waits: number[] = [];
+  const diagnostics: string[] = [];
+  const result = await attachDmg('/fixture/installer.dmg', '/fixture/image', {
+    run: (command, args) => {
+      calls.push([command, ...args]);
+      if (calls.length < 3) throw unavailableMount();
+      return 'mounted';
+    },
+    wait: async ms => { waits.push(ms); },
+    diagnostic: message => { diagnostics.push(message); },
+  });
+  assert.equal(result, 'mounted');
+  assert.equal(calls.length, 3);
+  for (const call of calls) assert.deepEqual(call, [
+    '/usr/bin/hdiutil', 'attach', '/fixture/installer.dmg', '-readonly', '-nobrowse', '-mountpoint', '/fixture/image',
+  ]);
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.equal(diagnostics.length, 2);
+  assert.match(diagnostics[0]!, /Resource temporarily unavailable/);
+});
+
+test('DMG attach retains the final failure after three temporary resource refusals', async () => {
+  const failures = [unavailableMount(), unavailableMount(), unavailableMount()];
+  let calls = 0;
+  const waits: number[] = [];
+  await assert.rejects(attachDmg('/fixture/installer.dmg', '/fixture/image', {
+    run: () => { throw failures[calls++]; },
+    wait: async ms => { waits.push(ms); },
+  }), error => error === failures[2]);
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [1000, 2000]);
+});
+
+test('DMG attach does not retry permanent errors, timeouts, or unrelated resource errors', async () => {
+  for (const failure of [
+    Object.assign(unavailableMount(), {stderr: 'hdiutil: attach failed - no mountable file systems\n'}),
+    Object.assign(unavailableMount(), {status: null, signal: 'SIGTERM'}),
+    Object.assign(unavailableMount(), {stderr: 'spawn hdiutil: Resource temporarily unavailable\n'}),
+  ]) {
+    let calls = 0;
+    await assert.rejects(attachDmg('/fixture/installer.dmg', '/fixture/image', {
+      run: () => { calls++; throw failure; },
+      wait: async () => { assert.fail('must not wait after a non-retryable failure'); },
+    }), error => error === failure);
+    assert.equal(calls, 1);
+  }
+});
+
+test('real cp, quarantine, ditto and read-only DMG round trips preserve bundle bytes, modes and links', macOnly, async t => {
   const root = mkdtempSync(join(tmpdir(), 'distribution-native-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const name = 'Agent Mission Control.app';
@@ -44,7 +121,7 @@ test('real cp, quarantine, ditto and read-only DMG round trips preserve bundle b
   const dmg = join(root, 'installer.dmg');
   native('/usr/bin/hdiutil', ['create', '-srcfolder', join(root, 'source'), '-format', 'UDZO', '-volname', 'Native argument probe', dmg]);
   const mount = join(root, 'image'); mkdirSync(mount);
-  native('/usr/bin/hdiutil', ['attach', dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
+  await attachDmg(dmg, mount, {diagnostic: message => t.diagnostic(message)});
   try {
     assert.equal(inspectBundle(join(mount, name)).digest, digest);
     assert.throws(() => writeFileSync(join(mount, 'must-not-write'), 'refuse'), /EROFS|EACCES|EPERM/);

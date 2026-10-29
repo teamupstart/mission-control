@@ -326,15 +326,20 @@ test("a long launch error wraps inside the pane and leaves the toolbar in view",
   const flash = detail.getByText(/Could not open a terminal: the helper/);
   await expect(flash).toBeVisible();
   await settle(dashboard);
-  const width = dashboard.viewportSize()!.width;
+  // Contained by the pane, not merely by the viewport: an overflow that stayed on screen but
+  // spilled over the session rail would be just as broken.
+  const pane = (await detail.boundingBox())!;
+  const paneRight = pane.x + pane.width;
   const flashBox = (await flash.boundingBox())!;
-  expect(flashBox.x, "the error starts left of the pane").toBeGreaterThanOrEqual(0);
-  expect(flashBox.x + flashBox.width, "the error runs off the right edge").toBeLessThanOrEqual(width);
+  expect(flashBox.x, "the error starts left of the pane").toBeGreaterThanOrEqual(pane.x);
+  expect(flashBox.x + flashBox.width, "the error runs off the pane's right edge").toBeLessThanOrEqual(
+    paneRight,
+  );
 
-  // And nothing is pushed out of view: every control the row hosts is still on screen.
+  // And nothing is pushed out of the pane: every control the row hosts is still inside it.
   for (const box of await toolbar(dashboard, detail)) {
-    expect(box.left, `${box.name} was pushed off the left edge`).toBeGreaterThanOrEqual(0);
-    expect(box.right, `${box.name} was pushed off the right edge`).toBeLessThanOrEqual(width);
+    expect(box.left, `${box.name} was pushed off the pane's left edge`).toBeGreaterThanOrEqual(pane.x);
+    expect(box.right, `${box.name} was pushed off the pane's right edge`).toBeLessThanOrEqual(paneRight);
   }
 
   await shoot(dashboard, tabs, "launch-error-flash");

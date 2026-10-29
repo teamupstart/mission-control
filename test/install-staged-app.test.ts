@@ -123,6 +123,8 @@ test('detached migration treats an exited but unreaped parent as gone', async t 
   while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
   const events: string[] = [];
   const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+    // The first check must still see the zombie: the helper proceeded on it, not after a later poll reaped it.
+    if (events.length === 0) assert.equal(processState(pid), 'Z');
     if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
     events.push(bundle);
     if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});

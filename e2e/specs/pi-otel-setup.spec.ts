@@ -56,6 +56,10 @@ test("Pi telemetry is an optional Setup add-on, checked without installing or ex
   rmSync(extension);
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row).toContainText("The registered package's OTel entry is missing");
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:@upstart/pi-router-otel@"] }));
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+  await expect(row.getByRole("img", { name: "Unknown", exact: true })).toBeVisible();
+  await expect(row).toContainText("empty version suffix");
   writeFileSync(join(agentDir, "settings.json"), '{"credential":"do-not-show-this-secret"');
   await page.getByRole("button", { name: "Re-check", exact: true }).click();
   await expect(row.getByRole("img", { name: "Unknown", exact: true })).toBeVisible();

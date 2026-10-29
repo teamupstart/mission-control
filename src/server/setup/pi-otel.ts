@@ -72,6 +72,9 @@ export async function piOtelPackageStatus(deps: EnvironmentDeps, configuredDir?:
   if (registered.length !== 1 || registered[0]!.extensions !== undefined || registered[0]!.autoload === false) {
     return { state: "unknown", why: "Pi package autoload is disabled, resource filters or duplicate declarations are configured. Use pi config and /otel status to verify that OTel is selected.", evidence: settingsPath };
   }
+  if (registered[0]!.source.endsWith("@")) {
+    return { state: "unknown", why: "The registered npm package declaration has an empty version suffix. Use an exact npm version pin or an unversioned package declaration.", evidence: settingsPath };
+  }
   const packageDir = join(agentDir, "npm", "node_modules", PI_OTEL_PACKAGE.name);
   const manifestPath = join(packageDir, "package.json");
   const manifest = await readJson(deps, manifestPath, ManifestSchema);

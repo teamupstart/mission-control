@@ -112,6 +112,26 @@ test("an installed version that does not match the registered pin is not ready",
   }
 });
 
+test("an empty npm version suffix cannot claim installation readiness", async () => {
+  const source = `npm:${PI_OTEL_PACKAGE.name}@`;
+  for (const declaration of [source, { source }]) {
+    const f = fixture();
+    f.files.set(f.settings, JSON.stringify({ packages: [declaration] }));
+    const status = await piOtelPackageStatus(f.deps);
+    assert.equal(status.state, "unknown");
+    assert.deepEqual(f.reads, [f.settings], "reject the declaration before inspecting installed files");
+  }
+});
+
+test("a genuinely unversioned package declaration remains supported", async () => {
+  const source = `npm:${PI_OTEL_PACKAGE.name}`;
+  for (const declaration of [source, { source }]) {
+    const f = fixture();
+    f.files.set(f.settings, JSON.stringify({ packages: [declaration] }));
+    assert.equal((await piOtelPackageStatus(f.deps)).state, "satisfied");
+  }
+});
+
 test("missing and unsupported package manifests are not healthy installations", async () => {
   for (const [contents, state] of [
     [undefined, "needs-setup"], ["{}", "unknown"],

@@ -13,7 +13,7 @@ import {
   type ClaudeManagedDeps,
   type ManagedFileStat,
 } from "../environment/claude-managed.ts";
-import { readPlistValue } from "../environment/macos.ts";
+import { readPlistString } from "../environment/macos.ts";
 import { agentOtelSignalUrl } from "./policy.ts";
 
 // What device management says about the agents' OWN telemetry.
@@ -320,11 +320,10 @@ async function readCodex(deps: AgentOtelManagedDeps): Promise<ManagedAgentOtel |
     const info = await deps.stat(location.path);
     if (info === "missing") continue;
     if (info === "unreadable") return null;
-    const encoded = await readPlistValue(location.path, "config_toml_base64", { run: deps.run });
-    // A profile without the key configures something else about Codex; the next location
-    // may still carry a config.
+    const encoded = await readPlistString(location.path, "config_toml_base64", { run: deps.run });
+    // A profile without a string config configures something else about Codex; the next
+    // location may still carry one.
     if (encoded === null) continue;
-    if (typeof encoded !== "string") return null;
     const bytes = Buffer.from(encoded.replace(/\s+/g, ""), "base64");
     if (bytes.length === 0 || bytes.length > MAX_CODEX_TOML_BYTES) return null;
     const values = parseCodexOtelToml(bytes.toString("utf8"));

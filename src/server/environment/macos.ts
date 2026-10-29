@@ -103,6 +103,32 @@ export async function readPlistValue(
   }
 }
 
+/**
+ * Read one string value out of a property list, or null when it is absent, not a string, or
+ * unreadable.
+ *
+ * Not `readPlistValue`: `plutil -extract <key> json` refuses a scalar ("Invalid object in plist
+ * for JSON format") and only converts dictionaries and arrays. `raw -expect string` prints the
+ * string itself, with one trailing newline, and refuses every other type.
+ */
+export async function readPlistString(
+  path: string,
+  keyPath: string,
+  deps: MacosReaderDeps,
+): Promise<string | null> {
+  let result;
+  try {
+    result = await deps.run("plutil", ["-extract", keyPath, "raw", "-expect", "string", "-o", "-", path], {
+      timeoutMs: READ_TIMEOUT_MS,
+      maxBuffer: PLIST_MAX_BUFFER,
+    });
+  } catch {
+    return null;
+  }
+  if (result.code !== 0 || result.outcomeUnknown || result.overflowed) return null;
+  return result.stdout.replace(/\n$/, "");
+}
+
 /** `word` alone, or `word (qualifier)`, case-insensitively, and nothing else. */
 function explicitAnswer(value: string, word: "yes" | "no"): boolean {
   return new RegExp(`^${word}(?:\\s+\\([^()]*\\))?$`, "i").test(value);

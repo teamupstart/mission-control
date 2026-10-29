@@ -190,14 +190,23 @@ function fakeDeps(
     user: "ada",
     stat: async (path) => (path in files ? { mtimeMs: 1, size: 1 } : "missing"),
     readText: async () => ({ ok: false, missing: true, reason: "missing" }),
+    // Faithful to macOS `plutil -extract`: `json` output refuses a scalar ("Invalid object in
+    // plist for JSON format"), and `raw -expect string` prints a string and refuses any other type.
     run: async (bin, args) => {
       calls.push(`${bin} ${args.join(" ")}`);
       const path = args.at(-1)!;
       const key = args[1]!;
+      const format = args[2];
       const value = (files[path] as Record<string, unknown> | undefined)?.[key];
-      return value === undefined
-        ? stubRun({ stdout: "", stderr: "no value", code: 1 })
-        : stubRun({ stdout: JSON.stringify(value), stderr: "", code: 0 });
+      if (value === undefined) return stubRun({ stdout: "", stderr: "no value", code: 1 });
+      if (format === "raw") {
+        return args[3] === "-expect" && args[4] === "string" && typeof value !== "string"
+          ? stubRun({ stdout: "", stderr: "unexpected type", code: 1 })
+          : stubRun({ stdout: `${String(value)}\n`, stderr: "", code: 0 });
+      }
+      return typeof value === "object" && value !== null
+        ? stubRun({ stdout: JSON.stringify(value), stderr: "", code: 0 })
+        : stubRun({ stdout: "", stderr: "Invalid object in plist for JSON format", code: 1 });
     },
     ...over,
   };

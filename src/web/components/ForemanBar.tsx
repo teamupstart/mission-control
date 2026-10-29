@@ -226,8 +226,11 @@ export function ForemanBar({
   onOpenSettings,
   onOpenModels = onOpenSettings,
   openRequest = 0,
+  compact = false,
 }: {
   state: ForemanState;
+  /** Always drawn minimized - dot only - by the operator's Top bar choice (`lib/topbar-items.ts`). */
+  compact?: boolean;
   /** Open Settings on the Foreman category, where the cheap tier, completion safeguards,
    *  and trusted-repo list now live. The popover keeps only the in-the-moment knobs. */
   onOpenSettings: () => void;
@@ -283,7 +286,7 @@ export function ForemanBar({
     <div className="foremanbar" ref={ref}>
       <Tooltip label={accessibleName}>
         <button
-          className={`ghost-btn foreman-btn${enabled ? " on" : ""}${issues ? " has-errors" : ""}`}
+          className={`ghost-btn foreman-btn${enabled ? " on" : ""}${issues ? " has-errors" : ""}${compact ? " tb-compact" : ""}`}
           onClick={() => setOpen((o) => !o)}
           // Named explicitly because the word below is a `.tb-label`, which the topbar's
           // narrow ladder takes away: the dot and the mode chip survive the collapse, the

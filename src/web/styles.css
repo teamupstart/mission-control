@@ -9173,9 +9173,13 @@ mark.find-hit.is-current {
 }
 
 /* ---- conversation launchers (open a terminal, or the agent's own CLI) ---- */
+/* A centred flex row so the buttons share one line. It must stay able to shrink and wrap,
+   though: `.launch-flash` lives in this strip and an error there is a whole sentence (a
+   refused resume names a path and a command). With `flex: none` and no wrap the strip took
+   that sentence's full width, ran off the pane and pushed every button after it out of view. */
 .conv-launch {
-  flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   margin-left: auto;
   align-self: center;

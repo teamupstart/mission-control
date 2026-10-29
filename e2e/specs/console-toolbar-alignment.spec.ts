@@ -289,3 +289,53 @@ test("Terminal: the toolbar and prompt line up the same way, and the frame is un
   await showView(dashboard, detail, "Chat");
   expectOneBand(await toolbar(dashboard, detail), "back in Chat");
 });
+
+test("a long launch error wraps inside the pane and leaves the toolbar in view", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "wrap a long launch error");
+
+  // The strip also hosts the launch flash, and a refused launch reports a whole sentence: a
+  // path and a command. Keeping the strip a nowrap, non-shrinking flex row gave that sentence
+  // its full width, so it ran off the pane and pushed every button after it out of view.
+  // The chooser and the launch are stubbed so the sentence is long and deterministic. They
+  // are registered before the page loads, because the chooser's targets are read at mount.
+  const sentence =
+    `Could not open a terminal: the helper at /var/folders/${"nested/".repeat(40)}helper.mjs ` +
+    "exited (code 1, signal null). Run npm run build and try again.";
+  await dashboard.route("**/api/terminal-targets", (route) =>
+    route.fulfill({
+      json: {
+        targets: [
+          { id: "tmux", label: "tmux", glyph: "▦", blurb: "A stubbed backend.", detail: null, unavailable: null },
+        ],
+      },
+    }),
+  );
+  // A refusal arrives as a non-2xx: the client reads any 2xx as success whatever its body says.
+  await dashboard.route("**/api/sessions/*/launch", (route) =>
+    route.fulfill({ status: 409, json: { ok: false, error: sentence } }),
+  );
+
+  const detail = await openConsoleDetail(dashboard, daemon, /Wrap a Long Launch Error/i);
+  const tabs = detail.locator(".detail-tabs");
+  await tabs.getByRole("button", { name: "Terminal", exact: true }).click();
+  await detail.getByRole("menuitem", { name: /tmux/ }).click();
+
+  const flash = detail.getByText(/Could not open a terminal: the helper/);
+  await expect(flash).toBeVisible();
+  await settle(dashboard);
+  const width = dashboard.viewportSize()!.width;
+  const flashBox = (await flash.boundingBox())!;
+  expect(flashBox.x, "the error starts left of the pane").toBeGreaterThanOrEqual(0);
+  expect(flashBox.x + flashBox.width, "the error runs off the right edge").toBeLessThanOrEqual(width);
+
+  // And nothing is pushed out of view: every control the row hosts is still on screen.
+  for (const box of await toolbar(dashboard, detail)) {
+    expect(box.left, `${box.name} was pushed off the left edge`).toBeGreaterThanOrEqual(0);
+    expect(box.right, `${box.name} was pushed off the right edge`).toBeLessThanOrEqual(width);
+  }
+
+  await shoot(dashboard, tabs, "launch-error-flash");
+});

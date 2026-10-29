@@ -242,3 +242,40 @@ test("a save in flight blocks a second save or reset, even after switching views
   expect(puts, "exactly one request was sent while the first was in flight").toBe(1);
   expect((await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds).toBe(shipped + 7);
 });
+
+test("a saved round limit whose version refresh fails is reported as saved, with Retry", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  const before = await builtinDetail(daemon);
+  const shipped = before.workflow.bindingDefaults.maxRepairRounds;
+  const newest = Math.max(...before.versions.map((version) => version.version));
+
+  // Only the follow-up version list fails. The detail load and the PUT itself go through.
+  let failVersions = true;
+  await dashboard.route(/\/api\/workflows\/[^/]+\/versions$/, async (route) => {
+    if (failVersions) return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"unavailable"}' });
+    return route.continue();
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
+  const rail = dashboard.getByRole("complementary", { name: "Workflow settings and validation" });
+  await rail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 4));
+  await rail.getByRole("button", { name: "Save rounds" }).click();
+
+  // The save landed, and says so; the stale history is named rather than reported as a failed save.
+  const notice = dashboard.getByRole("alert").filter({ hasText: "Repair rounds saved, but the version history could not be refreshed." });
+  await expect(notice).toBeVisible();
+  await expect(rail).toContainText(`Changed from the ${shipped} this build ships.`);
+  expect((await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds).toBe(shipped + 4);
+
+  failVersions = false;
+  await notice.getByRole("button", { name: "Retry" }).click();
+  await expect(notice).toHaveCount(0);
+  const history = dashboard.locator(".workflow-version-history");
+  await history.getByRole("button", { name: new RegExp(`^Version ${newest}\\b`) }).click();
+  await expect(history.locator("dl > div").filter({ hasText: "Maximum repair rounds" }))
+    .toContainText(String(shipped + 4));
+});

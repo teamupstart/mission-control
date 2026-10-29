@@ -162,6 +162,8 @@ export interface WorkflowDraftState {
   saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
   /** A round-limit save or reset is in flight. Held here, not in the field, so a view switch keeps it. */
   savingRoundLimit: boolean;
+  /** A saved round limit landed but the version list it changed could not be refetched. */
+  versionsStale: boolean;
   clearConflict: () => void;
   clearError: () => void;
   showError: (message: string) => void;
@@ -186,6 +188,7 @@ export function useWorkflowDraft(
   const [conflict, setConflict] = useState<WorkflowSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingRoundLimit, setSavingRoundLimit] = useState(false);
+  const [versionsStale, setVersionsStale] = useState(false);
   const roundLimitInFlight = useRef(false);
   const workflowIdRef = useRef(workflowId);
   const loadGeneration = useRef(0);
@@ -224,6 +227,7 @@ export function useWorkflowDraft(
       setWorkflow(null);
       workflowRef.current = null;
       setVersions([]);
+      setVersionsStale(false);
       setSavedFingerprint(null);
       savedFingerprintRef.current = null;
       setConflict(null);
@@ -244,6 +248,7 @@ export function useWorkflowDraft(
       setWorkflow(detail.workflow);
       workflowRef.current = detail.workflow;
       setVersions(detail.versions);
+      setVersionsStale(false);
       const loadedFingerprint = editableFingerprint(detail.workflow);
       setSavedFingerprint(loadedFingerprint);
       savedFingerprintRef.current = loadedFingerprint;
@@ -460,8 +465,17 @@ export function useWorkflowDraft(
       const storedFingerprint = editableFingerprint(response.workflow);
       setSavedFingerprint(storedFingerprint);
       savedFingerprintRef.current = storedFingerprint;
-      // Every version of the built-in now offers the new budget to a binding.
-      await refreshVersions(current.id);
+      // Every version of the built-in now offers the new budget to a binding. The PUT has
+      // already landed, so a failed refresh is not a failed save: it is stale history, said
+      // as such, with Retry reloading the detail that carries the versions.
+      try {
+        await refreshVersions(current.id);
+      } catch {
+        if (workflowIdRef.current === current.id) {
+          setVersionsStale(true);
+          setError("Repair rounds saved, but the version history could not be refreshed.");
+        }
+      }
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save the repair rounds");
@@ -493,6 +507,7 @@ export function useWorkflowDraft(
     duplicate,
     saveRoundLimit,
     savingRoundLimit,
+    versionsStale,
     clearConflict: () => {
       conflictRef.current = null;
       setConflict(null);
@@ -503,5 +518,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

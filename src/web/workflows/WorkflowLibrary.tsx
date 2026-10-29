@@ -940,7 +940,7 @@ export function WorkflowLibrary({
           <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New workflow</button></Tooltip></section>
         )}
         {draft.loading && <section className="workflow-empty"><p>Loading workflow…</p></section>}
-        <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
+        <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !draft.loading && (!workflow || draft.versionsStale))} onRetry={() => void draft.reload()} />
         {workflow && (
           <>
             {/* Three groups: what you are looking at, what you are editing with, and what

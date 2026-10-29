@@ -1268,7 +1268,9 @@ export function startInspector(registry: Registry, options: InspectorStartOption
             (snapshot, observedAt) => {
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
-              registry.refreshInspections();
+              // CodeRabbit may be delivered while a model review is still running.
+              // With this source off, retain Inspector's once-per-sweep refresh.
+              if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
           ));

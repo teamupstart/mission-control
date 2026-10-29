@@ -181,7 +181,9 @@ export function ShippingSettingsPanel({
             {config?.codeRabbitAutoResolve && (!foreman?.config?.enabled || foreman.config.mode !== "live" || !foreman.status?.running) && (
               <p className="settings-warn">
                 {!foreman?.config || !foreman.status ? "Foreman status is unavailable." : !foreman.config.enabled ? "Foreman is disabled." : foreman.config.mode !== "live" ? "Foreman must be Live to deliver feedback." : "Foreman is not running."}{" "}
-                <button type="button" className="settings-link" onClick={() => onNavigate("foreman", "foreman/enabled")}>Open Foreman controls →</button>
+                <Tooltip label="Open Foreman settings to enable Live follow-up">
+                  <button type="button" className="settings-link" onClick={() => onNavigate("foreman", "foreman/enabled")}>Open Foreman controls →</button>
+                </Tooltip>
               </p>
             )}
           </ConsoleCard>

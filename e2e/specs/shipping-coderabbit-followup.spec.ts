@@ -18,9 +18,10 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return await res.json() as T;
 }
-async function shoot(page: Page, name: string) {
+async function shoot(page: Page, name: string, keepHover = false) {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  mkdirSync(evidence, { recursive: true }); await page.mouse.move(0, 0);
+  mkdirSync(evidence, { recursive: true });
+  if (!keepHover) await page.mouse.move(0, 0);
   await page.screenshot({ path: join(evidence, `${name}.png`), fullPage: true });
   console.log(`CAPTURED e2e/.artifacts/shipping-coderabbit-followup/${name}.png`);
 }
@@ -65,7 +66,16 @@ test("the independent default-off toggle persists and unreadable settings remain
   await expect(toggle).not.toBeChecked(); await toggle.locator("..").click();
   await expect.poll(() => api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true, autoMerge: false });
   await expect(dashboard.getByText("Foreman is disabled.")).toBeVisible();
-  await expect(dashboard.getByRole("button", { name: "Open Foreman controls" })).toBeVisible();
+  const foremanControls = dashboard.getByRole("button", { name: "Open Foreman controls" });
+  await expect(foremanControls).toHaveAccessibleDescription("Open Foreman settings to enable Live follow-up");
+  await foremanControls.hover();
+  const tooltip = dashboard.locator(".tooltip");
+  await expect(tooltip).toHaveText("Open Foreman settings to enable Live follow-up");
+  await expect(tooltip).toBeVisible();
+  await shoot(dashboard, "foreman-controls-tooltip", true);
+  await foremanControls.click();
+  await expect(dashboard).toHaveURL(/#\/settings\/foreman/);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   await dashboard.reload(); await expect(toggle).toBeChecked(); await shoot(dashboard, "enabled-prerequisite");
   await dashboard.route("**/api/shipping/config", (route) => route.fulfill({ status: 503, body: "unavailable" }));
   await expect(toggle).toBeDisabled();

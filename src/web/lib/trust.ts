@@ -187,6 +187,68 @@ export function addRepositoriesPatch(repos: readonly string[], lists: TrustLists
   };
 }
 
+/** What `/api/repos/resolve` said about one requested path, reduced to what an add needs. */
+export type ResolvedRepo = { ok: true; repoRoot: string } | { ok: false; error: string };
+
+/** How one batch add sorts its requests before anything is written. */
+export interface BatchAddPlan {
+  /** The canonical roots to grant, de-duplicated, in request order. */
+  roots: string[];
+  /** Indexes into the request list that were refused, so they stay in the form to fix. */
+  refused: number[];
+  /** One sentence per refusal, in request order. */
+  errors: string[];
+}
+
+/**
+ * Sort a batch's resolved requests into what will be written and what was refused.
+ *
+ * A request is refused when it did not resolve, or when its canonical root is already in the
+ * matrix (`present`). Two requests that resolve to the same root are one repository: the
+ * second adds nothing and is not an error, since it names a repo that is being added.
+ */
+export function planBatchAdd(
+  asked: readonly string[],
+  resolved: readonly ResolvedRepo[],
+  present: ReadonlySet<string>,
+): BatchAddPlan {
+  const plan: BatchAddPlan = { roots: [], refused: [], errors: [] };
+  resolved.forEach((res, i) => {
+    if (!res.ok) {
+      plan.errors.push(`${asked[i]}: ${res.error}`);
+      plan.refused.push(i);
+    } else if (present.has(res.repoRoot)) {
+      plan.errors.push(`${res.repoRoot} is already in the matrix.`);
+      plan.refused.push(i);
+    } else if (!plan.roots.includes(res.repoRoot)) {
+      plan.roots.push(res.repoRoot);
+    }
+  });
+  return plan;
+}
+
+/**
+ * The sentence an add reports about its grant writes, or null when every one landed.
+ *
+ * `failed` names the subsystems whose write did not land. Some failing leaves the new rows
+ * in the matrix through the grants that did land, so the fix is a cell click. All failing
+ * leaves them in no allowlist, so they survive only if staging them worked - and when that
+ * failed too, no row exists and the only honest instruction is to add them again.
+ */
+export function grantFailureMessage(
+  failed: readonly string[],
+  added: number,
+  stagingFailed: boolean,
+): string | null {
+  const noun = added === 1 ? "repository" : "repositories";
+  if (stagingFailed) {
+    return `Couldn't add the new ${noun}: the ${failed.join(", ")} grants and the fallback `
+      + "row could not be saved. Add again once the daemon answers.";
+  }
+  if (failed.length === 0) return null;
+  return `Couldn't grant ${failed.join(", ")} for the new ${noun} - click a cell to try again.`;
+}
+
 /**
  * The write one cell click produces. Kept as data - which subsystem's config route the
  * FULL new list is written to, plus whether the staged list changed - so the component is

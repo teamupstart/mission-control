@@ -10,8 +10,10 @@ import {
   candidateRepos,
   checkExecutionGrants,
   DEFAULT_ADD_GRANTS,
+  grantFailureMessage,
   grantPatch,
   mergeBlindSpots,
+  planBatchAdd,
   trustRows,
   type ChecksArmedReading,
   type GrantColumn,
@@ -346,22 +348,8 @@ export function TrustPanel({
     const resolved = await Promise.all(asked.map((path) => resolveRepo(path)));
     // Duplicate-checked against the whole matrix - the allowlists AND the staged list - so a
     // repo already in it is never added twice.
-    const present = new Set(currentRepos());
-    const errors: string[] = [];
-    const roots: string[] = [];
-    /** Which of `asked` were refused, so only those stay in the form to be corrected. */
-    const refused = new Set<number>();
-    resolved.forEach((res, i) => {
-      if (!res.ok) {
-        errors.push(`${asked[i]}: ${res.error}`);
-        refused.add(i);
-      } else if (present.has(res.repoRoot)) {
-        errors.push(`${res.repoRoot} is already in the matrix.`);
-        refused.add(i);
-      } else if (!roots.includes(res.repoRoot)) {
-        roots.push(res.repoRoot);
-      }
-    });
+    const { roots, refused, errors } = planBatchAdd(asked, resolved, new Set(currentRepos()));
+    let stagingFailed = false;
 
     if (roots.length > 0) {
       const patch = addRepositoriesPatch(roots, {
@@ -382,23 +370,21 @@ export function TrustPanel({
       const failed = ["Foreman", "Workflows", "GitHub Inspector"].filter((_, i) => !written[i]);
       if (failed.length === DEFAULT_ADD_GRANTS.length) {
         // Nothing landed, so the new repos sit in no allowlist. Stage them so the rows still
-        // show, and their cells can be granted once the daemon answers again.
-        await updateUiConfig({ trustStaged: [...stagedRef.current, ...roots] });
+        // show, and their cells can be granted once the daemon answers again - and say so
+        // plainly if even that write fails, because then there is no row to click.
+        stagingFailed = !(await updateUiConfig({ trustStaged: [...stagedRef.current, ...roots] }));
       }
-      if (failed.length > 0) {
-        errors.push(
-          `Couldn't grant ${failed.join(", ")} for the new ${
-            roots.length === 1 ? "repository" : "repositories"
-          } - click a cell to try again.`,
-        );
-      }
-      setRecent(new Set(roots));
+      const message = grantFailureMessage(failed, roots.length, stagingFailed);
+      if (message) errors.push(message);
+      if (!stagingFailed) setRecent(new Set(roots));
     }
 
     // Keep only what was refused, so a failed pick or path can be corrected and retried. A
-    // refused pick that is already in the matrix drops out of the list by itself.
-    setPicked(new Set(chosen.filter((_, i) => refused.has(i))));
-    if (!typed || !refused.has(asked.length - 1)) setPathDraft("");
+    // refused pick that is already in the matrix drops out of the list by itself. When the
+    // whole add was lost, keep everything, so trying again is one click.
+    const keep = (i: number): boolean => stagingFailed || refused.includes(i);
+    setPicked(new Set(chosen.filter((_, i) => keep(i))));
+    if (!typed || !keep(asked.length - 1)) setPathDraft("");
     setAdding(false);
     setAddError(errors.length > 0 ? errors.join(" ") : null);
   }

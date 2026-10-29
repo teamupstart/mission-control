@@ -22,6 +22,7 @@ import type {
 // (verbatimModuleSyntax). The descriptor is named here rather than restated because
 // launch-scoped MCP is declared ONCE, in `mission-mcp.ts`.
 import type { MissionMcpDescriptor } from "../mission-mcp.ts";
+import type { AgentTraceContext } from "../agent-trace-context.ts";
 
 // The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
 //
@@ -788,6 +789,18 @@ export interface SdkLaunchOptions {
   standingInstructionsPrompt: string;
   /** Harness-native session/thread id to continue, for a restart. Null starts fresh. */
   resume: string | null;
+  /**
+   * The W3C trace context this session's agent process runs under, from
+   * `sessionTraceContext`, or null to launch it with none.
+   *
+   * An adapter that starts an agent process applies it through `withAgentTraceContext`, which
+   * also removes any `TRACEPARENT` the daemon inherited, and adds nothing else. Where the 
+   * agent's telemetry goes is dictated outside of mission control; it's the machine's 
+   * configuration for the specific harness (Claude or Codex) application that decides this.
+   * Pi runs in this process and has no launch environment to carry it. Optional so a direct
+   * caller that does not name it launches with none.
+   */
+  traceContext?: AgentTraceContext | null;
 }
 
 /** An image accompanying a turn. A PATH, because that is what an upload durably is. */

@@ -64,6 +64,7 @@ import { getTelemetryConfig } from "./config.ts";
 import { taskOutcomeSourceId } from "./store.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
+import { sessionTraceIds } from "./session-trace.ts";
 
 /** The source id every fact below deduplicates under. See `registerSessionTelemetrySource`. */
 const SOURCE_KIND = "mission.session";
@@ -665,6 +666,10 @@ function startTrack(host: SessionTelemetryHost, session: Session): void {
     // restart that re-adopts the same proven session an observation-continuity update rather
     // than a second adoption - no in-memory guard could survive the restart it has to survive.
     source: { kind: SOURCE_KIND, id: `start:${session.id}`, revision: 1 },
+    // The session's own trace, at ids derived from its id. An embedded agent was launched with
+    // this span's exported ids as its `TRACEPARENT` before the session existed to capture it;
+    // see `session-trace.ts`.
+    trace: { ...sessionTraceIds(session.id), parentSpanId: null },
     actor: SYSTEM_ACTOR,
     facts: {
       origin,

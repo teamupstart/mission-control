@@ -67,6 +67,7 @@ export {
   resetSessionTelemetryForTesting,
 } from "./sessions.ts";
 export type { SessionTelemetryHost } from "./sessions.ts";
+export { sessionTraceContext } from "./session-trace.ts";
 export {
   registerTelemetryProjection,
   registerTelemetrySource,

@@ -1393,11 +1393,13 @@ test("the adapter refuses a duplicated question too, against its own request", a
 // ---- managed telemetry stays the agent's own --------------------------------------------
 
 /**
- * Anything that would change where Claude Code's OpenTelemetry goes: exporter routing,
- * protocol, headers, the enable switch and the capture switches. On a managed Mac the
- * organization's policy routes these; Mission Control must never contribute one.
+ * Anything that would change where or whether Claude Code's OpenTelemetry is exported:
+ * exporter routing, protocol, headers, export cadence, the SDK and enable switches, and the
+ * capture switches. On a managed Mac the organization's policy sets these; Mission Control
+ * must never contribute one. Trace-context propagation (`TRACEPARENT`) is not routing.
  */
-const CLAUDE_OTEL_ROUTING = /\bOTEL_(?:EXPORTER_|LOGS_|METRICS_|TRACES_|LOG_)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
+const CLAUDE_OTEL_ROUTING =
+  /\bOTEL_(?:EXPORTER_|LOGS_|METRICS?_|TRACES_|LOG_|SDK_DISABLED)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
 
 test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async () => {
   for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {

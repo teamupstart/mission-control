@@ -416,7 +416,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     label: "Pi OpenTelemetry extension",
     family: "agents",
     requirement: "optional",
-    enables: `Optional add-on for Pi: pi install npm:${PI_OTEL_PACKAGE.name}@${PI_OTEL_PACKAGE.version}. Requires Upstart CodeArtifact access and also loads the Pi router. Its default sends full prompt and tool content to the corporate staging gateway. Mission Control never installs it automatically; Pi works without it.`,
+    enables: `Optional add-on for Pi: pi install npm:${PI_OTEL_PACKAGE.name}@${PI_OTEL_PACKAGE.version}. Requires Upstart CodeArtifact access for install.  Mission Control never installs it automatically; Pi works without it.`,
     remedy: {
       kind: "link",
       url: "https://github.com/teamupstart/mission-control/blob/main/docs/pi-telemetry.md",

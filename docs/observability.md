@@ -452,6 +452,41 @@ Changing collection consent retires retained PR observation windows in the same 
 Re-enabling cannot resume their polling or pending capture across the gap. Previously captured
 facts and operational PR ownership remain intact; a fresh association starts a new window.
 
+
+### Trace context for embedded agents
+
+An embedded session's agent process is launched under a W3C trace context, so its own spans
+are children of Mission Control's span for that session. One parent span per session:
+`mission.session.start`. Both SDK runtimes keep one agent process per session, and the context
+is read from the process environment, so it is fixed for the session's lifetime.
+
+- **What is passed.** `TRACEPARENT` (`00-<trace id>-<span id>-01`) and nothing else. Mission
+  Control sets no `TRACESTATE`, no `OTEL_*` variable and no `-c otel.*` override: where the
+  agents' telemetry goes is the machine's own configuration, which on an Upstart Mac is device
+  management. Claude Code reads `TRACEPARENT` when it starts each `claude_code.interaction`
+  span in an Agent SDK session. `codex app-server` reads it once at startup and parents every
+  JSON-RPC request span that carries no per-request `trace` field under it.
+  `CLAUDE_CODE_PROPAGATE_TRACEPARENT` is deliberately not set. It controls the OUTBOUND
+  `traceparent` header (and the variable Claude Code hands its Bash tool) when
+  `ANTHROPIC_BASE_URL` points at a proxy, which has no bearing on inbound parenting.
+- **Which ids.** The ids `mission.session.start` is exported under to the organization's
+  **Product analytics** lane, after the per-profile translation every exported id receives.
+  That lane is the one that reaches the same backend the agents' device-managed telemetry
+  does. The raw ids are derived from the session id, so the context is known before the
+  session is registered, and a restored SDK session gets the same parent as its first launch.
+- **When nothing is passed.** With collection off, no organization recognized, or the managed
+  lane not exporting (paused, or not yet applied), the launch carries no trace context and the
+  agent starts its own root spans. An inherited `TRACEPARENT` or `TRACESTATE` in the daemon's
+  environment is always removed from the launch: it belongs to whatever started the daemon.
+- **Scope.** Claude and Codex SDK sessions only. Pi runs in the daemon's process, terminal
+  sessions are launched through the pane path (and interactive Claude Code ignores an inbound
+  `TRACEPARENT` anyway), and one-shot model calls are not sessions. If the session start fact was not captured (collection
+  refused it, say), the agent's spans still share a trace id, with a parent that was never
+  exported.
+
+`src/server/telemetry/session-trace.ts` owns both halves, and
+`test/agent-trace-propagation.test.ts` checks the header against the exported span.
+
 ## The local reference stack
 
 Four pinned long-running containers, all published on loopback only, plus a one-shot

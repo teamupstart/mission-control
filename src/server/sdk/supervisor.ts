@@ -34,7 +34,7 @@ import {
 } from "../injections.ts";
 import { getStandingInstructions, getTask as getDurableTask, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import { noteSessionRestoring, observeSessionRestore } from "../telemetry/index.ts";
+import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -414,6 +414,10 @@ export class SdkSupervisor {
         // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
         standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
         resume: null,
+        // Decided here, before the card exists, because the agent reads it once at launch.
+        // `mission.session.started` is captured under the same derived ids when this id is
+        // first published, so the agent's spans join that span's trace.
+        traceContext: sessionTraceContext(id),
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -1222,6 +1226,9 @@ export class SdkSupervisor {
         // and nothing is repeated.
         standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
+        // The same session id derives the same parent, so the restored process continues the
+        // trace its first launch started rather than opening a second one.
+        traceContext: sessionTraceContext(row.id),
       });
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this

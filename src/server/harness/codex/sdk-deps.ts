@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
+import { withAgentTraceContext, type AgentTraceContext } from "../../agent-trace-context.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -127,12 +128,35 @@ export async function* readFrames(child: {
 
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */
 export interface CodexSdkDeps {
-  /** Start one connection. `args` are the launch-scoped `-c` config overrides. */
-  connect(args: readonly string[], cwd: string, stateHome?: string): Promise<AppServerTransport>;
+  /**
+   * Start one connection. `args` are the launch-scoped `-c` config overrides; `traceContext`
+   * is the session's W3C parent, carried in the environment because `codex app-server` reads
+   * `TRACEPARENT` once at startup and parents every request span that has no `trace` of its
+   * own under it. One server per session makes that process-wide value session-scoped.
+   */
+  connect(
+    args: readonly string[],
+    cwd: string,
+    stateHome?: string,
+    traceContext?: AgentTraceContext | null,
+  ): Promise<AppServerTransport>;
+}
+
+/**
+ * The app-server's environment: the shared SDK subprocess environment, carrying this
+ * session's trace context and no other telemetry setting.
+ */
+export function codexAppServerEnv(
+  base: NodeJS.ProcessEnv,
+  cwd: string,
+  stateHome?: string,
+  traceContext?: AgentTraceContext | null,
+): Record<string, string | undefined> {
+  return withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome), traceContext);
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
-  async connect(args, cwd, stateHome) {
+  async connect(args, cwd, stateHome, traceContext) {
     // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
     // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
     // machine-installed hooks firing inside them would all key to that one card. Shared
@@ -142,7 +166,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
       await codexExecutable(),
       args,
       cwd,
-      sdkSubprocessEnv(process.env, cwd, stateHome),
+      codexAppServerEnv(process.env, cwd, stateHome, traceContext),
     );
   },
 };

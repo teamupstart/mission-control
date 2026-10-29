@@ -9,12 +9,11 @@ that provides tools and lifecycle reporting.
 ## Before installing
 
 The separately maintained [`@upstart/pi-router-otel`](https://github.com/nigel-upstart/pi-buildout/tree/main/packages/pi-router-otel)
-package loads both the Pi router and the same vendored OTel extension used in `pi-buildout`;
-it is not telemetry-only. It is **not** a Mission Control npm dependency or part of the app bundle. Pi discovers it from its own agent
-home, including when Mission Control embeds Pi's SDK. Install it only in the Pi home the daemon
-will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home), after reviewing the package's
-full-content capture default and removing any separately installed `npm:pi-otel` to avoid
-duplicate instrumentation.
+package loads both the Pi router and the same vendored OTel extension used in `pi-buildout`.
+It is **not** a Mission Control dependency or part of the app bundle. Pi discovers it from its
+own agent home, including when Mission Control embeds Pi's SDK. Install it only in the Pi home
+the daemon will actually use (`PI_CODING_AGENT_DIR`, or Pi's default home) after removing any
+separately installed `npm:pi-otel` to avoid duplicate instrumentation.
 
 Use the AWS CLI with a read-only CodeArtifact profile; UMT is not required. The subshell below
 removes its temporary npm configuration and credentials when it finishes, including on failure.
@@ -47,6 +46,7 @@ setup; do not combine its persistent npm config with the temporary override abov
 The package defaults to `https://corp-otel-staging-1.upstart.com` with OTLP HTTP/protobuf and
 all three signals enabled. `PI_OTEL_DISABLED=1` disables it; `OTEL_EXPORTER_OTLP_ENDPOINT`
 overrides its destination. The staging gateway is VPN/IP restricted, unlike a local sink.
+However, the gateway fails open silently.
 
 ## Verify and opt out
 
@@ -65,12 +65,9 @@ overrides its destination. The staging gateway is VPN/IP restricted, unlike a lo
   installation's defaults. Restart Mission Control before checking its embedded Pi sessions
   after an install or resource change.
 - Set `PI_OTEL_DISABLED=1` in the launching environment or `otel.enabled=false` in Pi settings
-  to stop exports. Installation readiness is not a claim that exports are enabled. To remove
-  the package, use `pi remove npm:@upstart/pi-router-otel@0.1.1-alpha.4`.
+  to stop exports. To remove the package, use `pi remove npm:@upstart/pi-router-otel@0.1.1-alpha.4`.
 
 ## Build and runtime boundary
 
-This is an explicit runtime install, not a Mission Control npm dependency. Builds and GitHub
-Actions do not need CodeArtifact credentials and do not fetch or execute the package. Pi
-exports directly through its own extension; Mission Control does not proxy, route or count
+Pi exports directly through its own extension; Mission Control does not proxy, route or count
 those exports.

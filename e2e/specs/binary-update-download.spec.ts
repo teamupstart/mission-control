@@ -15,6 +15,7 @@ for (const colorScheme of ["dark", "light"] as const) {
     let settle: (outcome: BinaryStageOutcome) => void;
     const receipt = {schema: 1 as const, repo: "teamupstart/mission-control", sourceClone: "/missing", appPath: "/Applications/Mission Control.app", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-25T00:00:00Z"};
     const port: UpdaterPort = {
+      readSnoozes: () => ({}), writeSnoozes: () => {},
       packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40), readAlpha: () => true, writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: async () => null, latestMainCommit: async () => ({sha: "b".repeat(40), message: "Exact alpha", committedAt: "2026-10-25T00:00:00Z"}),
       binaryForCommit: async commit => ready ? binaryOffer(commit, "alpha") : null,
@@ -96,6 +97,7 @@ for (const kind of ["source", "binary"] as const) {
       name: offer.manifest.version, body: "Rename-compatible signed update", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: false}));
     const port: UpdaterPort = {
       packaged: true, arch: "arm64", currentVersion: () => "1.2.4", currentCommit: () => "a".repeat(40),
+      readSnoozes: () => ({}), writeSnoozes: () => {},
       readAlpha: () => false, writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: () => latestStableBinary(async args => {
         const path = args[3]!.replace("repos/teamupstart/mission-control/", "");
@@ -189,6 +191,7 @@ for (const channel of ["stable", "alpha"] as const) {
     });
     const port: UpdaterPort = {
       packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
+      readSnoozes: () => ({}), writeSnoozes: () => {},
       readAlpha: () => channel === "alpha", writeAlpha: () => {}, installSnapshot: () => ({receipt, problem: null}),
       latestRelease: () => channel === "stable" ? latestStableBinary(run, "1.2.3") : Promise.resolve(null),
       latestMainCommit: async () => ({sha: head, message: "Fixture main", committedAt: "2026-10-25T00:00:00Z"}),

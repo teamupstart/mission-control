@@ -211,6 +211,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     installSnapshot: () => ({ receipt, problem: null }),
     readAlpha: () => false,
     writeAlpha: () => {},
+    readSnoozes: () => ({}), writeSnoozes: () => {},
     latestMainCommit: async () => ({ sha: "b".repeat(40), message: "New main commit", committedAt: "2026-08-19T13:00:00.000Z" }),
     latestRelease: async () => release(),
     binaryForCommit: async (commit) => binaryOffer(commit, "alpha"),
@@ -1003,6 +1004,88 @@ test("a prepared update that was deferred installs without building again", asyn
   assert.equal(await f.controller.install(), true);
   assert.equal(f.handoffs[0]?.stagedBundle, STAGED_BUNDLE);
   f.controller.stop();
+});
+
+test("Later snoozes each release for 48 hours without blocking manual checks or a different release", async (t) => {
+  let now = Date.parse("2026-10-28T12:00:00Z");
+  let target = "v1.2.4";
+  const f = fixture({ now: () => now, latestRelease: async () => release({ tagName: target }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(false);
+  f.controller.defer();
+  const expires = now + 48 * 60 * 60 * 1000;
+  now += 6 * 60 * 60 * 1000;
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  assert.equal((await f.controller.check(true)).phase, "available");
+  assert.equal((await f.controller.check(false)).phase, "idle", "a manual check does not erase the snooze");
+  target = "v1.2.5";
+  assert.equal((await f.controller.check(false)).phase, "available");
+  f.controller.defer();
+  target = "v1.2.4";
+  now = expires - 1;
+  assert.equal((await f.controller.check(false)).phase, "idle", "each version keeps its own deadline");
+  now = expires;
+  assert.equal((await f.controller.check(false)).phase, "available");
+  target = "v1.2.5";
+  assert.equal((await f.controller.check(false)).phase, "idle");
+});
+
+test("Later on a ready update snoozes reminders while keeping the prepared candidate", async (t) => {
+  const f = fixture();
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  f.controller.defer();
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+  assert.equal(f.stageRequests.length, 1);
+});
+
+test("a manual check joining an automatic check can still reveal a snoozed release", async (t) => {
+  const f = fixture();
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(false);
+  f.controller.defer();
+  let settle!: (release: ReleaseInfo) => void;
+  f.port.latestRelease = () => new Promise(resolve => { settle = resolve; });
+  const background = f.controller.check(false);
+  const manual = f.controller.check(true);
+  settle(release());
+  assert.equal((await background).phase, "available");
+  assert.equal((await manual).phase, "available");
+});
+
+test("alpha snoozes use the full commit even when two offers have the same short label", async (t) => {
+  let commit = "b".repeat(40);
+  const f = fixture({ readAlpha: () => true, latestMainCommit: async () => ({ sha: commit, message: "Main", committedAt: "2026-10-28T00:00:00Z" }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(false);
+  f.controller.defer();
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  commit = "b".repeat(7) + "c".repeat(33);
+  assert.equal((await f.controller.check(false)).phase, "available");
+});
+
+test("Later prunes expired snoozes, preserves active versions, and stays effective if saving fails", async (t) => {
+  const now = Date.parse("2026-10-28T12:00:00Z");
+  let saved: Record<string, number> = {};
+  const f = fixture({ now: () => now,
+    readSnoozes: () => ({ "v1.2.0": now - 1, "v1.2.5": now + 1 }),
+    writeSnoozes: value => { saved = value; throw new Error("disk full"); },
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(false);
+  f.controller.defer();
+  assert.deepEqual(saved, { "v1.2.4": now + 48 * 60 * 60 * 1000, "v1.2.5": now + 1 });
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  assert.ok(f.events.some(event => event.includes("could not save update snooze")));
 });
 
 test("a prepared bundle that is gone is reported instead of handed off", async () => {

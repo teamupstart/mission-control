@@ -347,7 +347,12 @@ managed updates.
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
-Deferring hides the banner until the next scheduled check or launch. The banner is part of the
+**Later** hides automatic reminders for that exact version for 48 hours, including across
+scheduled checks, window reloads, and app restarts. A different release or alpha commit can
+still appear. Explicit **Check for Updates** commands show a snoozed version immediately
+without clearing its deadline; choosing **Later** again starts a new 48-hour period.
+The snoozes are saved beside the alpha setting in `update-preferences.json`.
+The banner is part of the
 Electron-only preload capability: the plain browser dashboard has no update bridge, renders no
 update banner, and starts no update check.
 

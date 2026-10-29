@@ -4,14 +4,18 @@ import { dirname } from "node:path";
 import { z } from "zod";
 
 // Desktop-owned, like the receipt and outcome. Updating must work without a healthy daemon.
-export const UpdatePreferencesSchema = z.object({ alpha: z.boolean().default(false) });
+export const UpdatePreferencesSchema = z.object({
+  alpha: z.boolean().default(false),
+  // Exact release tags or full alpha commit IDs, never shortened display labels.
+  snoozedUntil: z.record(z.number().int().nonnegative().finite()).default({}),
+});
 export type UpdatePreferences = z.infer<typeof UpdatePreferencesSchema>;
 
 export function readUpdatePreferences(path: string): UpdatePreferences {
   try {
     return UpdatePreferencesSchema.parse(JSON.parse(readFileSync(path, "utf8")));
   } catch {
-    return { alpha: false };
+    return { alpha: false, snoozedUntil: {} };
   }
 }
 

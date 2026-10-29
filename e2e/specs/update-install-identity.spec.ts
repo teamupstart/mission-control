@@ -57,6 +57,7 @@ test("a copy that is not the installed app says so, and update copy names no fix
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => commit,
+    readSnoozes: () => ({}), writeSnoozes: () => {},
     readAlpha: () => readUpdatePreferences(preferences).alpha,
     writeAlpha: (alpha) => {
       writeUpdatePreferences(preferences, { alpha });

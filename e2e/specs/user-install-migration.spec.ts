@@ -164,6 +164,7 @@ test('a failed repair followed by a successful retry shows completion from the m
   const controller = new UpdateController({
     launchPreflight: async () => {},
     packaged: false, arch: 'arm64',
+    readSnoozes: () => ({}), writeSnoozes: () => {},
     readAlpha: () => false, writeAlpha: unexpected,
     currentVersion: () => '1.17.1',
     currentCommit: () => null,

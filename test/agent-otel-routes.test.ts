@@ -291,6 +291,22 @@ test("stored headers stay with the origin they were saved for", async () => {
   assert.deepEqual(both.headerNames, ["Authorization"]);
 });
 
+test("a save that fails after its headers rolls the headers back too", async () => {
+  assert.equal((await putConfig({ enabled: true, endpoint: SINK, headers: [{ name: "Authorization", value: "Bearer for-sink" }] })).status, 200);
+  db.exec(`CREATE TRIGGER fail_agent_telemetry_config BEFORE UPDATE ON app_config
+    WHEN NEW.key = 'agentTelemetry' BEGIN SELECT RAISE(ABORT, 'injected'); END`);
+  try {
+    const res = await putConfig({ endpoint: "https://other-gateway.example.com", headers: [{ name: "X-Other", value: "for-other" }] });
+    assert.notEqual(res.status, 200);
+  } finally {
+    db.exec(`DROP TRIGGER fail_agent_telemetry_config`);
+  }
+  // The other gateway's credential is not left paired with the sink's endpoint.
+  assert.deepEqual(db.prepare(`SELECT name, value FROM agent_telemetry_headers`).all().map((r) => ({ ...r })), [
+    { name: "Authorization", value: "Bearer for-sink" },
+  ]);
+});
+
 test("two spellings of one header name are refused", async () => {
   const res = await putConfig({
     headers: [

@@ -13,7 +13,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import type { AgentType } from "@shared/types.ts";
 import { ensureToken } from "../auth.ts";
 import { PORT } from "../config.ts";
-import { getAppConfig, openDb, setAppConfig } from "../db.ts";
+import { getAppConfig, inTransaction, openDb, setAppConfig } from "../db.ts";
 import { currentOrganization } from "../environment/organization.ts";
 import { targetsThisDaemon } from "../telemetry/config.ts";
 import {
@@ -58,21 +58,15 @@ function storedHeaders(): Record<string, string> {
   return Object.fromEntries(rows.map((r) => [r.name, r.value]));
 }
 
+/** Replace every stored header. The caller owns the transaction. */
 function replaceHeaders(headers: Array<{ name: string; value: string }>, now: number): void {
   const d = openDb();
-  d.exec("BEGIN");
-  try {
-    d.prepare(`DELETE FROM agent_telemetry_headers`).run();
-    const insert = d.prepare(
-      `INSERT INTO agent_telemetry_headers (name, value, updated_at) VALUES (?,?,?)
-       ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    );
-    for (const h of headers) insert.run(h.name, h.value, now);
-    d.exec("COMMIT");
-  } catch (error) {
-    d.exec("ROLLBACK");
-    throw error;
-  }
+  d.prepare(`DELETE FROM agent_telemetry_headers`).run();
+  const insert = d.prepare(
+    `INSERT INTO agent_telemetry_headers (name, value, updated_at) VALUES (?,?,?)
+     ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+  for (const h of headers) insert.run(h.name, h.value, now);
 }
 
 export class AgentTelemetryManagedError extends Error {}
@@ -108,8 +102,11 @@ export async function setAgentTelemetryConfig(
   if (next.endpoint !== "" && targetsThisDaemon(next.endpoint)) {
     throw new AgentTelemetryInvalidError("The endpoint is this daemon, which would forward to itself.");
   }
-  if (headers !== undefined) replaceHeaders(headers, now);
-  setAppConfig(ENTRY, next);
+  // One transaction: a credential must never be committed beside an endpoint it was not for.
+  inTransaction(() => {
+    if (headers !== undefined) replaceHeaders(headers, now);
+    setAppConfig(ENTRY, next);
+  });
   return next;
 }
 

@@ -277,6 +277,20 @@ test("a relay token with non-ASCII characters is refused, not thrown on", async 
   assert.equal(res.status, 401);
 });
 
+test("stored headers stay with the origin they were saved for", async () => {
+  assert.equal((await putConfig({ enabled: true, endpoint: SINK, headers: [{ name: "Authorization", value: "Bearer gw-s3cret" }] })).status, 200);
+  // Same origin, another path: still the gateway the credential was entered for.
+  const samePath = await (await putConfig({ endpoint: `${SINK}/otel` })).json();
+  assert.deepEqual(samePath.headerNames, ["Authorization"]);
+  // Another host without new headers: the old credential is not carried to it.
+  const moved = await (await putConfig({ endpoint: "https://other-gateway.example.com" })).json();
+  assert.deepEqual(moved.headerNames, []);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM agent_telemetry_headers`).get()!.n, 0);
+  // Moving and re-entering headers in the same save keeps the ones just entered.
+  const both = await (await putConfig({ endpoint: SINK, headers: [{ name: "Authorization", value: "Bearer new" }] })).json();
+  assert.deepEqual(both.headerNames, ["Authorization"]);
+});
+
 test("two spellings of one header name are refused", async () => {
   const res = await putConfig({
     headers: [

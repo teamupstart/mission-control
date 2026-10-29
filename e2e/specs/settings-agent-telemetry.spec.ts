@@ -116,6 +116,25 @@ test.describe("unmanaged", () => {
     await expect(dashboard.getByLabel("Agent telemetry relay counters")).toContainText("Forwarded 1");
     await shoot(dashboard, "agent-telemetry-relaying");
 
+    // Pointing at another host warns first, and saving does not carry the credential there.
+    const endpointField = dashboard.getByLabel("Agent telemetry endpoint");
+    await endpointField.fill("https://other-gateway.example.com");
+    const dropWarning = dashboard.getByText("Saving another host removes the stored headers. Re-enter them to keep a credential.");
+    await expect(dropWarning).toBeVisible();
+    await endpointField.fill(`${sinkUrl}/otel`);
+    await expect(dropWarning).toHaveCount(0);
+    await endpointField.fill("https://other-gateway.example.com");
+    await saveButton.click();
+    await expect(dashboard.getByText(/Stored: Authorization/)).toHaveCount(0);
+    await expect(dropWarning).toHaveCount(0);
+
+    // Back on the sink, with the credential entered again for it.
+    await endpointField.fill(sinkUrl);
+    await dashboard.getByLabel("Agent telemetry header name").fill("Authorization");
+    await dashboard.getByLabel("Agent telemetry header value").fill(SECRET);
+    await saveButton.click();
+    await expect(dashboard.getByText(/Stored: Authorization\./)).toBeVisible();
+
     // And removing the header leaves the endpoint in place.
     await dashboard.getByRole("button", { name: "Remove stored header" }).click();
     await expect(dashboard.getByText(/Stored: Authorization/)).toHaveCount(0);

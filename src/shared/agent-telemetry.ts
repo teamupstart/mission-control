@@ -141,6 +141,21 @@ export function agentOtelDestinationProblem(endpoint: string, hasHeaders: boolea
   return null;
 }
 
+/**
+ * The scheme, host and port stored headers belong to, or null for an empty or unparseable
+ * endpoint. A save that moves to another origin without new headers drops the stored ones,
+ * and the form says so before it saves.
+ */
+export function agentOtelOrigin(endpoint: string): string | null {
+  const trimmed = endpoint.trim();
+  if (trimmed === "") return null;
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+}
+
 /** Why a config cannot be saved, or null. Shared so the form and the route agree. */
 export function agentTelemetryConfigProblem(
   config: AgentTelemetryConfig,

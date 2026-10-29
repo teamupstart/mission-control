@@ -1,6 +1,7 @@
 import {
   AGENT_OTEL_SIGNALS,
   AgentTelemetryConfigSchema,
+  agentOtelOrigin,
   agentTelemetryConfigProblem,
   type AgentOtelManagedSummary,
   type AgentOtelSignal,
@@ -98,13 +99,16 @@ export async function setAgentTelemetryConfig(
     signals: { ...previous.signals, ...patch.signals },
     capture: { ...previous.capture, ...patch.capture },
   });
-  const hasHeaders = patch.headers !== undefined ? patch.headers.length > 0 : headerNames().length > 0;
+  // A credential was entered for one gateway. Moving to another origin without supplying
+  // headers drops it rather than sending it to a host it was never meant for.
+  const headers = patch.headers ?? (agentOtelOrigin(next.endpoint) === agentOtelOrigin(previous.endpoint) ? undefined : []);
+  const hasHeaders = headers !== undefined ? headers.length > 0 : headerNames().length > 0;
   const problem = agentTelemetryConfigProblem(next, hasHeaders);
   if (problem) throw new AgentTelemetryInvalidError(problem);
   if (next.endpoint !== "" && targetsThisDaemon(next.endpoint)) {
     throw new AgentTelemetryInvalidError("The endpoint is this daemon, which would forward to itself.");
   }
-  if (patch.headers !== undefined) replaceHeaders(patch.headers, now);
+  if (headers !== undefined) replaceHeaders(headers, now);
   setAppConfig(ENTRY, next);
   return next;
 }

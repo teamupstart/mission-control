@@ -4,6 +4,7 @@ import {
   AGENT_OTEL_SIGNALS,
   agentOtelDestinationProblem,
   agentOtelHeaderNameProblem,
+  agentOtelOrigin,
   type AgentOtelCapture,
   type AgentOtelCaptureKey,
   type AgentOtelHarnessMode,
@@ -91,6 +92,11 @@ export function AgentTelemetrySettingsPanel({
       : (agentOtelHeaderNameProblem(headerName.trim()) ?? (headerValue === "" ? "Give the header a value." : null))
     : null;
   const hasHeaders = addingHeader || (status?.headerNames.length ?? 0) > 0;
+  const dropsStoredHeaders =
+    !addingHeader &&
+    (status?.headerNames.length ?? 0) > 0 &&
+    config !== null &&
+    agentOtelOrigin(endpoint) !== agentOtelOrigin(config.endpoint);
   const endpointProblem =
     endpoint.trim() === ""
       ? enabled ? "Set an endpoint to turn this on." : null
@@ -243,6 +249,11 @@ export function AgentTelemetrySettingsPanel({
                   ? `Stored: ${status!.headerNames.join(", ")}. Values are kept by the daemon and never shown.`
                   : "Optional, for a gateway that needs a credential. Stored by the daemon and never shown again."}
               </span>
+              {dropsStoredHeaders && (
+                <span className="settings-warn">
+                  Saving another host removes the stored headers. Re-enter them to keep a credential.
+                </span>
+              )}
               {headerProblem && <span className="settings-error">{headerProblem}</span>}
             </>
           )}

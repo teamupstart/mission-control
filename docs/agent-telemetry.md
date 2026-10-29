@@ -58,7 +58,9 @@ such as `ECONNREFUSED`. Bodies, headers and URLs are never logged.
 When device management applies, its routing and capture switches become the effective policy.
 An enabled Claude Code policy speaks for capture; a disabled one is ignored, and Codex's
 capture applies. Codex's policy fills any signal Claude's does not route.
-Stored Settings headers are never sent to a managed destination. Only OTLP/HTTP destinations
+Stored Settings headers are never sent to a managed destination. They also stay with the
+origin (scheme, host and port) they were saved for: saving another origin without new headers
+removes them, and Settings warns before that save. Only OTLP/HTTP destinations
 are reusable by the relay: console exporters and managed gRPC routes do not become HTTP
 upstreams.
 

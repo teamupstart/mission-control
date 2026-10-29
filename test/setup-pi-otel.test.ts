@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { PI_OTEL_PACKAGE } from "../src/shared/setup-catalog.ts";
@@ -143,8 +143,11 @@ test("PI_CODING_AGENT_DIR expands only a bare leading tilde, as Pi does", () => 
   assert.equal(expandPiAgentDir(undefined, home), undefined);
   assert.equal(expandPiAgentDir("~", home), home);
   assert.equal(expandPiAgentDir("~/pi", home), "/Users/op/pi");
-  assert.equal(expandPiAgentDir("~\\pi", home), "/Users/op\\pi");
-  assert.equal(expandPiAgentDir("~user/pi", home), "~user/pi");
+  assert.equal(expandPiAgentDir("", home), undefined);
+  assert.equal(expandPiAgentDir("~\\pi", home, "darwin"), resolve("~\\pi"));
+  assert.equal(expandPiAgentDir("~\\pi", home, "win32"), resolve("/Users/op\\pi"));
+  assert.equal(expandPiAgentDir("~user/pi", home), resolve("~user/pi"));
+  assert.equal(expandPiAgentDir("relative/pi", home), join(process.cwd(), "relative/pi"));
   assert.equal(expandPiAgentDir("/abs/pi", home), "/abs/pi");
 });
 

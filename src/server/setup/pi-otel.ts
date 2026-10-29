@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 
 import { PI_OTEL_PACKAGE, type SetupStatus } from "@shared/setup-catalog.ts";
@@ -38,9 +38,19 @@ function namesPackage(source: string, name: string): boolean {
   return source === `npm:${name}` || source.startsWith(`npm:${name}@`);
 }
 
-/** Expand only a bare leading `~`, as Pi does; `~user` stays unchanged. */
-export function expandPiAgentDir(value: string | undefined, homeDir: string): string | undefined {
-  return value?.replace(/^~(?=$|[/\\])/, homeDir);
+/**
+ * Expand a leading `~` exactly as Pi's `normalizePath` does (`~`, `~/`, and `~\` only on
+ * Windows; `~user` stays literal), then resolve against the daemon's working directory, which
+ * is where embedded Pi resolves a relative value too.
+ */
+export function expandPiAgentDir(
+  value: string | undefined,
+  homeDir: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (!value) return undefined;
+  const tilde = platform === "win32" ? /^~(?=$|[/\\])/ : /^~(?=$|\/)/;
+  return resolve(value.replace(tilde, homeDir));
 }
 
 /** Installation evidence only: never import extension code, change Pi settings or contact npm. */

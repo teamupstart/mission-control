@@ -2422,6 +2422,8 @@ export interface ResolveFindingsResult {
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
+  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
+  codeRabbitAutoResolve: z.boolean().default(false),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -4725,6 +4727,7 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
+  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),

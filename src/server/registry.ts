@@ -1,3 +1,4 @@
+import { codeRabbitSummary } from "./db.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -5068,7 +5069,7 @@ export class Registry extends EventEmitter {
     return {
       prNumber: live.number,
       prChecks: live.checks,
-      inspector: this.inspectorSummaryForUrl(prUrl),
+      inspector: this.inspectorSummaryForUrl(prUrl, this.sessions.get(sessionId)),
     };
   }
 
@@ -8632,7 +8633,7 @@ export class Registry extends EventEmitter {
    * a PR chip and no inspector chip is saying that PR came from somewhere else.
    */
   private inspectorSummaryFor(s: Session): InspectorSummary | null {
-    return this.inspectorSummaryForUrl(s.prUrl);
+    return this.inspectorSummaryForUrl(s.prUrl, s);
   }
 
   /**
@@ -8642,13 +8643,16 @@ export class Registry extends EventEmitter {
    * in this very ledger and reaches no session scalar, so the only difference between its chip
    * facts and the primary's is which url you ask about.
    */
-  private inspectorSummaryForUrl(prUrl: string | null): InspectorSummary | null {
+  private inspectorSummaryForUrl(prUrl: string | null, session?: Session): InspectorSummary | null {
     if (!prUrl) return null;
     const parsed = parsePrUrl(prUrl);
     if (!parsed) return null;
     const row = this.inspections.get(parsed.key);
     if (!row) return null;
     return {
+      codeRabbit: codeRabbitSummary(row.key, session && resolvedSessionIntent(this.getGoal(session.id))?.episodeKey
+        ? { noteKey: noteKeyFor(session), episodeKey: resolvedSessionIntent(this.getGoal(session.id))!.episodeKey }
+        : undefined),
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,

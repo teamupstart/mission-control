@@ -2805,6 +2805,7 @@ export interface InspectorComment {
  * PR itself is where you look.
  */
 export interface InspectorSummary {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -2859,6 +2860,7 @@ export interface RetroSummary {
 
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;

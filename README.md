@@ -300,6 +300,11 @@ The GitHub Inspector reviews pull requests Mission Control can prove it opened. 
 answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
 code fixes them. Dry run records what it would say without publishing anything.
 
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
+attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
+invitation and repository trust, and waits while a workflow owns the session.
+
 Optional shipping automation can merge only after the current head has a clean published review,
 CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,
 and the repository has separate review and merge grants. The final merge is pinned to the exact

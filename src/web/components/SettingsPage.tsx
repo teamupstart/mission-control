@@ -659,6 +659,7 @@ export function SettingsPage({
         return (
           <ShippingSettingsPanel
             state={shipping}
+            foreman={foreman}
             inspectorConfig={inspector.config ?? null}
             onNavigate={navigateWithAnchor}
           />

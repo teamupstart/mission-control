@@ -23118,6 +23118,11 @@ button.sc-row:focus-visible {
   background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
   border-color: color-mix(in oklab, var(--danger) 34%, transparent);
 }
+.ship-coderabbit-status {
+  display: block;
+  margin-top: 4px;
+}
+
 /* Stronger still. The Inspector's live mode publishes a comment; this one lands a commit
    on the base branch, and nothing here can take it back. */
 .ship-live-warn {

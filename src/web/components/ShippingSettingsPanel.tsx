@@ -110,9 +110,11 @@ const COLUMNS: readonly ConsoleColumn[] = [
 export function ShippingSettingsPanel({
   state,
   inspectorConfig,
+  foreman,
   onNavigate,
 }: {
   state: ShippingState;
+  foreman?: Pick<import("../useForeman.ts").ForemanState, "config" | "status">;
   /**
    * The Inspector's consent settings, from the config the Inspector panel edits. Null
    * when the daemon is unreachable, which is "unknown", not "off".
@@ -166,6 +168,23 @@ export function ShippingSettingsPanel({
 
       <div className="sc-split">
         <div className="sc-controls">
+          <ConsoleCard title="Follow up on CodeRabbit comments" anchor="shipping/coderabbit" action={
+            <ConsoleSwitch label="Follow up on CodeRabbit comments"
+              tooltip="Prompt the eligible owning session to assess unresolved CodeRabbit review threads"
+              checked={config?.codeRabbitAutoResolve ?? false} disabled={!config}
+              onChange={(next) => void update({ codeRabbitAutoResolve: next })} />
+          }>
+            <ConsoleState tone={!config ? "unknown" : config.codeRabbitAutoResolve ? "ok" : "off"}>
+              {!config ? "Unknown - Shipping configuration is unavailable" : config.codeRabbitAutoResolve ? "On - follow up through Foreman" : "Off - CodeRabbit follow-up is disabled"}
+            </ConsoleState>
+            <p className="settings-hint">Prompts the owning session to assess feedback and fix valid defects on the same PR. Works with Inspector reviews and YOLO off. Foreman must be Live, invited into the session, and trusted for its repository. Active workflows hold delivery.</p>
+            {config?.codeRabbitAutoResolve && (!foreman?.config?.enabled || foreman.config.mode !== "live" || !foreman.status?.running) && (
+              <p className="settings-warn">
+                {!foreman?.config || !foreman.status ? "Foreman status is unavailable." : !foreman.config.enabled ? "Foreman is disabled." : foreman.config.mode !== "live" ? "Foreman must be Live to deliver feedback." : "Foreman is not running."}{" "}
+                <button type="button" className="settings-link" onClick={() => onNavigate("foreman", "foreman/enabled")}>Open Foreman controls →</button>
+              </p>
+            )}
+          </ConsoleCard>
           <ConsoleCard
             title="YOLO mode"
             anchor="shipping/yolo"
@@ -424,7 +443,14 @@ export function ShippingSettingsPanel({
                     url={row.url}
                     tooltip={`Open ${row.repo}#${row.number} on GitHub`}
                   />
-                  <span className={`sc-standing sc-standing-${bucket}`}>{mergeStatus(row)}</span>
+                  <span className={`sc-standing sc-standing-${bucket}`}>
+                    {mergeStatus(row)}
+                    <span className="settings-hint ship-coderabbit-status">
+                      CodeRabbit: {row.codeRabbit?.status === "complete" && (row.codeRabbit.freshUntil ?? 0) >= now ? `${row.codeRabbit.unresolved} unresolved` : "unknown"}.
+                      {row.codeRabbit?.status !== "complete" && row.codeRabbit?.unresolved !== null && row.codeRabbit?.unresolved !== undefined ? ` Last complete observation: ${row.codeRabbit.unresolved} unresolved.` : ""}
+                      {" "}{row.codeRabbit?.error ?? row.codeRabbit?.delivery ?? "Waiting for a complete observation"}
+                    </span>
+                  </span>
                   <span className="sc-when">{when(row, now)}</span>
                 </div>
               );

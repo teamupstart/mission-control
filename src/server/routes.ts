@@ -1,3 +1,7 @@
+import { paneToken } from "@shared/pane.ts";
+import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
+import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
+import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
@@ -5632,6 +5636,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // It also carries `paneBlocked` when a pane in a tmux mode refused the write, which
   // is what stops the worker charging an attempt for a human reading their scrollback.
   // Both ride along on the ActionResult itself, so neither can be forgotten here.
+  const codeRabbitSending = new Set<string>();
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -5669,6 +5674,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return c.json(result, result.ok ? 200 : 409);
     }
+    let text = parsed.data.text;
+    let claim: { id: string; noteKey: string; episodeKey: string; checkout: string } | null = null;
+    const request = parsed.data.codeRabbit;
+    const codeRabbitGuard = (): string | null => {
+      if (!request) return null;
+      try {
+        if (origin !== "foreman" || !workflowManager()) return "CodeRabbit delivery requires Foreman and workflow ownership";
+        const candidate = codeRabbitCandidate(registry, session.id, request, claim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "CodeRabbit delivery channel changed";
+        if (claim && (candidate.owner.noteKey !== claim.noteKey || candidate.owner.episodeKey !== claim.episodeKey || candidate.checkout !== claim.checkout)) return "CodeRabbit owner changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = workflowManager()!.runs().filter((run) => run.noteKey === candidate.owner.noteKey || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "CodeRabbit delivery prerequisites are unavailable"; }
+    };
+    if (request) {
+      const blocked = codeRabbitGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = codeRabbitCandidate(registry, session.id, request);
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (codeRabbitSending.has(candidate.owner.noteKey)) return c.json({ error: "A PR follow-up is already being delivered", pasted: false }, 409);
+      const id = claimCodeRabbit(request.prKey, candidate.owner, request.observationId);
+      if (!id) return c.json({ error: "CodeRabbit feedback was already claimed or its history limit was reached", pasted: false }, 409);
+      claim = { id, ...candidate.owner, checkout: candidate.checkout };
+      codeRabbitSending.add(claim.noteKey);
+      text = candidate.payload;
+    }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
@@ -5682,15 +5719,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Narrowed once into a value rather than re-tested, so the reservation and its release
     // cannot drift apart on which origins they consider ours.
     const daemonOrigin = origin === "human" ? null : origin;
-    if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
+    if (daemonOrigin) reserveInjection(session.id, text, daemonOrigin);
     // The durable sender, reserved on the same terms. Named as the controller is now, so the
     // target's log still says who sent it after that session ends or the daemon restarts.
     // Any other sender of these words is reported first, so a race leaves both unattributed.
     const delegatedKey = noteKeyFor(session);
     const conversation = { key: delegatedKey, transcript: sessionMessages(session) };
-    const otherSend = controller ? null : noteOtherSend(conversation, parsed.data.text);
+    const otherSend = controller ? null : noteOtherSend(conversation, text);
     const delegatedTurn = controller
-      ? reserveDelegatedTurn(conversation, parsed.data.text, {
+      ? reserveDelegatedTurn(conversation, text, {
           id: controller,
           name: registry.getSession(controller)?.name ?? controller,
         })
@@ -5698,22 +5735,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
-      parsed.data.text,
+      text,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? registry.promptResourceBlockerForSession(session.id),
       origin,
-    );
+    ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
+      .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
+    if (request && claim) {
+      if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
+      registry.refreshInspections();
+    }
     if (daemonOrigin) {
       // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
       // would each owe an echo for one delivery.
-      if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
+      if (r.ok) confirmReservedInjection(session.id, text, daemonOrigin);
       // `pasted === false` and nothing weaker, which is the same line every other sender
       // draws. The note above about a refusal being positive evidence is true of the DRIVER
       // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
       // a real outcome - the text is in the composer and only the Enter failed. That echo may
       // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
       // reopened this race on the path Foreman's recovery packets travel.
-      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
+      else if (r.pasted === false) releaseInjection(session.id, text);
     }
     if (delegatedTurn && !r.ok && r.pasted === false) releaseDelegatedTurn(delegatedKey, delegatedTurn);
     if (otherSend && !r.ok && r.pasted === false) withdrawOtherSend(otherSend);
@@ -6895,7 +6937,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // a second endpoint over one ledger is a second thing to keep honest.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50));
+    if (raw === undefined) return c.json(loadInspectorInspections(50).map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) })));
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too

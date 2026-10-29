@@ -138,3 +138,60 @@ test("an unobserved gap beyond the scan budget stays unknown without rescanning 
   appendFileSync(path, next.slice(-5) + output + tokens);
   assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-terra");
 });
+
+test("an unfinished record beyond the scan budget retains progress across chunked appends", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-unfinished-model-"));
+  t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
+  const path = join(dir, "rollout.jsonl");
+  writeFileSync(path, turn("gpt-5.6-sol", "medium", "old"));
+  assert.equal(readRolloutMeta(path)?.modelId, "gpt-5.6-sol");
+  appendFileSync(path, '{"type":"response_item","payload":{"text":"' + "x".repeat(17 * 1024 * 1024));
+  assert.equal(readRolloutMeta(path), null);
+  const reads = t.mock.method(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    // Grow past one whole tail to prove each poll advances, rather than merely
+    // retaining the boundary from the first over-budget scan.
+    for (let i = 0; i < 4; i++) {
+      reads.mock.resetCalls();
+      appendFileSync(path, "x".repeat(64 * 1024));
+      assert.equal(readRolloutMeta(path), null);
+      const bytesRead = reads.mock.calls.reduce((sum, call) => sum + call.result!, 0);
+      t.diagnostic(`Unfinished oversized record append ${i + 1}: ${bytesRead} bytes read`);
+      assert.ok(bytesRead > 0 && bytesRead <= 128 * 1024, `unfinished append read ${bytesRead} bytes`);
+    }
+  } finally {
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+  appendFileSync(path, '"}}\n' + turn("gpt-6.1-sol", "high", "new") + output + tokens);
+  assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-sol");
+});
+
+test("a newline outside the tail preserves a split turn's retry boundary", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-large-split-model-"));
+  t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
+  const path = join(dir, "rollout.jsonl");
+  // The initial scan cannot establish a model, but it can locate the start of
+  // this incomplete turn. Its padding pushes that newline outside the live tail.
+  writeFileSync(path, output.repeat(60) + '{"type":"turn_context","payload":{"padding":"' + "x".repeat(300_000));
+  assert.equal(readRolloutMeta(path), null);
+  assert.equal(readRolloutMeta(path), null, "unchanged reads retain the pending turn boundary");
+  const reads = t.mock.method(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    appendFileSync(path, "x");
+    assert.equal(readRolloutMeta(path), null);
+    const bytesRead = reads.mock.calls.reduce((sum, call) => sum + call.result!, 0);
+    t.diagnostic(`Unfinished turn within scan budget: ${bytesRead} bytes read`);
+    assert.ok(bytesRead > 0 && bytesRead <= 1024 * 1024, `split turn append read ${bytesRead} bytes`);
+  } finally {
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+  // A valid final record without a newline must still be parsed on completion.
+  appendFileSync(path, '","model":"gpt-6.1-terra","effort":"high"}}');
+  assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-terra");
+  appendFileSync(path, "\n" + output + tokens);
+  assert.equal(readRolloutMeta(path)?.modelId, "gpt-6.1-terra");
+});

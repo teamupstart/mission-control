@@ -42,6 +42,7 @@ interface RolloutTurnCache {
   fileId: string;
   size: number;
   mtimeMs: number;
+  /** End of verified records, or a discarded oversized record prefix with a null turn. */
   checkedThrough: number;
   turn: TurnMeta | null;
 }
@@ -301,6 +302,10 @@ function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | nu
     let bytes = Math.min(size, ROLLOUT_TAIL_BYTES);
     const tail = read(bytes);
     const lines = completeLines(tail, bytes < size, false);
+    // An unchanged tail need not include the newline found by the previous wider
+    // scan. Preserve that retry boundary along with the retained result.
+    if (cached && size === cached.size) return { lines, turn: cached.turn };
+    let scanned = tail;
     let window = lines;
     let turn: TurnMeta | null = null;
     for (;;) {
@@ -309,23 +314,30 @@ function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | nu
         turn = { modelId: found.modelId, thinkingLevel: found.thinkingLevel, effortRevision: found.effortRevision };
         break;
       }
-      // An unchanged file or an overlap with the last complete record proves there
+      // An overlap with the last verified boundary proves there
       // is no unseen turn between this window and the retained result, even when
       // that result is unknown because an earlier scan reached the ceiling.
-      if (cached && (size === cached.size || size - bytes < cached.checkedThrough)) {
+      if (cached && size - bytes < cached.checkedThrough) {
         turn = cached.turn;
         break;
       }
       if (bytes >= Math.min(size, ROLLOUT_META_SCAN_BYTES)) break;
       bytes = Math.min(size, ROLLOUT_META_SCAN_BYTES, bytes * 2);
-      window = completeLines(read(bytes), bytes < size, false);
+      scanned = read(bytes);
+      window = completeLines(scanned, bytes < size, false);
     }
-    const lastNewline = tail.lastIndexOf(0x0a);
+    const lastNewline = scanned.lastIndexOf(0x0a);
+    let checkedThrough = lastNewline >= 0 ? size - scanned.length + lastNewline + 1 : 0;
+    if (lastNewline < 0 && !turn && (bytes === ROLLOUT_META_SCAN_BYTES ||
+      (cached && size - bytes < cached.checkedThrough))) {
+      // No newline within the scan ceiling means this record cannot be parsed
+      // within our budget, even after it finishes. Overlap without a newline can
+      // only reach a previously discarded prefix, not a complete-record boundary.
+      // Advance through that prefix; completeLines still drops it on future reads.
+      checkedThrough = size;
+    }
     rolloutTurnMeta.set(path, {
-      fileId, size, mtimeMs, turn,
-      // Retain the verified boundary even when no turn was found, so overlapping
-      // appends can stay unknown without rescanning history. Retry unfinished records.
-      checkedThrough: lastNewline >= 0 ? size - tail.length + lastNewline + 1 : 0,
+      fileId, size, mtimeMs, turn, checkedThrough,
     });
     return { lines, turn };
   } catch {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync, readdirSync, chmodSync, cpSync, renameSync, symlinkSync, type PathLike } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { stagingPaths } from '../scripts/app-bundle-swap.mjs';
@@ -12,7 +12,7 @@ import { prepareStagedInstall, prepareSourceUpdate, installStagedApp, inspectBun
 import { prepareInPlaceInstall, runMigration, recoverMigration, migrationReceipt, readMigrationJournal, validateMigrationPlan, atomicMigrationJson, MIGRATION_JOURNAL, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
-import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
+import { processIdentity } from '../scripts/update-lock.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 
 ensureNativeStateLockAddon();
@@ -44,6 +44,27 @@ function fixture(t: test.TestContext, rename = false, scope?: "user" | "system" 
   return {root, stateDirectory, app, candidate, descriptor, receiptPath, oldBytes, ports, events};
 }
 
+/** The `ps` state letter, or null once the pid is gone. `Z` is exited but not yet reaped. */
+function processState(pid: number) {
+  try {
+    return execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim().charAt(0) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the parent has not exited yet. `kill(pid, 0)` alone is the wrong oracle here: the
+ * parent is this test's own child, so after it exits it stays a zombie until this process's
+ * event loop reaps it, and `kill` still succeeds on a zombie. The helper correctly treats an
+ * exited process as gone, so a liveness check that counts the zombie flakes whenever the
+ * helper's poll lands inside that reap window.
+ */
+function parentIsRunning(pid: number) {
+  const state = processState(pid);
+  return state !== null && state !== 'Z';
+}
+
 function finishedSnapshot(journal: MigrationJournal) {
   const {stateDirectory, nonce} = journal.plan;
   const path = join(stateDirectory, 'update-runtimes', `attempt-${nonce}`);
@@ -71,7 +92,7 @@ test('detached migration waits for its identified parent before checking launch 
   const quit = setTimeout(() => parent.stdin.end(), 250);
   t.after(() => clearTimeout(quit));
   const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
-    if (processIsAlive(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
+    if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
     events.push(bundle);
     // Stop at the real conflict boundary without staging or launching an app.
     if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
@@ -83,6 +104,34 @@ test('detached migration waits for its identified parent before checking launch 
   assert.deepEqual(events, [plan.source, plan.target]);
   assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
   assert.equal(existsSync(plan.target), false);
+});
+
+test('detached migration treats an exited but unreaped parent as gone', async t => {
+  const f = fixture(t, true);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const parent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], {stdio: 'ignore'});
+  t.after(() => {if (parent.exitCode === null) parent.kill();});
+  const pid = parent.pid!;
+  const identity = processIdentity(pid);
+  assert.ok(identity);
+  const handoff = join(f.stateDirectory, 'handoff.json');
+  atomicMigrationJson(handoff, {plan, parent: {pid, identity}, port: 59999});
+  const logPath = join(f.stateDirectory, 'update.log');
+  // Hold the event loop until the parent has exited. This process cannot reap its
+  // own child until the loop turns, so the helper sees the zombie the CI runner did.
+  const deadline = Date.now() + 10_000;
+  while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
+  const events: string[] = [];
+  const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+    if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
+    events.push(bundle);
+    if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
+  }};
+  await assert.rejects(runApplyUpdate({sourceClone: plan.oldReceipt.sourceClone!, targetTag: 'v1.26.0',
+    appPath: plan.source, sourceApp: plan.source, targetApp: plan.target, parentPid: pid,
+    stateDirectory: f.stateDirectory, logPath, stagedBundle: plan.stagedBundle,
+    stagedRevision: plan.stagedRevision, migrationPlan: handoff}, ops), /checked target after parent exit/);
+  assert.deepEqual(events, [plan.source, plan.target]);
 });
 
 for (const collision of ['directory', 'symlink'] as const) test(`rename staging never writes into a raced ${collision} destination`, async t => {

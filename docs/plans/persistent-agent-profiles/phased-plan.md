@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 3). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 4). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 
@@ -35,8 +35,14 @@ requirements.
   `AppPageShell`'s exhaustive page record.
 - **`TurnOrigin`** (`src/shared/types.ts`) is a closed union used to label transcript turns;
   Phase 3 appends `resident`.
-- **No per-session spend query exists.** `automationSpendSince` and `recordDriverSessionUsage`
-  (`src/server/db.ts`) are the neighbours; Phase 3 adds a session-scoped read beside them.
+- **No per-session spend query exists, and spend is recorded differently per harness.**
+  `automationSpendSince` and `recordDriverSessionUsage` (`src/server/db.ts`) are the neighbours;
+  Phase 3 adds a session-scoped read beside them.
+  - Claude SDK turns are recorded by `recordDriverSessionUsage`, called from
+    `src/server/registry.ts`, with the cost Claude Code reports.
+  - Codex turns are priced by `estimateStandardApiUsage` against `STANDARD_TOKEN_PRICES`
+    (`src/server/harness/codex/pricing.ts`), so a model missing from that table has no spend.
+  - Phase 3 verifies both before relying on them.
 - **Generated Codex bindings predate `thread/compact/start`.** Phase 3 regenerates them with
   `scripts/codex-app-server-bindings.mjs`; the installed Codex 0.160.0 carries the method.
 - **Only `serveDashboardClick` creates trusted clicks** (`src/main/dashboard-click-ipc.ts`,

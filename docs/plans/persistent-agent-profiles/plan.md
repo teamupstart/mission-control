@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 3, repaired after plan validation). Implementation is split into seven phases in
+Status: decisions recorded (revision 4, repaired after plan validation). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -169,10 +169,14 @@ stateDiagram-v2
 2. **The human always wins**: a human message cancels the pending wake, and `needs-you` pauses.
 3. **Self-pacing within bounds**: `schedule_next_iteration({ delaySeconds, reason })` sets the
    next wake, clamped to the profile, with the reason shown on the card.
-4. **Guardrails pause, never stop.** Before each wake the loop counts the iterations in a durable,
-   timestamped iteration log, and the spend in the existing usage ledger, over the 24 hours before
-   that wake. A capped run stays paused until the operator resumes it. Resume is accepted once the
-   window has room, and the refusal names when that will be.
+4. **Guardrails pause, never stop.** The launch turn is iteration 1, and every wake or **Run now**
+   is the next. Before each wake the loop counts the iterations in a durable, timestamped iteration
+   log, and the spend in the existing usage ledger, over the 24 hours before that wake. A capped
+   run stays paused until the operator resumes it. Resume is accepted once the window has room,
+   and the refusal names when that will be. The spend cap is enforced for both harnesses: Claude
+   Code turns carry the cost Claude Code reports, and Codex turns are priced from their token
+   usage. A profile whose model cannot be priced cannot keep a spend cap. Save and launch refuse
+   it with that reason, and the operator either picks a priced model or clears the cap themselves.
 5. **Durable**: `resident_runs` holds loop state. After a restart the loop re-arms once SDK
    restore settles, and a missed wake fires once.
 6. **Controls**: Pause, Resume, Run now and Restart on new profile on the card menu, Console band,
@@ -184,7 +188,10 @@ stateDiagram-v2
   `/compact <focus>` (Claude) or `thread/compact/start` (Codex, after regenerating bindings).
 - **During long turns**: the native setting in the table above is the backstop.
 
-Compaction does not count as an iteration.
+Compaction does not count as an iteration. Both layers are probed against real installations of
+both harnesses before they are enabled. Each probe must show compaction triggering at the
+profile's threshold. If a layer cannot honor the threshold for a harness, Phase 3 stops before
+enabling that layer for that harness and asks the operator how to proceed.
 
 ## Request and data flow
 
@@ -321,9 +328,9 @@ The existing grant machinery is reused unchanged.
 | The pinned Claude Agent SDK exposes typed options for strict MCP and local plugins | medium | The verified CLI flags are passed through the SDK's extra-arguments option |
 | Codex `skills.config` entries and per-server disables behave as their names suggest | medium | The launch-scoped `CODEX_HOME` overlay is built instead |
 | A fallback also fails its probe | low | The phase stops and asks the operator before building that cell |
-| `/compact` as a user turn compacts an SDK Claude session | medium to high | Only the native backstop applies |
+| `/compact` as a user turn compacts an SDK Claude session | medium to high | Phase 3 stops and asks the operator before shipping that harness with one layer |
 | Default caps suit a 5-minute cadence | medium | Caps are editable and shown on every card |
-| Recorded spend exists per run for both harnesses | medium to high | Only the iteration cap applies for that harness |
+| Recorded spend exists per run for both harnesses | medium to high | A spend cap on an unpriced model is refused at save and launch; any wider reduction goes to the operator |
 
 ## Documentation and verification
 

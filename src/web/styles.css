@@ -9174,6 +9174,9 @@ mark.find-hit.is-current {
 
 /* ---- conversation launchers (open a terminal, or the agent's own CLI) ---- */
 .conv-launch {
+  flex: none;
+  display: flex;
+  align-items: center;
   margin-left: auto;
   align-self: center;
   gap: 7px;
@@ -9619,6 +9622,12 @@ mark.find-hit.is-current {
   color: var(--working);
   font: 700 12.5px/1 var(--mono);
 }
+/* The chat box is a padded, bordered field, so its first line starts ~9px lower than the
+   terminal's bare prompt line the 4px above is sized for. Without this the label rides
+   above the text it introduces. */
+.transcript[data-view="chat"] .pty-prompt {
+  margin-top: 13px;
+}
 .transcript[data-view="terminal"] .transcript-input {
   --textarea-block-chrome: 4px;
   min-height: 24px;
@@ -9795,14 +9804,20 @@ mark.find-hit.is-current {
   }
 }
 
+/* A flex box, not the inline span it is by default: an inline wrapper sits on the line box's
+   baseline inside the strip, so its button hangs a few pixels off the icon buttons beside it. */
 .launch {
   position: relative;
+  display: flex;
   flex: none;
 }
+/* One control height across the toolbar - the launchers, the two icon menus and the Foreman
+   chip all share it, so the row reads as a single band rather than four sizes of button. */
 .launch-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 28px;
   padding: 5px 9px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -26678,6 +26693,7 @@ span.line-run-prov {
 /* Rung 2: the view and control menus already use icons. Tighten their spacing before
    the launchers give up their words. */
 .detail-tabs[data-rung~="2"] .conv-launch { gap: 4px; }
+.detail-tabs[data-rung~="2"] .foreman-rail { margin-left: 2px; }
 .detail-tabs[data-rung~="2"] .session-toolbar-btn { padding-inline: 6px; }
 /* Rung 3: the two launchers drop to their glyphs, giving up their keycaps and carets with
    the word - a chord hint floating beside a bare glyph reads as a second glyph, and the
@@ -31819,6 +31835,10 @@ body.foreman-sidecar-open .modal-backdrop {
   display: flex;
   align-items: center;
   gap: 7px;
+  /* 28px like every launcher beside it, and 5px of margin on top of the row's 2px gap so
+     the strip-to-rail spacing matches the 7px between the strip's own buttons. */
+  min-height: 28px;
+  margin-left: 5px;
   padding: 4px 10px;
   background: transparent;
   border: 1px solid var(--border);

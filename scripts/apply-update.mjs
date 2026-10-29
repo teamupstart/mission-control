@@ -355,9 +355,12 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     }
     const waitForSource = ports.waitForParent;
     ports.waitForParent = async () => {
+      // The acknowledged parent is still quitting. Its runningboard job and
+      // Foreground registration can disappear at different times, so inspecting
+      // them now can mistake our own shutdown for a persistent launch conflict.
+      await waitForSource();
       await ops.preflight(plan.source);
       await ops.preflight(plan.target);
-      await waitForSource();
       await ops.waitForBundle(plan.source);
       await ops.waitForBundle(plan.target);
       await ops.preflight(plan.source);

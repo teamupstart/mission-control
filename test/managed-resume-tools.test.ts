@@ -377,7 +377,9 @@ const t=setInterval(()=>{
   if(existsSync(${JSON.stringify(stop)})){clearInterval(t);return;}
   if(existsSync(${JSON.stringify(check)})&&!existsSync(${JSON.stringify(result)})){
     let usable=false;try{usable=readFileSync(join(process.env.MISSION_HOME,'loopback-token'),'utf8').length>0;}catch{}
-    writeFileSync(${JSON.stringify(result)},String(usable));
+    // Existence signals completion to the parent, so publish only the finished result.
+    writeFileSync(${JSON.stringify(result + ".tmp")},String(usable));
+    renameSync(${JSON.stringify(result + ".tmp")},${JSON.stringify(result)});
   }
 },30);`);
   const spawnDescendant = `import {spawn} from 'node:child_process';

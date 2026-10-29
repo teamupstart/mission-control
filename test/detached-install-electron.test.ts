@@ -308,7 +308,7 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }, `detached fixture failed: ${state}`, {timeout: 120_000});
   const ready = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
   await boundedMigrationWait(() => !processIsAlive(ready.pid), 'fixture app did not exit', {timeout: 10000});
-  assert.equal(ready.receipt.installedCommit, (failure ? 'a' : 'b').repeat(40));
+  assert.equal(ready.receipt.installedCommit, (failure ? 'a' : 'b').repeat(40), fixtureDiagnostic(state));
   assert.equal(ready.result.committed, !failure);
   assert.equal(ready.nodeFlag, null, 'GUI launch must clear run-as-node');
   assert.ok(ready.electron);

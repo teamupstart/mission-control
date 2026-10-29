@@ -109,7 +109,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
           {snapshot.migration && snapshot.migration.kind !== "rename" && <Tooltip label="Keep installing updates in the shared system folder">
             <button type="button" className="btn btn-ghost" onClick={props.onKeepSystem}>Keep system installation</button>
           </Tooltip>}
-          <Tooltip label="Keep the prepared update and install it later">
+          <Tooltip label="Keep the prepared update and hide this version for 48 hours">
             <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
           </Tooltip>
         </div>
@@ -172,7 +172,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
               <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
             </Tooltip>
           )}
-          <Tooltip label="Hide this update until the next check">
+          <Tooltip label="Hide this version for 48 hours">
             <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
           </Tooltip>
         </div>

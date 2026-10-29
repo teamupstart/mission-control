@@ -10,6 +10,7 @@ for (const kind of ["legacy source", "binary"] as const) {
     const receipt = kind === "binary" ? binaryReceipt(binaryOffer("a".repeat(40), "stable", "1.2.3"), previous) : previous;
     let handoffs = 0, quits = 0;
     const port: UpdaterPort = {
+      readSnoozes: () => ({}), writeSnoozes: () => {},
       packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40), readAlpha: () => false, writeAlpha: () => {},
       installSnapshot: () => ({receipt, problem: null}),
       latestRelease: async () => ({tagName: "v1.2.4", name: "1.2.4", body: "Signed binary update.", publishedAt: "2026-10-25T00:00:00Z", isDraft: false, isPrerelease: false, binary: binaryOffer()}),

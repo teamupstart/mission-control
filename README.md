@@ -397,6 +397,8 @@ repository:
   To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
+  You can still check for updates manually at any time.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:

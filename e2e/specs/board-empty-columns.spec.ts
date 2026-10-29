@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -92,17 +93,6 @@ async function dispatch(page: Page, daemon: DaemonHandle, goal: string): Promise
   }, { message: "the dispatched SDK session should appear before its hooks are posted", timeout: 60_000 }).toBe(1);
 }
 
-/** The one SDK session this spec dispatched: its checkout is what binds a hook to it. */
-async function dispatchedCwd(daemon: DaemonHandle): Promise<string> {
-  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as {
-    cwd: string;
-    runtime: string;
-  }[];
-  const dispatched = sessions.filter((s) => s.runtime === "sdk");
-  expect(dispatched.length, "exactly one SDK session was dispatched").toBe(1);
-  return dispatched[0]!.cwd;
-}
-
 /** Post a hook exactly as `hooks/harness-hook.mjs` forwards it. */
 async function postHook(
   daemon: DaemonHandle,
@@ -113,7 +103,7 @@ async function postHook(
   const res = await fetch(`${daemon.baseURL}/hooks/${event}`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
-    body: JSON.stringify({ agent: "claude", cwd: await dispatchedCwd(daemon), env: {}, ...fields }),
+    body: JSON.stringify({ agent: "claude", ...await dispatchedSdkHookIdentity(daemon), env: {}, ...fields }),
   });
   expect(res.status, `the daemon accepted the ${event} hook`).toBe(204);
 }

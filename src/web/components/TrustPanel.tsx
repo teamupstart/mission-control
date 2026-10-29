@@ -523,22 +523,26 @@ export function TrustPanel({
               onChange={(e) => setPickQuery(e.target.value)}
             />
             <div className="trust-pick-actions">
-              <button
-                type="button"
-                className="btn"
-                disabled={shownCandidates.length === 0}
-                onClick={() => setPicked((prev) => new Set([...prev, ...shownCandidates]))}
-              >
-                Select all shown
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={pickedCount === 0}
-                onClick={() => setPicked(new Set())}
-              >
-                Clear
-              </button>
+              <Tooltip label="Tick every repository the search is showing">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={shownCandidates.length === 0}
+                  onClick={() => setPicked((prev) => new Set([...prev, ...shownCandidates]))}
+                >
+                  Select all shown
+                </button>
+              </Tooltip>
+              <Tooltip label="Untick every picked repository, including ones the search hides">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={pickedCount === 0}
+                  onClick={() => setPicked(new Set())}
+                >
+                  Clear
+                </button>
+              </Tooltip>
               <span className="trust-pane-count trust-picked-count">{pickedCount} selected</span>
             </div>
           </div>
@@ -605,18 +609,20 @@ export function TrustPanel({
                 );
               })}
             </p>
-            <button
-              type="button"
-              className="btn btn-primary trust-add-btn"
-              disabled={addCount === 0 || adding}
-              onClick={() => void add()}
-            >
-              {adding
-                ? "Adding…"
-                : addCount === 0
-                  ? "Add repositories"
-                  : `Add ${addCount} ${addCount === 1 ? "repository" : "repositories"}`}
-            </button>
+            <Tooltip label="Add the picked repositories and the typed path, each with Foreman, Workflows and GitHub Inspector granted">
+              <button
+                type="button"
+                className="btn btn-primary trust-add-btn"
+                disabled={addCount === 0 || adding}
+                onClick={() => void add()}
+              >
+                {adding
+                  ? "Adding…"
+                  : addCount === 0
+                    ? "Add repositories"
+                    : `Add ${addCount} ${addCount === 1 ? "repository" : "repositories"}`}
+              </button>
+            </Tooltip>
             {addError && <p className="settings-error trust-add-error">{addError}</p>}
           </div>
         </div>

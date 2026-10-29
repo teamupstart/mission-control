@@ -391,7 +391,7 @@ test("the add pane and the matrix sit side by side, each with its own search", (
   assert.match(html, /aria-label="Filter trusted repositories"/);
   assert.match(html, /aria-label="Repository path"/);
   // Nothing picked yet, so the batch button names no count and is disabled.
-  assert.match(html, /<button type="button" class="btn btn-primary trust-add-btn" disabled="">Add repositories<\/button>/);
+  assert.match(html, /<button type="button" class="btn btn-primary trust-add-btn" disabled=""[^>]*>Add repositories<\/button>/);
 });
 
 test("a merge-without-review, armed, flies the dagger footnote with both fixes", () => {

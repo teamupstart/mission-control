@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 2). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 3). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 
@@ -14,7 +14,7 @@ requirements.
 | Marker | Border glow only; profiles choose color and label | 2 |
 | Loop pacing | Daemon cadence plus agent self-pacing within bounds | 3 |
 | Spend guardrails | On by default (200 iterations, $20 per rolling 24 hours), editable | 3 |
-| Session control | Trusted dispatch click, kept for that run | 6 |
+| Session control | Trusted dispatch click, kept for that run | 6 (after 2) |
 | Harnesses | Claude Code and Codex | 1 (launch), 4 and 5 (tools) |
 | Workspace | Repository optional | 1 (repository residents), 7 (repo-less) |
 
@@ -42,9 +42,15 @@ requirements.
 - **Only `serveDashboardClick` creates trusted clicks** (`src/main/dashboard-click-ipc.ts`,
   registered in `src/main/index.ts` for session control and product issues). Phase 6 adds the
   resident Launch click through the same registrar.
-- **`node_modules` is absent in this checkout**, so the pinned Claude Agent SDK
-  (`^0.3.310`) option surface for `strictMcpConfig` and local plugins is unverified. Phases 4
-  and 5 begin by measuring it and record `null` capabilities where it is missing.
+- **Isolation mechanisms exist in the installed binaries.** Claude Code 2.1.310 carries
+  `--setting-sources`, `--plugin-dir`, `--strict-mcp-config` and
+  `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`. Codex 0.160.0 carries `skills.config`, `env_vars` and
+  `bearer_token_env_var`. `node_modules` is absent in this checkout, so the pinned Claude Agent
+  SDK's typed options are unverified. Phases 4 and 5 probe each primary mechanism and its named
+  fallback, build whichever passes, and stop to ask the operator only if both fail.
+- **A live run must not drift with its profile.** The approved plan applies profile edits at the
+  next launch, so every runtime reader (Phases 2, 3, 4, 5 and 6) reads the run's pinned revision.
+  Phase 1 owns that rule.
 
 ## Sizing
 
@@ -73,7 +79,7 @@ signal, not a diff-size promise.
 | 3 | [phase-3-resident-loop.md](phase-3-resident-loop.md) | 2 | Residents loop forever with self-pacing, compaction, guardrails, and Pause, Resume, Run now and Restart on new profile. |
 | 4 | [phase-4-skill-sources-and-selection.md](phase-4-skill-sources-and-selection.md) | 1 | Skill sources are indexed and a profile's skill subset reaches Claude and Codex launches. |
 | 5 | [phase-5-mcp-catalog-and-selection.md](phase-5-mcp-catalog-and-selection.md) | 4 | Global and custom MCP servers are selectable per profile, with secrets kept out of argv, backups and the browser. |
-| 6 | [phase-6-session-control-launch-click.md](phase-6-session-control-launch-click.md) | 1 | A desktop Launch click grants control to that run and the grant survives a daemon restart. |
+| 6 | [phase-6-session-control-launch-click.md](phase-6-session-control-launch-click.md) | 2 | A desktop Launch click grants control to that run and the grant survives a daemon restart. |
 | 7 | [phase-7-repo-less-residents.md](phase-7-repo-less-residents.md) | 1 | A resident can launch without a repository into a Mission-owned workspace. |
 
 ```mermaid
@@ -84,14 +90,15 @@ flowchart LR
   P2 --> P3[3 Resident loop]
   P1 --> P4[4 Skill sources]
   P4 --> P5[5 MCP catalog]
-  P1 --> P6[6 Launch-click control]
+  P2 --> P6[6 Launch-click control]
   P1 --> P7[7 Repo-less residents]
 ```
 
 ## Concurrency and merge order
 
-- After Phase 1 merges, Phases 2, 4, 6 and 7 may run concurrently.
-- Phase 3 starts after Phase 2; Phase 5 starts after Phase 4.
+- After Phase 1 merges, Phases 2, 4 and 7 may run concurrently.
+- Phases 3 and 6 start after Phase 2: both render in the Console band and dock rows that Phase 2
+  builds. Phase 5 starts after Phase 4.
 - Concurrent phases touch shared registries only through one-line additions that Phase 1
   creates for that purpose: `RESIDENT_PROFILE_SECTIONS` (profile revision schema),
   `RESIDENT_EDITOR_SECTIONS` (editor), `RESIDENT_LAUNCH_CONTRIBUTORS` (launch composer), and
@@ -115,11 +122,17 @@ flowchart LR
    daemon; later phases add columns through `addColumn` with upgrade tests.
 6. **Append-only identifiers:** task kind `resident`, turn origin `resident`, the MCP tool
    `schedule_next_iteration`, marker color ids, skill source ids, and backup domain ids.
+7. **A live run reads only its pinned revision.** Marker and pin, loop settings, guardrails,
+   compaction, skill and MCP rendering at launch and on resume, and authority all come from the
+   run's pinned revision. The daemon reads it through `ResidentStore.revision(profileId,
+   revision)`; the browser reads it from the run's `settings` in the `residentRuns` collection.
+   Only a new launch or **Restart on new profile** adopts a newer revision.
 
 ## Final verification
 
 After the last phase: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`,
 `npm run smoke`, and `npm run test:e2e`. Then follow one resident end to end with the fake
 agents: author, launch from Dispatch and from the dock, observe the glow and pin, let it loop
-and compact, hit a guardrail, resume, grant control by desktop click, restart the daemon, and
+and compact, hit a guardrail, resume, grant control by desktop click, edit the profile and confirm
+the live run is unchanged until **Restart on new profile**, restart the daemon, and
 **Complete & close**.

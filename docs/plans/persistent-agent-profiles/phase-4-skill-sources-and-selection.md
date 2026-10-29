@@ -42,12 +42,25 @@ Pi.
 
 ## Implementation steps
 
-1. **Measure first.** With the pinned Claude Agent SDK and installed Codex, record which
-   per-launch controls exist: Claude local plugins carrying `skills/`, any skill-level disable
-   switch, Codex skill search roots or per-skill disable overrides. Record the results as a new
-   `SkillSelectionSpec` in `HARNESS_CAPABILITIES` (`src/shared/harness-capabilities.ts`): whether
-   extra skills can be added and whether defaults can be excluded without losing repository
-   instructions, authentication or Mission hooks. Unsupported is `null`, verified, not assumed.
+1. **Probe, then build what passes.** For each harness and each cell (add extra skills; use only
+   selected skills), probe the primary mechanism and then its fallback against a real
+   installation. The probe confirms that selected skills load, unselected defaults do not, and
+   `CLAUDE.md`, `AGENTS.md`, authentication, Mission's MCP server and the session files Mission
+   Control reads all survive.
+   - Claude, extra skills: the per-run bundle as a local plugin via the SDK's plugin option.
+     Fallback: `--plugin-dir` through the SDK's extra-arguments option.
+   - Claude, selected only: setting sources without `user` (`--setting-sources`), plus
+     `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`, plus the bundle. Mission Control supplies its permission
+     mode and tool allowlist explicitly. Fallback: the same through extra arguments.
+   - Codex, extra skills: `skills.config` path entries for the bundle. Fallback: a launch-scoped
+     `CODEX_HOME` overlay with `auth.json` and `sessions/` linked to the operator's `CODEX_HOME`, a
+     generated `config.toml`, and `skills/` holding the bundle.
+   - Codex, selected only: `skills.config` disable entries for every unselected default skill the
+     index found. Fallback: the same overlay.
+   Record the mechanism that passed as a new `SkillSelectionSpec` in `HARNESS_CAPABILITIES`
+   (`src/shared/harness-capabilities.ts`). **If both fail for a cell, stop before building that
+   cell.** Ask the operator with `request_input` to choose between shipping that harness without
+   it, or approving a wider mechanism, and record the answer in the pull request.
 2. **Sources**: `residents.skillSources` in `APP_CONFIG_ENTRIES` with a backup domain; built-in
    source ids (append-only) `mission`, `claude-global` (`~/.claude/skills`, skipping
    `mission-*`), `agents-global` (`~/.agents/skills`), `codex-global` (`~/.codex/skills`).
@@ -55,13 +68,14 @@ Pi.
 3. **Index** in `src/server/residents/skill-index.ts`: reads `<dir>/<skill>/SKILL.md`
    frontmatter (`name`, `description`), records source, path and problems; identity
    `<source id>:<folder>`. Built on daemon start and on rescan; served by GET, never over SSE.
-4. **Profile section** `skills` and `ResidentSkillsSection`: inherit switch (disabled with an
-   explanation when the harness capability is `null`), a picker filtered by search and source,
-   duplicate-name conflict refused at save.
+4. **Profile section** `skills` and `ResidentSkillsSection`: inherit switch (offered exactly where
+   step 1 recorded a working mechanism), a picker filtered by search and source, duplicate-name
+   conflict refused at save.
 5. **Bundle and seam**: a `skills` contributor that materializes a per-run bundle under
    `$MISSION_HOME/residents/runs/<runId>/skills/` as links to the selected skill folders, and an
-   optional `skills` field on `SdkLaunchOptions` that each driver renders per its capability
-   (Claude local plugin; Codex skill root or overrides). Removed with the run.
+   optional `skills` field on `SdkLaunchOptions` that each driver renders with the mechanism step 1
+   recorded. The bundle is built from the run's pinned revision, at launch and again on resume
+   after a daemon restart, and removed with the run.
 6. **Rail**: a **Skill sources** entry on the `#/residents` rail to add, remove and rescan
    directories, with problems shown per source.
 7. **Documentation**: skill sources in `docs/skills-and-settings.md` and `docs/residents.md`;
@@ -70,7 +84,9 @@ Pi.
 ## Tests and verification
 
 - Unit: source validation, index parsing and problems, `mission-*` skipping, identity
-  stability, section defaults, bundle creation and cleanup, per-driver option rendering.
+  stability, section defaults, bundle creation and cleanup, per-driver option rendering for both
+  primary and fallback mechanisms, and resume rendering from the pinned revision after the
+  profile is edited.
 - Harness tests against real installations for every capability recorded as supported.
 - Playwright `e2e/specs/residents-skills.spec.ts`: add a source folder from a fixture, rescan,
   select a skill, launch, and see the selection in the launch summary.
@@ -91,3 +107,5 @@ Phase 5 reuses the measured-capability pattern and the optional-field approach o
 - Concurrent with Phases 2, 6 and 7; adds its own section, contributor, setting and rail entry.
 - Owns the first extension of `SdkLaunchOptions`; Phase 5 depends on it to avoid parallel edits
   of the driver renderers.
+- Repair round 1: selected-only is delivered through a probed primary or fallback mechanism, with
+  an operator decision gate if both fail; the Codex overlay introduced here is reused by Phase 5.

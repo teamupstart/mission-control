@@ -4,8 +4,8 @@ Part of [the phased plan](phased-plan.md) for [Residents](plan.md).
 
 ## Outcome
 
-A resident runs indefinitely. After each completed turn the daemon waits the profile's cadence
-(or the delay the agent asked for) and sends the loop prompt; it compacts first when context is
+A resident runs indefinitely. After each completed turn the daemon waits the cadence from the
+run's pinned profile revision (or the delay the agent asked for) and sends the loop prompt; it compacts first when context is
 at or above the threshold; it pauses for the human, for `needs-you`, and at its guardrails; and it
 survives daemon restarts. **Pause**, **Resume**, **Run now** and **Restart on new profile** work from
 the card menu, the Console band, the dock and the resident page.
@@ -22,7 +22,7 @@ the card menu, the Console band, the dock and the resident page.
 - `resident_runs` loop columns and the daemon-owned `ResidentLoop`.
 - Mission MCP tool `schedule_next_iteration`.
 - Two-layer compaction for Claude Code and Codex, including regenerated Codex bindings.
-- Session-scoped spend read; guardrail pause.
+- A durable iteration log, a session-scoped spend read, and the rolling-window guardrail pause.
 - Run controls and their routes; loop state on the band, card, dock and page.
 
 ### Non-goals
@@ -54,15 +54,20 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    the guardrail defaults applied to new profiles and to old revisions without the section.
 2. **Persistence**: `addColumn` on `resident_runs` for `loop_state` (`working`, `waiting`,
    `compacting`, `paused`), `iteration`, `next_wake_at`, `consumed_generation`, `pause_reason`,
-   `wake_reason`, `window_started_at`, `window_iterations`; upgrade test from a Phase 1 database.
+   `wake_reason`; and a new append-only `resident_iterations` table (`run_id`, `seq`, `trigger`
+   of `loop` or `run_now`, `sent_at`) indexed by (`run_id`, `sent_at`) and pruned beyond seven
+   days. Upgrade test from a Phase 1 database.
 3. **ResidentLoop** in `src/server/residents/loop.ts`, constructed in `src/server/index.ts` after
-   SDK restore settles:
+   SDK restore settles. It reads the loop prompt, cadence, bounds, guardrails and compaction
+   settings only from the run's pinned revision (`ResidentStore.revision`):
    - Subscribes to Registry session upserts. When a resident session's work-cycle generation
      advances past `consumed_generation` and the driver is idle, it consumes that generation and
      schedules `next_wake_at` in one write.
    - At wake: if the session is `needs-you`, pause with that reason; if a guardrail is reached,
      pause with that reason; if `contextPct` is at or above the threshold, compact first; then
-     send the loop prompt with `sendWhenIdle` and origin `resident`, incrementing `iteration`.
+     send the loop prompt with `sendWhenIdle` and origin `resident`, incrementing `iteration` and
+     appending a `resident_iterations` row in the same write. Compaction turns and human turns are
+     not iterations.
    - A human turn (pending-turn delivery) cancels the pending wake; the next completed
      generation reschedules.
    - Restart: wakes that came due while the daemon was down fire once; paused runs stay paused.
@@ -79,9 +84,13 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
      turn for Claude, `thread/compact/start` for Codex after regenerating bindings with
      `node scripts/codex-app-server-bindings.mjs`. Declared in `HARNESS_CAPABILITIES`, with
      `null` where unmeasured. Compaction is not an iteration.
-7. **Spend**: `sessionSpendSince(noteKeys, sinceMs)` beside `automationSpendSince` in
-   `src/server/db.ts`; the loop sums the run's sessions over the rolling window. A harness
-   without recorded spend falls back to the iteration cap only, shown on the card.
+7. **Guardrails over a rolling 24 hours**: before each wake the loop counts `resident_iterations`
+   rows with `sent_at` within the 24 hours before now, and sums spend with
+   `sessionSpendSince(noteKeys, now - 24h)`, added beside `automationSpendSince` in
+   `src/server/db.ts`. Reaching either cap pauses the run and raises attention. Resume is accepted
+   once the window has room; otherwise it is refused with the time the oldest counted iteration
+   (or spend) leaves the window. A harness without recorded spend falls back to the iteration cap
+   only, shown on the card.
 8. **Controls**: `POST /api/residents/runs/:id/pause|resume|run-now|restart`. Restart on new
    profile ends the run's session through the task lifecycle and launches the newest revision
    through `ResidentManager.launch`, resuming the same conversation only when the harness accepts
@@ -95,9 +104,17 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 ## Tests and verification
 
 - Unit (`test/residents-loop.test.ts`) with injected clock and fake supervisor: one wake per
-  generation, duplicate turn ends, human precedence, `needs-you` pause, guardrail pause and
-  window roll, compaction ordering, clamp of `schedule_next_iteration`, restart re-arm firing a
-  missed wake once, shutdown.
+  generation, duplicate turn ends, human precedence, `needs-you` pause, compaction ordering,
+  clamp of `schedule_next_iteration`, restart re-arm firing a missed wake once, and shutdown.
+- Guardrail boundary tests:
+  - an iteration sent exactly 24 hours before a wake no longer counts, and one sent 1 ms later
+    does;
+  - the cap pauses on the 200th iteration in the window;
+  - Resume is refused while the window is full, naming the right time, and accepted once it
+    frees;
+  - the same boundaries hold for spend.
+- Pinned-revision tests: editing the profile's cadence, bounds, caps or compaction leaves a live
+  run unchanged, including after a daemon restart, until **Restart on new profile**.
 - Harness tests: the compaction capability against the fakes, and the regenerated bindings.
 - `npm run build` then `npm run smoke` (new MCP tool published).
 - Playwright `e2e/specs/residents-loop.spec.ts` with fake agents: a resident loops, shows next
@@ -120,3 +137,5 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   routes.
 - Phase 5's MCP rendering and this phase's Codex `-c` compaction override both pass through the
   contributor list; neither edits the other's contributor.
+- Repair round 1: loop settings come only from the pinned revision, and the rolling window is
+  counted from `resident_iterations` rather than an aggregate counter.

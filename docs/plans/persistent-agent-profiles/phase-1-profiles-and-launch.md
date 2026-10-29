@@ -57,8 +57,11 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
      (`personaId`), `instructions` (Markdown), `execution` (`agent` limited to harnesses whose
      capabilities declare an SDK driver and are Claude Code or Codex, `model`, `effort`), and
      `workspace` (`defaultRepoRoot` or null). Later sections are optional with defaults.
-   - `ResidentProfile` (id, name, revision, archivedAt, current revision body), `ResidentRun`,
+   - `ResidentProfile` (id, name, revision, archivedAt, current revision body), `ResidentRun`
+     (including `profileRevision` and `settings`, the pinned revision's body), and
      `LaunchResidentSchema` (`repoRoot`, optional `instructions`, optional `requestId`).
+   - The pinned-revision rule: a live run's settings come only from its pinned revision. The
+     current revision is used for new launches and to flag "profile changed since launch".
    - Request schemas in `src/shared/protocol.ts` for create, update (with `expectedRevision`),
      archive and launch; every route uses `parseBody`.
 2. **Task kind.** Append `resident` to `TASK_KINDS`. Answer every exhaustive registry: label and
@@ -72,7 +75,8 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
    `task_id`, `persona_snapshot` (JSON: persona id, name, guidance at launch), `run_instructions`,
    `created_at`, `ended_at`. No `REFERENCES`; indexes after columns exist.
 4. **Store and manager** in `src/server/residents/`:
-   - `store.ts`: CAS create, update, archive, read by id, list live; revisions immutable.
+   - `store.ts`: CAS create, update, archive, read by id, list live, and
+     `revision(profileId, revision)` for any pinned revision; revisions immutable.
    - `manager.ts`: `ResidentManager.launch(profileId, input)` validates the profile, repository
      and harness SDK support, snapshots the persona, writes the run, then creates the task
      through `TaskManager.create` with kind `resident`, runtime forced to SDK, model and effort
@@ -120,7 +124,8 @@ so a downgraded build reads a resident task as `ship`; this matches the existing
 - `node --test --import ./test/setup-state.mjs --import tsx` on new `test/residents-*.test.ts`:
   schema round-trips and section defaults, CAS conflicts, archive, launch validation
   (unsupported harness, missing repository, Pi refused), persona snapshot, standing-instruction
-  composition and resume replay, kind registry answers, refusal of `resident` on other creation
+  composition and resume replay from the pinned revision after the profile is edited, kind
+  registry answers, refusal of `resident` on other creation
   paths, upgrade from a pre-feature database, backup capture and restore.
 - `test/task-kinds.test.ts`, `test/keybindings.test.ts`, `test/tooltip-coverage.test.ts` stay green.
 - Playwright `e2e/specs/residents-launch.spec.ts` with the fake agents: create a profile on
@@ -137,7 +142,8 @@ a daemon restart and a settings backup round trip.
 ## Downstream handoff
 
 Later phases rely on, and must not change: `ResidentManager.launch` as the only launch path,
-`launchResident()` as the only browser launch call, the three registries
+`launchResident()` as the only browser launch call, the pinned-revision rule and
+`ResidentStore.revision`, the three registries
 (`RESIDENT_PROFILE_SECTIONS`, `RESIDENT_EDITOR_SECTIONS`, `RESIDENT_LAUNCH_CONTRIBUTORS`), the
 run row as the durable identity, and the standing-instructions placement.
 
@@ -146,4 +152,6 @@ run row as the durable identity, and the standing-instructions placement.
 - Written first; owns every registry the concurrent phases extend.
 - Repository required here by design; Phase 7 owns relaxing it.
 - Final audit: every source-plan requirement and recorded decision maps to exactly one phase in
-  the index's decision table; Phases 2, 4, 6 and 7 extend only the registries named here.
+  the index's decision table; Phases 2 to 7 extend only the registries named here.
+- Repair round 1: the pinned-revision rule and `ResidentStore.revision` are owned here, so
+  every later runtime reader inherits one source of live settings.

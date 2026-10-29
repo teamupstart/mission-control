@@ -17,7 +17,8 @@ residents and the profiles, with **Launch** and **Manage residents**.
 
 - Profile section `board`: `colorId` from the append-only `RESIDENT_MARKER_COLORS` palette,
   `label` (1 to 4 characters, defaulting from the name), `pin` (default on).
-- A `residentRuns` SSE collection (live runs only), used to join a session to its run and profile.
+- A `residentRuns` SSE collection (live runs only), each row carrying its pinned revision's
+  `settings`, used to join a session to its run.
 - Border-glow marker on `SessionTile`, Console `RailRow`, and a band in `ConsoleDetail`.
 - Pinned partition in `orderSessions`.
 - The Residents dock and its top-bar button.
@@ -51,14 +52,17 @@ than border glow: rejected by the operator.
 2. **Runs on the wire**: `resident_run_upsert` and `resident_run_remove` events and a
    `residentRuns` collection bounded by live runs, with snapshot, `useEventStream` cases, an
    explicit `LINE_INPUT_EVENTS` decision and a bound test. The daemon publishes from
-   `ResidentManager` on launch and run end. No field is added to `Session`.
-3. **Client join**: a `useResidentFor(session)` selector joining session, task, run and profile.
+   `ResidentManager` on launch and run end, with the run's pinned `settings`. No field is added
+   to `Session`.
+3. **Client join**: a `useResidentFor(session)` selector joining session, task and run. Marker,
+   label and pin come from the run's pinned `settings`; the current profile is consulted only to
+   show "profile changed since launch".
 4. **Marker**: one `--resident` custom property set from the profile color. `SessionTile` gets a
    `.tile.is-resident` border glow and a label chip; `RailRow` an accent edge and chip;
    `ConsoleDetail` a resident band (profile name and label; Phase 3 adds loop state and
    controls). Register the marker as a `DISPLAY_ITEMS` entry so Settings > Display can hide it.
-5. **Pinning**: extend `orderSessions` with a pinned partition ahead of free and held, fed by an
-   input set of pinned session ids; keep the function pure and update the callers in `App.tsx`,
+5. **Pinning**: extend `orderSessions` with a pinned partition ahead of free and held, fed by the
+   set of sessions whose run's pinned revision has pin on; keep the function pure and update the callers in `App.tsx`,
    `BoardView` and `ConsoleView` to pass the set.
 6. **Dock**: a `ResidentsDock` button immediately after `ForemanBar`, with the live count; its
    panel lists live residents (name, label, session state, **Open**) and live profiles
@@ -69,7 +73,9 @@ than border glow: rejected by the operator.
 ## Tests and verification
 
 - Unit: pinned partition ordering (pinned first within each column, stable otherwise), board
-  section defaults and old-revision parsing, run event bound, `DISPLAY_ITEMS` registration.
+  section defaults and old-revision parsing, run event bound, `DISPLAY_ITEMS` registration, and
+  that editing a profile's color, label or pin leaves a live run's marker and position unchanged
+  while a new launch uses the edit.
 - `test/layout-parity.test.ts`, `test/session-leaf-parity.test.ts`,
   `test/board-card-items.test.ts`, `test/tooltip-coverage.test.ts`, `test/keybindings.test.ts`.
 - Electron geometry test for the dock panel against the top bar and window edge.
@@ -90,7 +96,9 @@ the `residentRuns` collection; it must not change the marker, palette ids or par
 
 ## Cross-phase audit record
 
-- Concurrent with Phases 4, 6 and 7: touches only its own section, editor component and run
+- Concurrent with Phases 4 and 7: touches only its own section, editor component and run
   events; adds one line to each Phase 1 registry.
+- Repair round 1: Phase 6 now follows this phase, because its grant status renders in the band
+  and dock row built here; marker and pin read the run's pinned revision.
 - The dock's **Launch** uses `launchResident()`, so Phase 6's trusted click applies here without
   edits.

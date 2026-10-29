@@ -11,7 +11,8 @@ without control and say so.
 
 ## Entry criteria and dependencies
 
-- Phase 1 merged (`launchResident()`, the launch route and the run row).
+- Phase 2 merged (the Console band and dock rows that display grant status). Phase 2 itself
+  follows Phase 1, which provides `launchResident()`, the launch route and the run row.
 
 ## Scope
 
@@ -37,7 +38,8 @@ Any other way to create a grant; changing the closed session-control action set.
   defaults nor a session-control tool can create a grant."
 - An Electron capability spans `ipcMain.handle`, `contextBridge`, `src/web/mission-desktop.d.ts`
   and a guarded browser call site.
-- Inherited: `launchResident()` is the only browser launch call.
+- Inherited: `launchResident()` is the only browser launch call (Phase 1); the Console band and
+  dock rows (Phase 2); the run's pinned revision supplies the authority setting (Phase 1).
 
 ## Implementation steps
 
@@ -80,5 +82,7 @@ No later phase may create a resident grant through any other path.
 
 ## Cross-phase audit record
 
-- Concurrent with Phases 2, 3, 4, 5 and 7; the dock's Launch (Phase 2) inherits the click
-  through `launchResident()`.
+- Follows Phase 2 and may run concurrently with Phases 3, 4, 5 and 7; the dock's Launch (Phase 2)
+  inherits the click through `launchResident()`.
+- Repair round 1: ordered after Phase 2 so the grant-status surfaces exist before this phase
+  renders into them; authority is read from the run's pinned revision.

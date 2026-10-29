@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 2). Implementation is split into seven phases in
+Status: decisions recorded (revision 3, repaired after plan validation). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -41,6 +41,11 @@ settings. It reuses those precedents rather than copying them.
 
 Profiles are named and revisioned. Every save writes an immutable revision, and every run pins
 the revision it launched from, following `mission_schedules` and `mission_schedule_revisions`.
+
+**A live run reads every setting from its pinned revision**: marker, label and pin, loop prompt,
+cadence and bounds, guardrails, compaction, skills, MCP servers and authority, including when the
+run is restored after a daemon restart. The profile's current revision is used only for new
+launches and to show that a run's profile has changed since launch.
 
 | Field | Meaning | Default |
 |---|---|---|
@@ -98,15 +103,24 @@ a write-only table. They never reach the browser or backups, and never appear on
 
 | Profile setting | Claude Code (Agent SDK) | Codex (app-server) |
 |---|---|---|
-| Extra skills | Per-run skill bundle loaded as a local plugin | Per-run bundle on Codex's skill path |
-| Use only selected skills | Narrowest per-launch skill switch available | Per-skill disable or launch-scoped root |
+| Extra skills | Per-run bundle loaded as a local plugin (`--plugin-dir`) | `skills.config` path entries; fallback: a launch-scoped `CODEX_HOME` overlay whose `skills/` holds the bundle |
+| Use only selected skills | Setting sources without `user` (`--setting-sources`) plus `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `skills.config` disable entries for every unselected default; fallback: the same overlay |
 | Extra MCP servers | `options.mcpServers` | `-c mcp_servers.<name>.*`, secrets by env name |
-| Use only selected MCPs | `strictMcpConfig`, kept globals copied in | Unselected globals disabled by override |
+| Use only selected MCPs | `--strict-mcp-config`, kept globals copied in | Unselected globals disabled per server; fallback: the overlay's generated `config.toml` |
 | Compaction backstop | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `model_auto_compact_token_limit` |
 
-Isolation never drops repository instructions, authentication, or Mission's hooks and server.
-Each cell is measured against a real installation first. An unsupported cell becomes a `null`
-capability, and the editor disables that option with an explanation.
+The installed Claude Code 2.1.310 carries every Claude flag named above, and the installed Codex
+0.160.0 carries `skills.config`, `env_vars` and `bearer_token_env_var`.
+
+Isolation never drops repository instructions, authentication, Mission's MCP server, or the
+session files Mission Control reads. Each mechanism is probed against a real installation before
+it is built. Where the primary mechanism fails, the named fallback is built instead. The Codex
+overlay links `auth.json` and `sessions/` back to the operator's `CODEX_HOME` and generates
+`config.toml` from the operator's configuration.
+
+If both the primary and the fallback fail for a cell, the phase stops before building that cell.
+It asks the operator to choose between shipping that harness without selected-only, or approving
+a wider mechanism. The editor never offers a switch that the launch cannot honor.
 
 ## Launch
 
@@ -155,7 +169,10 @@ stateDiagram-v2
 2. **The human always wins**: a human message cancels the pending wake, and `needs-you` pauses.
 3. **Self-pacing within bounds**: `schedule_next_iteration({ delaySeconds, reason })` sets the
    next wake, clamped to the profile, with the reason shown on the card.
-4. **Guardrails pause, never stop**, reading spend from the existing usage ledger.
+4. **Guardrails pause, never stop.** Before each wake the loop counts the iterations in a durable,
+   timestamped iteration log, and the spend in the existing usage ledger, over the 24 hours before
+   that wake. A capped run stays paused until the operator resumes it. Resume is accepted once the
+   window has room, and the refusal names when that will be.
 5. **Durable**: `resident_runs` holds loop state. After a restart the loop re-arms once SDK
    restore settles, and a missed wake fires once.
 6. **Controls**: Pause, Resume, Run now and Restart on new profile on the card menu, Console band,
@@ -301,8 +318,9 @@ The existing grant machinery is reused unchanged.
 
 | Assumption | Confidence | If wrong |
 |---|---|---|
-| The pinned Claude Agent SDK exposes `strictMcpConfig` and local plugins | medium | That cell is `null` and its option is disabled |
-| Codex accepts per-server disable overrides and a launch-scoped skill path | medium | Codex isolation is `null` |
+| The pinned Claude Agent SDK exposes typed options for strict MCP and local plugins | medium | The verified CLI flags are passed through the SDK's extra-arguments option |
+| Codex `skills.config` entries and per-server disables behave as their names suggest | medium | The launch-scoped `CODEX_HOME` overlay is built instead |
+| A fallback also fails its probe | low | The phase stops and asks the operator before building that cell |
 | `/compact` as a user turn compacts an SDK Claude session | medium to high | Only the native backstop applies |
 | Default caps suit a 5-minute cadence | medium | Caps are editable and shown on every card |
 | Recorded spend exists per run for both harnesses | medium to high | Only the iteration cap applies for that harness |

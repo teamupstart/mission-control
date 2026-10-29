@@ -160,6 +160,8 @@ export interface WorkflowDraftState {
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   /** A built-in's maximum repair rounds, its one in-place setting. `null` restores the shipped value. */
   saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
+  /** A round-limit save or reset is in flight. Held here, not in the field, so a view switch keeps it. */
+  savingRoundLimit: boolean;
   clearConflict: () => void;
   clearError: () => void;
   showError: (message: string) => void;
@@ -183,6 +185,8 @@ export function useWorkflowDraft(
   const [loading, setLoading] = useState(false);
   const [conflict, setConflict] = useState<WorkflowSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savingRoundLimit, setSavingRoundLimit] = useState(false);
+  const roundLimitInFlight = useRef(false);
   const workflowIdRef = useRef(workflowId);
   const loadGeneration = useRef(0);
   workflowIdRef.current = workflowId;
@@ -438,6 +442,12 @@ export function useWorkflowDraft(
     const current = workflowRef.current;
     // Not the draft autosave: a built-in has no draft to save, and this writes nothing else.
     if (!current?.builtin) return false;
+    // One request at a time, whichever rail or button asked. The Pipeline and Graph rails each
+    // mount their own field, so a guard held in the field would be lost on a view switch and
+    // let a Reset race a Save, applying whichever response landed last.
+    if (roundLimitInFlight.current) return false;
+    roundLimitInFlight.current = true;
+    setSavingRoundLimit(true);
     setError(null);
     try {
       const response = await workflowRequest<WorkflowWriteResponse>(`/api/workflows/${current.id}/round-limit`, {
@@ -456,6 +466,9 @@ export function useWorkflowDraft(
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save the repair rounds");
       return false;
+    } finally {
+      roundLimitInFlight.current = false;
+      setSavingRoundLimit(false);
     }
   }, [refreshVersions]);
 
@@ -479,6 +492,7 @@ export function useWorkflowDraft(
     publish,
     duplicate,
     saveRoundLimit,
+    savingRoundLimit,
     clearConflict: () => {
       conflictRef.current = null;
       setConflict(null);
@@ -489,5 +503,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, update, versions, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, workflowId]);
 }

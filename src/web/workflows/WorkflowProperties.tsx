@@ -70,6 +70,8 @@ type WorkflowPatch = Partial<Pick<
 /** How a built-in's round limit is saved, or absent where the workflow cannot take one. */
 export interface WorkflowRoundLimitControl {
   disabled: boolean;
+  /** A save or reset is in flight. Owned by the draft hook so both rails see the same request. */
+  saving: boolean;
   onSave: (maxRepairRounds: number | null) => Promise<boolean>;
 }
 
@@ -99,17 +101,12 @@ export function BuiltinRoundLimitField({
   const current = workflow.bindingDefaults.maxRepairRounds;
   const shipped = workflow.shippedMaxRepairRounds;
   const [value, setValue] = useState(String(current));
-  const [saving, setSaving] = useState(false);
   useEffect(() => setValue(String(current)), [current, workflow.id]);
   const rounds = parseRoundLimit(value);
+  const saving = control.saving;
   const disabled = control.disabled || saving;
-  const save = async (next: number | null): Promise<void> => {
-    setSaving(true);
-    try {
-      await control.onSave(next);
-    } finally {
-      setSaving(false);
-    }
+  const save = (next: number | null): void => {
+    if (!disabled) void control.onSave(next);
   };
   return (
     <div className="workflow-round-limit">
@@ -142,14 +139,14 @@ export function BuiltinRoundLimitField({
             type="button"
             className="btn"
             disabled={disabled || rounds === null || rounds === current}
-            onClick={() => void save(rounds)}
+            onClick={() => save(rounds)}
           >
             {saving ? "Saving…" : "Save rounds"}
           </button>
         </Tooltip>
         {shipped !== undefined && (
           <Tooltip label="Return to the maximum repair rounds this build ships">
-            <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => void save(null)}>
+            <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => save(null)}>
               Reset to {shipped}
             </button>
           </Tooltip>

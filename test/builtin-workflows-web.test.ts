@@ -173,7 +173,7 @@ test("a built-in's settings rail leaves only the repair rounds editable", async 
   const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
   const { WorkflowSettingsFields, parseRoundLimit } = await import("../src/web/workflows/WorkflowProperties.tsx");
   const shipped = BUILTIN_WORKFLOWS[0]!.definition;
-  const roundLimit = { disabled: false, onSave: async () => true };
+  const roundLimit = { disabled: false, saving: false, onSave: async () => true };
   const render = (workflow: WorkflowDefinition) => renderToStaticMarkup(createElement(WorkflowSettingsFields, {
     workflow,
     readOnly: true,
@@ -197,6 +197,25 @@ test("a built-in's settings rail leaves only the repair rounds editable", async 
   });
   assert.match(changed, /value="9"/);
   assert.match(changed, new RegExp(`Reset to ${shipped.bindingDefaults.maxRepairRounds}`));
+
+  // While the hook reports a request in flight, nothing in the field can start another one.
+  const inFlight = renderToStaticMarkup(createElement(WorkflowSettingsFields, {
+    workflow: {
+      ...shipped,
+      bindingDefaults: { ...shipped.bindingDefaults, maxRepairRounds: 9 },
+      shippedMaxRepairRounds: shipped.bindingDefaults.maxRepairRounds,
+    },
+    readOnly: true,
+    onUpdate: () => {},
+    roundLimit: { ...roundLimit, saving: true },
+  }));
+  assert.match(inFlight, /Saving…/);
+  assert.equal(
+    [...inFlight.matchAll(/<(input|select|textarea|button)\b[^>]*>/g)]
+      .filter((match) => !/\bdisabled=""/.test(match[0])).length,
+    0,
+    "every control, Reset included, is disabled while a save is in flight",
+  );
 
   // A custom workflow keeps the ordinary draft field and no separate Save.
   const custom = renderToStaticMarkup(createElement(WorkflowSettingsFields, {

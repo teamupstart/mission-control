@@ -382,7 +382,7 @@ export function WorkflowLibrary({
   const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
   // A built-in's round limit is the one thing `readOnly` does not lock.
   const roundLimit = workflow?.builtin && workflow.archivedAt === null
-    ? { disabled: transitioning, onSave: draft.saveRoundLimit }
+    ? { disabled: transitioning, saving: draft.savingRoundLimit, onSave: draft.saveRoundLimit }
     : undefined;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");

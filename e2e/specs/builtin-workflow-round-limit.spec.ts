@@ -196,3 +196,49 @@ test("another built-in saves both accepted endpoints, 20 and 1, and reads each b
   const noMistakes = await builtinDetail(daemon);
   expect(noMistakes.workflow.shippedMaxRepairRounds).toBeUndefined();
 });
+
+test("a save in flight blocks a second save or reset, even after switching views", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  const shipped = (await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds;
+  // Seed an override so Reset is offered, then reopen on that state.
+  const seeded = await fetch(
+    `${daemon.baseURL}/api/workflows/${encodeURIComponent((await builtinDetail(daemon)).workflow.id)}/round-limit`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxRepairRounds: shipped + 2 }) },
+  );
+  expect(seeded.status).toBe(200);
+
+  // Hold the next round-limit PUT open so the request is still in flight across a view switch.
+  let puts = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await dashboard.route("**/round-limit", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    puts += 1;
+    await held;
+    await route.continue();
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
+  const pipelineRail = dashboard.getByRole("complementary", { name: "Workflow settings and validation" });
+  await expect(pipelineRail.getByRole("spinbutton", { name: "Maximum repair rounds" })).toHaveValue(String(shipped + 2));
+  await pipelineRail.getByRole("spinbutton", { name: "Maximum repair rounds" }).fill(String(shipped + 7));
+  await pipelineRail.getByRole("button", { name: "Save rounds" }).click();
+  await expect(pipelineRail.getByRole("button", { name: "Saving…" })).toBeDisabled();
+
+  // The Graph rail is a fresh field, and it still knows a request is in flight.
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+  const graphRail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
+  await expect(graphRail.getByRole("button", { name: `Reset to ${shipped}` })).toBeDisabled();
+  await expect(graphRail.getByRole("spinbutton", { name: "Maximum repair rounds" })).toBeDisabled();
+  await graphRail.getByRole("button", { name: `Reset to ${shipped}` }).click({ force: true });
+
+  release();
+  await expect(graphRail.getByRole("spinbutton", { name: "Maximum repair rounds" })).toHaveValue(String(shipped + 7));
+  await expect(graphRail.getByRole("button", { name: `Reset to ${shipped}` })).toBeEnabled();
+  expect(puts, "exactly one request was sent while the first was in flight").toBe(1);
+  expect((await builtinDetail(daemon)).workflow.bindingDefaults.maxRepairRounds).toBe(shipped + 7);
+});

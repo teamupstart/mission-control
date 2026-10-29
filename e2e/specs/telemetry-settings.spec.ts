@@ -206,6 +206,101 @@ test("an edit made while a destination save is pending remains in the draft", as
   expect(stored.config.user.endpoint).toBe("http://127.0.0.1:14318");
 });
 
+test("product analytics keeps edits made while its destination save is pending", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const endpoint = dashboard.getByLabel("Product analytics endpoint");
+  await endpoint.fill("http://127.0.0.1:14398");
+
+  let releaseSave!: () => void;
+  let requestStarted!: () => void;
+  const held = new Promise<void>((resolve) => { releaseSave = resolve; });
+  const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+  await dashboard.route("**/api/telemetry/config", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    requestStarted();
+    await held;
+    await route.continue();
+  });
+
+  const save = dashboard.getByRole("button", { name: "Save the product analytics destination" });
+  const saved = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/telemetry/config") && response.request().method() === "PUT"
+  );
+  await save.click();
+  await started;
+  await endpoint.fill("http://127.0.0.1:24398");
+  const temporality = dashboard.getByLabel("Metric temporality for product analytics");
+  await temporality.selectOption("delta");
+  const shape = dashboard.getByLabel("Export shape for product analytics");
+  await shape.selectOption("datadog-lean");
+  releaseSave();
+  expect((await saved).ok()).toBe(true);
+  await expect(save).toBeEnabled();
+  await expect(endpoint).toHaveValue("http://127.0.0.1:24398");
+  await expect(temporality).toHaveValue("delta");
+  await expect(shape).toHaveValue("datadog-lean");
+
+  const stored = (await (await dashboard.request.get(`${daemon.baseURL}/api/telemetry/config`)).json()) as {
+    config: { product: { endpoint: string; temporality: string; exportShape: string } };
+  };
+  expect(stored.config.product).toMatchObject({ endpoint: "http://127.0.0.1:14398", temporality: "cumulative", exportShape: "full" });
+  await shoot(dashboard, "product-draft-preserved", true);
+});
+
+test("product analytics preserves unsaved edits across refreshes and accepts refreshes after saving", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
+  const endpoint = dashboard.getByLabel("Product analytics endpoint");
+  const temporality = dashboard.getByLabel("Metric temporality for product analytics");
+  const shape = dashboard.getByLabel("Export shape for product analytics");
+  const userEndpoint = dashboard.getByLabel("Telemetry export endpoint");
+  const save = dashboard.getByRole("button", { name: "Save the product analytics destination" });
+  await expect(endpoint).toBeEnabled();
+
+  // Whitespace makes the successful save's normalization observable in the form.
+  // Until that save completes, every config refresh must leave this draft alone.
+  await endpoint.fill(" http://127.0.0.1:24398 ");
+  await temporality.selectOption("delta");
+  await shape.selectOption("datadog-lean");
+  const changedBeforeSave = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
+    data: {
+      user: { endpoint: "http://127.0.0.1:14318" },
+      product: { endpoint: "http://127.0.0.1:14398", temporality: "cumulative", exportShape: "full" },
+    },
+  });
+  expect(changedBeforeSave.ok()).toBe(true);
+  // The untouched personal field is a witness that the same live config refresh
+  // has reached the form. No reload or remount may discard the product draft.
+  await expect(userEndpoint).toHaveValue("http://127.0.0.1:14318");
+  await expect(endpoint).toHaveValue(" http://127.0.0.1:24398 ");
+  await expect(temporality).toHaveValue("delta");
+  await expect(shape).toHaveValue("datadog-lean");
+  await save.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "product-unsaved-refresh-preserved", true);
+
+  const saved = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/telemetry/config") && response.request().method() === "PUT"
+  );
+  await save.click();
+  expect((await saved).ok()).toBe(true);
+  // The trimmed value arrives only after a successful save makes the draft clean.
+  await expect(endpoint).toHaveValue("http://127.0.0.1:24398");
+  await expect(temporality).toHaveValue("delta");
+  await expect(shape).toHaveValue("datadog-lean");
+
+  const changedAfterSave = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
+    data: {
+      user: { endpoint: "http://127.0.0.1:24318" },
+      product: { endpoint: "http://127.0.0.1:34398", temporality: "cumulative", exportShape: "full" },
+    },
+  });
+  expect(changedAfterSave.ok()).toBe(true);
+  await expect(userEndpoint).toHaveValue("http://127.0.0.1:24318");
+  await expect(endpoint).toHaveValue("http://127.0.0.1:34398");
+  await expect(temporality).toHaveValue("cumulative");
+  await expect(shape).toHaveValue("full");
+  await shoot(dashboard, "product-clean-refresh-applied", true);
+});
+
 test("the export shape is chosen per destination, and the reset it causes is said before saving", async ({
   dashboard,
   daemon,
@@ -342,7 +437,14 @@ test("a remote plaintext endpoint carrying a credential is refused by the form a
   daemon,
 }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/telemetry`);
-  await dashboard.getByLabel("Collect Mission Control telemetry on this machine").check();
+  const collect = dashboard.getByLabel("Collect Mission Control telemetry on this machine");
+  await expect(collect).toBeEnabled();
+  await expect(collect).not.toBeChecked();
+  // This controlled switch saves asynchronously. Assert the settled state instead of
+  // check()'s immediate post-click state while a settings refresh is still rendering.
+  await collect.click();
+  await expect(collect).toBeChecked();
+  await expect(collect).toBeEnabled();
 
   await dashboard.getByLabel("Telemetry export endpoint").fill("http://telemetry.example.com:4318");
   await dashboard.getByLabel("Telemetry export credential").fill("a-secret-token");

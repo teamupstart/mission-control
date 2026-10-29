@@ -19,7 +19,7 @@ test("Pi telemetry is an optional Setup add-on, checked without installing or ex
   const row = setupRow(page, "dependency-pi-otel");
   await expect(row).toContainText("Pi OpenTelemetry extension");
   await expect(row).toContainText("optional");
-  await expect(row).toContainText("full prompt and tool content");
+  await expect(row).toContainText("Requires Upstart CodeArtifact access for install.");
   await expect(row).toContainText("never installs it automatically");
   await expect(row.getByRole("link", { name: "Install Pi telemetry (CodeArtifact)" }))
     .toHaveAttribute("href", /docs\/pi-telemetry\.md/);

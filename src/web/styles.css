@@ -30634,6 +30634,10 @@ span.line-run-prov {
   overflow: hidden;
 }
 .display-choice-option {
+  /* The hidden radio's containing block. Without it the radio is placed against the
+     viewport, outside Settings' scroller, and focusing it on a click scrolls the whole
+     document to wherever that box landed. */
+  position: relative;
   display: inline-flex;
   align-items: center;
   padding: 5px 11px;

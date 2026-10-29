@@ -944,6 +944,13 @@ that it was not saved and a restart may revert it. Retry that selection to save 
 after closing and reopening the dropdown.
 Terminal sessions and stopped sessions keep a read-only model badge.
 
+Codex's observed model and effort come from the newest turn in its rollout, even when
+large tool output pushes that record out of the live tail. Polling retains verified turn
+evidence for both terminal and SDK sessions and scans backwards across missed output after
+a restart or a gap between reads. If the latest turn cannot be established within the bounded
+16 MiB scan, its model remains unconfirmed rather than reverting to an older model from the log's
+beginning. This observation never changes the model configured for future turns.
+
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
 selected model and choose one for that session. A successful change uses the harness's

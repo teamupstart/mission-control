@@ -1,9 +1,9 @@
-import { openSync, readSync, closeSync, statSync, readdirSync } from "node:fs";
+import { openSync, readSync, closeSync, statSync, fstatSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PermissionMode, Session, ThinkingLevel } from "@shared/types.ts";
 import { isLongContext } from "@shared/model.ts";
-import { readTailLines } from "../../util/file-tail.ts";
+import { completeLines } from "../../util/file-tail.ts";
 import type { RuntimeMetaRead } from "../types.ts";
 
 // Reads an OpenAI Codex CLI "rollout" session file to surface the same runtime
@@ -21,6 +21,8 @@ function codexSessionsDir(): string {
 
 /** Bytes to scan from a rollout's tail for the latest turn/token records. */
 const ROLLOUT_TAIL_BYTES = 128 * 1024;
+/** Same ceiling as transcript history reads; never scan an unlimited log on a poll. */
+const ROLLOUT_META_SCAN_BYTES = 16 * 1024 * 1024;
 /** Bytes to read from a rollout's head to identify its session_meta. */
 // Session metadata can embed the complete base instructions. Real 0.144.6 headers exceed
 // 18 KB, so the old 16 KB cap cut valid JSON in half and made every such rollout invisible.
@@ -31,10 +33,19 @@ const SCAN_CAP = 400;
 const FALLBACK_START_SLOP_MS = 30 * 1000;
 
 /**
- * Model and effort are normally written once near the rollout's head. Keep that
- * identity after the file grows beyond the tail window used for live polling.
+ * Retain a turn only alongside the byte boundary through which it was verified.
+ * A later turn can leave the tail between polls, so an uncovered gap must be read
+ * before reusing this identity. File replacement/truncation invalidates the cache.
  */
-const rolloutTurnMeta = new Map<string, Pick<RuntimeMetaRead, "modelId" | "thinkingLevel" | "effortRevision">>();
+type TurnMeta = Pick<RuntimeMetaRead, "modelId" | "thinkingLevel" | "effortRevision">;
+interface RolloutTurnCache {
+  fileId: string;
+  size: number;
+  mtimeMs: number;
+  checkedThrough: number;
+  turn: TurnMeta | null;
+}
+const rolloutTurnMeta = new Map<string, RolloutTurnCache>();
 
 /**
  * Forget the retained model/effort for every rollout not in `keep`.
@@ -262,67 +273,87 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
   };
 }
 
-/** Complete JSONL records from the bounded rollout head. */
-function readHeadLines(path: string): string[] {
+/**
+ * Read a stable file window and find the newest turn, growing backwards only when
+ * the tail leaves a gap since the last read. The head is never evidence of the
+ * current model. If the scan ceiling is reached, leave identity unknown instead.
+ */
+function readRolloutWindow(path: string): { lines: string[]; turn: TurnMeta | null } {
   let fd: number;
   try {
     fd = openSync(path, "r");
   } catch {
-    return [];
+    rolloutTurnMeta.delete(path);
+    return { lines: [], turn: null };
   }
   try {
-    const size = statSync(path).size;
-    const len = Math.min(size, CODEX_HEAD_BYTES);
-    const buf = Buffer.allocUnsafe(len);
-    const n = readSync(fd, buf, 0, len, 0);
-    const lines = buf.subarray(0, n).toString("utf8").split("\n");
-    // A capped read may end halfway through a JSON record.
-    if (len < size) lines.pop();
-    return lines;
+    const stat = fstatSync(fd);
+    const { size, mtimeMs } = stat;
+    const fileId = `${stat.dev}:${stat.ino}`;
+    const previous = rolloutTurnMeta.get(path);
+    const cached = previous?.fileId === fileId && size >= previous.size &&
+      (size !== previous.size || mtimeMs === previous.mtimeMs) ? previous : undefined;
+    const read = (bytes: number): Buffer => {
+      const buf = Buffer.allocUnsafe(bytes);
+      if (readSync(fd, buf, 0, bytes, size - bytes) !== bytes) throw new Error("rollout changed during read");
+      return buf;
+    };
+    let bytes = Math.min(size, ROLLOUT_TAIL_BYTES);
+    const tail = read(bytes);
+    const lines = completeLines(tail, bytes < size, false);
+    let window = lines;
+    let turn: TurnMeta | null = null;
+    for (;;) {
+      const found = parseRolloutMeta(window);
+      if (found?.modelId) {
+        turn = { modelId: found.modelId, thinkingLevel: found.thinkingLevel, effortRevision: found.effortRevision };
+        break;
+      }
+      // An unchanged file or an overlap with the last complete record proves there
+      // is no unseen turn between this window and the retained result, even when
+      // that result is unknown because an earlier scan reached the ceiling.
+      if (cached && (size === cached.size || size - bytes < cached.checkedThrough)) {
+        turn = cached.turn;
+        break;
+      }
+      if (bytes >= Math.min(size, ROLLOUT_META_SCAN_BYTES)) break;
+      bytes = Math.min(size, ROLLOUT_META_SCAN_BYTES, bytes * 2);
+      window = completeLines(read(bytes), bytes < size, false);
+    }
+    const lastNewline = tail.lastIndexOf(0x0a);
+    rolloutTurnMeta.set(path, {
+      fileId, size, mtimeMs, turn,
+      // Retain the verified boundary even when no turn was found, so overlapping
+      // appends can stay unknown without rescanning history. Retry unfinished records.
+      checkedThrough: lastNewline >= 0 ? size - tail.length + lastNewline + 1 : 0,
+    });
+    return { lines, turn };
   } catch {
-    return [];
+    rolloutTurnMeta.delete(path);
+    return { lines: [], turn: null };
   } finally {
     closeSync(fd);
   }
 }
 
-function readRetainedRolloutMeta(path: string, tailLines: string[]): RuntimeMetaRead | null {
+function readRetainedRolloutMeta(turn: TurnMeta | null, tailLines: string[]): RuntimeMetaRead | null {
   const tail = parseRolloutMeta(tailLines);
-  let turn = rolloutTurnMeta.get(path);
-
-  // A turn_context always carries a model. This lets a later model/effort change
-  // supersede the head value, including an explicitly unsupported/null effort.
-  if (tail?.modelId) {
-    turn = {
-      modelId: tail.modelId,
-      thinkingLevel: tail.thinkingLevel,
-      effortRevision: tail.effortRevision,
-    };
-  } else if (!turn) {
-    const head = parseRolloutMeta(readHeadLines(path));
-    turn = {
-      modelId: head?.modelId ?? null,
-      thinkingLevel: head?.thinkingLevel ?? null,
-      effortRevision: head?.effortRevision ?? null,
-    };
-  }
-  rolloutTurnMeta.set(path, turn);
-
-  if (!tail && !turn.modelId && !turn.thinkingLevel) return null;
+  if (!tail && !turn) return null;
   return {
-    modelId: tail?.modelId ?? turn.modelId,
+    modelId: turn?.modelId ?? null,
     contextTokens: tail?.contextTokens ?? null,
     contextWindow: tail?.contextWindow ?? null,
     contextPct: tail?.contextPct ?? null,
     longContext: tail?.longContext ?? false,
-    thinkingLevel: tail?.modelId ? tail.thinkingLevel : turn.thinkingLevel,
-    effortRevision: tail?.modelId ? tail.effortRevision : turn.effortRevision,
+    thinkingLevel: turn?.thinkingLevel ?? null,
+    effortRevision: turn?.effortRevision ?? null,
   };
 }
 
 /** Read a rollout file's tail and derive its runtime metadata, or null. */
 export function readRolloutMeta(path: string): RuntimeMetaRead | null {
-  return readRetainedRolloutMeta(path, readTailLines(path, ROLLOUT_TAIL_BYTES));
+  const { lines, turn } = readRolloutWindow(path);
+  return readRetainedRolloutMeta(turn, lines);
 }
 
 function recordTime(o: Record<string, unknown>, payload: Record<string, unknown>): number {
@@ -396,12 +427,12 @@ export function parseRolloutPermissionMode(lines: string[]): PermissionMode | nu
   return parseRolloutPermissionModeRead(lines)?.mode ?? null;
 }
 
-/** Metadata and lifecycle from the same bounded filesystem read. */
+/** Live counters and lifecycle use the tail; model identity may need a bounded older window. */
 export function readRolloutPassive(path: string): import("../types.ts").TranscriptPassiveRead {
-  const lines = readTailLines(path, ROLLOUT_TAIL_BYTES);
+  const { lines, turn } = readRolloutWindow(path);
   const permission = parseRolloutPermissionModeRead(lines);
   return {
-    meta: readRetainedRolloutMeta(path, lines),
+    meta: readRetainedRolloutMeta(turn, lines),
     activity: parseRolloutActivity(lines),
     permissionMode: permission?.mode ?? null,
     permissionModeRevision: permission?.revision ?? null,

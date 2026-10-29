@@ -94,6 +94,9 @@ answers what is working, what is idle, and what needs a decision. Cards group by
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
 context. The signals that need a person can never be hidden.
 
+The [model badge](docs/sessions.md#status-line-optional) follows the latest observed turn;
+large Codex logs do not substitute an older model from the start of the conversation.
+
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
 

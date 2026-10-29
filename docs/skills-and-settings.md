@@ -508,10 +508,21 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
-- **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
-  first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
-  off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
-  survives a reload before you come back to grant it.
+- **Add several repositories at once.** The page is two panes side by side. **Add
+  repositories**, on the left, lists every repository the workspace scan found that is not
+  in the matrix yet: search it, tick any number (or **Select all shown**), type a path for a
+  checkout the scan missed, and **Add** them in one batch. Each path is resolved and
+  canonicalized first, so a typo is refused. **Trusted**, on the right, is the matrix with a
+  filter of its own. Each pane scrolls inside itself, so the add controls never sit below a
+  long table.
+- **New repositories start with three grants.** An added repo gets **Foreman sends live**,
+  **Workflows act** and **GitHub Inspector posts reviews** straight away; **YOLO merges**
+  stays off until you click its cell. Every default is one click to revoke. Because the
+  Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
+  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. If
+  none of the three grants can be written, for example while the daemon is unreachable, the
+  repo is remembered as an ungranted row per machine so it survives a reload, and its cells
+  can be granted later.
 - **Repository labels use directory names.** Read-only repository labels normally show only
   the final directory name; hover the label to see its complete path. If a Trust warning names
   two repositories with the same directory name, it shows their full paths in the warning so
@@ -523,7 +534,7 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   records the bare Git directory as the owner, including when it is named `.git`, rather
   than granting the containing folder. Tasks use the same owner and run in linked checkouts.
 - **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
-  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  the Trust row in the rail to the matrix and its add pane, and the tour leaves you on this
   page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
   a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,

@@ -23650,25 +23650,212 @@ button.sc-row:focus-visible {
   background: var(--panel-2);
   border-color: color-mix(in oklab, var(--muted) 28%, transparent);
 }
-.trust-matrix {
+/* Trust takes the page's width rather than the 900px reading column: it is two panes side by
+   side, the add picker and the matrix, so adding never waits below a long table. */
+.settings-pane > .settings-section.trust-section {
+  max-width: 1320px;
+}
+/* The split has a height of its own and each pane scrolls inside it, so neither the add
+   button nor the matrix header ever needs the settings pane scrolled to be reached. The
+   height leaves room below for the dagger footnotes, which every add can raise. */
+.trust-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 14px;
   margin-top: 14px;
-  max-width: 860px;
+  height: clamp(360px, calc(100vh - 340px), 720px);
+}
+.trust-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
   border: 1px solid var(--border-soft);
   border-radius: 11px;
   overflow: hidden;
+  background: var(--bg);
+}
+.trust-pane-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.trust-matrix-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.trust-pane-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.trust-pane-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+.trust-pane-count {
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.trust-pane-title-row .trust-pane-count,
+.trust-picked-count {
+  margin-left: auto;
+}
+.trust-search,
+.trust-path {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  width: 100%;
+  min-width: 0;
+}
+.trust-search:focus,
+.trust-path:focus {
+  outline: none;
+  border-color: var(--working);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 22%, transparent);
+}
+.trust-matrix-head .trust-search {
+  flex: 1;
+  width: auto;
+}
+.trust-pick-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Sized to its rows, not stretched: the empty-list note follows it directly, and the
+   pane's footer is what takes the leftover height (`margin-top: auto`). */
+.trust-pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.trust-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.trust-pick:hover {
+  background: color-mix(in oklab, var(--working) 6%, transparent);
+}
+.trust-pick.is-picked {
+  background: color-mix(in oklab, var(--working) 11%, transparent);
+}
+.trust-pick input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--working);
+}
+.trust-pick-name {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trust-pick-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.trust-pick-empty {
+  margin: 0;
+  padding: 14px;
+}
+.trust-pane-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-2);
+}
+.trust-defaults {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+/* The same pill the cells wear, as a legend of what an add will write - never a control. */
+.trust-grant.trust-default {
+  padding: 1px 8px;
+  font-size: 10.5px;
+  cursor: default;
+}
+.trust-add-btn {
+  width: 100%;
+  padding: 7px 11px;
+}
+.trust-add-error {
+  margin: 0;
+}
+.trust-new-tag {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--idle);
+  border: 1px solid color-mix(in oklab, var(--idle) 35%, transparent);
+  border-radius: 4px;
+}
+/* Below this the two panes cannot both hold their content side by side, so they stack - the
+   add pane first, which keeps it at the top of the page rather than under the table. */
+@media (max-width: 1100px) {
+  .trust-split {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+  .trust-add {
+    max-height: 420px;
+  }
+  .trust-matrix .trust-grid {
+    max-height: min(460px, 55vh);
+  }
 }
 /* One grid for the whole table so every column line stays true down the rows: repo path
-   takes the flexible track, the three grants are fixed to their label widths, and the
-   remove button gets a hairline column of its own.
+   takes the flexible track, the four grants share bounded tracks sized to their pills, and
+   the remove button gets a hairline column of its own.
 
-   The grid is also the table's scrollport. Uncapped, every trusted repo added a row to the
-   settings pane, which pushed the add picker to the pane's bottom edge where its list had no
-   room to open. Past the cap the rows scroll here, under a header that stays put. */
+   The grid is also the table's scrollport. It fills what its pane leaves below the filter,
+   and past that the rows scroll here, under a header that stays put - so a long matrix
+   never grows the settings pane. */
 .trust-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 140px 168px 130px 44px;
+  grid-template-columns: minmax(0, 1fr) repeat(4, minmax(96px, 116px)) 40px;
+  align-content: start;
   align-items: stretch;
-  max-height: min(460px, 55vh);
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -23803,20 +23990,6 @@ button.sc-row:focus-visible {
 /* The double-dagger footnote, on the same rhythm. Tighter to the note above it than to the
    matrix, so that when both are flying they read as two footnotes rather than two sections. */
 .trust-arm-note {
-  margin-top: 8px;
-}
-.trust-add {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  margin-top: 14px;
-  max-width: 860px;
-}
-.trust-add .combobox {
-  flex: 1;
-  min-width: 0;
-}
-.trust-add-note {
   margin-top: 8px;
 }
 /* The grant-count summary that replaced the repo editors on the three panels that hold a

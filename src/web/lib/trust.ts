@@ -2,9 +2,10 @@
 //
 // Trust is a VIEW over four existing `repoAllowlist`s (Foreman sends live, Workflows act,
 // Inspector posts reviews, YOLO merges) plus the panel's staged list (`UiConfig.trustStaged`,
-// the home for a repo added but granted nothing). Turning those five lists into one sorted
-// table of repos, and spotting the dangerous combinations, is arithmetic - no React,
-// no fetch - so it lives here where a render test can drive it without stubbing anything.
+// the home for a repo in the matrix that holds no grant: one added while none of its default
+// grants could be written, or one an older build added ungranted). Turning those five lists
+// into one sorted table of repos, and spotting the dangerous combinations, is arithmetic -
+// no React, no fetch - so it lives here where a render test can drive it without stubbing anything.
 
 /**
  * The four allowlists a row is read from, by the grant each one confers.
@@ -153,6 +154,38 @@ export function candidateRepos(repos: readonly string[], present: readonly strin
 
 /** Which matrix column a cell belongs to, keyed by the grant it toggles. */
 export type GrantColumn = "foreman" | "workflows" | "inspector" | "merge";
+
+/**
+ * The grants a repository receives the moment it is added to Trust.
+ *
+ * Everything except YOLO merges. Foreman, Workflows and the Inspector each act on a repo's
+ * sessions or its pull requests, and an operator adding a checkout to Trust is asking for
+ * exactly that; a merge is the one grant that lands code on the base branch without a person
+ * in the loop, so it stays a deliberate cell click. Every default is still one click to
+ * revoke, and the cells say which way each one stands.
+ */
+export const DEFAULT_ADD_GRANTS = ["foreman", "workflows", "inspector"] as const satisfies
+  readonly GrantColumn[];
+
+/** One default-granted column's owning allowlist after an add: the full new list. */
+export type AddPatch = Record<(typeof DEFAULT_ADD_GRANTS)[number], string[]>;
+
+/**
+ * The writes one batch add produces: each default-granted allowlist with every new repo
+ * appended once, in the order given. Full lists rather than deltas, because every config
+ * route takes the whole list, and a repo the list already names is not appended twice.
+ */
+export function addRepositoriesPatch(repos: readonly string[], lists: TrustLists): AddPatch {
+  const extend = (current: readonly string[]): string[] => [
+    ...current,
+    ...repos.filter((r, i) => !current.includes(r) && repos.indexOf(r) === i),
+  ];
+  return {
+    foreman: extend(lists.foreman),
+    workflows: extend(lists.workflows),
+    inspector: extend(lists.inspector),
+  };
+}
 
 /**
  * The write one cell click produces. Kept as data - which subsystem's config route the

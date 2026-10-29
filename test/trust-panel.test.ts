@@ -10,6 +10,8 @@ import {
   checksArmedReading,
   grantPatch,
   candidateRepos,
+  addRepositoriesPatch,
+  DEFAULT_ADD_GRANTS,
   type ChecksArmedReading,
   type TrustLists,
 } from "../src/web/lib/trust.ts";
@@ -212,6 +214,32 @@ test("the add picker omits repos already in the matrix", () => {
   assert.deepEqual(candidateRepos(["/a", "/b", "/c"], ["/b"]), ["/a", "/c"]);
 });
 
+// ---- what one batch add writes -----------------------------------------------------------
+
+test("an added repository is granted everything except YOLO merges", () => {
+  // The merge is the one grant that lands code on the base branch with nobody in the loop,
+  // so it is the one an add must never hand out by default.
+  assert.deepEqual([...DEFAULT_ADD_GRANTS], ["foreman", "workflows", "inspector"]);
+  assert.equal((DEFAULT_ADD_GRANTS as readonly string[]).includes("merge"), false);
+});
+
+test("a batch add appends every new repo once to each default-granted list", () => {
+  const patch = addRepositoriesPatch(
+    ["/a", "/b", "/a"],
+    lists({ foreman: ["/f"], workflows: ["/w", "/b"], inspector: [], shipping: ["/s"] }),
+  );
+  // Full lists, in the order given, with no repo written twice - even one the list already
+  // held or one the batch named twice.
+  assert.deepEqual(patch, {
+    foreman: ["/f", "/a", "/b"],
+    workflows: ["/w", "/b", "/a"],
+    inspector: ["/a", "/b"],
+  });
+  // And nothing for Shipping: the patch has no key that could reach the merge allowlist.
+  assert.equal("shipping" in patch, false);
+  assert.equal("merge" in patch, false);
+});
+
 // ---- static render ---------------------------------------------------------------------
 
 function foreman(over: Partial<{ repoAllowlist: string[]; config: null }> = {}): ForemanState {
@@ -295,7 +323,7 @@ function render(
   );
 }
 
-test("the matrix renders one grant column per subsystem and the add row's anchor", () => {
+test("the matrix renders one grant column per subsystem and the add pane's anchor", () => {
   const repo = "/Users/dev/work/harness";
   const html = render(
     foreman({ repoAllowlist: [repo] }),
@@ -341,10 +369,29 @@ test("the Workflows column names both capabilities its one grant covers", () => 
   assert.doesNotMatch(html, /unless you switched them off/);
 });
 
-test("the add row says it grants nothing, so adding cannot read as consent", () => {
+test("the add pane says what an add grants, with YOLO merges off", () => {
   const html = render(foreman(), inspector(), shipping());
-  assert.match(html, /Adding a repo grants nothing yet/);
-  assert.match(html, /Adding is configuration; enabling is consent/);
+  assert.match(html, /New repositories get/);
+  const legend = html.slice(html.indexOf("New repositories get"));
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Foreman</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Workflows</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>GitHub Inspector</);
+  assert.match(legend, /trust-default is-off[^>]*><span class="trust-grant-dot"[^>]*><\/span>YOLO merges off</);
+  // The old consent line described the behaviour this change removes.
+  assert.doesNotMatch(html, /grants nothing yet/);
+});
+
+test("the add pane and the matrix sit side by side, each with its own search", () => {
+  const html = render(foreman({ repoAllowlist: ["/repo"] }), inspector(), shipping());
+  const add = html.indexOf('data-anchor="trust/add"');
+  const matrix = html.indexOf('data-anchor="trust/matrix"');
+  assert.ok(add > -1 && matrix > add, "the add pane comes first, so it never sits under the table");
+  assert.match(html, /class="trust-split"/);
+  assert.match(html, /aria-label="Search repositories to add"/);
+  assert.match(html, /aria-label="Filter trusted repositories"/);
+  assert.match(html, /aria-label="Repository path"/);
+  // Nothing picked yet, so the batch button names no count and is disabled.
+  assert.match(html, /<button type="button" class="btn btn-primary trust-add-btn" disabled="">Add repositories<\/button>/);
 });
 
 test("a merge-without-review, armed, flies the dagger footnote with both fixes", () => {

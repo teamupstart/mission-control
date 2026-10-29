@@ -1001,6 +1001,18 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       PRIMARY KEY (slot, repo_root)
     );
 
+    -- The operator's maximum repair rounds for one built-in workflow.
+    --
+    -- A built-in is not a row: its definition and versions ship with the build and stay
+    -- read-only. The round budget is the one setting an operator may change on one without
+    -- duplicating it, so it lives beside the catalog rather than in it, keyed by the
+    -- built-in's stable id. No row means the shipped value.
+    CREATE TABLE IF NOT EXISTS workflow_builtin_round_limits (
+      workflow_id       TEXT PRIMARY KEY,
+      max_repair_rounds INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
     -- executions, delivery identity and later audit data all share one migration boundary.
     CREATE TABLE IF NOT EXISTS workflow_definitions (

@@ -967,6 +967,11 @@ export class WorkflowManager {
     return this.finish(result);
   }
 
+  /** A built-in's maximum repair rounds, the one setting it lets an operator change in place. */
+  setBuiltinRoundLimit(id: string, maxRepairRounds: number | null, now = Date.now()): WorkflowMutation {
+    return this.finish(this.store.setBuiltinRoundLimit(id, maxRepairRounds, now));
+  }
+
   archive(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowMutation {
     return this.finish(this.store.archiveWorkflowCas(id, expectedDraftRevision, now));
   }

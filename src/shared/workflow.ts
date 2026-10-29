@@ -3641,8 +3641,17 @@ export interface WorkflowDefinition {
    * A built-in workflow is app data, not operator data: it is not a row, it arrives already
    * published, and it can be neither edited, archived, nor published again. Duplicate is the
    * path to a customized copy, and that copy is an ordinary workflow like any other.
+   *
+   * The one exception is `bindingDefaults.maxRepairRounds`, which an operator may change in
+   * place. See `shippedMaxRepairRounds`.
    */
   builtin: boolean;
+  /**
+   * What this build ships as the built-in's maximum repair rounds, present only while the
+   * operator's own value replaces it. `bindingDefaults` (here and on every version of the
+   * built-in) already carries the operator's value; this is what Reset returns to.
+   */
+  shippedMaxRepairRounds?: number;
 }
 
 export interface WorkflowVersion {

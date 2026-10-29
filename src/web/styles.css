@@ -18495,6 +18495,11 @@ td.wf-command-rule-action {
 .workflow-policy-fields { display: flex; flex-direction: column; gap: 9px; }
 .workflow-properties label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--dim); }
 .workflow-properties textarea { min-height: 68px; resize: vertical; }
+/* A built-in's round limit: the one live field among disabled ones, with its own Save. */
+.workflow-round-limit { display: flex; flex-direction: column; gap: 6px; }
+.workflow-round-limit .settings-hint { margin: 0; }
+.workflow-round-limit-error { color: var(--danger); }
+.workflow-round-limit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .workflow-validation { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .workflow-validation ul { display: flex; flex-direction: column; gap: 7px; margin: 8px 0 0; padding: 0; list-style: none; }
 .workflow-validation li { display: grid; gap: 2px; font-size: 10.5px; line-height: 1.4; color: var(--muted); }

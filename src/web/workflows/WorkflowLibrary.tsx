@@ -191,8 +191,8 @@ export function WorkflowStateNotice({
     return (
       <p className="wf-state builtin">
         Built-in - this workflow ships with Mission Control, always carries the graph this
-        build was made from, and is already published. Duplicate it to make a copy you own and
-        can edit.
+        build was made from, and is already published. Only its maximum repair rounds can be
+        changed here. Duplicate it to make a copy you own and can edit.
       </p>
     );
   }
@@ -380,6 +380,10 @@ export function WorkflowLibrary({
   // affordance answer "can this be changed?" identically. A built-in is app data: the daemon
   // refuses the write, and offering the control anyway is a button that reports an error.
   const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
+  // A built-in's round limit is the one thing `readOnly` does not lock.
+  const roundLimit = workflow?.builtin && workflow.archivedAt === null
+    ? { disabled: transitioning, onSave: draft.saveRoundLimit }
+    : undefined;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
@@ -1260,6 +1264,7 @@ export function WorkflowLibrary({
               stageCount={pipeline?.stages.length ?? 0}
               readOnly={transitioning || readOnly}
               onUpdate={draft.update}
+              roundLimit={roundLimit}
             />
           ) : (
             <WorkflowProperties
@@ -1273,6 +1278,7 @@ export function WorkflowLibrary({
               readOnly={transitioning || readOnly}
               onUpdate={draft.update}
               onConfirm={setConfirm}
+              roundLimit={roundLimit}
             />
           )}
           <WorkflowVersionHistory

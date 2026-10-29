@@ -6159,6 +6159,22 @@ export const UpdateWorkflowSchema = z
 export type UpdateWorkflow = z.infer<typeof UpdateWorkflowSchema>;
 export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
 
+/**
+ * The whole of what an operator may change on a built-in workflow without duplicating it.
+ *
+ * Strict, so a body that also names a graph, policy or any other binding default is refused
+ * rather than having the rest silently dropped. `null` returns to the shipped value.
+ */
+export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax)
+    .nullable(),
+}).strict();
+export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
+
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
 export const PublishWorkflowSchema = ValidateWorkflowSchema;
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;

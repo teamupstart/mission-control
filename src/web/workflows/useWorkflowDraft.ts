@@ -158,6 +158,8 @@ export interface WorkflowDraftState {
   reload: () => Promise<void>;
   publish: () => Promise<WorkflowVersion | null>;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
+  /** A built-in's maximum repair rounds, its one in-place setting. `null` restores the shipped value. */
+  saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
   clearConflict: () => void;
   clearError: () => void;
   showError: (message: string) => void;
@@ -432,6 +434,31 @@ export function useWorkflowDraft(
     }
   }, []);
 
+  const saveRoundLimit = useCallback(async (maxRepairRounds: number | null): Promise<boolean> => {
+    const current = workflowRef.current;
+    // Not the draft autosave: a built-in has no draft to save, and this writes nothing else.
+    if (!current?.builtin) return false;
+    setError(null);
+    try {
+      const response = await workflowRequest<WorkflowWriteResponse>(`/api/workflows/${current.id}/round-limit`, {
+        method: "PUT",
+        body: JSON.stringify({ maxRepairRounds }),
+      });
+      if (workflowIdRef.current !== current.id) return true;
+      workflowRef.current = response.workflow;
+      setWorkflow(response.workflow);
+      const storedFingerprint = editableFingerprint(response.workflow);
+      setSavedFingerprint(storedFingerprint);
+      savedFingerprintRef.current = storedFingerprint;
+      // Every version of the built-in now offers the new budget to a binding.
+      await refreshVersions(current.id);
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save the repair rounds");
+      return false;
+    }
+  }, [refreshVersions]);
+
   return useMemo(() => ({
     workflow: currentWorkflow,
     versions,
@@ -451,6 +478,7 @@ export function useWorkflowDraft(
     reload,
     publish,
     duplicate,
+    saveRoundLimit,
     clearConflict: () => {
       conflictRef.current = null;
       setConflict(null);
@@ -461,5 +489,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saving, update, versions, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, update, versions, workflowId]);
 }

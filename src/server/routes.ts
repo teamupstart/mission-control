@@ -174,6 +174,7 @@ import {
   ArchivePersonaSchema,
   CreateWorkflowSchema,
   UpdateWorkflowSchema,
+  UpdateBuiltinWorkflowRoundLimitSchema,
   ValidateWorkflowSchema,
   PublishWorkflowSchema,
   ArchiveWorkflowSchema,
@@ -2292,8 +2293,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (result.reason === "builtin") {
       return c.json({
         ...body,
-        error: "this workflow ships with Mission Control: it cannot be edited, published, "
-          + "archived, restored, or deleted. Duplicate it to make a copy you own.",
+        error: "this workflow ships with Mission Control: only its maximum repair rounds can be "
+          + "changed, and it cannot be edited, published, archived, restored, or deleted. "
+          + "Duplicate it to make a copy you own.",
+      }, 409);
+    }
+    if (result.reason === "not_builtin") {
+      return c.json({
+        ...body,
+        error: "only a built-in workflow takes a round limit in place: edit this workflow's draft "
+          + "and publish it instead.",
       }, 409);
     }
     return c.json(body, 409);
@@ -2467,6 +2476,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.update(c.req.param("id"), parsed.data);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  // A built-in's round budget, the one setting it lets an operator change without Duplicate.
+  // Its own route rather than a PATCH exception, so the schema itself is the proof that
+  // nothing else about a built-in can be written.
+  app.put("/api/workflows/:id/round-limit", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateBuiltinWorkflowRoundLimitSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setBuiltinRoundLimit(c.req.param("id"), parsed.data.maxRepairRounds);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result);
   });
   app.delete("/api/workflows/:id", async (c) => {
     const manager = workflowManager();

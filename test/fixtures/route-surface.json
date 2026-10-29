@@ -352,6 +352,7 @@
   "PUT /api/terminals/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty config update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
   "PUT /api/ui/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty config update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
   "PUT /api/workflow-commands/:slot": "503 {\"error\":\"Command catalog unavailable\"}",
+  "PUT /api/workflows/:id/round-limit": "503 {\"error\":\"Workflow manager unavailable\"}",
   "PUT /api/workflows/config": "409 {\"error\":\"The dispatch default must be an active published workflow\"}",
   "PUT /api/worktrees/config": "503 {\"error\":\"worktree operations unavailable\"}"
 }

@@ -11,6 +11,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_LIMITS,
   personaChoiceLabel,
   personaChoicesForDisplay,
   sessionActionChoiceLabel,
@@ -19,6 +20,7 @@ import {
   withNodeExecutionOverride,
 } from "@shared/workflow.ts";
 import type { LlmProviderView } from "@shared/types.ts";
+import { useEffect, useState } from "react";
 import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
 import { NodeReviewPolicyEditor } from "./NodeReviewPolicyEditor.tsx";
 import { personaNodeRouting } from "./node-execution.ts";
@@ -65,6 +67,98 @@ type WorkflowPatch = Partial<Pick<
   "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults" | "evidenceReadinessPolicy"
 >>;
 
+/** How a built-in's round limit is saved, or absent where the workflow cannot take one. */
+export interface WorkflowRoundLimitControl {
+  disabled: boolean;
+  onSave: (maxRepairRounds: number | null) => Promise<boolean>;
+}
+
+/** The typed count as a round budget the daemon will accept, or null. */
+export function parseRoundLimit(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const rounds = Number(value);
+  return rounds >= WORKFLOW_LIMITS.repairRoundsMin && rounds <= WORKFLOW_LIMITS.repairRoundsMax
+    ? rounds
+    : null;
+}
+
+/**
+ * A built-in's maximum repair rounds, the one setting it can change without Duplicate.
+ *
+ * An explicit Save rather than the draft autosave every other field rides, because a built-in
+ * has no draft: this writes a single installation setting, and the operator should see it
+ * land. Every other field beside it stays disabled.
+ */
+export function BuiltinRoundLimitField({
+  workflow,
+  control,
+}: {
+  workflow: WorkflowDefinition;
+  control: WorkflowRoundLimitControl;
+}): React.JSX.Element {
+  const current = workflow.bindingDefaults.maxRepairRounds;
+  const shipped = workflow.shippedMaxRepairRounds;
+  const [value, setValue] = useState(String(current));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setValue(String(current)), [current, workflow.id]);
+  const rounds = parseRoundLimit(value);
+  const disabled = control.disabled || saving;
+  const save = async (next: number | null): Promise<void> => {
+    setSaving(true);
+    try {
+      await control.onSave(next);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="workflow-round-limit">
+      <label>Maximum repair rounds
+        <input
+          type="number"
+          min={WORKFLOW_LIMITS.repairRoundsMin}
+          max={WORKFLOW_LIMITS.repairRoundsMax}
+          disabled={disabled}
+          value={value}
+          aria-invalid={rounds === null}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </label>
+      <p className="settings-hint">
+        {shipped === undefined
+          ? `The value this build ships. `
+          : `Changed from the ${shipped} this build ships. `}
+        The only setting you can change on a built-in workflow. New bindings start from it;
+        existing bindings keep their own.
+      </p>
+      {rounds === null && (
+        <p className="settings-hint workflow-round-limit-error" role="alert">
+          Enter a whole number from {WORKFLOW_LIMITS.repairRoundsMin} through {WORKFLOW_LIMITS.repairRoundsMax}.
+        </p>
+      )}
+      <div className="workflow-round-limit-actions">
+        <Tooltip label="Save this built-in workflow's maximum repair rounds">
+          <button
+            type="button"
+            className="btn"
+            disabled={disabled || rounds === null || rounds === current}
+            onClick={() => void save(rounds)}
+          >
+            {saving ? "Saving…" : "Save rounds"}
+          </button>
+        </Tooltip>
+        {shipped !== undefined && (
+          <Tooltip label="Return to the maximum repair rounds this build ships">
+            <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => void save(null)}>
+              Reset to {shipped}
+            </button>
+          </Tooltip>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * The one set of workflow-level fields, shared by both right rails.
  *
@@ -77,10 +171,13 @@ export function WorkflowSettingsFields({
   workflow,
   readOnly,
   onUpdate,
+  roundLimit,
 }: {
   workflow: WorkflowDefinition;
   readOnly: boolean;
   onUpdate: (patch: WorkflowPatch) => void;
+  /** Present for a built-in, whose round limit is the one field `readOnly` does not cover. */
+  roundLimit?: WorkflowRoundLimitControl;
 }): React.JSX.Element {
   return (
     <section className="workflow-policy-fields">
@@ -101,9 +198,13 @@ export function WorkflowSettingsFields({
           </select>
         </Tooltip>
       </label>
-      <label>Maximum repair rounds
-        <input disabled={readOnly} type="number" min={1} max={20} value={workflow.bindingDefaults.maxRepairRounds} onChange={(event) => onUpdate({ bindingDefaults: { ...workflow.bindingDefaults, maxRepairRounds: Number(event.target.value) } })} />
-      </label>
+      {roundLimit && workflow.builtin
+        ? <BuiltinRoundLimitField workflow={workflow} control={roundLimit} />
+        : (
+          <label>Maximum repair rounds
+            <input disabled={readOnly} type="number" min={WORKFLOW_LIMITS.repairRoundsMin} max={WORKFLOW_LIMITS.repairRoundsMax} value={workflow.bindingDefaults.maxRepairRounds} onChange={(event) => onUpdate({ bindingDefaults: { ...workflow.bindingDefaults, maxRepairRounds: Number(event.target.value) } })} />
+          </label>
+        )}
       <label>Evidence preflight
         <Tooltip label="Criterion mapped pauses structurally incomplete evidence before any Persona or Check attempt">
           <select
@@ -207,17 +308,19 @@ export function WorkflowPipelineProperties({
   stageCount,
   readOnly,
   onUpdate,
+  roundLimit,
 }: {
   workflow: WorkflowDefinition;
   diagnostics: WorkflowDiagnostic[];
   stageCount: number;
   readOnly: boolean;
   onUpdate: (patch: WorkflowPatch) => void;
+  roundLimit?: WorkflowRoundLimitControl;
 }): React.JSX.Element {
   const sentences = pipelineValidationSentences(diagnostics, stageCount);
   return (
     <aside className="workflow-properties" aria-label="Workflow settings and validation">
-      <WorkflowSettingsFields workflow={workflow} readOnly={readOnly} onUpdate={onUpdate} />
+      <WorkflowSettingsFields workflow={workflow} readOnly={readOnly} onUpdate={onUpdate} roundLimit={roundLimit} />
       <section className="workflow-validation">
         <h4>Validation</h4>
         {sentences.length === 0
@@ -243,6 +346,7 @@ export function WorkflowProperties({
   readOnly,
   onUpdate,
   onConfirm,
+  roundLimit,
 }: {
   workflow: WorkflowDefinition;
   personas: PersonaView[];
@@ -257,6 +361,7 @@ export function WorkflowProperties({
   readOnly: boolean;
   onUpdate: (patch: WorkflowPatch) => void;
   onConfirm: (request: WorkflowConfirmRequest) => void;
+  roundLimit?: WorkflowRoundLimitControl;
 }): React.JSX.Element {
   const selectedNode = selection?.kind === "node" ? workflow.draft.nodes.find((node) => node.id === selection.id) : null;
   const selectedEdge = selection?.kind === "edge" ? workflow.draft.edges.find((edge) => edge.id === selection.id) : null;
@@ -502,7 +607,7 @@ export function WorkflowProperties({
           <p>Use Delete from the canvas to remove this selection with one confirmation.</p>
         </section>
       ) : (
-        <WorkflowSettingsFields workflow={workflow} readOnly={readOnly} onUpdate={onUpdate} />
+        <WorkflowSettingsFields workflow={workflow} readOnly={readOnly} onUpdate={onUpdate} roundLimit={roundLimit} />
       )}
       <section className="workflow-edge-list" aria-label="Workflow connections">
         <h4>Connections · {workflow.draft.edges.length}</h4>

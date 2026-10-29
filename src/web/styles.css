@@ -4797,6 +4797,33 @@ body {
   padding: 0 9px;
 }
 
+/* Operator-minimized controls: Settings > Display > Top bar. A control the operator asked to
+   keep small is drawn the way the ladder draws it when space runs out - rung 1's Missions
+   glyph, rung 4's page segment and Foreman dot - at EVERY width, so it never takes back the
+   room the ladder would have given it. Same visually-hidden technique as the rungs, for the
+   same reason: the control keeps its accessible name and its tooltip.
+
+   Not a rung, and deliberately not keyed on `data-rung`: it is a preference, not a fit, and
+   `fitTopbar` simply measures a bar that already carries less ink.
+
+   Foreman's chip is hidden only while it is a MODE (`live`, `off`). In the issue state the
+   chip is the issue count, and an unread problem is not ink to be saved, so the selector
+   exempts `.has-errors` itself rather than relying on the later `.has-errors` rule winning a
+   tie on source order - a tie a moved block or one more class on either side would break. */
+.topbar .tb-compact .tb-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.topbar .page-seg-btn.tb-compact .kb-hint,
+.topbar .foreman-btn.tb-compact:not(.has-errors) .foreman-chip {
+  display: none;
+}
+
 .tone-working {
   --tone-color: var(--working);
 }
@@ -30751,6 +30778,46 @@ span.line-run-prov {
 .board-card-preview-stage .tile:hover {
   transform: none;
 }
+/* Display > Top bar's preview: the real `Topbar`, drawn at its natural one-row width and
+   zoomed down to fit the stage (`TopbarPreview` measures the ratio), so the operator compares
+   the whole bar at once rather than scrolling along it. Every rule `.topbar` carries for its
+   life as the page's sticky header - stickiness, the gap under it, the desktop shell's
+   traffic-light inset and window-drag region - is cancelled here: this copy is a picture
+   inside Settings, and dragging it must not move the window. */
+.topbar-preview-stage {
+  overflow: hidden;
+  padding: 0 4px;
+}
+.topbar.topbar-preview,
+.app-console .topbar.topbar-preview,
+.app-board .topbar.topbar-preview,
+.is-desktop .topbar.topbar-preview,
+.is-desktop .app-console .topbar.topbar-preview,
+.is-desktop .app-board .topbar.topbar-preview {
+  position: static;
+  width: max-content;
+  margin: 0;
+  padding: 10px 6px;
+  border-bottom: none;
+  background: none;
+  backdrop-filter: none;
+  -webkit-app-region: no-drag;
+}
+.topbar-preview-stage .topbar-preview,
+.topbar-preview-stage .topbar-preview * {
+  cursor: default;
+}
+.topbar-customizer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 22px;
+  margin-top: 14px;
+}
+.topbar-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 /* Display > Working indicator's preview: two short logs and a reply box, drawn with the
    conversation's own classes. The logs are fixed-height and unscrollable, because the
    second one's whole point is a scroll position - the top - that the stage holds still. */
@@ -30782,7 +30849,8 @@ span.line-run-prov {
   margin-top: 4px;
 }
 @media (max-width: 900px) {
-  .board-card-customizer {
+  .board-card-customizer,
+  .topbar-customizer {
     grid-template-columns: minmax(0, 1fr);
   }
   .board-card-preview {

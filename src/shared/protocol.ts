@@ -3487,6 +3487,13 @@ export const UI_CONFIG_DEFAULTS = {
   showEmptyColumnStash: true,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /**
+   * Empty, both of them: the bar ships the way its predecessor drew it - every item present
+   * and every control at full size, with the measured ladder still shedding labels when the
+   * window narrows. See `src/web/lib/topbar-items.ts` for which ids each list may hold.
+   */
+  hiddenTopbarItems: [] as readonly string[],
+  compactTopbarItems: [] as readonly string[],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3639,6 +3646,26 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).default([]),
+  /**
+   * The topbar's optional items the operator has hidden - the session counts, search, the cost
+   * estimate, product feedback, and alerts and away mode.
+   *
+   * A list of HIDDEN ids for the reasons `hiddenDisplayItems` gives: an item a later build
+   * adds is drawn for everyone until they say otherwise, and a retired or unknown id is inert
+   * rather than a parse error. Not validated against the id set, which is a web-only concept
+   * owned by `src/web/lib/topbar-items.ts`.
+   *
+   * Its own key rather than more entries in `hiddenDisplayItems`, because that array carries
+   * a seed ladder whose marker counts its builds, and none of these ids ever ships hidden.
+   */
+  hiddenTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
+  /**
+   * The topbar controls the operator wants ALWAYS drawn minimized - glyph only, as the ladder
+   * draws them when the bar runs out of room. These controls cannot be hidden; the page
+   * segments, Recurring missions and Foreman are how anyone gets anywhere. Absent means
+   * expanded, with the ladder still free to minimize it on a narrow window.
+   */
+  compactTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
